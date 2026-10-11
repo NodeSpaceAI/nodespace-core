@@ -51,6 +51,12 @@ pub struct SharedContext {
     /// other open databases so foreground work is not blocked by another
     /// database's backlog. Shared by every database's `EmbeddingProcessor`.
     pub scheduler: Arc<EmbeddingScheduler>,
+    /// Cancelled when the daemon is told to stop, before its server starts
+    /// draining connections. Every database's stream-ending token is a child
+    /// of it, so every open `WatchNodes` stream ends then, and the drain,
+    /// which waits for open streams, is not held until its watchdog by a
+    /// subscriber that is still connected.
+    pub serving_ended: tokio_util::sync::CancellationToken,
     /// Builds the pre-delete subtree access gate (ADR-041) for a database as it
     /// is opened. Empty by default, so every database keeps `NodeService`'s
     /// always-allow gate; a host that enforces access fills it in (ADR-082).
@@ -325,6 +331,7 @@ pub async fn build_shared_services(
                 has_model,
                 subtree_gate_factory: Arc::new(OnceLock::new()),
                 scheduler,
+                serving_ended: tokio_util::sync::CancellationToken::new(),
                 local_agent,
                 extensions,
             },
@@ -417,7 +424,9 @@ pub async fn build_database_services(
     // See `DatabaseServices::shutdown_token`'s doc comment: cancelled when
     // this database's service set is retired, so every `WatchNodes` stream
     // `node_service_grpc` has open ends instead of surviving as a zombie.
-    let shutdown_token = tokio_util::sync::CancellationToken::new();
+    // A child of the daemon's own token, so the streams also end when the
+    // daemon stops serving.
+    let shutdown_token = shared.serving_ended.child_token();
 
     // Constructed here (ahead of node_service_grpc) so its lifecycle-manager
     // handle can be threaded into NodeServiceImpl for get-workflow-state —

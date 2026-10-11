@@ -5382,6 +5382,7 @@ mod tests {
             model,
             has_model: false,
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+            serving_ended: tokio_util::sync::CancellationToken::new(),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT),
             extensions: crate::DaemonExtensions::none(),

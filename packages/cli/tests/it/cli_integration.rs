@@ -182,6 +182,7 @@ pub(crate) fn routing_test_context() -> SharedContext {
         model,
         has_model: false,
         scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+        serving_ended: Default::default(),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),
         extensions: nodespace_daemon::DaemonExtensions::none(),

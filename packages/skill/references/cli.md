@@ -341,7 +341,7 @@ nodespace query --type task --filters '[{"type":"property","operator":"gte","pro
 
 **Options:**
 - `--type <type>` — target node type, or `*` for all types
-- `--filters <json>` — array of filter conditions: `{"type":"property"|"content"|"metadata"|"relationship"|"related"|"permitted","operator":"equals"|"contains"|"gt"|"lt"|"gte"|"lte"|"in"|"exists","property":"...","value":...}`
+- `--filters <json>` — array of filter conditions: `{"type":"property"|"content"|"metadata"|"relationship"|"related"|"permitted","operator":"equals"|"contains"|"gt"|"lt"|"gte"|"lte"|"in"|"exists","property":"...","value":...}`. A metadata filter names a node column: `id`, `title`, `content`, `node_type`, `created_at` or `modified_at`
   - A `relationship` filter selects the nodes connected to one node: `{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}` is the children of `<id>` (each matching node reaches `<id>` by following `child_of`).
   - A `related` filter selects by a condition on the connected nodes: `{"type":"related","operator":"equals","path":["project"],"filter":{"type":"property","operator":"equals","property":"status","value":"active"}}` is the tasks whose project is active.
   - `path` lists the relationship names to follow from each candidate node, in order: built-in names (`has_child`, `member_of`, `mentions`), schema-declared names, or the reverse name of either (`child_of`, `mentioned_by`, a declared `reverseName`). `{"name":"child_of","open_ended":true}` in place of a name follows it to every depth (all ancestors). A name the type does not declare is an error naming the ones it does. With `--type '*'` only built-in names resolve.
@@ -408,6 +408,49 @@ A saved query with a `permitted` filter lists what the rules would allow at the 
 This is the CLI counterpart of the local agent's `run_query` tool.
 
 **Output:** `{count, nodes, attached_skills}`: the matching nodes, and the skills attached to the query. With `--with-context`: `{count, items, attached_skills}`
+
+### Wait for a change
+
+`wait` blocks until a node or a saved query's result changes in a stated way, then prints it and exits. Use it when the next step is someone else's: a review by another session, an answer from a person. Start it as a background command and end your turn; your harness resumes you when it exits. Nothing is pushed to you, and the wait keeps no state: the node and the queue are the record, so a wait that timed out or was killed loses nothing and running it again resumes waiting.
+
+```bash
+# Until a task leaves review; exit 4 if it is cancelled instead
+nodespace wait node <task-id> --until '[{"type":"property","operator":"equals","property":"status","value":"in_review","negate":true}]' --unless '[{"type":"property","operator":"equals","property":"status","value":"cancelled"}]'
+nodespace --json wait node <node-id> --until '[{"type":"property","operator":"exists","property":"answer"}]' --timeout 30m
+nodespace wait query "Awaiting review" --until not-empty         # until the queue has work
+nodespace wait query "Awaiting review" --until gain              # until it has an item it did not have
+nodespace wait query "Awaiting review" --item <task-id>          # until one named item is in it
+```
+
+**A node wait** holds when the node matches every filter in `--until`, written in the shape `nodespace query --filters` takes: property, content, relationship and related filters, `negate` included. So "its status is no longer `in_review`" and "this field is set" are both conditions. `--unless` takes the same shape and names the state from which `--until` will not be reached; it is checked first. The filters are run as a query, so a node a query leaves out never matches: an archived node waits until the timeout.
+
+**A query wait** holds when the saved query's result:
+- `--until change` (the default) — gained or lost an item since the wait started;
+- `--until gain` / `--until loss` — gained one, or lost one;
+- `--until not-empty` — has at least one item;
+- `--item <node-id>` — contains that node, in place of `--until`.
+
+`--filters` narrows every run of the wait, as it does for `query run`. The result is compared by node id within the query's own limit, so wait on a queue narrow enough to fit it.
+
+**A condition that already holds returns at once.** `change`, `gain` and `loss` compare with the result at the moment the wait started, so they never hold at once; `not-empty` and `--item` can.
+
+**What comes back.** A node wait prints what `node context <id>` prints: the node, what governs it, its skills and the `version` to name on your next write. A query wait prints what `query run` prints, and `gained` and `lost`: the ids that entered and left the result since the wait started. While waiting, a status line goes to stderr every `--interval` (a minute by default); standard output carries only the result.
+
+**Exit status.** It is how you tell what happened:
+
+| Exit | Meaning | What to do |
+|---|---|---|
+| 0 | The condition holds; the result is printed | Read it and carry on |
+| 1 | The command failed: a filter the daemon rejected, a title that names several saved queries | Fix the command |
+| 3 | `--timeout` passed (3 hours by default) | Run the same command again |
+| 4 | The condition can no longer be reached: the node, the saved query or the `--item` node no longer exists, or the node matches `--unless` | Stop and tell the user |
+| 5 | The daemon is unavailable: not running when the wait started, or gone for two minutes during it | Run it again once the daemon is up |
+
+With `--json`, a wait that ends with 3, 4 or 5 prints `{"outcome": "timeout" | "unreachable" | "daemon_unavailable", "reason": "..."}`. A daemon restart during a wait is survived: the wait reconnects and checks the condition again, so a change made while it was disconnected is seen.
+
+**Durations** are a number of seconds, or a number with `s`, `m` or `h`: `90s`, `30m`, `3h`.
+
+A harness that cannot run a command in the background gets nothing from `wait`: there, re-read the node with `node context` when the user returns. Through the MCP passthrough a call is cut off after two minutes, so a wait there needs a `--timeout` under that.
 
 ### Export node as markdown
 
@@ -1408,6 +1451,27 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 - `--links` — Reset the `attached_to` links (the nodes the skill is handed over with) to the currently-compiled set: a link you deleted comes back and one you added is removed
 - `--all` — Reset guidance, config and links — equivalent to passing all three flags
 - `--yes` — Reset without prompting for confirmation. Required in a non-interactive context (no `--yes` there is a hard error, not an auto-proceed) — unlike `install`/`mcp enable`, this is the one destructive path in the system (ADR-072), and auto-confirming a content discard with no one watching would defeat the point of requiring confirmation at all
+
+### `nodespace wait`
+
+Block until a node or a saved query's result changes in a stated way, then print it and exit: start it in the background after handing work to someone else. Exit 0 when the condition holds, 3 on timeout, 4 when it can no longer be reached, 5 when the daemon is unavailable
+
+**`nodespace wait node`** — Wait until a node matches a condition, then print it with its context, as `node context` reads it. A condition that already holds returns at once. Exits 3 on timeout, 4 when the node no longer exists or matches `--unless`, 5 when the daemon is unavailable
+
+- `<ID>` — Node ID (UUID) (required)
+- `--until <UNTIL>` — The condition: a JSON array of filter conditions in the shape `nodespace query --filters` takes, all of which the node must match, e.g. `[{"type":"property","operator":"equals","property":"status","value":"in_review","negate":true}]` for "its status is no longer in_review" (required)
+- `--unless <UNLESS>` — A condition that ends the wait with exit 4 when the node matches it, in the shape `--until` takes: the state from which `--until` will not be reached, e.g. a cancelled task. It is checked before `--until`
+- `--timeout <TIMEOUT>` — Give up after this long and exit 3: a number of seconds, or a number with `s`, `m` or `h` (`90s`, `30m`, `3h`)
+- `--interval <INTERVAL>` — Print a status line to stderr this often while waiting, in the form `--timeout` takes
+
+**`nodespace wait query`** — Wait until a saved query's result changes, then print the run, as `query run` prints it, with what it gained and lost. Exits 3 on timeout, 4 when the saved query or the `--item` node no longer exists, 5 when the daemon is unavailable
+
+- `<QUERY>` — The saved query's id, or its title (quoted when it has spaces). A title must name exactly one saved query (required)
+- `--until <UNTIL>` — What to wait for. `change`, `gain` and `loss` compare the result with the one the query had when the wait started; `not-empty` holds as soon as the result has an item
+- `--item <NODE_ID>` — Wait until this node is in the result, in place of `--until`. Holds at once when it already is
+- `--filters <FILTERS>` — JSON array of filter conditions ANDed with the stored ones for every run of the wait, in the shape `nodespace query --filters` takes
+- `--timeout <TIMEOUT>` — Give up after this long and exit 3: a number of seconds, or a number with `s`, `m` or `h` (`90s`, `30m`, `3h`)
+- `--interval <INTERVAL>` — Print a status line to stderr this often while waiting, in the form `--timeout` takes
 
 ### `nodespace mcp`
 

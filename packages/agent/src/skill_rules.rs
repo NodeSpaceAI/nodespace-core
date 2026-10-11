@@ -816,12 +816,14 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("task-implement-tick"),
     procedure_rule!("task-implement-links"),
     procedure_rule!("task-implement-review"),
+    procedure_rule!("task-implement-wait"),
     // Reviewing a Task
     procedure_rule!("task-review-take"),
     procedure_rule!("task-review-read"),
     procedure_rule!("task-review-note"),
     procedure_rule!("task-review-pass"),
     procedure_rule!("task-review-return"),
+    procedure_rule!("task-review-wait"),
     // Completing a Task
     procedure_rule!("task-complete-read"),
     procedure_rule!("task-complete-done"),

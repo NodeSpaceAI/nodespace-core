@@ -687,6 +687,7 @@ async fn watch_nodes_receives_create_update_delete_events() {
         .watch_nodes(WatchRequest {
             node_type: String::new(),
             root_id: String::new(),
+            background: false,
         })
         .await
         .expect("watch_nodes failed")

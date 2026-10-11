@@ -2924,10 +2924,15 @@ impl GrpcNodeService for NodeServiceImpl {
         // compute scoping): its embedding batches now take priority over other
         // open databases' backlogs on the shared model. The desktop opens this
         // stream on the database the user is looking at, so the active signal
-        // tracks the foreground database with no extra protocol.
-        this.scheduler.set_active(Some(this.database_id.clone()));
-
+        // tracks the foreground database with no extra protocol. A background
+        // subscriber (a command waiting on a change) is nobody looking at the
+        // database, so it takes no claim and releases none.
         let req = request.into_inner();
+        let claims_active = !req.background;
+        if claims_active {
+            this.scheduler.set_active(Some(this.database_id.clone()));
+        }
+
         if !req.node_type.is_empty() || !req.root_id.is_empty() {
             // Filtering is intentionally out of scope for the initial implementation
             // (this filtering is a documented Non-Goal). Log so clients can see the
@@ -2962,10 +2967,10 @@ impl GrpcNodeService for NodeServiceImpl {
         let stream = async_stream::stream! {
             // Retracts the active-database claim taken above on every exit
             // path from this generator — see `ActiveDbGuard`'s doc comment.
-            let _active_guard = ActiveDbGuard {
+            let _active_guard = claims_active.then(|| ActiveDbGuard {
                 scheduler,
                 database_id: database_id.clone(),
-            };
+            });
 
             loop {
                 let envelope_result = tokio::select! {
@@ -5170,6 +5175,7 @@ mod tests {
             model,
             has_model: false,
             scheduler: Arc::new(EmbeddingScheduler::new()),
+            serving_ended: tokio_util::sync::CancellationToken::new(),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: crate::SharedLocalAgent::new(),
             extensions: crate::DaemonExtensions::none(),
@@ -7442,6 +7448,50 @@ mod tests {
             !scheduler.is_active("db-a"),
             "dropping the stream must retract its active-database claim, not leave the \
              database stuck eviction-immune forever"
+        );
+    }
+
+    /// A background stream is a command waiting on a change, not a window on
+    /// the database. It takes no active-database claim when it opens, and
+    /// closing it leaves a window's claim on the same database in place.
+    #[tokio::test]
+    async fn a_background_watch_stream_neither_takes_nor_releases_the_active_claim() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
+        let core_svc = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+        let scheduler = Arc::new(EmbeddingScheduler::new());
+        let svc = Arc::new(
+            NodeServiceImpl::new(
+                core_svc,
+                Arc::new(tokio::sync::RwLock::new(None)),
+                scheduler.clone(),
+            )
+            .with_database_id("db-a".into()),
+        );
+        let background = || {
+            Request::new(WatchRequest {
+                background: true,
+                ..WatchRequest::default()
+            })
+        };
+
+        let mut alone = svc.watch_nodes(background()).await.unwrap().into_inner();
+        assert!(next_event(&mut alone).await.is_none());
+        assert!(
+            !scheduler.is_active("db-a"),
+            "a background stream must not mark its database active"
+        );
+        drop(alone);
+
+        let mut window = watch_as(&svc, None).await;
+        assert!(next_event(&mut window).await.is_none());
+        let mut waiting = svc.watch_nodes(background()).await.unwrap().into_inner();
+        assert!(next_event(&mut waiting).await.is_none());
+        drop(waiting);
+        assert!(
+            scheduler.is_active("db-a"),
+            "closing a background stream must leave the window's claim in place"
         );
     }
 

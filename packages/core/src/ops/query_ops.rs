@@ -2486,6 +2486,91 @@ mod tests {
             );
         }
 
+        /// A metadata filter on `id` narrows a query to one node, so a filter
+        /// set can be asked of that node alone: it comes back when it matches
+        /// the other filters and nothing comes back when it does not.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_metadata_filter_on_id_asks_the_other_filters_of_one_node() {
+            let (svc, _tmp) = make_test_service().await;
+            let open = "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2b01";
+            let done = "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2b02";
+            svc.create_node(task_node(open, "open", None))
+                .await
+                .unwrap();
+            svc.create_node(task_node(done, "done", None))
+                .await
+                .unwrap();
+
+            let matching = |id: &str| {
+                let input: ExecuteQueryInput = serde_json::from_value(json!({
+                    "target_type": "task",
+                    "filters": [
+                        {"type": "metadata", "operator": "equals", "property": "id", "value": id},
+                        {"type": "property", "operator": "equals", "property": "status", "value": "done"}
+                    ]
+                }))
+                .unwrap();
+                execute_query(&svc, input)
+            };
+
+            let output = matching(done).await.unwrap();
+            assert_eq!(output.count, 1, "{:?}", output.nodes);
+            assert_eq!(
+                output.nodes[0].get("id").and_then(|v| v.as_str()),
+                Some(done)
+            );
+            assert_eq!(matching(open).await.unwrap().count, 0);
+
+            // The same name sorts by the column, in SQL and in the re-sort.
+            let sorted: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "task",
+                "sorting": [{"field": "id", "direction": "desc"}]
+            }))
+            .unwrap();
+            let output = execute_query(&svc, sorted).await.unwrap();
+            let ids: Vec<_> = output
+                .nodes
+                .iter()
+                .filter_map(|node| node.get("id").and_then(|v| v.as_str()))
+                .collect();
+            assert_eq!(ids, vec![done, open]);
+        }
+
+        /// `id` names the node's own id even on a type that declares a field
+        /// called `id`: the SQL ordering and the re-sort both read the
+        /// column, so the two never disagree about the order.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_sort_by_id_reads_the_column_on_a_type_with_an_id_field() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({"name": "ticketed", "fields": [{"name": "id", "type": "text"}]}),
+            )
+            .await;
+            let first = "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2c01";
+            let second = "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2c02";
+            // The field's values order the two the other way round.
+            svc.create_node(node(first, "ticketed", json!({"id": "z"})))
+                .await
+                .unwrap();
+            svc.create_node(node(second, "ticketed", json!({"id": "a"})))
+                .await
+                .unwrap();
+
+            let sorted: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "ticketed",
+                "sorting": [{"field": "id", "direction": "asc"}]
+            }))
+            .unwrap();
+            let output = execute_query(&svc, sorted).await.unwrap();
+            let ids: Vec<_> = output
+                .nodes
+                .iter()
+                .filter_map(|node| node.get("id").and_then(|v| v.as_str()))
+                .collect();
+            assert_eq!(ids, vec![first, second]);
+        }
+
         /// The forward name of an inbound relationship, walked backwards
         /// (`ResolvedRelName::InboundForward`) -- a distinct resolution
         /// branch from `Forward`/`Reverse`/`Builtin`, exercised here with

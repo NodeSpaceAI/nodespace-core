@@ -8,7 +8,7 @@ STEP 3, CHECK EACH ITEM AGAINST ITS EVIDENCE: for each checklist item, decide wh
 
 STEP 4, RECORD THE OUTCOME: write what was checked and what was found as a note directly under the task, so the outcome is on the task and not only in this conversation. <!-- include: task-review-note -->
 
-STEP 5, PASS IT OR SEND IT BACK: when every item is met and nothing that governs the task is broken, mark it done. <!-- include: task-review-pass --> Otherwise untick each item that is not met, say under it what is missing, and move the task back to `in_progress`. <!-- include: task-review-return --> Tell the user the outcome either way.
+STEP 5, PASS IT OR SEND IT BACK: when every item is met and nothing that governs the task is broken, mark it done. <!-- include: task-review-pass --> Otherwise untick each item that is not met, say under it what is missing, and move the task back to `in_progress`. <!-- include: task-review-return --> Tell the user the outcome either way. A task sent back returns to review when its implementer has fixed it. <!-- include: task-review-wait -->
 
 <!-- include: version-conflict -->
 

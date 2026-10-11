@@ -1614,6 +1614,7 @@ mod tests {
             model,
             has_model: false,
             scheduler: Arc::new(EmbeddingScheduler::new()),
+            serving_ended: tokio_util::sync::CancellationToken::new(),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: crate::SharedLocalAgent::new(),
             extensions: crate::DaemonExtensions::none(),

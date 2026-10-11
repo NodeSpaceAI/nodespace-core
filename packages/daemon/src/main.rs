@@ -861,6 +861,7 @@ mod shutdown_watchdog_tests {
 /// `std::process::exit`.
 fn watch_for_shutdown_signal(
     shutdown_future: impl std::future::Future<Output = ()> + Send + 'static,
+    serving_ended: tokio_util::sync::CancellationToken,
     timeout: Duration,
     on_timeout: impl FnOnce() + Send + 'static,
 ) -> (
@@ -872,6 +873,11 @@ fn watch_for_shutdown_signal(
     let slot_for_future = slot.clone();
     let wrapped = async move {
         shutdown_future.await;
+        // End every open stream before tonic starts draining: the drain
+        // waits for open streams, and a subscriber that stays connected (a
+        // window, a command waiting on a change) would hold it until the
+        // watchdog below forces the exit and skips the cleanup after it.
+        serving_ended.cancel();
         let defused = arm_shutdown_watchdog(timeout, on_timeout);
         *slot_for_future.lock().unwrap() = Some(defused);
     };
@@ -916,9 +922,10 @@ fn force_exit_on_serve_drain_timeout() {
     tracing::error!(
         timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
         "serve_with_incoming_shutdown did not finish draining connections/streams in time -- \
-         forcing exit. If you see this, please report it: either a client connection (e.g. an \
-         open WatchNodes stream) is stalling tonic's own graceful shutdown, or a legitimately \
-         long-running request was still in flight when shutdown was signaled."
+         forcing exit. If you see this, please report it: either a client connection is stalling \
+         tonic's own graceful shutdown (open WatchNodes streams are ended when shutdown is \
+         signaled, so it is something else), or a legitimately long-running request was still \
+         in flight when shutdown was signaled."
     );
     std::process::exit(0);
 }
@@ -1143,6 +1150,7 @@ mod watch_for_shutdown_signal_tests {
         let (tx, rx) = mpsc::channel();
         let (wrapped, _slot) = watch_for_shutdown_signal(
             std::future::pending::<()>(),
+            tokio_util::sync::CancellationToken::new(),
             Duration::from_millis(30),
             move || {
                 let _ = tx.send(());
@@ -1168,10 +1176,15 @@ mod watch_for_shutdown_signal_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn arms_and_fires_once_the_shutdown_future_resolves_if_never_defused() {
         let (tx, rx) = mpsc::channel();
-        let (wrapped, _slot) =
-            watch_for_shutdown_signal(async {}, Duration::from_millis(30), move || {
+        let serving_ended = tokio_util::sync::CancellationToken::new();
+        let (wrapped, _slot) = watch_for_shutdown_signal(
+            async {},
+            serving_ended.clone(),
+            Duration::from_millis(30),
+            move || {
                 let _ = tx.send(());
-            });
+            },
+        );
         tokio::spawn(wrapped);
 
         match rx.recv_timeout(Duration::from_millis(300)) {
@@ -1187,11 +1200,20 @@ mod watch_for_shutdown_signal_tests {
     #[tokio::test]
     async fn defusing_after_resolution_prevents_the_watchdog_from_firing() {
         let (tx, rx) = mpsc::channel();
-        let (wrapped, slot) =
-            watch_for_shutdown_signal(async {}, Duration::from_millis(30), move || {
+        let serving_ended = tokio_util::sync::CancellationToken::new();
+        let (wrapped, slot) = watch_for_shutdown_signal(
+            async {},
+            serving_ended.clone(),
+            Duration::from_millis(30),
+            move || {
                 let _ = tx.send(());
-            });
+            },
+        );
         wrapped.await; // resolves immediately, arming the watchdog
+        assert!(
+            serving_ended.is_cancelled(),
+            "open streams must be ended as soon as shutdown is signalled"
+        );
         defuse_serve_drain_watchdog(&slot);
 
         match rx.recv_timeout(Duration::from_millis(200)) {
@@ -1326,6 +1348,7 @@ mod open_default_database_tests {
             model,
             has_model: false,
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+            serving_ended: tokio_util::sync::CancellationToken::new(),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: nodespace_daemon::SharedLocalAgent::new(),
             extensions: DaemonExtensions::none(),
@@ -1711,6 +1734,7 @@ async fn serve_headless() -> Result<()> {
 
     let (wrapped_shutdown, serve_drain_watchdog) = watch_for_shutdown_signal(
         shutdown,
+        shared.context.serving_ended.clone(),
         SHUTDOWN_WATCHDOG_TIMEOUT,
         force_exit_on_serve_drain_timeout,
     );
@@ -1804,6 +1828,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
                 _ = shutdown_controller.shutdown() => tracing::info!("Tray Quit triggered shutdown"),
             }
         },
+        shared.context.serving_ended.clone(),
         SHUTDOWN_WATCHDOG_TIMEOUT,
         force_exit_on_serve_drain_timeout,
     );
@@ -1943,6 +1968,7 @@ async fn serve_headless() -> Result<()> {
             shutdown.await;
             cancel.cancel();
         },
+        shared.context.serving_ended.clone(),
         SHUTDOWN_WATCHDOG_TIMEOUT,
         force_exit_on_serve_drain_timeout,
     );
@@ -2052,6 +2078,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
                 _ = shutdown_controller.shutdown() => tracing::info!("Tray Quit triggered shutdown"),
             }
         },
+        shared.context.serving_ended.clone(),
         SHUTDOWN_WATCHDOG_TIMEOUT,
         force_exit_on_serve_drain_timeout,
     );

@@ -18,3 +18,4 @@ mod launched_session;
 mod mcp_integration;
 mod requires_extension;
 mod skill_md_generation;
+mod wait;

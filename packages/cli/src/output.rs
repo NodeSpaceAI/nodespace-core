@@ -169,16 +169,7 @@ pub fn print_node_list(response: &NodeListResponse, json: bool) -> Result<()> {
 /// fetch prints.
 pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Result<()> {
     if json {
-        let mut value = json!({
-            "count": response.count,
-            "nodes": response.nodes.iter().map(node_to_json).collect::<Vec<_>>(),
-            "attached_skills": attached_skills_json(&response.skills, &response.schemas),
-        });
-        // Set only when the run returned as many results as its limit allows.
-        if response.limit_reached {
-            value["limit_reached"] = json!(true);
-        }
-        note_permitted_unresolved_json(&mut value, response);
+        let value = saved_query_run_json(response);
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
@@ -203,6 +194,47 @@ pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Re
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
         None => Ok(()),
     }
+}
+
+/// A saved query's run in the CLI's JSON shape.
+fn saved_query_run_json(response: &RunSavedQueryResponse) -> Value {
+    let mut value = json!({
+        "count": response.count,
+        "nodes": response.nodes.iter().map(node_to_json).collect::<Vec<_>>(),
+        "attached_skills": attached_skills_json(&response.skills, &response.schemas),
+    });
+    // Set only when the run returned as many results as its limit allows.
+    if response.limit_reached {
+        value["limit_reached"] = json!(true);
+    }
+    note_permitted_unresolved_json(&mut value, response);
+    value
+}
+
+/// The run a query wait ended on, as [`print_saved_query_run`] prints it,
+/// with the ids the result gained and lost since the wait started. Both are
+/// empty for a wait that compares with nothing (`not-empty`, `--item`).
+pub fn print_query_wait(
+    response: &RunSavedQueryResponse,
+    gained: &[String],
+    lost: &[String],
+    json: bool,
+) -> Result<()> {
+    if json {
+        let mut value = saved_query_run_json(response);
+        value["gained"] = json!(gained);
+        value["lost"] = json!(lost);
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    print_saved_query_run(response, false)?;
+    for (label, ids) in [("gained", gained), ("lost", lost)] {
+        if !ids.is_empty() {
+            println!("\n{label}: {}", sanitize_for_terminal(&ids.join(", ")));
+        }
+    }
+    Ok(())
 }
 
 /// Say how many candidates a run's `permitted` filter left out because it
