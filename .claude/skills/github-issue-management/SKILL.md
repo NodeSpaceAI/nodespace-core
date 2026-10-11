@@ -494,7 +494,7 @@ Fixing violations and creating issue...
 
 ### What This Skill DOES NOT:
 - ❌ Handle PR comments (use `/pragmatic-code-review` and `/address-review`)
-- ❌ Create WIP commits (follow CLAUDE.md git workflow)
+- ❌ Create WIP commits (follow AGENTS.md git workflow)
 - ❌ Merge PRs or make git decisions
 - ❌ Ask user for approval (issues are easily editable)
 - ❌ Create temporary markdown files for drafts

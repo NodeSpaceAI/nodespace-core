@@ -58,7 +58,7 @@ The pragmatic-code-reviewer agent should perform a comprehensive code review foc
 
 2. **Code Quality**:
    - Readability, maintainability, and adherence to best practices
-   - Follows project standards from CLAUDE.md (no lint suppressions, etc.)
+   - Follows project standards from AGENTS.md (no lint suppressions, etc.)
    - Consistent with established patterns in the codebase
 
 3. **Security**:

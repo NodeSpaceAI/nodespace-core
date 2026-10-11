@@ -50,7 +50,7 @@ This command is used AFTER a PR has been reviewed (typically via `/pragmatic-cod
    - Breaking changes
    - Data integrity issues
    - Test failures
-   - Violations of project standards (from CLAUDE.md)
+   - Violations of project standards (from AGENTS.md)
 
 2. **SHOULD Address** (🟡 Important):
    - Performance issues
@@ -212,7 +212,7 @@ Agent:
 - **DO NOT** extend scope beyond addressing review feedback
 - **DO NOT** merge the PR - that's a separate decision
 - **DO** explain your reasoning when skipping recommendations
-- **DO** follow project standards from CLAUDE.md
+- **DO** follow project standards from AGENTS.md
 - **DO** run quality checks before pushing
 
 ## Project Context
