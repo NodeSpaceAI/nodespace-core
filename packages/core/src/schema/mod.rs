@@ -2942,6 +2942,45 @@ pub async fn update_schema(
         }
     }
 
+    // --- Phase 0: Reject an extension field named after a declared field ---
+    //
+    // Checked over the field list this call would leave, against the parent
+    // it would leave, so one check covers `add_fields`, `rename_fields` and
+    // an `extends` re-target, and a call that also removes or renames the
+    // declared field away is legal. Ahead of Phase 1, which commits a rename
+    // as it runs, and ahead of the play check: `force` cannot make the name
+    // legal, so the caller is not asked for it first.
+    {
+        let mut fields_after = schema_before.fields.clone();
+        for rename in params.rename_fields.iter().flatten() {
+            if let Some(field) = fields_after.iter_mut().find(|f| f.name == rename.from) {
+                field.name = rename.to.clone();
+            }
+        }
+        if let Some(ref remove_names) = params.remove_fields {
+            fields_after.retain(|f| !remove_names.contains(&f.name));
+        }
+        fields_after.extend(params.add_fields.iter().flatten().cloned());
+
+        // A new parent is validated before its chain is read: one that does
+        // not exist resolves to an empty chain, and the re-target block's
+        // own refusal would come only after Phase 1.
+        let parent_after = match params.extends.as_deref().map(str::trim) {
+            Some(new_parent) => {
+                validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+                Some(new_parent)
+            }
+            None => schema_before.extends.as_deref(),
+        };
+        validate_no_shadowed_extension_fields(
+            node_service,
+            &params.schema_id,
+            parent_after,
+            &fields_after,
+        )
+        .await?;
+    }
+
     // Check if any active plays would be affected by this schema change.
     // Done before any mutations so a blocked rename doesn't partially execute.
     //
@@ -3032,44 +3071,6 @@ pub async fn update_schema(
                 }
             }
         }
-    }
-
-    // --- Phase 0: Reject an extension field named after a declared field ---
-    //
-    // Checked over the field list this call would leave, against the parent
-    // it would leave, so one check covers `add_fields`, `rename_fields` and
-    // an `extends` re-target, and a call that also removes or renames the
-    // declared field away is legal. Ahead of Phase 1, which commits a rename
-    // as it runs.
-    {
-        let mut fields_after = schema_before.fields.clone();
-        for rename in params.rename_fields.iter().flatten() {
-            if let Some(field) = fields_after.iter_mut().find(|f| f.name == rename.from) {
-                field.name = rename.to.clone();
-            }
-        }
-        if let Some(ref remove_names) = params.remove_fields {
-            fields_after.retain(|f| !remove_names.contains(&f.name));
-        }
-        fields_after.extend(params.add_fields.iter().flatten().cloned());
-
-        // A new parent is validated before its chain is read: one that does
-        // not exist resolves to an empty chain, and the re-target block's
-        // own refusal would come only after Phase 1.
-        let parent_after = match params.extends.as_deref().map(str::trim) {
-            Some(new_parent) => {
-                validate_extends_target(node_service, &params.schema_id, new_parent).await?;
-                Some(new_parent)
-            }
-            None => schema_before.extends.as_deref(),
-        };
-        validate_no_shadowed_extension_fields(
-            node_service,
-            &params.schema_id,
-            parent_after,
-            &fields_after,
-        )
-        .await?;
     }
 
     // --- Phase 1: Process renames (identity renames migrate data; display-only renames do not) ---
