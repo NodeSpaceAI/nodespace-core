@@ -35,7 +35,8 @@ use tonic::transport::Channel;
 /// implemented in the desktop app's own `DatabaseIdInterceptor` at
 /// `packages/desktop-app/app-lib/src/services/grpc_client.rs`) — a separate,
 /// same-named struct in a different crate. The CLI is a one-shot process per
-/// invocation that never opens `WatchNodes`, so it has no same-origin echo to
+/// invocation, and the one command that opens `WatchNodes` (`wait`) never
+/// writes, so it has no same-origin echo to
 /// suppress; leaving its writes untagged means they carry no
 /// `source_client_id` and are therefore always visible as foreign writes to
 /// any other subscriber (e.g. a desktop window), which is the correct
@@ -208,6 +209,14 @@ pub enum Command {
     Skill {
         #[command(subcommand)]
         action: commands::skill::SkillAction,
+    },
+    /// Block until a node or a saved query's result changes in a stated way,
+    /// then print it and exit: start it in the background after handing work
+    /// to someone else. Exit 0 when the condition holds, 3 on timeout, 4 when
+    /// it can no longer be reached, 5 when the daemon is unavailable.
+    Wait {
+        #[command(subcommand)]
+        action: commands::wait::WaitAction,
     },
     /// Host a stdio MCP server exposing one passthrough tool, for bash-less
     /// MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this
@@ -748,6 +757,9 @@ async fn dispatch(cli: Cli) -> Result<()> {
             }
             other => commands::skill::run(other),
         },
+        // `wait` connects for itself: it reconnects when the daemon restarts,
+        // and a daemon that is not running is one of its own exit statuses.
+        Command::Wait { action } => commands::wait::run(&sock, selection, action, json).await,
         // `mcp` takes the resolved socket path and no database: each
         // dispatched call shells back out to this same binary (see
         // `commands::mcp`) and acts on the daemon's active database.

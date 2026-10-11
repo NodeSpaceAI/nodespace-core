@@ -2486,6 +2486,42 @@ mod tests {
             );
         }
 
+        /// A metadata filter on `id` narrows a query to one node, so a filter
+        /// set can be asked of that node alone: it comes back when it matches
+        /// the other filters and nothing comes back when it does not.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_metadata_filter_on_id_asks_the_other_filters_of_one_node() {
+            let (svc, _tmp) = make_test_service().await;
+            let open = "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2b01";
+            let done = "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2b02";
+            svc.create_node(task_node(open, "open", None))
+                .await
+                .unwrap();
+            svc.create_node(task_node(done, "done", None))
+                .await
+                .unwrap();
+
+            let matching = |id: &str| {
+                let input: ExecuteQueryInput = serde_json::from_value(json!({
+                    "target_type": "task",
+                    "filters": [
+                        {"type": "metadata", "operator": "equals", "property": "id", "value": id},
+                        {"type": "property", "operator": "equals", "property": "status", "value": "done"}
+                    ]
+                }))
+                .unwrap();
+                execute_query(&svc, input)
+            };
+
+            let output = matching(done).await.unwrap();
+            assert_eq!(output.count, 1, "{:?}", output.nodes);
+            assert_eq!(
+                output.nodes[0].get("id").and_then(|v| v.as_str()),
+                Some(done)
+            );
+            assert_eq!(matching(open).await.unwrap().count, 0);
+        }
+
         /// The forward name of an inbound relationship, walked backwards
         /// (`ResolvedRelName::InboundForward`) -- a distinct resolution
         /// branch from `Forward`/`Reverse`/`Builtin`, exercised here with

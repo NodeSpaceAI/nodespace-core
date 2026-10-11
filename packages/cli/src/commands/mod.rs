@@ -16,3 +16,4 @@ pub mod seed;
 pub mod session;
 pub mod skill;
 pub mod uninstall;
+pub mod wait;

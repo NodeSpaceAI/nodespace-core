@@ -349,9 +349,16 @@ pub struct QueryService {
 }
 
 /// The node columns a sort or a metadata filter names directly. A sort field
-/// of one of these names reads the column, never a property.
-pub(crate) const NODE_COLUMNS: [&str; 5] =
-    ["created_at", "modified_at", "content", "node_type", "title"];
+/// of one of these names reads the column, never a property. `id` is among
+/// them so a filter set can be asked of one node: "does this node match".
+pub(crate) const NODE_COLUMNS: [&str; 6] = [
+    "id",
+    "created_at",
+    "modified_at",
+    "content",
+    "node_type",
+    "title",
+];
 
 /// Each node type's chain of types, itself first and then its ancestors.
 type TypeChains = std::collections::HashMap<String, Vec<String>>;

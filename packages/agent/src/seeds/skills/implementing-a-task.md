@@ -1,4 +1,4 @@
-This is the whole procedure for doing a task, from taking it to handing it over for review. Reviewing it is separate work with its own procedure: do not review a task you implemented, and do not mark it done.
+This is the whole procedure for doing a task, from taking it to handing it over for review and fixing what the review sends back. Reviewing it is separate work with its own procedure: do not review a task you implemented, and do not mark it done.
 
 STEP 1, TAKE A READY TASK: <!-- include: task-implement-take --> A ready task is open, has a checklist, is not blocked, has no plan waiting on approval, and has no spec waiting on approval. A small change needs no spec or plan: a task with a checklist of its own and no spec is taken and worked the same way. When the user names a task, or you are resuming one already in progress, read that task. <!-- include: task-context-read -->
 
@@ -12,7 +12,9 @@ STEP 5, TICK EACH ITEM AS IT IS MET, WITH EVIDENCE UNDER IT: tick an item when i
 
 STEP 6, RECORD THE PULL REQUEST AND THE COMMITS: when the work is a code change, record its pull request in `pull_request` and its commits in `commits`. <!-- include: task-implement-links --> Work that is not a code change has neither, and needs neither.
 
-STEP 7, MOVE IT TO REVIEW: when every item is ticked, move the task to `in_review`. <!-- include: task-implement-review --> That ends this procedure. Tell the user what was done, item by item, and where the pull request is.
+STEP 7, MOVE IT TO REVIEW: when every item is ticked, move the task to `in_review`. <!-- include: task-implement-review --> Tell the user what was done, item by item, and where the pull request is.
+
+STEP 8, WAIT FOR THE REVIEW AND FIX WHAT IT SENDS BACK: the review is another session's work, and its outcome is the task's status: `done` when it passed, back to `in_progress` with items unticked when something was not met. <!-- include: task-implement-wait --> A task that came back is yours to fix: read what the reviewer wrote under each unticked item, fix it, tick the item again with new evidence under it, and go back to STEP 7. A task that is `done` ends this procedure.
 
 <!-- include: version-conflict -->
 

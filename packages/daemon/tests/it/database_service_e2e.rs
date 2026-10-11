@@ -265,6 +265,7 @@ async fn watch_events_are_stamped_with_the_serving_database_id() {
         .watch_nodes(Request::new(WatchRequest {
             node_type: String::new(),
             root_id: String::new(),
+            background: false,
         }))
         .await
         .unwrap()
@@ -275,6 +276,7 @@ async fn watch_events_are_stamped_with_the_serving_database_id() {
             WatchRequest {
                 node_type: String::new(),
                 root_id: String::new(),
+                background: false,
             },
             &second_id,
         ))

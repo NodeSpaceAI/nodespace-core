@@ -853,6 +853,10 @@ message WatchRequest {
   string node_type = 1;
   // Watch only descendants of this node (empty = global watch)
   string root_id = 2;
+  // The subscriber is a command waiting on a change, not a window showing the
+  // database: the stream takes no active-database claim (ADR-053), so opening
+  // or closing it never moves embedding priority or eviction immunity.
+  bool background = 3;
 }
 
 message NodeEvent {
