@@ -211,5 +211,16 @@ fn run_query_is_registered_seeded_and_offered() {
     let item = &definition.parameters_schema["properties"]["filters"]["items"];
     assert_eq!(item["properties"]["negate"]["type"], "boolean");
     assert!(item["properties"]["operator"]["enum"].is_array());
+    // Its explanations are shortened, but a filter keeps every field and the
+    // explanation of each: a moved `search_nodes` schema must not leave one
+    // described by nothing.
+    for key in ["type", "property", "value", "path", "node_id", "negate"] {
+        assert!(
+            item["properties"][key]["description"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty()),
+            "run_query's filter item lost the description of `{key}`"
+        );
+    }
     assert_eq!(definition.parameters_schema["required"], json!(["query"]));
 }

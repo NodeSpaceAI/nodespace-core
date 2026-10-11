@@ -2549,9 +2549,10 @@ fn def_run_query() -> ToolDefinition {
         def_search_nodes().parameters_schema["properties"]["filters"]["items"].clone();
     // The structure is `search_nodes`'s; the explanations are shortened. This
     // tool and `search_nodes` ride the same request on a lookup, so the long
-    // form would be sent twice, and a saved query's extra filter is the rare
-    // call. The rules a model most often breaks stay: `status` is a property,
-    // and a value is never null.
+    // form would be sent twice. The rules a model most often breaks stay:
+    // `status` is a property, a filter narrows and never selects a field, and
+    // a value is never null. The surface can also offer this tool without
+    // `search_nodes`, so each text stands alone.
     for (key, description) in [
         (
             "type",
@@ -2563,15 +2564,15 @@ fn def_run_query() -> ToolDefinition {
         ),
         (
             "value",
-            "Value to compare: a string for dates (YYYY-MM-DD), an array for 'in'. Never null; use the 'exists' operator to ask whether a property is set.",
+            "Value to compare: a string for dates (YYYY-MM-DD), an array for 'in'. A filter only narrows which nodes come back, every one with all its properties; never filter just to read a property. Never null: use the 'exists' operator to ask whether a property is set.",
         ),
         (
             "path",
-            "For 'relationship' filters: the relationship names to follow, in order, e.g. [\"child_of\"].",
+            "For 'relationship' filters: the relationship names to follow, in order. [\"child_of\"] is the parent, [\"has_child\"] the children, [\"mentions\"] and [\"mentioned_by\"] the links; a schema-declared relationship or its reverseName works too.",
         ),
         (
             "node_id",
-            "For 'relationship' filters: the node the path must reach.",
+            "For 'relationship' filters: the node the path must reach, e.g. {\"path\": [\"child_of\"], \"node_id\": X} selects the children of X.",
         ),
     ] {
         filter_item["properties"][key]["description"] = json!(description);
