@@ -173,8 +173,26 @@ function skillsOf(listing: unknown): NodespaceSkill[] {
     .filter(skill => skill.id !== '')
 }
 
+/**
+ * How a queue is run for this checkout's project alone. A queue names no
+ * project, so without the filter the next item may be another project's. The
+ * id stands outside the marker, so one that is not an id's shape is left out.
+ */
+function projectFilter(id: string): string[] {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+    return []
+  }
+
+  const filters = JSON.stringify([{ type: 'relationship', operator: 'equals', path: ['project'], node_id: id }])
+
+  return [
+    `A queue holds every project's work. Take this project's only: add \`--filters '${filters}'\` to each \`nodespace query run\`.`,
+    '',
+  ]
+}
+
 /** `skills` is `null` when the list could not be read. */
-function buildSection(project: { title: string }, skills: readonly NodespaceSkill[] | null): string {
+function buildSection(project: { id: string; title: string }, skills: readonly NodespaceSkill[] | null): string {
   const shown = (skills ?? []).slice(0, MAX_LISTED_SKILLS)
   const lines = [
     ORIENTATION,
@@ -199,6 +217,7 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
     ),
     `</${GRAPH_MARKER}>`,
     '',
+    ...projectFilter(project.id),
   ]
 
   if (skills !== null && skills.length > shown.length) {

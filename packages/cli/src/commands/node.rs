@@ -81,6 +81,30 @@ fn parse_path(s: &str) -> Result<RelationshipPath, String> {
     s.parse()
 }
 
+/// Content may begin with a dash, so the word after `--content` is taken as
+/// its value even when it is another flag. A value that is nothing but a
+/// flag is therefore refused, in either spelling (`--dry-run`,
+/// `--version=3`): it is a `--content` whose own value was left out, and
+/// taking it would write the flag as the content and drop what the flag asked
+/// for (`--content --dry-run` would write, not preview).
+fn parse_content(s: &str) -> Result<String, String> {
+    let is_one_word = !s.contains(char::is_whitespace);
+    let is_flag = is_one_word
+        && s.strip_prefix("--").is_some_and(|rest| {
+            let name = rest.split('=').next().unwrap_or(rest);
+            name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        });
+    if is_flag {
+        return Err(format!(
+            "`{s}` is a flag, not content: the value after --content is missing"
+        ));
+    }
+    Ok(s.to_string())
+}
+
 #[derive(Args, Debug)]
 pub struct CreateArgs {
     /// Node type, e.g. `text`, `task`, `date`.
@@ -88,8 +112,9 @@ pub struct CreateArgs {
     pub node_type: String,
     /// Content (plain text or markdown). Omit for a type with a title
     /// template (e.g. `person`): its name comes from the template's fields,
-    /// set with `--property`, and content is rejected.
-    #[arg(long)]
+    /// set with `--property`, and content is rejected. A value may begin with
+    /// a dash, as a checklist item or a list line does.
+    #[arg(long, allow_hyphen_values = true, value_parser = parse_content)]
     pub content: Option<String>,
     /// Parent node ID (omit to create a root node).
     #[arg(long)]
@@ -128,8 +153,10 @@ pub struct CreateArgs {
 pub struct UpdateArgs {
     /// Node ID to update.
     pub id: String,
-    /// New content. Omit to leave content unchanged (e.g. when only setting properties).
-    #[arg(long)]
+    /// New content. Omit to leave content unchanged (e.g. when only setting
+    /// properties). A value may begin with a dash, as a checklist item or a
+    /// list line does.
+    #[arg(long, allow_hyphen_values = true, value_parser = parse_content)]
     pub content: Option<String>,
     /// Set one or more properties: `--property key=value` (repeatable). Values
     /// are parsed as JSON when possible (numbers, booleans, `null`, arrays,
@@ -1017,6 +1044,71 @@ mod tests {
                 action: NodeAction::Create(args),
             } => Ok(args),
             other => panic!("expected node create, got {other:?}"),
+        }
+    }
+
+    // A checklist item's content is `- [ ] ...`. The implementing procedure
+    // prints the tick command with a space after `--content`, so that form,
+    // not only `--content=`, has to parse.
+    #[test]
+    fn content_may_begin_with_a_dash() {
+        let created = create_args(&["--content", "- [ ] ship it", "--parent", "p-1"])
+            .expect("a checklist item parses");
+        assert_eq!(created.content.as_deref(), Some("- [ ] ship it"));
+        assert_eq!(created.parent.as_deref(), Some("p-1"));
+
+        let argv = [
+            "nodespace",
+            "node",
+            "update",
+            "c-1",
+            "--content",
+            "- [x] ship it",
+            "--version",
+            "3",
+        ];
+        match crate::Cli::try_parse_from(argv)
+            .expect("a ticked item parses")
+            .command
+        {
+            crate::Command::Node {
+                action: NodeAction::Update(args),
+            } => {
+                assert_eq!(args.content.as_deref(), Some("- [x] ship it"));
+                assert_eq!(args.version, Some(3));
+            }
+            other => panic!("expected node update, got {other:?}"),
+        }
+    }
+
+    // Taking the next flag as the content would turn a preview into a write.
+    #[test]
+    fn content_that_is_only_a_flag_name_is_refused() {
+        for flag in [
+            "--dry-run",
+            "--version",
+            "--parent",
+            "--version=3",
+            "--parent=p-1",
+        ] {
+            let argv = ["nodespace", "node", "update", "c-1", "--content", flag];
+            let err = crate::Cli::try_parse_from(argv).expect_err("refused");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{flag}"
+            );
+        }
+        // What a list or a rule line starts with is still content.
+        for content in [
+            "---",
+            "-5",
+            "-- two dashes and a space",
+            "--Not a flag",
+            "--flag=value and more words",
+        ] {
+            let args = create_args(&["--content", content]).expect("content parses");
+            assert_eq!(args.content.as_deref(), Some(content));
         }
     }
 
