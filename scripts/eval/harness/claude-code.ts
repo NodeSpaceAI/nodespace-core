@@ -102,6 +102,15 @@ export async function claudeCode(
         clearTimeout(timer);
         resolve(text);
       };
+      // A session that ends first (not signed in, a flag it does not know)
+      // will never answer: say so now and not when the timer runs out.
+      void child.exited.then(code => {
+        if (pending.answer) {
+          clearTimeout(timer);
+          pending.answer = null;
+          reject(new Error(`claude exited with ${code} before answering the ${name} prompt`));
+        }
+      });
     });
 
     child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: PROMPTS[name] } })}\n`);

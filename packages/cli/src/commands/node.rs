@@ -81,6 +81,26 @@ fn parse_path(s: &str) -> Result<RelationshipPath, String> {
     s.parse()
 }
 
+/// Content may begin with a dash, so the word after `--content` is taken as
+/// its value even when it is another flag. A value that is nothing but a
+/// flag's name is therefore refused: it is a `--content` whose own value was
+/// left out, and taking it would write the flag's name as the content and drop
+/// the flag (`--content --dry-run` would write, not preview).
+fn parse_content(s: &str) -> Result<String, String> {
+    let is_flag_name = s.strip_prefix("--").is_some_and(|name| {
+        name.starts_with(|c: char| c.is_ascii_lowercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    });
+    if is_flag_name {
+        return Err(format!(
+            "`{s}` is a flag, not content: the value after --content is missing"
+        ));
+    }
+    Ok(s.to_string())
+}
+
 #[derive(Args, Debug)]
 pub struct CreateArgs {
     /// Node type, e.g. `text`, `task`, `date`.
@@ -90,7 +110,7 @@ pub struct CreateArgs {
     /// template (e.g. `person`): its name comes from the template's fields,
     /// set with `--property`, and content is rejected. A value may begin with
     /// a dash, as a checklist item or a list line does.
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, value_parser = parse_content)]
     pub content: Option<String>,
     /// Parent node ID (omit to create a root node).
     #[arg(long)]
@@ -132,7 +152,7 @@ pub struct UpdateArgs {
     /// New content. Omit to leave content unchanged (e.g. when only setting
     /// properties). A value may begin with a dash, as a checklist item or a
     /// list line does.
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(long, allow_hyphen_values = true, value_parser = parse_content)]
     pub content: Option<String>,
     /// Set one or more properties: `--property key=value` (repeatable). Values
     /// are parsed as JSON when possible (numbers, booleans, `null`, arrays,
@@ -1023,8 +1043,9 @@ mod tests {
         }
     }
 
-    // A checklist item's content is `- [ ] ...`, and ticking one is the
-    // command the implementing procedure hands every agent.
+    // A checklist item's content is `- [ ] ...`. The implementing procedure
+    // prints the tick command with a space after `--content`, so that form,
+    // not only `--content=`, has to parse.
     #[test]
     fn content_may_begin_with_a_dash() {
         let created = create_args(&["--content", "- [ ] ship it", "--parent", "p-1"])
@@ -1053,6 +1074,25 @@ mod tests {
                 assert_eq!(args.version, Some(3));
             }
             other => panic!("expected node update, got {other:?}"),
+        }
+    }
+
+    // Taking the next flag as the content would turn a preview into a write.
+    #[test]
+    fn content_that_is_only_a_flag_name_is_refused() {
+        for flag in ["--dry-run", "--version", "--parent"] {
+            let argv = ["nodespace", "node", "update", "c-1", "--content", flag];
+            let err = crate::Cli::try_parse_from(argv).expect_err("refused");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{flag}"
+            );
+        }
+        // What a list or a rule line starts with is still content.
+        for content in ["---", "-5", "-- two dashes and a space", "--Not a flag"] {
+            let args = create_args(&["--content", content]).expect("content parses");
+            assert_eq!(args.content.as_deref(), Some(content));
         }
     }
 

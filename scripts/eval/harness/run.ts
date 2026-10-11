@@ -17,26 +17,56 @@
  * length limit, so the home is a short path.
  */
 
+import { EXIT_FAILED, EXIT_USAGE, EnvironmentError, abortOnEnvironment } from "../preflight.ts";
 import { claudeCode } from "./claude-code.ts";
 import { opencode } from "./opencode.ts";
-import { type Turn, ENV_USAGE, checkout, clearRun, fixture, logger, play, readEnv, seedRun } from "./scenario.ts";
+import {
+  type RunTasks,
+  type ScenarioEnv,
+  type Turn,
+  ENV_USAGE,
+  checkout,
+  clearRun,
+  fixture,
+  logger,
+  play,
+  readEnv,
+  seedRun,
+} from "./scenario.ts";
 
 const HARNESSES = ["claude-code", "claude-code-block", "opencode"] as const;
 const harness = process.argv[2] as (typeof HARNESSES)[number] | undefined;
 
 if (!harness || !HARNESSES.includes(harness)) {
   console.error(`Usage: bun scripts/eval/harness/run.ts <${HARNESSES.join("|")}>\n\n${ENV_USAGE}`);
-  process.exit(64);
+  process.exit(EXIT_USAGE);
 }
 
-const env = readEnv();
-const held = fixture(env);
-const tasks = seedRun(env, held);
-const cwd = checkout(env, harness);
-const log = logger(env, harness);
-const scenario = (turn: Turn) => play(env, held, tasks, log, turn);
+let env: ScenarioEnv;
 
 try {
+  env = readEnv();
+} catch (err) {
+  if (err instanceof EnvironmentError) {
+    abortOnEnvironment("harness scenario", err);
+  }
+
+  throw err;
+}
+
+const log = logger(env, harness);
+let tasks: RunTasks | null = null;
+let cwd = "";
+
+try {
+  const held = fixture(env);
+  const seeded = seedRun(env, held);
+
+  tasks = seeded;
+  cwd = checkout(env, harness);
+
+  const scenario = (turn: Turn) => play(env, held, seeded, log, turn);
+
   if (harness === "opencode") {
     await opencode(env, cwd, log, scenario);
   } else {
@@ -44,9 +74,12 @@ try {
   }
 } catch (err) {
   log.note(`STOPPED ${String(err)}`);
-  process.exitCode = 1;
+  console.error(String(err));
+  process.exitCode = EXIT_FAILED;
 } finally {
-  clearRun(env, tasks);
+  if (tasks) {
+    clearRun(env, tasks);
+  }
 }
 
 console.log(`checkout  ${cwd}\nevents    ${log.events}\nsession   ${log.file}\n\nbun scripts/eval/harness/trace.ts ${log.file}`);

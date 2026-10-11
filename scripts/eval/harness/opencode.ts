@@ -8,10 +8,25 @@
  * plugin under test is the one this checkout installs.
  */
 
+import { connect } from "node:net";
 import { join } from "node:path";
 import { type ScenarioEnv, type Turn, PROMPTS, installSkill, sessionEnv } from "./scenario.ts";
 
 const PORT = 4733;
+const SERVER_START_MS = 30_000;
+const TURN_TIMEOUT_MS = 12 * 60 * 1000;
+
+function isListening(): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = connect(PORT, "127.0.0.1");
+
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
+  });
+}
 
 export async function opencode(
   env: ScenarioEnv,
@@ -23,12 +38,18 @@ export async function opencode(
 
   installSkill("opencode", "XDG_CONFIG_HOME", config);
 
+  // A server an interrupted run left behind holds another checkout and a
+  // plugin that has already read the graph: attaching to it would measure that.
+  if (await isListening()) {
+    throw new Error(`Something is already listening on port ${PORT}: stop the earlier \`opencode serve\` first.`);
+  }
+
   const session = sessionEnv(env, { XDG_CONFIG_HOME: config });
   const server = Bun.spawn(["opencode", "serve", "--port", String(PORT)], {
     cwd,
     env: session,
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: "inherit",
   });
   let sessionId = "";
 
@@ -42,12 +63,16 @@ export async function opencode(
         ...(sessionId ? ["--session", sessionId] : []),
         PROMPTS[name],
       ],
-      { cwd, env: session, stdout: "pipe", stderr: "inherit" },
+      { cwd, env: session, stdout: "pipe", stderr: "inherit", timeout: TURN_TIMEOUT_MS },
     );
     const out = await Bun.readableStreamToText(run.stdout);
+    const code = await run.exited;
 
-    await run.exited;
     log.raw(out);
+
+    if (code !== 0) {
+      throw new Error(`opencode run exited with ${code} on the ${name} prompt`);
+    }
 
     let said = "";
 
@@ -69,8 +94,20 @@ export async function opencode(
   };
 
   try {
-    // The server takes a few seconds to listen.
-    await Bun.sleep(8000);
+    const deadline = Date.now() + SERVER_START_MS;
+
+    while (!(await isListening())) {
+      if (server.exitCode !== null) {
+        throw new Error(`opencode serve exited with ${server.exitCode} before it listened`);
+      }
+
+      if (Date.now() > deadline) {
+        throw new Error("opencode serve did not start listening in time");
+      }
+
+      await Bun.sleep(500);
+    }
+
     await play(turn);
   } finally {
     server.kill();

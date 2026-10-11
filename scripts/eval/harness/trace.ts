@@ -8,6 +8,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { EXIT_USAGE } from "../preflight.ts";
 
 type Json = Record<string, unknown>;
 
@@ -15,7 +16,7 @@ const file = process.argv[2];
 
 if (!file) {
   console.error("Usage: bun scripts/eval/harness/trace.ts <log.jsonl> [--full]");
-  process.exit(64);
+  process.exit(EXIT_USAGE);
 }
 
 const resultChars = process.argv.includes("--full") ? 4000 : 300;

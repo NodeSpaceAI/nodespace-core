@@ -450,7 +450,7 @@ export function awaitSkillIndex(
  * `NODESPACED_DB_PATH` alone leaves the daemon serving the real user database,
  * and nothing in the eval's own configuration reveals that.
  */
-function readServedDatabasePath(env: EvalEnv): string {
+export function readServedDatabasePath(env: Pick<EvalEnv, "nsBin" | "socket">): string {
   // Fails CLOSED. Every other check failing open costs a missed detection; this
   // one guards against writing test schemas and chat nodes into live user data,
   // which cannot be undone. "I could not determine which database this is" must
