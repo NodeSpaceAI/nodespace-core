@@ -786,8 +786,8 @@ async fn a_declared_field_is_refused_above_an_extension_field_of_the_same_name()
     )
     .await;
 
-    let on_gadget = "'colour' cannot be declared by the type 'gadget' above 'widget': \
-                     'widget' declares the extension field 'custom:colour'";
+    let on_gadget = "'colour' cannot be a declared field of the type 'gadget' in the same chain \
+                     as 'widget': 'widget' declares the extension field 'custom:colour'";
     let added = json!({
         "schema_id": "gadget",
         "add_fields": [{ "name": "colour", "type": "text" }]
@@ -800,7 +800,8 @@ async fn a_declared_field_is_refused_above_an_extension_field_of_the_same_name()
     assert_edit_refused_with(&svc, renamed, on_gadget).await;
     // Through a new parent, the declaring type is the one named.
     let reparented = json!({ "schema_id": "gadget", "extends": "asset" });
-    let on_asset = "'colour' cannot be declared by the type 'asset' above 'widget'";
+    let on_asset =
+        "'colour' cannot be a declared field of the type 'asset' in the same chain as 'widget'";
     assert_edit_refused_with(&svc, reparented, on_asset).await;
 
     let id = create(&svc, "widget", "A widget", json!({})).await.unwrap();
@@ -817,6 +818,88 @@ async fn a_declared_field_is_refused_above_an_extension_field_of_the_same_name()
     )
     .await
     .expect("no extension field is read as 'weight'");
+}
+
+/// The mirror of the case above: the extension field is the one already
+/// there, on a type above, and the declared field would arrive below it. And
+/// the reverse order, where the extension field arrives above a declared
+/// field of an extending type.
+#[tokio::test]
+async fn a_declared_field_is_refused_below_an_extension_field_of_the_same_name() {
+    let (svc, _tmp) = test_service().await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_fields": [{ "name": "custom:effort", "type": "text", "default": "m" }]
+        }),
+    )
+    .await
+    .expect("an ordinary extension field");
+
+    let below_task = "'effort' cannot be a declared field of the type 'chore' in the same chain \
+                      as 'task': 'task' declares the extension field 'custom:effort'";
+    let error = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Chore",
+            "extends": "task",
+            "fields": [{ "name": "effort", "type": "text" }]
+        }),
+    )
+    .await
+    .expect_err("the schema must be refused")
+    .to_string();
+    assert!(error.contains(below_task), "{error}");
+    assert!(svc.get_schema_node("chore").await.unwrap().is_none());
+
+    create_schema(
+        &svc,
+        json!({
+            "name": "Chore",
+            "extends": "task",
+            "fields": [{ "name": "room", "type": "text" }]
+        }),
+    )
+    .await;
+    let added = json!({
+        "schema_id": "chore",
+        "add_fields": [{ "name": "effort", "type": "text" }]
+    });
+    assert_edit_refused_with(&svc, added, below_task).await;
+    let renamed = json!({
+        "schema_id": "chore",
+        "rename_fields": [{ "from": "room", "to": "effort" }]
+    });
+    assert_edit_refused_with(&svc, renamed, below_task).await;
+
+    // The extending type's writes still take the extension field's default.
+    let id = create(&svc, "chore", "A chore", json!({})).await.unwrap();
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["task"]["custom:effort"], "m");
+
+    // The other order: the extension field arrives above the declared one.
+    let edit = json!({
+        "schema_id": "task",
+        "add_fields": [{ "name": "custom:room", "type": "text" }]
+    });
+    assert_edit_refused(&svc, edit, "custom:room", "room", "chore").await;
+
+    // Through a new parent that declares the extension field.
+    create_schema(
+        &svc,
+        json!({ "name": "Asset", "fields": [{ "name": "custom:size", "type": "text" }] }),
+    )
+    .await;
+    create_schema(
+        &svc,
+        json!({ "name": "Gadget", "fields": [{ "name": "size", "type": "text" }] }),
+    )
+    .await;
+    let reparented = json!({ "schema_id": "gadget", "extends": "asset" });
+    let below_asset =
+        "'size' cannot be a declared field of the type 'gadget' in the same chain as 'asset'";
+    assert_edit_refused_with(&svc, reparented, below_asset).await;
 }
 
 /// Extending an inherited field's values declares that field on the schema
