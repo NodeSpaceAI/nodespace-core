@@ -249,6 +249,23 @@ describe('a session, whichever harness it runs in', () => {
     expect(marked).toContain('Project for this checkout: Widgets');
     // The shipped text stands outside the marker: it is not graph data.
     expect(marked).not.toContain('Confirmation rules');
+    // A queue names no project: the section says how to run one for this checkout's.
+    expect(section).toContain(
+      `add \`--filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"p1"}]'\` to each \`nodespace query run\``
+    );
+    expect(marked).not.toContain('--filters');
+  });
+
+  it('writes no filter for an id that is not an id', async () => {
+    const w = world({ project: { id: "p1'; rm -rf ~ #", version: 1, title: 'Widgets' } });
+    const session = createSession(hostOf(w));
+    await session.start('/work/widgets', { sessionId: 'ses_1' });
+
+    const section = session.section()!;
+
+    expect(section).toContain('Project for this checkout: Widgets');
+    expect(section).not.toContain('--filters');
+    expect(section).not.toContain('rm -rf');
   });
 
   it('keeps graph text from closing the marker it is printed inside', async () => {

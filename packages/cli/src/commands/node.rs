@@ -88,8 +88,9 @@ pub struct CreateArgs {
     pub node_type: String,
     /// Content (plain text or markdown). Omit for a type with a title
     /// template (e.g. `person`): its name comes from the template's fields,
-    /// set with `--property`, and content is rejected.
-    #[arg(long)]
+    /// set with `--property`, and content is rejected. A value may begin with
+    /// a dash, as a checklist item or a list line does.
+    #[arg(long, allow_hyphen_values = true)]
     pub content: Option<String>,
     /// Parent node ID (omit to create a root node).
     #[arg(long)]
@@ -128,8 +129,10 @@ pub struct CreateArgs {
 pub struct UpdateArgs {
     /// Node ID to update.
     pub id: String,
-    /// New content. Omit to leave content unchanged (e.g. when only setting properties).
-    #[arg(long)]
+    /// New content. Omit to leave content unchanged (e.g. when only setting
+    /// properties). A value may begin with a dash, as a checklist item or a
+    /// list line does.
+    #[arg(long, allow_hyphen_values = true)]
     pub content: Option<String>,
     /// Set one or more properties: `--property key=value` (repeatable). Values
     /// are parsed as JSON when possible (numbers, booleans, `null`, arrays,
@@ -1017,6 +1020,39 @@ mod tests {
                 action: NodeAction::Create(args),
             } => Ok(args),
             other => panic!("expected node create, got {other:?}"),
+        }
+    }
+
+    // A checklist item's content is `- [ ] ...`, and ticking one is the
+    // command the implementing procedure hands every agent.
+    #[test]
+    fn content_may_begin_with_a_dash() {
+        let created = create_args(&["--content", "- [ ] ship it", "--parent", "p-1"])
+            .expect("a checklist item parses");
+        assert_eq!(created.content.as_deref(), Some("- [ ] ship it"));
+        assert_eq!(created.parent.as_deref(), Some("p-1"));
+
+        let argv = [
+            "nodespace",
+            "node",
+            "update",
+            "c-1",
+            "--content",
+            "- [x] ship it",
+            "--version",
+            "3",
+        ];
+        match crate::Cli::try_parse_from(argv)
+            .expect("a ticked item parses")
+            .command
+        {
+            crate::Command::Node {
+                action: NodeAction::Update(args),
+            } => {
+                assert_eq!(args.content.as_deref(), Some("- [x] ship it"));
+                assert_eq!(args.version, Some(3));
+            }
+            other => panic!("expected node update, got {other:?}"),
         }
     }
 

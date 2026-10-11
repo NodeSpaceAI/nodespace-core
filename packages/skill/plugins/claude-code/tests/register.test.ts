@@ -297,6 +297,22 @@ describe('session start', () => {
     expect(section?.text).toMatch(/<nodespace-graph-data>[\s\S]*read from the NodeSpace graph/)
     expect(section?.text).toContain('- Implementing a task: when Implementing a task applies')
     expect(section?.text).toContain('- Reviewing a change: when Reviewing a change applies')
+    // A queue names no project: the section says how to run one for this checkout's.
+    expect(section?.text).toContain(
+      `add \`--filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"p1"}]'\` to each \`nodespace query run\``,
+    )
+  })
+
+  test('an id that is not an id is not written into the filter', async ($, on) => {
+    host(on, world({ project: { id: "p1'; rm -rf ~ #", version: 1, title: 'Widgets' } }))
+    await $.session.start(START)
+
+    const { sections } = await $.prompt.compose(COMPOSE)
+    const section = sections.find(s => s.id === 'nodespace:context')?.text ?? ''
+
+    expect(section).toContain('Project for this checkout: Widgets')
+    expect(section).not.toContain('--filters')
+    expect(section).not.toContain('rm -rf')
   })
 
   test('graph text cannot close the marker it is printed inside', async ($, on) => {

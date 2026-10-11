@@ -1057,7 +1057,7 @@ Operate on individual nodes (get, context, create, update, move, delete, childre
 **`nodespace node create`** — Create a new node
 
 - `--type <NODE_TYPE>` — Node type, e.g. `text`, `task`, `date` (required)
-- `--content <CONTENT>` — Content (plain text or markdown). Omit for a type with a title template (e.g. `person`): its name comes from the template's fields, set with `--property`, and content is rejected
+- `--content <CONTENT>` — Content (plain text or markdown). Omit for a type with a title template (e.g. `person`): its name comes from the template's fields, set with `--property`, and content is rejected. A value may begin with a dash, as a checklist item or a list line does
 - `--parent <PARENT>` — Parent node ID (omit to create a root node)
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Required this way for any schema field that is `required` with no default — validation runs at create time, so there is no way to supply it afterward via `update`
 - `--properties <JSON>` — Set several properties at once from one JSON object: `--properties '{"key":"value"}'`. Each value keeps the JSON type it is written with, so this is the form for nested values and for a string that reads as a number (`{"estimate":"3"}`). May be combined with `--property`, which wins for a key given both ways
@@ -1067,7 +1067,7 @@ Operate on individual nodes (get, context, create, update, move, delete, childre
 **`nodespace node update`** — Update an existing node's content and/or properties
 
 - `<ID>` — Node ID to update (required)
-- `--content <CONTENT>` — New content. Omit to leave content unchanged (e.g. when only setting properties)
+- `--content <CONTENT>` — New content. Omit to leave content unchanged (e.g. when only setting properties). A value may begin with a dash, as a checklist item or a list line does
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Deep-merged into the node's existing properties (unspecified keys are left untouched). Do NOT use this to change a task's status; use `node set-status` instead
 - `--properties <JSON>` — Set several properties at once from one JSON object: `--properties '{"key":"value"}'`, deep-merged like `--property`. Each value keeps the JSON type it is written with. May be combined with `--property`, which wins for a key given both ways
 - `--collection <PATH>` — Collection path to add the node to, `:`-delimited for hierarchy (e.g. `docs:rust`). Missing segments are created. Repeatable. Mutually exclusive with --collection-id
