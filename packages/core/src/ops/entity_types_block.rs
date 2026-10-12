@@ -284,8 +284,10 @@ impl EntityTypeDescriptor {
     /// site — reserved for a schema known to extend nothing, or a degraded
     /// path with no way to read the chain, each saying so beside the call.
     ///
-    /// Merged with the same nearest-first, first-declared-wins rule as
-    /// `NodeService::resolve_field_owners`/`resolve_relationships`. The title
+    /// Merged by the same builders as `NodeService::resolve_field_owners`
+    /// (fields, through `flatten_chain_fields`, so an enum an ancestor and a
+    /// subtype both declare lists the ancestor's values plus the subtype's) and
+    /// `resolve_relationships` (nearest-first, first-declared-wins). The title
     /// template stays `own`'s: title interpolation reads only the node's own
     /// schema's template, so an ancestor's would describe a title the node
     /// never gets.
@@ -294,12 +296,8 @@ impl EntityTypeDescriptor {
         ancestors: impl IntoIterator<Item = &'a SchemaNode>,
     ) -> Self {
         let chain: Vec<&SchemaNode> = std::iter::once(own).chain(ancestors).collect();
-        let fields = crate::schema::extends_chain::flatten_chain_by_name(
-            chain
-                .iter()
-                .map(|s| s.fields.iter().collect::<Vec<_>>())
-                .collect(),
-            |f| f.name.as_str(),
+        let fields = crate::schema::extends_chain::flatten_chain_fields(
+            chain.iter().map(|s| s.fields.clone()).collect(),
         );
         let relationships = crate::schema::extends_chain::flatten_chain_by_name(
             chain
@@ -312,7 +310,7 @@ impl EntityTypeDescriptor {
             type_id: own.envelope.id.clone(),
             name: Some(own.envelope.content.clone()),
             fields: fields
-                .into_iter()
+                .iter()
                 .map(EntityFieldDescriptor::from_schema_field)
                 .collect(),
             relationships: relationships
@@ -1061,6 +1059,29 @@ mod tests {
                 .map(|r| r.name.as_str())
                 .collect::<Vec<_>>(),
             ["reference", "billed_to"]
+        );
+    }
+
+    /// An issue's `status` stores only the two values it adds; the model is
+    /// told the whole vocabulary, in the field's order.
+    #[test]
+    fn a_subtypes_enum_lists_the_ancestors_values_with_its_own() {
+        let schemas = crate::models::core_schemas::get_core_schemas();
+        let find = |id: &str| schemas.iter().find(|s| s.envelope.id == id).unwrap();
+
+        let d = EntityTypeDescriptor::from_chain(find("issue"), [find("task")]);
+        let status = d.fields.iter().find(|f| f.name == "status").unwrap();
+        assert_eq!(
+            status.enum_values,
+            [
+                "open",
+                "in_progress",
+                "changes_requested",
+                "in_review",
+                "ready_to_merge",
+                "done",
+                "cancelled"
+            ]
         );
     }
 

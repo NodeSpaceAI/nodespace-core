@@ -825,59 +825,64 @@ fn extend_inherited_field(
     Ok(addition.values.len())
 }
 
-/// Refuse an added value that a type extending `schema_id` already added to the
+/// Refuse added values that a type extending `schema_id` already added to the
 /// same field, naming that type.
 ///
 /// A descendant's stored extension lists only its own values, and the field's
 /// values are the ancestors' plus each descendant's, so a parent adding a value
 /// its descendant already carries would list it twice with two meanings. The
 /// parent's author resolves it (rename the value, or drop the descendant's).
+///
+/// The descendants are read once for the whole call, through the same closure
+/// `validate_no_shadowed_extension_fields` walks.
 async fn reject_descendant_value_collisions(
     node_service: &Arc<NodeService>,
     schema_id: &str,
-    addition: &FieldValueAddition,
+    additions: &[FieldValueAddition],
 ) -> Result<(), MarkdownError> {
-    let parent_map = load_parent_map(node_service).await?;
-    let lookup = {
-        let parent_map = parent_map.clone();
-        move |id: &str| parent_map.get(id).cloned()
-    };
-    let mut descendants: Vec<&String> = parent_map
-        .keys()
-        .filter(|id| {
-            id.as_str() != schema_id
-                && extends_chain::resolve_ancestor_chain(id, &lookup)
-                    .iter()
-                    .any(|ancestor| ancestor == schema_id)
-        })
-        .collect();
+    if additions.is_empty() {
+        return Ok(());
+    }
+    let mut descendants = node_service
+        .store()
+        .get_subtype_closure(schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve the types extending '{schema_id}': {e}"
+            ))
+        })?;
+    descendants.retain(|id| id != schema_id);
     descendants.sort();
 
-    for id in descendants {
+    for id in &descendants {
         let schema = node_service.get_schema_node(id).await.map_err(|e| {
             MarkdownError::internal_error(format!("Failed to resolve schema '{id}': {e}"))
         })?;
-        let Some(field) = schema.as_ref().and_then(|s| s.get_field(&addition.field)) else {
-            continue;
-        };
-        let held: std::collections::HashSet<&str> = field
-            .core_values
-            .iter()
-            .flatten()
-            .chain(field.user_values.iter().flatten())
-            .map(|ev| ev.value.as_str())
-            .collect();
-        if let Some(clash) = addition
-            .values
-            .iter()
-            .find(|v| held.contains(v.value.as_str()))
-        {
-            return Err(MarkdownError::invalid_params(format!(
-                "Value '{}' cannot be added to field '{}' of '{}': '{}', which extends it, \
-                 already adds a value of that name. Choose a different value string, or \
-                 remove it from '{}' first.",
-                clash.value, addition.field, schema_id, id, id
-            )));
+        let Some(schema) = schema else { continue };
+        for addition in additions {
+            let Some(field) = schema.get_field(&addition.field) else {
+                continue;
+            };
+            let held: std::collections::HashSet<&str> = field
+                .core_values
+                .iter()
+                .flatten()
+                .chain(field.user_values.iter().flatten())
+                .map(|ev| ev.value.as_str())
+                .collect();
+            if let Some(clash) = addition
+                .values
+                .iter()
+                .find(|v| held.contains(v.value.as_str()))
+            {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Value '{}' cannot be added to field '{}' of '{}': '{}', which extends it, \
+                     already adds a value of that name. Choose a different value string, or \
+                     remove it from '{}' first.",
+                    clash.value, addition.field, schema_id, id, id
+                )));
+            }
         }
     }
     Ok(())
@@ -3409,14 +3414,14 @@ pub async fn update_schema(
             None => Vec::new(),
         };
 
-        for addition in additions {
-            reject_descendant_value_collisions(node_service, &params.schema_id, addition).await?;
+        reject_descendant_value_collisions(node_service, &params.schema_id, additions).await?;
 
+        for addition in additions {
             // Extending an INHERITED field's vocabulary (ADR-078). The field
             // is not in `fields` at all, so it cannot be mutated in place —
-            // the added values are validated here and then materialized onto
-            // this schema as its own declaration of that field, carrying the
-            // inherited definition plus the new values.
+            // the added values are validated here and then stored on this
+            // schema as its own declaration of that field, listing only the
+            // new values: the inherited ones are read from the ancestors.
             if let Some(inherited) = inherited_fields
                 .iter()
                 .find(|f| f.name == addition.field)

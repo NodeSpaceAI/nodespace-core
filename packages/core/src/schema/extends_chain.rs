@@ -245,7 +245,8 @@ fn extend_enum_field(base: SchemaField, extension: &SchemaField) -> SchemaField 
         .map(|ev| ev.value.clone())
         .collect();
     // Values already inserted after a given target, so siblings keep their
-    // declaration order rather than reversing.
+    // declaration order rather than reversing. Keyed by the target's value,
+    // not by list: a target and its siblings can sit in different lists.
     let mut inserted_after: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
 
@@ -616,6 +617,27 @@ mod tests {
         // The middle type does not see its descendant's value.
         let mid_only = flatten_chain_fields(vec![vec![mid], vec![root]]);
         assert_eq!(values_of(&mid_only[0]), ["todo", "queued", "done"]);
+    }
+
+    #[test]
+    fn core_and_user_values_compose_across_three_levels() {
+        // root: core todo, done; user waiting. mid adds queued (core) after
+        // todo; leaf adds triage (user) after queued, and parked (user) after
+        // waiting.
+        let mut root = enum_field("status", &["todo", "done"], &[]);
+        root.user_values = Some(vec![EnumValue::new("waiting", "waiting")]);
+        let mid = enum_field("status", &[], &[("queued", "todo")]);
+        let leaf = enum_field(
+            "status",
+            &[],
+            &[("triage", "queued"), ("parked", "waiting")],
+        );
+
+        let flat = flatten_chain_fields(vec![vec![leaf], vec![mid], vec![root]]);
+        assert_eq!(
+            values_of(&flat[0]),
+            ["todo", "queued", "triage", "done", "waiting", "parked"]
+        );
     }
 
     #[test]

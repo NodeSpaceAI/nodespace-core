@@ -1408,4 +1408,48 @@ async fn each_level_of_a_chain_adds_after_the_value_it_maps_to() {
     .expect("adding to the root succeeds");
     create_instance(&svc, "crash", json!({ "state": "parked" })).await;
     create_instance(&svc, "crash", json!({ "state": "triaged" })).await;
+    assert_eq!(
+        effective_state_values(&svc, "crash").await,
+        ["open", "backlog", "triaged", "done", "parked"]
+    );
+}
+
+/// An extension is the type's own declaration of the field, so moving the type
+/// under a parent that has the field is a redeclaration and is refused: the
+/// parent's values are never silently preferred over the type's.
+#[tokio::test]
+async fn re_pointing_a_type_with_an_extension_under_another_vocabulary_is_refused() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Story",
+            "fields": [{
+                "name": "state",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "extensible": true,
+                "coreValues": [
+                    { "value": "open", "label": "Open" },
+                    { "value": "backlog", "label": "Backlog" }
+                ]
+            }]
+        }),
+    )
+    .await
+    .expect("story schema creation failed");
+
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "story" })).await;
+    assert!(
+        result.is_err(),
+        "a type holding its own extension of `state` cannot move under another `state`: {result:?}"
+    );
+    // The type is unchanged.
+    assert_eq!(
+        effective_state_values(&svc, "bug").await,
+        ["open", "backlog", "done"]
+    );
 }
