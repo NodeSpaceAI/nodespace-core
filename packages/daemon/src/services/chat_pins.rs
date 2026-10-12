@@ -5,11 +5,12 @@
 //! turn's entity list. Both are read from the edges each turn, so a turn sees
 //! the nodes as they are now.
 
-use nodespace_agent::agent_types::{ChatMessage, Role, SkillCandidate};
+use nodespace_agent::agent_types::SkillCandidate;
 use nodespace_agent::local_agent::tools::pinned_skill_candidates;
 use nodespace_core::governance;
 use nodespace_core::models::AI_CHAT_PINS;
 use nodespace_core::services::NodeService;
+use nodespace_nlp_engine::{ChatMessage, Role};
 
 use crate::services::chat_messages::{clip_summary, display_title, node_uri};
 

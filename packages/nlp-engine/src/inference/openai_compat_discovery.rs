@@ -10,7 +10,7 @@
 //! window or capability flags. Those fields are left at their "unknown"
 //! sentinels rather than guessed at.
 
-use crate::agent_types::{ModelBackend, ModelError, ModelFamily, ModelInfo, ModelStatus};
+use super::model::{ModelBackend, ModelError, ModelFamily, ModelInfo, ModelStatus};
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -130,7 +130,7 @@ pub fn discovered_model_info(config_id: &str, config_name: &str, model: &str) ->
     ModelInfo {
         id: format!(
             "{}{}:{}",
-            crate::local_agent::openai_compat_inference::OPENAI_COMPAT_PREFIX,
+            super::openai_compat::OPENAI_COMPAT_PREFIX,
             config_id,
             model
         ),
@@ -204,9 +204,7 @@ mod tests {
 
     #[test]
     fn discovered_id_round_trips_through_the_prefix_helpers() {
-        use crate::local_agent::openai_compat_inference::{
-            is_openai_compat, strip_openai_compat_prefix,
-        };
+        use crate::inference::openai_compat::{is_openai_compat, strip_openai_compat_prefix};
 
         let info = discovered_model_info("abc-123", "Local Ollama", "llama3.1:8b");
 

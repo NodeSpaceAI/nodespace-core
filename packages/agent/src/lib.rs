@@ -1,4 +1,4 @@
-//! Agent subsystem: local inference, PTY agent catalog, tool execution.
+//! Agent subsystem: the agent loop, PTY agent catalog, tool execution.
 //!
 //! This crate contains the business logic for the agent layer, decoupled
 //! from Tauri. The desktop-app crate provides thin Tauri command bindings

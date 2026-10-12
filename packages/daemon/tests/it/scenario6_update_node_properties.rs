@@ -33,11 +33,7 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, ChatMessage, InferenceRequest, ModelFamily, Role, StreamingChunk,
-    ToolCallRaw, ToolDefinition, ToolExecutionRecord,
-};
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
+use nodespace_agent::agent_types::ToolExecutionRecord;
 use nodespace_agent::local_agent::prompt_templates;
 use nodespace_agent::local_agent::tools::all_tool_definitions;
 use nodespace_core::models::AiChatMessageRole;
@@ -46,6 +42,11 @@ use nodespace_daemon::services::local_agent_service::{
     completed_writes_from, node_history_from_messages,
 };
 use nodespace_nlp_engine::chat::ChatConfig;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, InferenceRequest, ModelFamily, Role, StreamingChunk,
+    ToolCallRaw, ToolDefinition,
+};
 
 fn model_path() -> String {
     let home = std::env::var("HOME").expect("HOME must be set");
@@ -58,8 +59,13 @@ fn load_engine() -> LlamaChatInferenceEngine {
         default_temperature: 0.1,
         ..Default::default()
     };
-    LlamaChatInferenceEngine::load(&model_path(), ModelFamily::Gemma4, config)
-        .expect("model must load from the standard catalog path")
+    LlamaChatInferenceEngine::load(
+        &model_path(),
+        ModelFamily::Gemma4,
+        config,
+        nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&model_path()),
+    )
+    .expect("model must load from the standard catalog path")
 }
 
 fn exec(name: &str, args: serde_json::Value, result: serde_json::Value) -> ToolExecutionRecord {

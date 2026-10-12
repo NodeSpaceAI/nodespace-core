@@ -1,12 +1,7 @@
 pub mod agent_loop;
 pub mod decisions;
 pub mod deletion_confirmation;
-pub mod inference;
 pub mod model_manager;
-pub mod ndjson;
-pub mod openai_compat_discovery;
-pub mod openai_compat_inference;
-pub mod openai_compat_prompt_dump;
 pub mod otlp_tracer;
 pub mod prompt_templates;
 pub mod response_processing;

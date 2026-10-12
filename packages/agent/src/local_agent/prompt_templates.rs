@@ -8,7 +8,7 @@
 //! system-prompt duplication here — the only non-assembler path is the minimal
 //! `EMERGENCY_FALLBACK_PROMPT` safety net in that module.
 
-use crate::agent_types::ToolDefinition;
+use nodespace_nlp_engine::ToolDefinition;
 
 /// Format tool definitions into the text block appended to the system prompt.
 ///

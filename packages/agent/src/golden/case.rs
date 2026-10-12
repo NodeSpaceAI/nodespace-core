@@ -35,8 +35,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent_types::ToolDefinition;
 use nodespace_nlp_engine::chat::{ChatMessage, Role};
+use nodespace_nlp_engine::ToolDefinition;
 
 /// A parsed case file: one or more turns, run `reps` times as a whole.
 #[derive(Debug, Clone, Deserialize, Serialize)]

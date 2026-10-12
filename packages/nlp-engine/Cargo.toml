@@ -48,11 +48,17 @@ libc = "0.2"
 # Path utilities
 dirs = "5.0"
 
+# Remote inference: the client for OpenAI-compatible endpoints and its model
+# discovery. A remote client needs an HTTP library, which is why nlp-engine
+# carries one; it stays a leaf of the workspace.
+async-trait = { workspace = true }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset", "stream", "json"] }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 criterion = { workspace = true }
 tempfile = "3.0"
-futures = "0.3"
 # Serializes the model-loading integration tests so concurrent first-time
 # llama.cpp/Metal backend initialization cannot happen under the parallel harness.
 serial_test = "3.2"

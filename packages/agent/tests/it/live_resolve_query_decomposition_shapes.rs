@@ -15,7 +15,7 @@
 //! What it does NOT do: assert a pass/fail bar on model behavior. It drives
 //! the real `exec_resolve_query` over a corpus of phrasings, captures every
 //! decomposition's *raw* text via the existing `NODESPACE_PROMPT_DUMP` hook
-//! (`nlp-engine`'s `chat/prompt_dump.rs` names `resolve_query` as a covered
+//! (`nlp-engine`'s `inference/prompt_dump.rs` names `resolve_query` as a covered
 //! caller, so this needs no new production instrumentation), classifies each
 //! emitted filter object against the shapes the repairs exist for, and prints
 //! a tally. The human reads the tally and decides.
@@ -35,14 +35,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nodespace_agent::agent_types::{ChatInferenceEngine, ModelFamily};
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::tools::{extract_json_object, GraphToolExecutor};
 use nodespace_agent::AgentToolExecutor;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::NodeService;
 use nodespace_nlp_engine::chat::ChatConfig;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::{ChatInferenceEngine, ModelFamily};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
@@ -73,8 +73,13 @@ fn load_engine() -> LlamaChatInferenceEngine {
         default_temperature: 0.0,
         ..Default::default()
     };
-    LlamaChatInferenceEngine::load(&model_path(), ModelFamily::Gemma4, config)
-        .expect("model must load from the standard catalog path")
+    LlamaChatInferenceEngine::load(
+        &model_path(),
+        ModelFamily::Gemma4,
+        config,
+        nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&model_path()),
+    )
+    .expect("model must load from the standard catalog path")
 }
 
 async fn make_service() -> (Arc<NodeService>, TempDir) {

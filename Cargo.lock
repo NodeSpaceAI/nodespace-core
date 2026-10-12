@@ -3614,6 +3614,7 @@ name = "nodespace-nlp-engine"
 version = "0.3.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "criterion",
  "dirs 5.0.1",
  "encoding_rs",
@@ -3621,6 +3622,7 @@ dependencies = [
  "libc",
  "llama-cpp-2",
  "lru",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "serial_test",

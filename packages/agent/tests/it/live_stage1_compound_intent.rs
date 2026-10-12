@@ -41,17 +41,15 @@
 //! the rate matters for `route_multi`'s design, repeat the run and compare
 //! before treating any single number as ground truth.
 
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, InferenceRequest, ModelFamily, StreamingChunk,
-};
 use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::routing::{
     self, RouteDecision, ROUTE_CLARIFY_TOOL, ROUTE_LOOKUP_TOOL, ROUTE_MULTI_TOOL, ROUTE_QUERY_TOOL,
 };
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
 use nodespace_nlp_engine::ChatConfig;
+use nodespace_nlp_engine::{ChatInferenceEngine, InferenceRequest, ModelFamily, StreamingChunk};
 use std::sync::{Arc, Mutex};
 
 /// The skill names production's Stage-1 prompt carries on a freshly seeded
@@ -84,7 +82,12 @@ async fn resolve_locked_model() -> Option<Arc<dyn ChatInferenceEngine>> {
     }
     let path_str = path.to_string_lossy().to_string();
     let engine = tokio::task::spawn_blocking(move || {
-        LlamaChatInferenceEngine::load(&path_str, ModelFamily::Gemma4, ChatConfig::default())
+        LlamaChatInferenceEngine::load(
+            &path_str,
+            ModelFamily::Gemma4,
+            ChatConfig::default(),
+            nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&path_str),
+        )
     })
     .await
     .ok()?

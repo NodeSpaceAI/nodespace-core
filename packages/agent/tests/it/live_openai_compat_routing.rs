@@ -83,14 +83,13 @@
 //! cargo test -p nodespace-agent --test it live_openai_compat_routing:: -- --ignored --nocapture
 //! ```
 
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, InferenceRequest, SkillCandidate, StreamingChunk, ToolDefinition,
-};
+use nodespace_agent::agent_types::SkillCandidate;
 use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
-use nodespace_agent::local_agent::openai_compat_discovery::discover_models;
-use nodespace_agent::local_agent::openai_compat_inference::OpenAiCompatInferenceEngine;
 use nodespace_agent::local_agent::routing;
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
+use nodespace_nlp_engine::inference::openai_compat::OpenAiCompatInferenceEngine;
+use nodespace_nlp_engine::inference::openai_compat_discovery::discover_models;
+use nodespace_nlp_engine::{ChatInferenceEngine, InferenceRequest, StreamingChunk, ToolDefinition};
 use std::sync::{Arc, Mutex};
 
 /// The skill names production's Stage-1 prompt carries on a freshly seeded

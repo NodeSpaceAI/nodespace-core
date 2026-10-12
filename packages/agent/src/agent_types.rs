@@ -5,6 +5,9 @@
 //! produces no runtime behavior -- only type definitions, trait declarations,
 //! and module scaffolding.
 //!
+//! The inference-engine interface and its request and response types are
+//! `nodespace-nlp-engine`'s, and are imported from there.
+//!
 //! Tauri event channel constants live in the desktop-app crate (they depend
 //! on Tauri, which is not a dependency of this crate).
 
@@ -15,60 +18,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use thiserror::Error;
 
-// Re-export the canonical chat message types from nlp-engine (single source of truth).
-pub use nodespace_nlp_engine::{ChatMessage, Role, ToolCallRaw};
+use nodespace_nlp_engine::{ChatMessage, InferenceUsage, ModelError, ModelInfo, ToolDefinition};
 
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
-
-/// Errors returned by [`ChatInferenceEngine`] methods.
-#[derive(Debug, Error)]
-pub enum InferenceError {
-    /// No model is currently loaded.
-    #[error("no model loaded")]
-    NoModelLoaded,
-
-    /// The model ran out of context window space.
-    #[error("context window exceeded: {0}")]
-    ContextOverflow(String),
-
-    /// An internal engine error occurred.
-    #[error("inference engine error: {0}")]
-    Engine(String),
-
-    /// Catch-all for unexpected errors.
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
-/// Errors returned by [`ModelManager`] methods.
-#[derive(Debug, Error)]
-pub enum ModelError {
-    /// The requested model ID does not exist in the catalog.
-    #[error("model not found: {0}")]
-    NotFound(String),
-
-    /// A download was already in progress for this model.
-    #[error("download already in progress for model: {0}")]
-    DownloadInProgress(String),
-
-    /// Network or I/O failure during download.
-    #[error("download failed: {0}")]
-    DownloadFailed(String),
-
-    /// Verification (SHA-256 checksum) failed after download.
-    #[error("verification failed for model: {0}")]
-    VerificationFailed(String),
-
-    /// The model file could not be loaded into memory.
-    #[error("failed to load model: {0}")]
-    LoadFailed(String),
-
-    /// Catch-all for unexpected errors.
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
 
 /// Errors returned by [`AgentToolExecutor`] methods.
 #[derive(Debug, Error)]
@@ -98,83 +52,6 @@ pub enum ToolError {
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
-
-/// A single chunk emitted during streaming inference.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StreamingChunk {
-    /// A token of generated text (answer content shown to the user).
-    Token {
-        /// The text content of this token.
-        text: String,
-    },
-    /// A span of the model's internal reasoning (chain-of-thought).
-    ///
-    /// Captured separately from the answer so it can be surfaced in a dedicated
-    /// collapsible UI section rather than inline. Not forwarded to the live UI
-    /// overlay; it is accumulated into the final assistant message.
-    Reasoning {
-        /// The reasoning text content of this span.
-        text: String,
-    },
-    /// The model is starting a tool call.
-    ToolCallStart {
-        /// Unique identifier for this tool call.
-        id: String,
-        /// Name of the tool being invoked.
-        name: String,
-        /// Provider-opaque data (e.g. Gemini 3's `thought_signature`) that
-        /// must be echoed back verbatim if this call is replayed as history.
-        /// `None` for providers/models that attach nothing extra.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        provider_extra: Option<serde_json::Value>,
-    },
-    /// Incremental arguments JSON for an in-progress tool call.
-    ToolCallArgs {
-        /// Identifier matching the corresponding `ToolCallStart`.
-        id: String,
-        /// Partial JSON string of tool arguments.
-        args_json: String,
-    },
-    /// Inference is complete.
-    Done {
-        /// Token usage statistics for the completed turn.
-        usage: InferenceUsage,
-    },
-    /// An error occurred during streaming.
-    Error {
-        /// Human-readable error description.
-        message: String,
-    },
-}
-
-/// Current status of a model in the local catalog.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ModelStatus {
-    /// Model is known but not yet downloaded.
-    NotDownloaded,
-    /// Model is currently being downloaded.
-    Downloading {
-        /// Download progress as a percentage (0.0 -- 100.0).
-        progress_pct: f32,
-        /// Bytes downloaded so far.
-        bytes_downloaded: u64,
-        /// Total bytes to download.
-        bytes_total: u64,
-    },
-    /// Download complete, verifying integrity (SHA-256).
-    Verifying,
-    /// Model is on disk and ready to be loaded.
-    Ready,
-    /// Model is loaded into memory and available for inference.
-    Loaded,
-    /// An error occurred (download, verification, or loading).
-    Error {
-        /// Human-readable error description.
-        message: String,
-    },
-}
 
 /// External agent CLI catalogued for PTY spawning (ADR-032).
 ///
@@ -241,83 +118,9 @@ pub enum LocalAgentStatus {
     },
 }
 
-/// Family of language models.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ModelFamily {
-    /// Gemma 4 -- Google's multimodal model series (E4B, 26B-A4B).
-    Gemma4,
-    /// Model served via a user-configured OpenAI-compatible endpoint (family
-    /// determined by the remote server).
-    OpenAiCompat,
-}
-
-/// Backend used to serve a language model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum ModelBackend {
-    /// Local GGUF model loaded via llama.cpp.
-    #[default]
-    Gguf,
-    /// Model served by a user-configured OpenAI-compatible endpoint. Covers
-    /// every remotely-served model, Ollama's `/v1` API included.
-    OpenAiCompat,
-}
-
-impl ModelBackend {
-    /// Wire identifier sent to the frontend in the model catalog.
-    ///
-    /// Spelled out rather than derived from `Debug`, which would render the
-    /// variant as "openaicompat" and silently disagree with the hyphenated
-    /// value the frontend matches on.
-    pub fn as_wire_str(self) -> &'static str {
-        match self {
-            ModelBackend::Gguf => "gguf",
-            ModelBackend::OpenAiCompat => "openai-compat",
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Structs -- Chat & Inference
-// ---------------------------------------------------------------------------
-
-/// Parameters for an inference request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InferenceRequest {
-    /// Ordered list of chat messages forming the conversation.
-    pub messages: Vec<ChatMessage>,
-    /// Tool definitions available for the model to invoke.
-    pub tools: Option<Vec<ToolDefinition>>,
-    /// Sampling temperature (0.0 = deterministic, higher = more creative).
-    pub temperature: Option<f32>,
-    /// Maximum number of tokens to generate.
-    pub max_tokens: Option<u32>,
-}
-
-/// Token usage statistics for a completed inference turn.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-pub struct InferenceUsage {
-    /// Number of tokens in the input prompt.
-    pub prompt_tokens: u32,
-    /// Number of tokens generated by the model.
-    pub completion_tokens: u32,
-}
-
 // ---------------------------------------------------------------------------
 // Structs -- Tools
 // ---------------------------------------------------------------------------
-
-/// Definition of a tool that the model can invoke.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    /// Unique name of the tool (e.g. "search_nodes").
-    pub name: String,
-    /// Human-readable description of what the tool does.
-    pub description: String,
-    /// JSON Schema describing the tool's parameters.
-    pub parameters_schema: serde_json::Value,
-}
 
 /// Result of a single tool invocation, returned to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -352,56 +155,6 @@ pub struct ToolExecutionRecord {
 // ---------------------------------------------------------------------------
 // Structs -- Model Management
 // ---------------------------------------------------------------------------
-
-/// Metadata about a language model in the local catalog.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelInfo {
-    /// Unique identifier for this model.
-    pub id: String,
-    /// Model family (e.g. Gemma4).
-    pub family: ModelFamily,
-    /// Human-readable model name.
-    pub name: String,
-    /// Filename of the model weights on disk.
-    pub filename: Option<String>,
-    /// Size of the model file in bytes.
-    pub size_bytes: u64,
-    /// Quantization format (e.g. "Q4_K_M").
-    pub quantization: String,
-    /// URL to download the model weights.
-    pub url: Option<String>,
-    /// Expected SHA-256 hash of the model file.
-    pub sha256: Option<String>,
-    /// Backend used to serve this model.
-    #[serde(default)]
-    pub backend: ModelBackend,
-    /// Current download / load status.
-    pub status: ModelStatus,
-    /// Minimum system RAM (in GiB) required to run this model comfortably.
-    /// Zero means unknown (e.g. for remotely-served models).
-    pub min_memory_gb: u8,
-}
-
-/// Specification of a chat model's capabilities.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatModelSpec {
-    /// Identifier of the model this spec describes.
-    pub model_id: String,
-    /// Family the model belongs to (drives any per-family behavior, e.g. UI
-    /// hardware-requirement labels).
-    pub family: ModelFamily,
-    /// Maximum number of tokens the model can process.
-    pub context_window: u32,
-    /// Default sampling temperature.
-    pub default_temperature: f32,
-    /// KV cache quantization for key tensors. `None` leaves keys at F16.
-    /// Set to `Q8_0` for ~2× memory savings (recommended for 12B+ models).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub type_k: Option<nodespace_nlp_engine::KvCacheQuantType>,
-    /// KV cache quantization for value tensors. Same semantics as `type_k`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub type_v: Option<nodespace_nlp_engine::KvCacheQuantType>,
-}
 
 /// Event payload emitted during model download progress.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -658,34 +411,6 @@ impl AgentTurnResult {
 // ---------------------------------------------------------------------------
 // Traits
 // ---------------------------------------------------------------------------
-
-/// Engine for running chat inference against a loaded language model.
-///
-/// Implementors manage model state and produce streaming or complete responses.
-#[async_trait]
-pub trait ChatInferenceEngine: Send + Sync {
-    /// Run streaming inference on the given request.
-    async fn generate(
-        &self,
-        request: InferenceRequest,
-        on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
-    ) -> Result<InferenceUsage, InferenceError>;
-
-    /// Return metadata about the currently loaded model.
-    async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError>;
-
-    /// Estimate the token count for the given text.
-    async fn token_count(&self, text: &str) -> Result<u32, InferenceError>;
-
-    /// Whether a request to this engine is served on this machine.
-    ///
-    /// `false` unless the engine says otherwise, so an engine that sends its
-    /// requests elsewhere, or that nobody has classified, is never handed
-    /// input that must not leave the machine.
-    fn runs_on_this_machine(&self) -> bool {
-        false
-    }
-}
 
 /// Manager for the local model catalog: download, verify, load, and unload.
 #[async_trait]

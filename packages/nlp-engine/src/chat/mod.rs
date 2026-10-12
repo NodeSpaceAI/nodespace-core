@@ -18,7 +18,6 @@
 /// one generation runs at a time. This prevents Metal command-buffer
 /// collisions between concurrent requests.
 pub mod error;
-pub mod prompt_dump;
 pub mod types;
 
 pub use error::{ChatError, Result};
@@ -28,6 +27,8 @@ pub use types::{
 
 #[cfg(feature = "chat-service")]
 use crate::embedding::{get_or_init_backend, register_atexit_handler, register_state_for_cleanup};
+#[cfg(feature = "chat-service")]
+use crate::inference::prompt_dump::{self, Engine, Sent};
 
 #[cfg(feature = "chat-service")]
 use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
@@ -414,7 +415,7 @@ impl ChatEngine {
         // probe) passes through, so capturing here covers all of them without
         // per-caller wiring. `dump_seq` correlates this prompt with its
         // response below.
-        let dump_seq = prompt_dump::dump_prompt(prompt);
+        let dump_seq = prompt_dump::dump_prompt(Engine::Native, None, Sent::Text(prompt));
 
         // --- Tokenize ---
         // AddBos::Never -- the OAI-compat Jinja template above already injects
@@ -799,7 +800,7 @@ impl ChatEngine {
 
         on_chunk(ChatChunk::Done);
 
-        prompt_dump::dump_response(dump_seq, &raw_response_accum);
+        prompt_dump::dump_response(Engine::Native, dump_seq, &raw_response_accum);
 
         let usage = ChatUsage {
             prompt_tokens,
@@ -2162,7 +2163,7 @@ mod tests {
         // this path exists for consistency with the OpenAI-compat replay
         // path -- exercise the actual merge so a colliding key is proven to
         // overwrite (via serde_json::Map::insert) rather than duplicate,
-        // unlike the flatten-based approach in openai_compat_inference.rs.
+        // unlike the flatten-based approach in inference/openai_compat.rs.
         let m = ChatMessage::assistant_with_tool_calls(
             "",
             vec![ToolCallRaw {

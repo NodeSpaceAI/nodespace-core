@@ -6,8 +6,7 @@
 //! returns a compact, token-efficient result suitable for an 8k-context local model.
 
 use crate::agent_types::{
-    AgentToolExecutor, ChatInferenceEngine, ChatMessage, InferenceRequest, Role, SkillCandidate,
-    SkillRetrieval, StreamingChunk, ToolDefinition, ToolError, ToolResult,
+    AgentToolExecutor, SkillCandidate, SkillRetrieval, ToolError, ToolResult,
 };
 use async_trait::async_trait;
 use nodespace_core::agent_params::{SearchNodesParams, SearchSemanticParams};
@@ -17,6 +16,9 @@ use nodespace_core::models::{CoreNodeType, TaskStatus};
 use nodespace_core::ops::{node_context_ops, node_ops, query_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk, ToolDefinition,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::borrow::Cow;
@@ -8767,9 +8769,9 @@ mod tests {
     /// gap.
     mod resolve_query_integration {
         use super::*;
-        use crate::agent_types::{ChatModelSpec, InferenceUsage};
         use nodespace_core::db::SqliteStore;
         use nodespace_core::schema::handle_create_schema;
+        use nodespace_nlp_engine::{ChatModelSpec, InferenceUsage};
         use tempfile::TempDir;
 
         async fn make_test_service() -> (Arc<NodeService>, TempDir) {
@@ -8794,7 +8796,7 @@ mod tests {
                 &self,
                 _request: InferenceRequest,
                 on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
-            ) -> Result<InferenceUsage, crate::agent_types::InferenceError> {
+            ) -> Result<InferenceUsage, nodespace_nlp_engine::InferenceError> {
                 on_chunk(StreamingChunk::Token {
                     text: self.response.clone(),
                 });
@@ -8806,14 +8808,14 @@ mod tests {
 
             async fn model_info(
                 &self,
-            ) -> Result<Option<ChatModelSpec>, crate::agent_types::InferenceError> {
+            ) -> Result<Option<ChatModelSpec>, nodespace_nlp_engine::InferenceError> {
                 Ok(None)
             }
 
             async fn token_count(
                 &self,
                 text: &str,
-            ) -> Result<u32, crate::agent_types::InferenceError> {
+            ) -> Result<u32, nodespace_nlp_engine::InferenceError> {
                 Ok((text.len() as f32 / 4.0).ceil() as u32)
             }
         }
@@ -8834,7 +8836,7 @@ mod tests {
                 &self,
                 request: InferenceRequest,
                 on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
-            ) -> Result<InferenceUsage, crate::agent_types::InferenceError> {
+            ) -> Result<InferenceUsage, nodespace_nlp_engine::InferenceError> {
                 if let Some(m) = request.messages.first() {
                     *self.seen_prompt.lock().unwrap() = m.content.clone();
                 }
@@ -8849,14 +8851,14 @@ mod tests {
 
             async fn model_info(
                 &self,
-            ) -> Result<Option<ChatModelSpec>, crate::agent_types::InferenceError> {
+            ) -> Result<Option<ChatModelSpec>, nodespace_nlp_engine::InferenceError> {
                 Ok(None)
             }
 
             async fn token_count(
                 &self,
                 text: &str,
-            ) -> Result<u32, crate::agent_types::InferenceError> {
+            ) -> Result<u32, nodespace_nlp_engine::InferenceError> {
                 Ok((text.len() as f32 / 4.0).ceil() as u32)
             }
         }
@@ -9571,10 +9573,11 @@ mod tests {
             };
 
             let engine = tokio::task::spawn_blocking(move || {
-                crate::local_agent::inference::LlamaChatInferenceEngine::load(
+                nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine::load(
                     &model_path,
-                    crate::agent_types::ModelFamily::Gemma4,
+                    nodespace_nlp_engine::ModelFamily::Gemma4,
                     nodespace_nlp_engine::ChatConfig::default(),
+                    crate::local_agent::model_manager::expected_sha256_for_path(&model_path),
                 )
             })
             .await

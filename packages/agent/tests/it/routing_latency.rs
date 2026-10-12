@@ -18,13 +18,13 @@
 
 use async_trait::async_trait;
 use nodespace_agent::agent_types::{
-    AgentToolExecutor, ChatInferenceEngine, ModelFamily, SkillCandidate, SkillRetrieval,
-    ToolDefinition, ToolError, ToolResult,
+    AgentToolExecutor, SkillCandidate, SkillRetrieval, ToolError, ToolResult,
 };
 use nodespace_agent::local_agent::agent_loop::LocalAgentService;
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
 use nodespace_nlp_engine::ChatConfig;
+use nodespace_nlp_engine::{ChatInferenceEngine, ModelFamily, ToolDefinition};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
@@ -61,7 +61,12 @@ async fn resolve_backend() -> Option<(Arc<dyn ChatInferenceEngine>, String)> {
     }
     let path_str = path.to_string_lossy().to_string();
     let engine = tokio::task::spawn_blocking(move || {
-        LlamaChatInferenceEngine::load(&path_str, ModelFamily::Gemma4, ChatConfig::default())
+        LlamaChatInferenceEngine::load(
+            &path_str,
+            ModelFamily::Gemma4,
+            ChatConfig::default(),
+            nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&path_str),
+        )
     })
     .await
     .ok()?

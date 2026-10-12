@@ -17,12 +17,10 @@
 //! cargo test -p nodespace-agent --test it live_openai_compat_smoke:: -- --ignored --nocapture
 //! ```
 
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, InferenceRequest, StreamingChunk, ToolDefinition,
-};
-use nodespace_agent::local_agent::openai_compat_discovery::discover_models;
-use nodespace_agent::local_agent::openai_compat_inference::OpenAiCompatInferenceEngine;
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
+use nodespace_nlp_engine::inference::openai_compat::OpenAiCompatInferenceEngine;
+use nodespace_nlp_engine::inference::openai_compat_discovery::discover_models;
+use nodespace_nlp_engine::{ChatInferenceEngine, InferenceRequest, StreamingChunk, ToolDefinition};
 use std::sync::{Arc, Mutex};
 
 const BASE_URL: &str = "http://127.0.0.1:11434/v1";

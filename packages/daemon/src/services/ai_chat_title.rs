@@ -43,11 +43,11 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk,
-};
 use nodespace_agent::local_agent::prompt_templates::title_generation_prompt;
 use nodespace_core::models::{AiChatMessageRole, AiChatNativeNode, NodeUpdate};
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk,
+};
 
 use crate::services::chat_messages::StoredMessage;
 use nodespace_core::services::{NodeService, NodeServiceError};
@@ -446,32 +446,28 @@ mod tests {
             &self,
             request: InferenceRequest,
             on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
-        ) -> Result<
-            nodespace_agent::agent_types::InferenceUsage,
-            nodespace_agent::agent_types::InferenceError,
-        > {
+        ) -> Result<nodespace_nlp_engine::InferenceUsage, nodespace_nlp_engine::InferenceError>
+        {
             let budget = request.max_tokens.unwrap_or(u32::MAX);
             if budget > self.reasoning_tokens {
                 on_chunk(StreamingChunk::Token {
                     text: "Tasks assigned to Anoop".to_string(),
                 });
             }
-            Ok(nodespace_agent::agent_types::InferenceUsage::default())
+            Ok(nodespace_nlp_engine::InferenceUsage::default())
         }
 
         async fn model_info(
             &self,
-        ) -> Result<
-            Option<nodespace_agent::agent_types::ChatModelSpec>,
-            nodespace_agent::agent_types::InferenceError,
-        > {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, nodespace_nlp_engine::InferenceError>
+        {
             Ok(None)
         }
 
         async fn token_count(
             &self,
             _text: &str,
-        ) -> Result<u32, nodespace_agent::agent_types::InferenceError> {
+        ) -> Result<u32, nodespace_nlp_engine::InferenceError> {
             Ok(0)
         }
     }

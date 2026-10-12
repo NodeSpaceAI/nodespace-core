@@ -21,11 +21,11 @@ use std::sync::{Arc, Mutex};
 
 use nodespace_nlp_engine::chat::{ChatConfig, ChatMessage, Role, ToolCallRaw};
 
-use crate::agent_types::{
+use crate::local_agent::agent_loop::repair_tool_call_arguments;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::{
     ChatInferenceEngine, InferenceRequest, ModelFamily, StreamingChunk, ToolDefinition,
 };
-use crate::local_agent::agent_loop::repair_tool_call_arguments;
-use crate::local_agent::inference::LlamaChatInferenceEngine;
 
 use super::case::{CaseError, GoldenCase, DEFAULT_TOOL_RESULT};
 
@@ -47,8 +47,13 @@ pub fn load_engine(model_path: &Path) -> Result<LlamaChatInferenceEngine, CaseEr
         ..Default::default()
     };
     let path = model_path.to_string_lossy().to_string();
-    LlamaChatInferenceEngine::load(&path, ModelFamily::Gemma4, config)
-        .map_err(|e| CaseError::Io(format!("could not load model at {path}: {e}")))
+    LlamaChatInferenceEngine::load(
+        &path,
+        ModelFamily::Gemma4,
+        config,
+        crate::local_agent::model_manager::expected_sha256_for_path(&path),
+    )
+    .map_err(|e| CaseError::Io(format!("could not load model at {path}: {e}")))
 }
 
 /// A tool call as observed from a turn, after production's argument repairs.
@@ -304,7 +309,7 @@ fn parse_output(chunks: &[StreamingChunk]) -> TurnOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_types::InferenceUsage;
+    use nodespace_nlp_engine::InferenceUsage;
 
     fn tool_start(id: &str, name: &str) -> StreamingChunk {
         StreamingChunk::ToolCallStart {

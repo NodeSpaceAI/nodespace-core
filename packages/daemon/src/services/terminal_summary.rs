@@ -51,11 +51,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk,
-};
 use nodespace_agent::local_agent::prompt_templates::session_summary_prompt;
 use nodespace_agent::pty::plain_text::strip_terminal_sequences;
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk,
+};
 
 use crate::services::capture_service::SessionSummarizer;
 use crate::services::local_agent_service::SharedLocalAgent;
@@ -327,7 +327,7 @@ impl SessionSummarizer for LocalModelSummarizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nodespace_agent::agent_types::{ChatModelSpec, InferenceError, InferenceUsage};
+    use nodespace_nlp_engine::{ChatModelSpec, InferenceError, InferenceUsage};
     use std::sync::Mutex;
 
     /// An engine that replies with a fixed text and records the prompt it was

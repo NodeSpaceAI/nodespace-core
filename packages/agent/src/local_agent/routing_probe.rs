@@ -27,10 +27,11 @@
 //! arms pay, matching the shape of request `agent_loop::run_turn` actually
 //! sends — see [`probe_routing_ok`]'s doc comment.
 
-use crate::agent_types::{ChatInferenceEngine, InferenceRequest, SkillCandidate, StreamingChunk};
+use crate::agent_types::SkillCandidate;
 use crate::local_agent::agent_loop::{stage1_system_prompt, stage1_type_names, STAGE1_MAX_TOKENS};
 use crate::local_agent::routing;
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
+use nodespace_nlp_engine::{ChatInferenceEngine, InferenceRequest, StreamingChunk};
 use std::sync::{Arc, Mutex};
 
 /// The request the probe sends. Phrased so a correct response is unambiguous
@@ -47,8 +48,8 @@ const PROBE_SYSTEM_PROMPT: &str =
     "You are NodeSpace's assistant. Use the available tools to fulfil the user's request.";
 
 /// The one tool the probe offers, matching the live matrix test's `search_tool`.
-fn probe_tool() -> crate::agent_types::ToolDefinition {
-    crate::agent_types::ToolDefinition {
+fn probe_tool() -> nodespace_nlp_engine::ToolDefinition {
+    nodespace_nlp_engine::ToolDefinition {
         name: "search_nodes".to_string(),
         description: "Search the knowledge graph for nodes matching a query.".to_string(),
         parameters_schema: serde_json::json!({
@@ -102,7 +103,7 @@ fn probe_candidate() -> SkillCandidate {
 /// failed Stage 1, so the probe mirrors that rather than aborting.
 pub async fn probe_routing_ok(
     engine: &dyn ChatInferenceEngine,
-) -> Result<bool, crate::agent_types::InferenceError> {
+) -> Result<bool, nodespace_nlp_engine::InferenceError> {
     let stage1 = InferenceRequest {
         messages: vec![
             // Names the probe's one candidate, so the request has the same
@@ -163,8 +164,8 @@ pub async fn probe_routing_ok(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_types::{InferenceError, InferenceUsage};
     use async_trait::async_trait;
+    use nodespace_nlp_engine::{InferenceError, InferenceUsage};
 
     /// Engine stub that reports whichever tool calls the test configures,
     /// or errors, without a real model. Mirrors the shape of test doubles
@@ -197,7 +198,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<crate::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             Ok(None)
         }
 

@@ -15,9 +15,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_types::{
-    ChatModelSpec, DownloadEvent, ModelBackend, ModelError, ModelFamily, ModelInfo, ModelManager,
-    ModelStatus,
+use crate::agent_types::{DownloadEvent, ModelManager};
+use nodespace_nlp_engine::{
+    ChatModelSpec, ModelBackend, ModelError, ModelFamily, ModelInfo, ModelStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -826,6 +826,17 @@ pub fn expected_sha256_for_filename(filename: &str) -> Option<&'static str> {
         .map(|e| e.sha256)
 }
 
+/// The pinned SHA-256 for the catalog chat model at `model_path`, looked up by
+/// its file name. `None` for a path outside the catalog. This is the digest a
+/// caller hands `LlamaChatInferenceEngine::load`, so the load-time integrity
+/// gate cannot be skipped for a catalog model by passing the path alone.
+pub fn expected_sha256_for_path(model_path: &str) -> Option<&'static str> {
+    Path::new(model_path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .and_then(expected_sha256_for_filename)
+}
+
 /// Detect total system RAM in bytes using `sysinfo`.
 pub fn detect_system_ram() -> u64 {
     let mut sys = sysinfo::System::new();
@@ -1333,6 +1344,17 @@ mod tests {
             expected_sha256_for_filename("not-a-catalog-model.gguf"),
             None
         );
+    }
+
+    #[test]
+    fn expected_sha256_for_path_resolves_by_basename() {
+        let entry = CATALOG.iter().next().expect("catalog is non-empty");
+        // The digest is keyed on the file name, wherever the file sits: the
+        // load path hands the inference engine this value, so a catalog model
+        // never loads without its integrity gate.
+        let in_models_dir = format!("/home/u/.nodespace/models/{}", entry.filename);
+        assert_eq!(expected_sha256_for_path(&in_models_dir), Some(entry.sha256));
+        assert_eq!(expected_sha256_for_path("/tmp/custom-model.gguf"), None);
     }
 
     #[test]
