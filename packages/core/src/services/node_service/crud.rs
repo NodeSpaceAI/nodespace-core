@@ -748,11 +748,8 @@ impl NodeService {
         }
 
         if schema_definition {
-            self.ensure_creatable_schema_definition(
-                &node,
-                &mut std::collections::HashSet::new(),
-            )
-            .await?;
+            self.ensure_creatable_schema_definition(&node, &mut std::collections::HashSet::new())
+                .await?;
         } else {
             self.ensure_creatable(&node).await?;
         }

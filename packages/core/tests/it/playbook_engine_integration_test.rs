@@ -30,6 +30,7 @@ use anyhow::Result;
 use nodespace_core::db::{SqliteStore, WriteContext};
 use nodespace_core::models::Node;
 use nodespace_core::playbook::types::PlayStatus;
+use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::NodeService;
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
@@ -50,23 +51,20 @@ async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
 /// Create a minimal schema node for a user-defined node type, with the given
 /// fields (each `{"name": ..., "type": ...}`). No relationships.
 async fn create_schema(
-    service: &NodeService,
+    service: &Arc<NodeService>,
     node_type: &str,
     fields: serde_json::Value,
 ) -> Result<()> {
-    let schema = Node::new_with_id(
-        node_type.to_string(),
-        "schema".to_string(),
-        node_type.to_string(),
+    handle_create_schema(
+        service,
         json!({
-            "isCore": false,
-            "schemaVersion": 1,
+            "name": node_type,
             "description": format!("{node_type} schema"),
             "fields": fields,
-            "relationships": []
         }),
-    );
-    service.create_node(schema).await?;
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
 }
 
@@ -76,24 +74,21 @@ async fn create_schema(
 /// table rows), matching production storage and mirroring the pattern
 /// `graph_resolver.rs`'s own integration tests already use.
 async fn create_schema_with_relationships(
-    service: &NodeService,
+    service: &Arc<NodeService>,
     node_type: &str,
     fields: serde_json::Value,
     relationships: serde_json::Value,
 ) -> Result<()> {
-    let schema = Node::new_with_id(
-        node_type.to_string(),
-        "schema".to_string(),
-        node_type.to_string(),
+    handle_create_schema(
+        service,
         json!({
-            "isCore": false,
-            "schemaVersion": 1,
+            "name": node_type,
             "description": format!("{node_type} schema"),
             "fields": fields,
-            "relationships": []
         }),
-    );
-    service.create_node(schema).await?;
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
     let declarations: Vec<nodespace_core::models::schema::SchemaRelationship> =
         serde_json::from_value(relationships)?;

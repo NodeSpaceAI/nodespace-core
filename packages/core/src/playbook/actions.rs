@@ -5077,20 +5077,16 @@ mod tests {
             }
         }
 
-        async fn declare_schema(svc: &NodeService, node_type: &str, relationships: Value) {
-            let schema = Node::new_with_id(
-                node_type.to_string(),
-                "schema".to_string(),
-                node_type.to_string(),
+        async fn declare_schema(svc: &Arc<NodeService>, node_type: &str, relationships: Value) {
+            crate::schema::handle_create_schema(
+                svc,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": format!("{node_type} schema"),
-                    "fields": [{"name": "estimate", "type": "number"}],
-                    "relationships": []
+                    "name": node_type,
+                    "fields": [{"name": "estimate", "type": "number"}]
                 }),
-            );
-            svc.create_node(schema).await.unwrap();
+            )
+            .await
+            .unwrap();
 
             let declarations: Vec<crate::models::schema::SchemaRelationship> =
                 serde_json::from_value(relationships).unwrap();
@@ -5521,18 +5517,15 @@ mod tests {
                     }]),
                 ),
             ] {
-                let schema = Node::new_with_id(
-                    type_name.to_string(),
-                    "schema".to_string(),
-                    type_name.to_string(),
+                crate::schema::handle_create_schema(
+                    &svc,
                     json!({
-                        "isCore": false,
-                        "schemaVersion": 1,
-                        "description": format!("{type_name} schema"),
+                        "name": type_name,
                         "fields": [{"name": "email", "type": "text"}]
                     }),
-                );
-                svc.create_node(schema).await.unwrap();
+                )
+                .await
+                .unwrap();
                 let declarations: Vec<crate::models::schema::SchemaRelationship> =
                     serde_json::from_value(rels).unwrap();
                 if !declarations.is_empty() {

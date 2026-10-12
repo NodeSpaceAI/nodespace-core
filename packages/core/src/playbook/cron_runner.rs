@@ -530,19 +530,15 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             // Create schema for the node type
-            let schema = Node::new_with_id(
-                "cr-task".to_string(),
-                "schema".to_string(),
-                "cr-task".to_string(),
+            crate::schema::handle_create_schema(
+                &svc,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": "cr-task schema",
-                    "fields": [{"name": "status", "type": "text"}],
-                    "relationships": []
+                    "name": "cr-task",
+                    "fields": [{"name": "status", "type": "text"}]
                 }),
-            );
-            svc.create_node(schema).await.unwrap();
+            )
+            .await
+            .unwrap();
 
             // Create active nodes of type "cr-task"
             let node1 = Node::new_with_id(
@@ -598,19 +594,15 @@ mod tests {
         async fn check_and_enqueue_skips_an_archived_node() {
             let (svc, _tmp) = create_test_service().await;
 
-            let schema = Node::new_with_id(
-                "cr-task-archived".to_string(),
-                "schema".to_string(),
-                "cr-task-archived".to_string(),
+            crate::schema::handle_create_schema(
+                &svc,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": "cr-task-archived schema",
-                    "fields": [{"name": "status", "type": "text"}],
-                    "relationships": []
+                    "name": "cr-task-archived",
+                    "fields": [{"name": "status", "type": "text"}]
                 }),
-            );
-            svc.create_node(schema).await.unwrap();
+            )
+            .await
+            .unwrap();
 
             let live = Node::new(
                 "cr-task-archived".to_string(),
@@ -747,19 +739,15 @@ mod tests {
         async fn check_and_enqueue_recovers_from_poisoned_lock() {
             let (svc, _tmp) = create_test_service().await;
 
-            let schema = Node::new_with_id(
-                "cr-task-poison".to_string(),
-                "schema".to_string(),
-                "cr-task-poison".to_string(),
+            crate::schema::handle_create_schema(
+                &svc,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": "cr-task-poison schema",
-                    "fields": [{"name": "status", "type": "text"}],
-                    "relationships": []
+                    "name": "cr-task-poison",
+                    "fields": [{"name": "status", "type": "text"}]
                 }),
-            );
-            svc.create_node(schema).await.unwrap();
+            )
+            .await
+            .unwrap();
 
             let node = Node::new_with_id(
                 "348bc89e-0178-526d-a678-50d1e84f2813".to_string(),
