@@ -1642,15 +1642,11 @@ async fn an_issue_moves_through_review_by_its_findings() {
         )
         .await;
     assert_eq!(back["items"][0]["id"], issue, "{back}");
-    // It carries the addressing procedure. It also carries the implementing
-    // one: "In progress" is written against `task`, where `changes_requested`
-    // reads as the `in_progress` it maps to, so the issue is still listed
-    // there. The implementing procedure hands over to the addressing one.
-    let mut names = skill_names(&back);
-    names.sort();
-    assert_eq!(names, [ADDRESSING, IMPLEMENTING], "{back}");
+    // It carries the addressing procedure alone: "In progress" compares the
+    // stored status, so a sent-back issue is not in it.
+    assert_eq!(skill_names(&back), [ADDRESSING], "{back}");
     let in_progress = h.ok("run_query", json!({ "query": "In progress" })).await;
-    assert_eq!(in_progress["nodes"][0]["id"], issue, "{in_progress}");
+    assert_eq!(in_progress["count"], 0, "{in_progress}");
     for queue in ["Awaiting review", "Ready to merge"] {
         let run = h.ok("run_query", json!({ "query": queue })).await;
         assert_eq!(run["count"], 0, "{queue}: {run}");

@@ -489,14 +489,12 @@ async fn a_task_query_reads_an_issue_status_as_the_one_it_maps_to() -> Result<()
     assert_eq!(issue_row.properties["task"]["status"], "in_progress");
     assert!(issue_row.properties.get("issue").is_none());
 
-    // "In progress" is written against `task`, so it lists an issue by what
-    // its status reads as there. The three queues that follow an issue
+    // "In progress" is written against `task`, where `changes_requested`
+    // reads as `in_progress`, and compares the stored value so the issue is
+    // left to "Changes requested". The three queues that follow an issue
     // through review are written against `issue`, so each lists it by the
     // status it stores.
-    assert_eq!(
-        saved_query(&h, IN_PROGRESS_QUERY_ID).await,
-        [task, changes.clone()]
-    );
+    assert_eq!(saved_query(&h, IN_PROGRESS_QUERY_ID).await, [task]);
     assert_eq!(saved_query(&h, AWAITING_REVIEW_QUERY_ID).await, [reviewing]);
     assert_eq!(saved_query(&h, CHANGES_REQUESTED_QUERY_ID).await, [changes]);
     assert_eq!(saved_query(&h, READY_TO_MERGE_QUERY_ID).await, [ready]);

@@ -121,6 +121,35 @@ fn in_status(id: &str, title: &str, target_type: CoreNodeType, status: &str) -> 
     )
 }
 
+/// "In progress": the tasks that are being worked, and not the issues that
+/// were sent back from review.
+///
+/// Written against `task`, so a plain task and an issue are both listed, and
+/// the status reads as the core status it maps to. That reads an issue's
+/// `changes_requested` as `in_progress`, and the issue belongs to "Changes
+/// requested" alone. The second filter compares the stored value (`stored`),
+/// the one condition that tells the two apart at this scope, and a negated
+/// filter keeps every row it does not hold for, plain tasks included.
+fn in_progress_query() -> NodeTemplate {
+    let mut template = in_status(
+        IN_PROGRESS_QUERY_ID,
+        "In progress",
+        CoreNodeType::Task,
+        "in_progress",
+    );
+    if let Some(filters) = template
+        .root_properties
+        .get_mut("filters")
+        .and_then(Value::as_array_mut)
+    {
+        filters.push(json!({
+            "type": "property", "operator": "equals", "property": "status",
+            "value": "changes_requested", "stored": true, "negate": true
+        }));
+    }
+    template
+}
+
 /// Most urgent first, then oldest first. `priority` ascending is urgency
 /// order, not alphabetical, and a task with no priority sorts ahead of the
 /// scale (`Priority::ABSENT_RANK`).
@@ -250,12 +279,7 @@ pub fn core_query_templates() -> Vec<NodeTemplate> {
                 "sorting": by_priority_then_age(),
             }),
         ),
-        in_status(
-            IN_PROGRESS_QUERY_ID,
-            "In progress",
-            CoreNodeType::Task,
-            "in_progress",
-        ),
+        in_progress_query(),
         in_status(
             AWAITING_REVIEW_QUERY_ID,
             "Awaiting review",

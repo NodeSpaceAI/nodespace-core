@@ -243,23 +243,25 @@ async fn a_task_moves_from_queue_to_queue_with_its_status() -> Result<()> {
     Ok(())
 }
 
-/// An issue is in exactly the review queue of the status it stores: the
-/// three queues that follow it through review are written against `issue`,
-/// where `ready_to_merge` is not `in_review`. "In progress" is written against
-/// `task`, so it reads `changes_requested` as the `in_progress` it maps to.
+/// An issue is in exactly the queue of the status it stores: the three queues
+/// that follow it through review are written against `issue`, where
+/// `ready_to_merge` is not `in_review`. "In progress" is written against
+/// `task`, where `changes_requested` reads as `in_progress`, and compares the
+/// stored value to leave the issue to "Changes requested" alone.
 #[tokio::test]
 async fn an_issue_is_in_the_review_queue_of_the_status_it_stores() -> Result<()> {
     let (service, _tmp) = test_service().await?;
     let issue = create(&service, "issue", "the issue", json!({})).await;
     create_child(&service, &issue, "checkbox", "- [x] It works").await;
     let queues = [
+        IN_PROGRESS_QUERY_ID,
         AWAITING_REVIEW_QUERY_ID,
         CHANGES_REQUESTED_QUERY_ID,
         READY_TO_MERGE_QUERY_ID,
     ];
 
     for (status, queue) in [
-        ("in_progress", None),
+        ("in_progress", Some(IN_PROGRESS_QUERY_ID)),
         ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
         ("changes_requested", Some(CHANGES_REQUESTED_QUERY_ID)),
         ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
