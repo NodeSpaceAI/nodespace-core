@@ -35,6 +35,7 @@
   import ListView from '$lib/components/query/list-view.svelte';
   import KanbanView from '$lib/components/query/kanban-view.svelte';
   import HeaderInput from '$lib/design/components/header-input.svelte';
+  import BoundChatButton from '$lib/components/chat/bound-chat-button.svelte';
   import { eligibleGroupByFields } from '$lib/components/query/kanban-grouping';
   import {
     loadDefaultViewPrefs,
@@ -122,6 +123,9 @@
   let saveError = $state<string | null>(null);
   /** Error message shown to user when creating a new instance fails */
   let createError = $state<string | null>(null);
+  // Why the last Ask opened no chat. View state, not query state: the chat is
+  // bound to this query and opens beside it (ADR-100 §1).
+  let askError = $state('');
   /** True while a new-instance create is in flight (disables the button) */
   let isCreating = $state(false);
   /** Guards against a second materialize firing before the tab re-routes. */
@@ -657,6 +661,9 @@
         >Kanban</button>
       </span>
     </nav>
+    {#if mode === 'saved'}
+      <BoundChatButton class="query-ask" {nodeId} label="Ask" bind:error={askError} />
+    {/if}
     {#if schemaNode && queryState === 'success'}
       <button
         class="new-instance-button"
@@ -665,6 +672,10 @@
       >+ New</button>
     {/if}
   </header>
+
+  {#if askError}
+    <p class="create-error" role="alert">Couldn't open a chat about this view: {askError}</p>
+  {/if}
 
   {#if createError}
     <p class="create-error" role="alert">{createError}</p>

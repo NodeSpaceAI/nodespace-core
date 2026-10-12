@@ -3061,10 +3061,10 @@ impl NodeService {
         crate::services::QueryDefinition::from_fields(&fields)
             .validate_identifiers()
             .map_err(|e| NodeServiceError::invalid_update(e.to_string()))?;
-        crate::ops::query_ops::resolve_filters(self, &fields.target_type, fields.filters)
+        crate::ops::query_ops::resolve_saved_filters(self, &fields.target_type, fields.filters)
             .await
             .map_err(to_service_error)?;
-        crate::ops::query_ops::resolve_sorting(
+        crate::ops::query_ops::resolve_saved_sorting(
             self,
             &fields.target_type,
             fields.sorting.unwrap_or_default(),

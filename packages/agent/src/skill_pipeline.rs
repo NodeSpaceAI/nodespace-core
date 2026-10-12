@@ -62,6 +62,10 @@ pub const CREATING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c17
 /// on you" queue.
 pub const ANSWERING_A_QUESTION_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c18";
 
+/// The Building and Changing a View skill's fixed id. A chat opened on a saved
+/// query pins it (ADR-100 §6).
+pub const QUERY_BUILDING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c19";
+
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
 pub struct SkillSeed {
@@ -701,6 +705,28 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         attached_to: &[],
         role: SkillRole::Tool,
         body: include_str!("seeds/skills/play-authoring.md"),
+    },
+    SkillSeed {
+        // Building and Changing a View (ADR-100 §6)
+        //
+        // The skill a chat bound to a saved query pins. It explains a view,
+        // answers what it can be filtered and sorted on from the graph, and
+        // changes it after saying what will change. The description names
+        // changing a view, so a request to find nodes still goes to search.
+        id: QUERY_BUILDING_SKILL_ID,
+        title: "Building and Changing a View",
+        use_for: "Explain a saved view or saved query: what it lists, what its filters and sorting are, and why a node is in it. Change the saved view's filters, sorting, row limit or board layout.",
+        tools: &["get_node", "search_nodes", "update_node", "run_query", "route_clarify"],
+        // Read the view, read the type, and a write with two repairs.
+        max_iterations: 5,
+        not_for: None,
+        applies_to: &[],
+        attached_to: &[],
+        // The procedure lane: a chat bound to a query pins it, so retrieval
+        // is not how it is reached, and in the tool lane its place in the
+        // window cost other skills theirs on requests that name no view.
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/building-a-view.md"),
     },
     SkillSeed {
         // Bulk Import
@@ -1542,7 +1568,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 24, "Should have 24 seed skills");
+        assert_eq!(seeds.len(), 25, "Should have 25 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());
