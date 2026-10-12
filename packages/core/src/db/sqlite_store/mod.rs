@@ -1,3 +1,4 @@
+use crate::db::events::WriteContext;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate, OrderBy};
 use anyhow::{Context, Result};
@@ -307,6 +308,9 @@ pub struct StoreChange {
     pub source: Option<String>,
     pub previous_node: Option<Node>,
     pub playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
+    /// The write context of the writer that made the change, carried onto
+    /// the event the notifier builds from it.
+    pub write_context: WriteContext,
 }
 
 pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
@@ -1984,7 +1988,9 @@ mod tests {
         }
         ids.push("never-existed".to_string());
 
-        let deleted = store.bulk_delete(&ids, None).await?;
+        let deleted = store
+            .bulk_delete(&ids, None, crate::db::WriteContext::default())
+            .await?;
         assert_eq!(
             deleted.len(),
             3,
@@ -2033,7 +2039,9 @@ mod tests {
             .collect();
         store.write().await.execute(&sql, params).await?;
 
-        let deleted = store.bulk_delete(&ids, None).await?;
+        let deleted = store
+            .bulk_delete(&ids, None, crate::db::WriteContext::default())
+            .await?;
         assert_eq!(deleted.len(), 1_000, "every seeded node reported deleted");
 
         for id in &ids {
@@ -3443,6 +3451,7 @@ mod tests {
                             ..Default::default()
                         },
                         None,
+                        crate::db::WriteContext::default(),
                     )
                     .await
             })

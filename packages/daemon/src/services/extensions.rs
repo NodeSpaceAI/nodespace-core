@@ -25,6 +25,7 @@ use nodespace_core::extensions::{
 #[derive(Clone, Debug, Default)]
 pub struct DaemonExtensions {
     supported_extensions: Vec<String>,
+    reserved_client_ids: Vec<String>,
     data: DataExtensions,
 }
 
@@ -54,6 +55,32 @@ impl DaemonExtensions {
     /// declared. A database that lists any other id is refused when opened.
     pub fn supported_extensions(&self) -> &[String] {
         &self.supported_extensions
+    }
+
+    /// Reserves `id` for the build's own in-process writers: a request to the
+    /// daemon's node API that presents it as its `x-ns-client-id` is refused
+    /// with `PERMISSION_DENIED`, so no client can tag its writes as theirs.
+    /// A writer in the same process tags its writes with the id through
+    /// `NodeService::with_client`, and a consumer such as
+    /// `NodeService::set_excluded_event_origin` can then rely on every event
+    /// carrying it being that writer's. Core reserves none.
+    ///
+    /// The id must be non-empty visible ASCII, the only form the header can
+    /// carry; any other id is rejected when the daemon starts (see
+    /// [`DaemonExtensionsError`]). Reserving an id twice is the same as
+    /// reserving it once.
+    pub fn reserved_client_id(mut self, id: impl Into<String>) -> Self {
+        let id = id.into();
+        if !self.reserved_client_ids.contains(&id) {
+            self.reserved_client_ids.push(id);
+        }
+        self
+    }
+
+    /// The client ids this daemon refuses from a request, in the order they
+    /// were reserved. Empty for core's own daemon.
+    pub fn reserved_client_ids(&self) -> &[String] {
+        &self.reserved_client_ids
     }
 
     /// Adds the behaviour of an `extends` subtype of a core type (ADR-082
@@ -95,8 +122,25 @@ impl DaemonExtensions {
         {
             return Err(DaemonExtensionsError::InvalidExtensionId(id.clone()));
         }
+        if let Some(id) = self
+            .reserved_client_ids
+            .iter()
+            .find(|id| !is_header_client_id(id))
+        {
+            return Err(DaemonExtensionsError::InvalidReservedClientId(id.clone()));
+        }
         self.data.check().map_err(DaemonExtensionsError::Data)
     }
+}
+
+/// Whether `id` is a value the `x-ns-client-id` header can carry, and so one
+/// a request could present: non-empty, and visible ASCII or spaces, with no
+/// leading or trailing space.
+fn is_header_client_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.bytes().all(|b| b == b' ' || b.is_ascii_graphic())
+        && !id.starts_with(' ')
+        && !id.ends_with(' ')
 }
 
 /// Why the daemon refused a [`DaemonExtensions`] at startup.
@@ -109,6 +153,9 @@ pub enum DaemonExtensionsError {
     /// A declared extension id does not have the form
     /// [`DaemonExtensions::supported_extension`] requires.
     InvalidExtensionId(String),
+    /// A reserved client id is not a value the `x-ns-client-id` header can
+    /// carry (see [`DaemonExtensions::reserved_client_id`]).
+    InvalidReservedClientId(String),
     /// A behaviour or an edge-field declaration was refused (see
     /// [`DataExtensions::check`]).
     Data(DataExtensionsError),
@@ -122,6 +169,10 @@ impl std::fmt::Display for DaemonExtensionsError {
                 "'{id}' is not a valid extension id: use a lowercase letter followed by \
                  lowercase letters, digits, '-' or '_'"
             ),
+            Self::InvalidReservedClientId(id) => write!(
+                f,
+                "'{id}' cannot be reserved as a client id: use non-empty visible ASCII"
+            ),
             Self::Data(err) => write!(f, "{err}"),
         }
     }
@@ -130,7 +181,7 @@ impl std::fmt::Display for DaemonExtensionsError {
 impl std::error::Error for DaemonExtensionsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::InvalidExtensionId(_) => None,
+            Self::InvalidExtensionId(_) | Self::InvalidReservedClientId(_) => None,
             Self::Data(err) => err.source(),
         }
     }
@@ -170,6 +221,43 @@ mod tests {
                 .check(),
             Err(DaemonExtensionsError::InvalidExtensionId("Bad".to_string()))
         );
+    }
+
+    #[test]
+    fn reserving_a_client_id_twice_reserves_it_once() {
+        assert!(DaemonExtensions::none().reserved_client_ids().is_empty());
+        assert_eq!(
+            DaemonExtensions::none()
+                .reserved_client_id("apply")
+                .reserved_client_id("other")
+                .reserved_client_id("apply")
+                .reserved_client_ids(),
+            ["apply", "other"]
+        );
+    }
+
+    #[test]
+    fn check_rejects_the_first_reserved_client_id_a_header_cannot_carry() {
+        assert_eq!(
+            DaemonExtensions::none()
+                .reserved_client_id("apply-service")
+                .reserved_client_id("a b")
+                .check(),
+            Ok(())
+        );
+        for bad in ["", " lead", "trail ", "tab\there", "caf\u{e9}"] {
+            assert_eq!(
+                DaemonExtensions::none()
+                    .reserved_client_id("apply-service")
+                    .reserved_client_id(bad)
+                    .reserved_client_id("")
+                    .check(),
+                Err(DaemonExtensionsError::InvalidReservedClientId(
+                    bad.to_string()
+                )),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

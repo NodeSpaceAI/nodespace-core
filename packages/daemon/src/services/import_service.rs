@@ -948,7 +948,12 @@ impl Phase2Writer {
             let update = nodespace_core::NodeUpdate::new().with_content(content.clone());
             if let Err(e) = self
                 .store
-                .update_node(root_id, update, Some("import".to_string()))
+                .update_node(
+                    root_id,
+                    update,
+                    Some("import".to_string()),
+                    nodespace_core::WriteContext::default(),
+                )
                 .await
             {
                 tracing::warn!("Failed to refresh root {}: {}", root_id, e);
@@ -1014,7 +1019,12 @@ impl Phase2Writer {
         for root_id in &archived {
             if let Err(e) = self
                 .store
-                .update_node(root_id, archive_update(), Some("import".to_string()))
+                .update_node(
+                    root_id,
+                    archive_update(),
+                    Some("import".to_string()),
+                    nodespace_core::WriteContext::default(),
+                )
                 .await
             {
                 tracing::warn!("Failed to archive imported root {}: {}", root_id, e);
@@ -1484,7 +1494,12 @@ async fn import_markdown_content(
         }
         node_service
             .store()
-            .update_node(root_id, update, Some("import".to_string()))
+            .update_node(
+                root_id,
+                update,
+                Some("import".to_string()),
+                nodespace_core::WriteContext::default(),
+            )
             .await
             .map_err(|e| format!("Failed to refresh root node: {}", e))?;
         let descendants = node_service

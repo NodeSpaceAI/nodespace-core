@@ -12,8 +12,10 @@
 //!
 //! Covers:
 //! - A play fires end-to-end for a local mutation (trigger → condition → action).
-//! - An event tagged as sync-originated (the existing `source_client_id`
-//!   convention, ADR-027) does NOT reach trigger evaluation (ADR-073).
+//! - An event of a write whose write context skips playbook triggers
+//!   (`NodeService::with_write_context`) does NOT reach trigger evaluation
+//!   (ADR-073), and neither does one tagged with the superseded
+//!   `REPLICATED_APPLY_CLIENT_ID` until it is removed.
 //! - `CronRunner`'s 60-second poll loop is actually spawned by `start()` and
 //!   ticks on schedule.
 //!
@@ -26,7 +28,7 @@
 
 use anyhow::Result;
 use nodespace_core::db::events::REPLICATED_APPLY_CLIENT_ID;
-use nodespace_core::db::SqliteStore;
+use nodespace_core::db::{SqliteStore, WriteContext};
 use nodespace_core::models::Node;
 use nodespace_core::playbook::types::PlayStatus;
 use nodespace_core::services::NodeService;
@@ -292,20 +294,65 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
     Ok(())
 }
 
-/// Acceptance criterion: "An event tagged as sync-originated (via the
-/// existing `source_client_id` convention) verifiably does NOT reach trigger
-/// evaluation (integration test)."
+/// Derives the service a test applies writes through from the test's
+/// service.
+type ApplyWith = fn(&NodeService) -> NodeService;
+
+/// A writer applying data whose rules already ran elsewhere: both flags set.
+fn skipping_rules(service: &NodeService) -> NodeService {
+    service
+        .with_client("apply")
+        .with_write_context(WriteContext {
+            skip_playbook_triggers: true,
+            skip_invariant_rules: true,
+        })
+}
+
+/// A write context that skips playbook triggers and nothing else.
+fn skipping_triggers_only(service: &NodeService) -> NodeService {
+    service
+        .with_client("apply")
+        .with_write_context(WriteContext {
+            skip_playbook_triggers: true,
+            skip_invariant_rules: false,
+        })
+}
+
+/// The superseded client-id tag, which still reads as both flags set.
+/// Removed with `REPLICATED_APPLY_CLIENT_ID`.
+fn superseded_client_id(service: &NodeService) -> NodeService {
+    service.with_client(REPLICATED_APPLY_CLIENT_ID)
+}
+
+/// Acceptance criterion: "An event tagged as sync-originated verifiably does
+/// NOT reach trigger evaluation (integration test)."
 ///
-/// This is the safety-critical half of ADR-073: a node created through
-/// `NodeService::with_client(REPLICATED_APPLY_CLIENT_ID)` — the exact tagging
-/// convention ADR-027 already establishes for the local-first sync service —
-/// must be excluded from trigger evaluation before it ever reaches
-/// `TriggerKey` lookup. If the gate in
-/// `packages/core/src/playbook/engine.rs::is_replicated_apply` were absent or
-/// wrong, this node would be updated exactly like the local-mutation test
+/// This is the safety-critical half of ADR-073: a node created through a
+/// `NodeService` whose write context skips playbook triggers must be
+/// excluded from trigger evaluation before it ever reaches `TriggerKey`
+/// lookup. If the gate in `packages/core/src/playbook/engine.rs` were absent
+/// or wrong, this node would be updated exactly like the local-mutation test
 /// above.
 #[tokio::test]
+async fn write_skipping_playbook_triggers_does_not_reach_trigger_evaluation() -> Result<()> {
+    applied_create_does_not_reach_trigger_evaluation(skipping_rules).await
+}
+
+/// `skip_playbook_triggers` alone is enough to keep a write out of trigger
+/// evaluation.
+#[tokio::test]
+async fn skip_playbook_triggers_alone_keeps_a_write_out_of_trigger_evaluation() -> Result<()> {
+    applied_create_does_not_reach_trigger_evaluation(skipping_triggers_only).await
+}
+
+/// The superseded client-id tag is gated as before. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
 async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()> {
+    applied_create_does_not_reach_trigger_evaluation(superseded_client_id).await
+}
+
+async fn applied_create_does_not_reach_trigger_evaluation(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
 
     create_schema(
@@ -338,11 +385,9 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Simulate a sync-applied write: the exact tagging convention ADR-027
-    // establishes for the local-first sync service (`with_client`, read by
-    // `EventMetadata::source_client_id` on the resulting `NodeCreated`
-    // event). Condition would pass (status == "open") if evaluated at all.
-    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
+    // An applied write, made through `apply_with`'s service. Condition
+    // would pass (status == "open") if evaluated at all.
+    let sync_service = apply_with(&service);
     let synced_node = Node::new(
         "pb-sync-task".to_string(),
         "task applied via sync".to_string(),
@@ -409,10 +454,23 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
 /// This is exactly the "replay re-firing history" failure mode ADR-073
 /// exists to prevent, for any batch of replicated nodes applied at once.
 /// Covers the same shape as
-/// `sync_originated_event_does_not_reach_trigger_evaluation` above, but
-/// through `bulk_create` instead of `create_node`.
+/// `applied_create_does_not_reach_trigger_evaluation` above, but through
+/// `bulk_create` instead of `create_node`.
+#[tokio::test]
+async fn bulk_create_skipping_playbook_triggers_does_not_reach_trigger_evaluation() -> Result<()> {
+    applied_bulk_create_does_not_reach_trigger_evaluation(skipping_rules).await
+}
+
+/// The superseded client-id tag through `bulk_create`. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
 #[tokio::test]
 async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Result<()> {
+    applied_bulk_create_does_not_reach_trigger_evaluation(superseded_client_id).await
+}
+
+async fn applied_bulk_create_does_not_reach_trigger_evaluation(
+    apply_with: ApplyWith,
+) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
 
     create_schema(
@@ -445,9 +503,9 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // A replicated-apply-tagged NodeService writing a batch of rows through
+    // An applying NodeService writing a batch of rows through
     // `bulk_create`, not one `create_node` call per row.
-    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
+    let sync_service = apply_with(&service);
     let synced_node = Node::new(
         "pb-bulk-sync-task".to_string(),
         "task applied via sync bulk_create".to_string(),
@@ -492,8 +550,8 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
         .expect("sync-tagged bulk-created node must still exist (created, just not acted on)");
 
     // The sync-tagged bulk-created node must remain untouched — its
-    // NodeCreated event must carry source_client_id = Some(REPLICATED_APPLY_CLIENT_ID)
-    // (not None) and never reach trigger evaluation at all.
+    // NodeCreated event must carry the applying service's write context and
+    // client id (not the defaults) and never reach trigger evaluation at all.
     //
     // Unlike `create_node`, `NodeService::bulk_create` does not run node
     // properties through `normalize_flat_properties_to_namespace` before

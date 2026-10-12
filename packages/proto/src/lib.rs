@@ -79,6 +79,8 @@ pub const DATABASE_ENV_VAR: &str = "NODESPACE_DATABASE";
 /// `source_client_id = id`. `WatchNodes` reads the same header off the
 /// subscribing request and drops any event whose `source_client_id` matches —
 /// the daemon, not the frontend, is the authority on "is this my own echo".
+/// A daemon refuses a request presenting an id it reserves for its own
+/// in-process writers (`DaemonExtensions::reserved_client_id`).
 ///
 /// Absent → writes emit no `source_client_id` and are never suppressed on any
 /// stream (unchanged original behavior, preserved for any caller that omits

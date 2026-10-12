@@ -12,7 +12,7 @@
 //! - Phase 6: Cycle detection (max depth 10)
 //! - Phase 7: Save-time validation before play activation
 
-use crate::db::events::{chain_depth_of_write, DomainEvent, EventEnvelope};
+use crate::db::events::{chain_depth_of_write, DomainEvent, EventEnvelope, WriteContext};
 use crate::models::PlaySuspensionReason;
 use crate::playbook::lifecycle::{
     parse_play_rules, trigger_keys_for_event, PlaybookLifecycleManager,
@@ -90,8 +90,10 @@ impl PlaybookEngine {
         self: Arc<Self>,
         mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> anyhow::Result<()> {
-        // Step 1: Subscribe FIRST to avoid missing events between load and subscribe
-        let mut rx = self.node_service.subscribe_to_events();
+        // Step 1: Subscribe FIRST to avoid missing events between load and
+        // subscribe. The engine's channel carries each event with the write
+        // context of the write that emitted it.
+        let mut rx = self.node_service.subscribe_to_emitted_events();
         info!("Play engine subscribed to event channel");
 
         // Step 2-3: Load every play and index the runnable ones
@@ -120,8 +122,9 @@ impl PlaybookEngine {
             tokio::select! {
                 result = rx.recv() => {
                     match result {
-                        Ok(envelope) => {
-                            self.handle_event(envelope, &queue_tx).await;
+                        Ok(emitted) => {
+                            self.handle_event(emitted.envelope, emitted.write_context, &queue_tx)
+                                .await;
                         }
                         Err(broadcast::error::RecvError::Lagged(count)) => {
                             // A missed event may have been a play's own:
@@ -499,6 +502,7 @@ impl PlaybookEngine {
     async fn handle_event(
         &self,
         envelope: EventEnvelope,
+        write_context: WriteContext,
         queue_tx: &mpsc::Sender<ExecutionWorkItem>,
     ) {
         // A previous refresh failed and left the cache of unknown staleness.
@@ -580,35 +584,34 @@ impl PlaybookEngine {
         // Play lifecycle management above (install/uninstall/enable/disable,
         // schema-drift detection) is intentionally NOT gated — a Play node
         // authored on another device is data like any other and must still
-        // be installed locally once synced in. What IS gated is trigger
-        // evaluation against a mutation: an event whose origin is the
-        // replicated-apply path (tagged with `REPLICATED_APPLY_CLIENT_ID`, per
-        // ADR-027's existing `source_client_id` convention) is structurally
-        // excluded here, before any `TriggerKey` lookup, so a reconnecting
-        // device can never replay its sync backlog as live rule firings.
-        // Scheduled (cron) triggers are unaffected — `CronRunner` scans local
-        // graph state directly and never reaches this event-driven path.
-        //
-        // This does not make `RuleClass::Invariant` rules sync-safe: their
-        // fail-closed guarantee depends on ADR-060 §2/§7 mechanisms that are
-        // out of scope here. It only prevents reactive (and invariant) rules
-        // from firing against a sync-replayed event at all.
-        if is_replicated_apply(&envelope) {
+        // be installed locally once written here. What IS gated is trigger
+        // evaluation against a mutation, by the write context the write was
+        // made with (`WriteContext`, delivered beside the event and set only
+        // in-process through `NodeService::with_write_context`).
+        let write_context = write_context_of(&envelope, write_context);
+
+        // ADR-060 §7: repair-and-log, for a write whose invariant rules were
+        // skipped in its transaction because they already ran where the data
+        // was written. This IS the mechanism that keeps `RuleClass::Invariant`
+        // rules holding for such a node — architecturally separate from the
+        // reactive `ExecutionQueue` below (never enqueued there; run inline,
+        // here, against the already-committed node). Covers updates as well
+        // as creates: a `property_changed` invariant is violated just as
+        // permanently by an applied update as by an applied create.
+        if write_context.skip_invariant_rules {
+            self.dispatch_invariant_repair(&envelope.event).await;
+        }
+
+        // A write that skips playbook triggers is excluded here, before any
+        // `TriggerKey` lookup, so applying a backlog of changes made elsewhere
+        // never replays them as live rule firings. Scheduled (cron) triggers
+        // are unaffected — `CronRunner` scans local graph state directly and
+        // never reaches this event-driven path.
+        if write_context.skip_playbook_triggers {
             debug!(
                 node_event = ?trigger_node_id(&envelope.event),
-                "Skipping trigger evaluation for replicated-apply event"
+                "Skipping trigger evaluation for a write that skips playbook triggers"
             );
-            // ADR-060 §7: repair-and-log. This IS the mechanism that makes
-            // `RuleClass::Invariant` rules sync-safe for a node received
-            // already-committed via sync — architecturally separate from the
-            // reactive `ExecutionQueue` above (never enqueued there; run
-            // inline, here, against the already-committed node), and
-            // deliberately still reached even though trigger evaluation for
-            // reactive/invariant firing is skipped for this event. Covers
-            // received updates as well as creates: a `property_changed`
-            // invariant is violated just as permanently by a remote update
-            // as by a remote create.
-            self.dispatch_invariant_repair(&envelope.event).await;
             return;
         }
 
@@ -739,9 +742,11 @@ impl PlaybookEngine {
         }
     }
 
-    /// Repair-and-log for a node received via sync (ADR-060 §7).
+    /// Repair-and-log for a node written without its invariant rules
+    /// (`WriteContext::skip_invariant_rules`), such as one received from
+    /// another device (ADR-060 §7).
     ///
-    /// `event` is the event of a just-applied replicated write. Only
+    /// `event` is the event of that just-committed write. Only
     /// `NodeCreated` and `NodeUpdated` are repaired; any other event is a
     /// no-op. Rules are matched with `trigger_keys_for_event` — the same
     /// derivation the local pre-commit update path uses — so a received
@@ -761,8 +766,8 @@ impl PlaybookEngine {
     /// redundant at best.
     ///
     /// Loop safety. The repair write goes through `self.node_service`, not
-    /// the sync-tagged service, so its own `NodeUpdated` is local-origin and
-    /// can never re-enter this sync-only branch on this device. Across
+    /// the writer's service, so its own `NodeUpdated` carries the default
+    /// write context and can never re-enter this branch on this device. Across
     /// devices, a repair continues the chain only when the received write
     /// was itself a play write (`chain_depth_of_write`, read from the
     /// received event's own committed node and diff), and otherwise starts
@@ -1581,19 +1586,28 @@ pub(crate) async fn rule_processor_loop(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// ADR-073 local-origin gate: true when `envelope` is a replicated apply (a
-/// write applied from another device) rather than a mutation that originated
-/// on this device.
-///
-/// Deliberately a denylist (match the reserved replicated-apply origin), not
-/// an allowlist of known local client ids: local writes arrive tagged with many
-/// different client ids (Tauri windows, MCP clients, CLI sessions, or none at
-/// all), and enumerating them would be both impractical and the wrong
-/// direction to fail in — an unrecognized *local* id would be silently
-/// dropped instead of a genuinely replicated one slipping through. This
-/// mirrors the existing `passes_origin_filter` precedent in
-/// `services::node_service` (`excluded_event_origin`), which excludes by
-/// origin match for the same reason.
+/// The write context the ADR-073 gate and repair-and-log read for
+/// `envelope`: `write_context`, the one its write was made with, or both
+/// flags set for a write tagged with the superseded
+/// [`REPLICATED_APPLY_CLIENT_ID`](crate::db::events::REPLICATED_APPLY_CLIENT_ID)
+/// (see [`is_replicated_apply`]).
+pub(crate) fn write_context_of(
+    envelope: &EventEnvelope,
+    write_context: WriteContext,
+) -> WriteContext {
+    if is_replicated_apply(envelope) {
+        return WriteContext {
+            skip_playbook_triggers: true,
+            skip_invariant_rules: true,
+        };
+    }
+    write_context
+}
+
+/// Whether `envelope` is tagged with the superseded
+/// [`REPLICATED_APPLY_CLIENT_ID`](crate::db::events::REPLICATED_APPLY_CLIENT_ID),
+/// which [`write_context_of`] treats as a write context with both flags set.
+/// Removed with the constant in the next release.
 pub(crate) fn is_replicated_apply(envelope: &EventEnvelope) -> bool {
     envelope.metadata.source_client_id.as_deref()
         == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
@@ -2625,6 +2639,7 @@ mod ancestry_cache_tests {
                     node_id: "bug".to_string(),
                     node_type: "schema".to_string(),
                 }),
+                WriteContext::default(),
                 &queue_tx,
             )
             .await;
@@ -2686,6 +2701,7 @@ mod ancestry_cache_tests {
                     id: "standalone".to_string(),
                     node_type: "schema".to_string(),
                 }),
+                WriteContext::default(),
                 &queue_tx,
             )
             .await;
@@ -2807,6 +2823,7 @@ mod ancestry_cache_tests {
                     node_id: "some-task".to_string(),
                     node_type: "task".to_string(),
                 }),
+                WriteContext::default(),
                 &queue_tx,
             )
             .await;

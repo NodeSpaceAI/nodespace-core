@@ -121,7 +121,7 @@ pub(crate) const MAX_BATCH_SIZE: usize = 100;
 /// write tagging (ADR-026 C5 extension) via the `x-ns-client-id` header.
 /// **Adding a new streaming (subscribe-style) handler**: if it should also
 /// suppress the subscriber's own writes, read `x-ns-client-id` via the
-/// standalone `client_id_header()` helper *before* calling `route()` — see
+/// `client_id_header()` method *before* calling `route()` — see
 /// `watch_nodes` for the reference implementation. Do not rely on `route()`
 /// alone for a subscribing handler: `route()`'s use of the header scopes
 /// *writes*, which a read-only streaming handler never performs.
@@ -152,6 +152,10 @@ pub struct NodeServiceImpl {
     /// The extension ids this daemon supports, reported by `GetDaemonVersion`
     /// for the app's product check. Empty for core's own daemon.
     supported_extensions: Vec<String>,
+    /// Client ids a request may not present as its `x-ns-client-id`
+    /// ([`crate::DaemonExtensions::reserved_client_id`]). Empty for core's
+    /// own daemon.
+    reserved_client_ids: Arc<[String]>,
     /// This database's Play engine lifecycle manager (`TriggerIndex`,
     /// `CronRegistry`, active plays) — shared with the running
     /// `PlaybookEngine` instance, not a separate copy. `None` only in tests
@@ -174,6 +178,7 @@ impl NodeServiceImpl {
             scheduler,
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             supported_extensions: Vec::new(),
+            reserved_client_ids: Arc::from([]),
             playbook_lifecycle: None,
         }
     }
@@ -183,6 +188,14 @@ impl NodeServiceImpl {
     /// [`crate::DaemonExtensions`]; an impl built any other way reports none.
     pub fn with_supported_extensions(mut self, supported_extensions: Vec<String>) -> Self {
         self.supported_extensions = supported_extensions;
+        self
+    }
+
+    /// Set the client ids a request may not present as its `x-ns-client-id`.
+    /// Set by [`crate::build_database_services`] from the daemon's
+    /// [`crate::DaemonExtensions`]; an impl built any other way refuses none.
+    pub fn with_reserved_client_ids(mut self, reserved_client_ids: Vec<String>) -> Self {
+        self.reserved_client_ids = reserved_client_ids.into();
         self
     }
 
@@ -238,35 +251,45 @@ impl NodeServiceImpl {
     /// with that id as `source_client_id` — the signal `watch_nodes` uses to
     /// drop the writer's own echo. Applied here, once, so every RPC handler
     /// (which all start with `let this = self.route(&request).await?`) picks
-    /// it up without individually touching the client-id header.
+    /// it up without individually touching the client-id header. The id is
+    /// only a label: it never sets the service's write context, and a
+    /// reserved id is refused (see [`Self::client_id_header`]).
     async fn route<T>(&self, request: &Request<T>) -> Result<NodeServiceImpl, Status> {
+        let client_id = self.client_id_header(request).map_err(|e| *e)?;
         let mut this =
             crate::db_routing::route_or_self(self, request, |s| &s.node_service_grpc).await?;
-        if let Some(client_id) = client_id_header(request).map_err(|e| *e)? {
+        if let Some(client_id) = client_id {
             this.node_service = Arc::new(this.node_service.with_client(client_id));
         }
         Ok(this)
     }
-}
 
-/// Read the `x-ns-client-id` header off a request, if present. Absent →
-/// `Ok(None)`, meaning the caller's writes emit no `source_client_id` and are
-/// never suppressed on any `WatchNodes` stream — behavior identical to before
-/// this header existed. `Status` is boxed on the error path so this small
-/// `Option<String>` success type doesn't blow up `Result`'s stack size next
-/// to it (`clippy::result_large_err`).
-fn client_id_header<T>(request: &Request<T>) -> Result<Option<String>, Box<Status>> {
-    request
-        .metadata()
-        .get(nodespace_proto::CLIENT_ID_HEADER)
-        .map(|v| {
-            v.to_str().map(str::to_owned).map_err(|_| {
-                Box::new(Status::invalid_argument(
-                    "x-ns-client-id must be valid ASCII",
-                ))
-            })
-        })
-        .transpose()
+    /// Read the `x-ns-client-id` header off a request, if present. Absent →
+    /// `Ok(None)`, meaning the caller's writes emit no `source_client_id` and
+    /// are never suppressed on any `WatchNodes` stream — behavior identical to
+    /// before this header existed. The only place the daemon takes a client
+    /// id from a request: a value that is not valid ASCII is
+    /// `INVALID_ARGUMENT`, and one this daemon reserves for its own writers
+    /// ([`crate::DaemonExtensions::reserved_client_id`]) is
+    /// `PERMISSION_DENIED`. `Status` is boxed on the error path so this small
+    /// `Option<String>` success type doesn't blow up `Result`'s stack size
+    /// next to it (`clippy::result_large_err`).
+    fn client_id_header<T>(&self, request: &Request<T>) -> Result<Option<String>, Box<Status>> {
+        let Some(value) = request.metadata().get(nodespace_proto::CLIENT_ID_HEADER) else {
+            return Ok(None);
+        };
+        let client_id = value.to_str().map_err(|_| {
+            Box::new(Status::invalid_argument(
+                "x-ns-client-id must be valid ASCII",
+            ))
+        })?;
+        if self.reserved_client_ids.iter().any(|id| id == client_id) {
+            return Err(Box::new(Status::permission_denied(format!(
+                "x-ns-client-id '{client_id}' is reserved for this daemon's own writers"
+            ))));
+        }
+        Ok(Some(client_id.to_owned()))
+    }
 }
 
 /// RAII release of a `WatchNodes` stream's scheduler active-database claim
@@ -2962,7 +2985,7 @@ impl GrpcNodeService for NodeServiceImpl {
         // returned `node_service` — irrelevant here, since this handler never
         // writes. The subscriber's id is instead used below to filter its own
         // echoes out of the stream it is opening.
-        let subscriber_client_id = client_id_header(&request).map_err(|e| *e)?;
+        let subscriber_client_id = self.client_id_header(&request).map_err(|e| *e)?;
         let this = self.route(&request).await?;
 
         // A live edit stream marks this database active (ADR-053: per-database
@@ -3488,7 +3511,7 @@ fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::N
 /// user's version needs no template and is still possible.
 ///
 /// The error is boxed for `clippy::result_large_err`, as in
-/// [`client_id_header`].
+/// [`NodeServiceImpl::client_id_header`].
 fn prepared_seed_template(
     node_id: &str,
 ) -> Result<Vec<nodespace_core::markdown::PreparedNode>, Box<Status>> {
@@ -7480,6 +7503,144 @@ mod tests {
             next_event(&mut alice_stream).await.is_some(),
             "an untagged write must still reach a client-id-tagged subscriber"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Reserved client ids and the write context
+    // -----------------------------------------------------------------------
+
+    fn text_create(
+        content: &str,
+        client_id: Option<&str>,
+    ) -> Request<crate::nodespace::CreateNodeRequest> {
+        let mut request = Request::new(crate::nodespace::CreateNodeRequest {
+            id: None,
+            node_type: "text".into(),
+            content: content.into(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: "{}".into(),
+            position: None,
+        });
+        if let Some(id) = client_id {
+            request
+                .metadata_mut()
+                .insert(nodespace_proto::CLIENT_ID_HEADER, id.parse().unwrap());
+        }
+        request
+    }
+
+    /// A request presenting a client id the daemon reserves is refused with
+    /// `PERMISSION_DENIED`, on a write and on a watch, and writes nothing; a
+    /// request presenting any other id is served as before, its writes
+    /// tagged with that id.
+    #[tokio::test]
+    async fn a_reserved_client_id_is_refused_and_others_are_served() {
+        let (svc, _tmp) = make_service().await;
+        let svc = Arc::new(
+            Arc::try_unwrap(svc)
+                .unwrap_or_else(|_| panic!("the only handle"))
+                .with_reserved_client_ids(vec!["apply-writer".to_string()]),
+        );
+        let mut events = svc.node_service.subscribe_to_events();
+
+        let refused = svc
+            .create_node(text_create("refused", Some("apply-writer")))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::PermissionDenied, "{refused:?}");
+        assert!(
+            events.try_recv().is_err(),
+            "a refused request writes nothing"
+        );
+
+        let mut watch = Request::new(WatchRequest::default());
+        watch.metadata_mut().insert(
+            nodespace_proto::CLIENT_ID_HEADER,
+            "apply-writer".parse().unwrap(),
+        );
+        let refused = svc
+            .watch_nodes(watch)
+            .await
+            .err()
+            .expect("the watch is refused");
+        assert_eq!(refused.code(), tonic::Code::PermissionDenied, "{refused:?}");
+
+        for client_id in [Some("window-a"), Some("apply-writer-2"), None] {
+            svc.create_node(text_create("served", client_id))
+                .await
+                .unwrap_or_else(|e| panic!("{client_id:?}: {e:?}"));
+            let envelope = events.recv().await.unwrap();
+            assert_eq!(
+                envelope.metadata.source_client_id.as_deref(),
+                client_id,
+                "{envelope:?}"
+            );
+        }
+    }
+
+    /// A daemon built without reservations, core's own, serves every client
+    /// id.
+    #[tokio::test]
+    async fn without_reservations_every_client_id_is_served() {
+        let (svc, _tmp) = make_service().await;
+        svc.create_node(text_create("served", Some("apply-writer")))
+            .await
+            .unwrap();
+        let _stream = watch_as(&svc, Some("apply-writer")).await;
+    }
+
+    /// No request can set a write context: whatever client id it presents,
+    /// the service its RPC runs on writes with the default write context,
+    /// and the id is only the label its events carry.
+    #[tokio::test]
+    async fn a_client_id_header_never_sets_a_write_context() {
+        let (svc, _tmp) = make_service().await;
+        let mut events = svc.node_service.subscribe_to_events();
+
+        // The superseded id included: the write context stays the default.
+        for client_id in [
+            "window-a",
+            "apply",
+            nodespace_core::db::events::REPLICATED_APPLY_CLIENT_ID,
+        ] {
+            let request = text_create("tagged", Some(client_id));
+            let routed = svc.route(&request).await.unwrap();
+            assert_eq!(
+                routed.node_service.write_context(),
+                nodespace_core::WriteContext::default(),
+                "{client_id}"
+            );
+
+            svc.create_node(request).await.unwrap();
+            let envelope = events.recv().await.unwrap();
+            assert_eq!(
+                envelope.metadata.source_client_id.as_deref(),
+                Some(client_id)
+            );
+        }
+    }
+
+    /// A request's client id never switches invariant rules off: an update a
+    /// rule refuses is refused whatever id the request presents.
+    #[tokio::test]
+    async fn a_client_id_header_does_not_skip_invariant_rules() {
+        let (svc, _blocker, blocked, _tmp) = make_service_with_a_blocked_task().await;
+        for client_id in ["window-a", "apply"] {
+            let mut request = Request::new(start_request(&blocked));
+            request.metadata_mut().insert(
+                nodespace_proto::CLIENT_ID_HEADER,
+                client_id.parse().unwrap(),
+            );
+            let refused = svc.update_node(request).await.unwrap_err();
+            assert_eq!(
+                refused.code(),
+                tonic::Code::FailedPrecondition,
+                "{client_id}: {refused:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

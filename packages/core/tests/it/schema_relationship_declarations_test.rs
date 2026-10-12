@@ -627,7 +627,7 @@ async fn deleting_a_schema_with_declarations_is_blocked_on_both_ends() -> Result
     // Declaring side.
     let err = svc
         .store()
-        .delete_node("assembly", None)
+        .delete_node("assembly", None, nodespace_core::WriteContext::default())
         .await
         .expect_err("deleting the declaring schema must be blocked");
     assert!(
@@ -639,7 +639,7 @@ async fn deleting_a_schema_with_declarations_is_blocked_on_both_ends() -> Result
     // would silently destroy it.
     let err = svc
         .store()
-        .delete_node("widget", None)
+        .delete_node("widget", None, nodespace_core::WriteContext::default())
         .await
         .expect_err("deleting the target schema must be blocked");
     assert!(
@@ -654,8 +654,12 @@ async fn deleting_a_schema_with_declarations_is_blocked_on_both_ends() -> Result
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    svc.store().delete_node("widget", None).await?;
-    svc.store().delete_node("assembly", None).await?;
+    svc.store()
+        .delete_node("widget", None, nodespace_core::WriteContext::default())
+        .await?;
+    svc.store()
+        .delete_node("assembly", None, nodespace_core::WriteContext::default())
+        .await?;
     Ok(())
 }
 
@@ -679,7 +683,7 @@ async fn deleting_an_extending_schema_succeeds_but_deleting_its_parent_is_still_
     // against. Still blocked, same as before this change.
     let err = svc
         .store()
-        .delete_node("ticket", None)
+        .delete_node("ticket", None, nodespace_core::WriteContext::default())
         .await
         .expect_err("deleting a schema other schemas still extend must be blocked");
     assert!(
@@ -692,10 +696,14 @@ async fn deleting_an_extending_schema_succeeds_but_deleting_its_parent_is_still_
     // gone, and unlike an ordinary relationship, `remove_relationships`
     // cannot clear `extends` first (that back door is closed), so deleting
     // the extending schema directly must be the working path.
-    svc.store().delete_node("bug", None).await?;
+    svc.store()
+        .delete_node("bug", None, nodespace_core::WriteContext::default())
+        .await?;
 
     // Now that no schema extends it, "ticket" deletes cleanly too.
-    svc.store().delete_node("ticket", None).await?;
+    svc.store()
+        .delete_node("ticket", None, nodespace_core::WriteContext::default())
+        .await?;
     Ok(())
 }
 
@@ -794,7 +802,9 @@ async fn an_untyped_relationship_may_target_a_schema_node() -> Result<()> {
     );
 
     // The schema is still deletable, and the edge goes with it.
-    svc.store().delete_node("gizmo", None).await?;
+    svc.store()
+        .delete_node("gizmo", None, nodespace_core::WriteContext::default())
+        .await?;
     assert!(svc
         .get_related_nodes("1aa41ebc-ae40-5059-ab0c-19b72e2c9c72", "pins", "out")
         .await?

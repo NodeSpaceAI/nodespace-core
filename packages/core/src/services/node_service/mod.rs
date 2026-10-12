@@ -502,6 +502,19 @@ impl Emitter {
     }
 }
 
+/// An event on its way out, with the write context of the write that
+/// emitted it. Subscribers of [`NodeService::subscribe_to_events`] get the
+/// envelope alone; the playbook engine gets both, through
+/// [`NodeService::subscribe_to_emitted_events`], to tell how the write is
+/// treated (ADR-073, ADR-060 §7). Every buffer an event waits in (a
+/// transaction's, a batch's) holds it in this form, so no path can drop the
+/// write context.
+#[derive(Debug, Clone)]
+pub(crate) struct EmittedEvent {
+    pub(crate) envelope: crate::db::events::EventEnvelope,
+    pub(crate) write_context: crate::db::events::WriteContext,
+}
+
 /// One open `begin_batch_emit` batch: the guard's `token`, the emitter that
 /// opened it, and its events keyed by node id and origin (see
 /// [`BatchState::offer`]).
@@ -512,24 +525,27 @@ struct OpenBatch {
 }
 
 /// What a batch holds events under: the node, the client the write came
-/// from, and the play that made it, if any. Writes that differ in either
-/// never merge, so one writer's changes are never relabelled with another's
-/// metadata — a sync-applied create must not reach the playbook engine's
-/// local-origin gate (ADR-073) as a local one, and a user's edit must not
-/// carry a play's chain depth, nor a play's write lose it.
+/// from, its write context, and the play that made it, if any. Writes that
+/// differ in any of these never merge, so one writer's changes are never
+/// relabelled with another's metadata — a write that skips playbook
+/// triggers must not reach the playbook engine (ADR-073) as one that does,
+/// nor the reverse, and a user's edit must not carry a play's chain depth,
+/// nor a play's write lose it.
 #[derive(PartialEq, Eq, Hash)]
 struct BatchKey {
     node_id: String,
     source_client_id: Option<String>,
+    write_context: crate::db::events::WriteContext,
     source_playbook_id: Option<String>,
 }
 
 impl BatchKey {
-    fn new(node_id: String, envelope: &crate::db::events::EventEnvelope) -> Self {
-        let metadata = &envelope.metadata;
+    fn new(node_id: String, event: &EmittedEvent) -> Self {
+        let metadata = &event.envelope.metadata;
         BatchKey {
             node_id,
             source_client_id: metadata.source_client_id.clone(),
+            write_context: event.write_context,
             source_playbook_id: metadata
                 .playbook_context
                 .as_ref()
@@ -543,7 +559,7 @@ impl BatchKey {
 /// (see [`BatchState::offer`]).
 struct HeldEvent {
     seq: u64,
-    envelope: crate::db::events::EventEnvelope,
+    event: EmittedEvent,
 }
 
 /// The open `begin_batch_emit` batches, shared by every clone of a
@@ -605,28 +621,35 @@ impl BatchState {
         emitter: Emitter,
         node_id: String,
         seq: u64,
-        envelope: crate::db::events::EventEnvelope,
-    ) -> Option<crate::db::events::EventEnvelope> {
+        event: EmittedEvent,
+    ) -> Option<EmittedEvent> {
         let index = self
             .batches
             .iter()
             .rposition(|b| b.owner == emitter)
             .or_else(|| self.batches.len().checked_sub(1));
         let Some(index) = index else {
-            return Some(envelope);
+            return Some(event);
         };
-        let key = BatchKey::new(node_id, &envelope);
+        let key = BatchKey::new(node_id, &event);
         let events = &mut self.batches[index].events;
+        // One key, one write context: a merge keeps it.
         let merged = match events.remove(&key) {
             Some(held) if held.seq > seq => HeldEvent {
                 seq: held.seq,
-                envelope: coalesce_envelopes(envelope, held.envelope),
+                event: EmittedEvent {
+                    envelope: coalesce_envelopes(event.envelope, held.event.envelope),
+                    write_context: held.event.write_context,
+                },
             },
             Some(held) => HeldEvent {
                 seq,
-                envelope: coalesce_envelopes(held.envelope, envelope),
+                event: EmittedEvent {
+                    envelope: coalesce_envelopes(held.event.envelope, event.envelope),
+                    write_context: event.write_context,
+                },
             },
-            None => HeldEvent { seq, envelope },
+            None => HeldEvent { seq, event },
         };
         events.insert(key, merged);
         None
@@ -636,16 +659,13 @@ impl BatchState {
     /// batch when it is node-keyed and one is open, otherwise returned for
     /// the caller to broadcast. Relationship events are not node-keyed and
     /// always broadcast.
-    fn route(
-        &mut self,
-        envelope: crate::db::events::EventEnvelope,
-    ) -> Option<crate::db::events::EventEnvelope> {
-        match envelope_node_id(&envelope) {
+    fn route(&mut self, event: EmittedEvent) -> Option<EmittedEvent> {
+        match envelope_node_id(&event.envelope) {
             Some(id) if !self.batches.is_empty() => {
                 let seq = self.next_seq();
-                self.offer(Emitter::current(), id, seq, envelope)
+                self.offer(Emitter::current(), id, seq, event)
             }
-            _ => Some(envelope),
+            _ => Some(event),
         }
     }
 }
@@ -690,6 +710,8 @@ pub struct BatchEmitGuard {
     filtered_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
     /// Origin withheld from `filtered_tx`; see `NodeService::excluded_event_origin`.
     excluded_event_origin: Arc<RwLock<Option<String>>>,
+    /// The events with their write contexts; see `NodeService::emitted_event_tx`.
+    emitted_tx: broadcast::Sender<EmittedEvent>,
 }
 
 impl Drop for BatchEmitGuard {
@@ -703,12 +725,13 @@ impl Drop for BatchEmitGuard {
             let mut held: Vec<HeldEvent> = batch.events.into_values().collect();
             // Latest write last, so a subscriber that applies each event's
             // node snapshot in turn ends on the newest one.
-            held.sort_by_key(|event| event.seq);
-            flush_envelopes(
-                held.into_iter().map(|event| event.envelope),
+            held.sort_by_key(|held| held.seq);
+            flush_events(
+                held.into_iter().map(|held| held.event),
                 &self.tx,
                 &self.filtered_tx,
                 &self.excluded_event_origin,
+                &self.emitted_tx,
             );
         }
     }
@@ -802,20 +825,24 @@ fn merge_property_changes(
     merged
 }
 
-/// Send every buffered envelope, in order, mirroring to the origin-filtered
-/// channel the same way immediate emission and `BatchEmitGuard::drop` do.
-/// Shared by both so the mirror/send logic exists in exactly one place.
-fn flush_envelopes(
-    envelopes: impl IntoIterator<Item = crate::db::events::EventEnvelope>,
+/// Send every buffered event, in order: its envelope to the main channel
+/// and, past the origin filter, to the origin-filtered one; the event with
+/// its write context to the channel the playbook engine reads. Shared by
+/// immediate emission, transaction commits and `BatchEmitGuard::drop`, so
+/// the mirror/send logic exists in exactly one place.
+fn flush_events(
+    events: impl IntoIterator<Item = EmittedEvent>,
     tx: &broadcast::Sender<crate::db::events::EventEnvelope>,
     filtered_tx: &broadcast::Sender<crate::db::events::EventEnvelope>,
     excluded_origin: &RwLock<Option<String>>,
+    emitted_tx: &broadcast::Sender<EmittedEvent>,
 ) {
-    for envelope in envelopes {
-        if passes_origin_filter(excluded_origin, &envelope) {
-            let _ = filtered_tx.send(envelope.clone());
+    for event in events {
+        if passes_origin_filter(excluded_origin, &event.envelope) {
+            let _ = filtered_tx.send(event.envelope.clone());
         }
-        let _ = tx.send(envelope);
+        let _ = tx.send(event.envelope.clone());
+        let _ = emitted_tx.send(event);
     }
 }
 
@@ -835,14 +862,14 @@ fn flush_envelopes(
 /// and discarded on rollback (ADR-069 §2).
 pub(crate) struct NodeServiceTx<'t> {
     store_tx: &'t Tx<'t>,
-    events: Mutex<Vec<crate::db::events::EventEnvelope>>,
+    events: Mutex<Vec<EmittedEvent>>,
     deferred_embedding_refreshes: Mutex<Vec<DeferredEmbeddingRefresh>>,
 }
 
 /// A committed transaction's events, not yet published: in emission order,
 /// with the sequence number reserved at commit (see [`BatchState::next_seq`]).
 struct CommittedEvents {
-    events: Vec<crate::db::events::EventEnvelope>,
+    events: Vec<EmittedEvent>,
     seq: u64,
 }
 
@@ -865,11 +892,11 @@ impl<'t> NodeServiceTx<'t> {
 
     /// Buffer an event for publication if, and only if, this transaction
     /// commits.
-    pub(crate) fn buffer_event(&self, envelope: crate::db::events::EventEnvelope) {
+    pub(crate) fn buffer_event(&self, event: EmittedEvent) {
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(envelope);
+            .push(event);
     }
 
     /// Record a rootness change whose embedding refresh must wait for commit.
@@ -1002,17 +1029,18 @@ impl NodeService {
         let broadcast: Vec<_> = committed
             .events
             .into_iter()
-            .filter_map(|envelope| match envelope_node_id(&envelope) {
-                Some(id) => state.offer(emitter, id, committed.seq, envelope),
-                None => Some(envelope),
+            .filter_map(|event| match envelope_node_id(&event.envelope) {
+                Some(id) => state.offer(emitter, id, committed.seq, event),
+                None => Some(event),
             })
             .collect();
         drop(state);
-        flush_envelopes(
+        flush_events(
             broadcast,
             &self.event_tx,
             &self.origin_filtered_event_tx,
             &self.excluded_event_origin,
+            &self.emitted_event_tx,
         );
     }
 }
@@ -1366,6 +1394,12 @@ pub struct NodeService {
     /// every event.
     pub(crate) origin_filtered_event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
 
+    /// Every event of `event_tx`, with the write context of the write that
+    /// emitted it ([`EmittedEvent`]), for the playbook engine
+    /// (`subscribe_to_emitted_events`). Crate-private: the write context is
+    /// how core treats a write, not something a subscriber acts on.
+    pub(crate) emitted_event_tx: broadcast::Sender<EmittedEvent>,
+
     /// Source client id withheld from `origin_filtered_event_tx`.
     ///
     /// Set through `set_excluded_event_origin`; core assumes no particular
@@ -1389,6 +1423,11 @@ pub struct NodeService {
     ///
     /// Use `with_client()` to create a new NodeService instance with client_id set.
     pub(crate) client_id: Option<String>,
+
+    /// How the rules that run on every write treat this instance's writes;
+    /// carried onto every event they emit. The default for an ordinary
+    /// write. Set only in-process, through `with_write_context()`.
+    pub(crate) write_context: crate::db::events::WriteContext,
 
     /// Optional playbook execution context for cycle detection
     ///
@@ -1496,9 +1535,11 @@ impl Clone for NodeService {
             edge_fields: self.edge_fields.clone(),
             event_tx: self.event_tx.clone(),
             origin_filtered_event_tx: self.origin_filtered_event_tx.clone(),
+            emitted_event_tx: self.emitted_event_tx.clone(),
             excluded_event_origin: self.excluded_event_origin.clone(),
             batch_state: self.batch_state.clone(),
             client_id: self.client_id.clone(),
+            write_context: self.write_context,
             execution_context: self.execution_context.clone(),
             // Share the same OnceLock so any clone can observe the waker once set.
             #[cfg(feature = "nlp")]
@@ -1573,6 +1614,8 @@ impl NodeService {
         // default).
         let (origin_filtered_event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
         let excluded_event_origin: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        // The same events with their write contexts, for the playbook engine.
+        let (emitted_event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
         // Shared batch state — no batch open by default; see `begin_batch_emit`.
         let batch_state: Arc<Mutex<BatchState>> = Arc::default();
@@ -1587,6 +1630,7 @@ impl NodeService {
         {
             let tx = event_tx.clone();
             let filtered_tx = origin_filtered_event_tx.clone();
+            let emitted_tx = emitted_event_tx.clone();
             let excluded_origin_ref = Arc::clone(&excluded_event_origin);
             let batch_state_ref = Arc::clone(&batch_state);
             let notifier = Arc::new(move |change: StoreChange| {
@@ -1621,13 +1665,17 @@ impl NodeService {
                     },
                 };
 
-                // Wrap in EventEnvelope with metadata
-                let envelope = EventEnvelope {
-                    event,
-                    metadata: EventMetadata {
-                        source_client_id: change.source,
-                        playbook_context: change.playbook_context,
+                // Wrap in EventEnvelope with metadata, beside the writer's
+                // write context
+                let event = EmittedEvent {
+                    envelope: EventEnvelope {
+                        event,
+                        metadata: EventMetadata {
+                            source_client_id: change.source,
+                            playbook_context: change.playbook_context,
+                        },
                     },
+                    write_context: change.write_context,
                 };
 
                 // Only non-transactional store writes notify — every `_in_tx`
@@ -1637,9 +1685,15 @@ impl NodeService {
                 let unbatched = batch_state_ref
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .route(envelope);
-                if let Some(envelope) = unbatched {
-                    flush_envelopes([envelope], &tx, &filtered_tx, &excluded_origin_ref);
+                    .route(event);
+                if let Some(event) = unbatched {
+                    flush_events(
+                        [event],
+                        &tx,
+                        &filtered_tx,
+                        &excluded_origin_ref,
+                        &emitted_tx,
+                    );
                 }
             });
 
@@ -1660,9 +1714,11 @@ impl NodeService {
             edge_fields: Arc::new(edge_fields),
             event_tx,
             origin_filtered_event_tx,
+            emitted_event_tx,
             excluded_event_origin,
             batch_state,
             client_id: None,
+            write_context: crate::db::events::WriteContext::default(),
             execution_context: None,
             #[cfg(feature = "nlp")]
             embedding_waker: std::sync::Arc::new(std::sync::OnceLock::new()),
@@ -2592,6 +2648,51 @@ impl NodeService {
         cloned
     }
 
+    /// Returns a clone of this service whose writes are treated as
+    /// `write_context` says (see [`WriteContext`](crate::db::events::WriteContext)),
+    /// keeping its client id. Every event those writes emit reaches the
+    /// playbook engine with it.
+    ///
+    /// This is the only way to set a write context: it is an in-process
+    /// capability of the code that holds the `NodeService`, and nothing a
+    /// client of the daemon sends reaches it.
+    ///
+    /// ```no_run
+    /// # use nodespace_core::services::NodeService;
+    /// # use nodespace_core::db::{SqliteStore, WriteContext};
+    /// # use std::sync::Arc;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut store = Arc::new(SqliteStore::new("./data/nodespace.db".into()).await?);
+    /// let service = NodeService::new(&mut store).await?;
+    ///
+    /// // Applies data whose rules already ran where it was written.
+    /// let apply = service.with_client("apply").with_write_context(WriteContext {
+    ///     skip_playbook_triggers: true,
+    ///     skip_invariant_rules: true,
+    /// });
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_write_context(&self, write_context: crate::db::events::WriteContext) -> Self {
+        let mut cloned = self.clone();
+        cloned.write_context = write_context;
+        cloned
+    }
+
+    /// The write context this instance's writes are made with.
+    pub fn write_context(&self) -> crate::db::events::WriteContext {
+        self.write_context
+    }
+
+    /// Whether this instance's writes run no invariant rule inside their
+    /// transaction: its write context says so, or its client id is the
+    /// superseded [`REPLICATED_APPLY_CLIENT_ID`](crate::db::events::REPLICATED_APPLY_CLIENT_ID).
+    pub(crate) fn skips_invariant_rules(&self) -> bool {
+        self.write_context.skip_invariant_rules
+            || self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
+    }
+
     /// Return a scoped `NodeService` that tags all emitted events with the given
     /// playbook execution context.
     ///
@@ -2615,6 +2716,13 @@ impl NodeService {
     /// in `EventEnvelope` with metadata (source_client_id, playbook_context).
     pub fn subscribe_to_events(&self) -> broadcast::Receiver<crate::db::events::EventEnvelope> {
         self.event_tx.subscribe()
+    }
+
+    /// Subscribe to the same events as [`Self::subscribe_to_events`], each
+    /// with the write context of the write that emitted it. The playbook
+    /// engine's channel (ADR-073, ADR-060 §7).
+    pub(crate) fn subscribe_to_emitted_events(&self) -> broadcast::Receiver<EmittedEvent> {
+        self.emitted_event_tx.subscribe()
     }
 
     /// Subscribe to domain events, minus those from one excluded origin.
@@ -2787,6 +2895,7 @@ impl NodeService {
             tx: self.event_tx.clone(),
             filtered_tx: self.origin_filtered_event_tx.clone(),
             excluded_event_origin: Arc::clone(&self.excluded_event_origin),
+            emitted_tx: self.emitted_event_tx.clone(),
         }
     }
 
@@ -2806,18 +2915,19 @@ impl NodeService {
             IN_TRANSACTION.try_with(|_| ()).is_err(),
             "emit_event called inside a transaction; use emit_event_in_tx"
         );
-        let envelope = self.envelope(event);
+        let event = self.emitted(event);
         let unbatched = self
             .batch_state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .route(envelope);
-        if let Some(envelope) = unbatched {
-            flush_envelopes(
-                [envelope],
+            .route(event);
+        if let Some(event) = unbatched {
+            flush_events(
+                [event],
                 &self.event_tx,
                 &self.origin_filtered_event_tx,
                 &self.excluded_event_origin,
+                &self.emitted_event_tx,
             );
         }
     }
@@ -2825,17 +2935,21 @@ impl NodeService {
     /// Emit a domain event for a write made inside `tx`: buffered on `tx`
     /// and published only if it commits (ADR-069 §2).
     pub(crate) fn emit_event_in_tx(&self, tx: &NodeServiceTx<'_>, event: DomainEvent) {
-        tx.buffer_event(self.envelope(event));
+        tx.buffer_event(self.emitted(event));
     }
 
-    /// Wrap `event` with this instance's client id and execution context.
-    fn envelope(&self, event: DomainEvent) -> crate::db::events::EventEnvelope {
-        crate::db::events::EventEnvelope {
-            event,
-            metadata: crate::db::events::EventMetadata {
-                source_client_id: self.client_id.clone(),
-                playbook_context: self.execution_context.clone(),
+    /// Wrap `event` with this instance's client id and execution context,
+    /// beside its write context.
+    fn emitted(&self, event: DomainEvent) -> EmittedEvent {
+        EmittedEvent {
+            envelope: crate::db::events::EventEnvelope {
+                event,
+                metadata: crate::db::events::EventMetadata {
+                    source_client_id: self.client_id.clone(),
+                    playbook_context: self.execution_context.clone(),
+                },
             },
+            write_context: self.write_context,
         }
     }
 }
@@ -8849,6 +8963,258 @@ mod tests {
         assert_eq!(contents, vec!["v2".to_string(), "v3".to_string()]);
     }
 
+    // =========================================================================
+    // Write context (`WriteContext`, `with_write_context`)
+    // =========================================================================
+
+    /// The write context these tests write with: both flags set, as a writer
+    /// applying data whose rules already ran elsewhere sets it.
+    const SKIP_RULES: crate::db::events::WriteContext = crate::db::events::WriteContext {
+        skip_playbook_triggers: true,
+        skip_invariant_rules: true,
+    };
+
+    /// `with_write_context` and `with_client` each set one thing and keep the
+    /// other, in either order, and leave the service they derive from alone.
+    /// A plain service and one derived with `with_client` alone write with
+    /// the default context.
+    #[tokio::test]
+    async fn write_context_and_client_id_are_set_independently() {
+        let (service, _temp) = create_test_service().await;
+        let default = crate::db::events::WriteContext::default();
+        assert_eq!(service.write_context(), default);
+        assert_eq!(service.with_client("apply").write_context(), default);
+
+        let client_first = service.with_client("apply").with_write_context(SKIP_RULES);
+        let context_first = service.with_write_context(SKIP_RULES).with_client("apply");
+        for derived in [&client_first, &context_first] {
+            assert_eq!(derived.write_context(), SKIP_RULES);
+            assert_eq!(derived.client_id.as_deref(), Some("apply"));
+            assert!(derived.skips_invariant_rules());
+        }
+        assert_eq!(service.write_context(), default);
+        assert_eq!(service.client_id, None);
+        assert!(!service.skips_invariant_rules());
+        assert!(!service.with_client("apply").skips_invariant_rules());
+    }
+
+    /// Every event a write emits carries the write context of the service
+    /// that made it, on every write path: in-transaction creates and
+    /// updates, bulk creates, relationship writes, and the store's own
+    /// notifications (unchecked and version-bump updates, every delete path,
+    /// bulk delete). Wherever an event carries the writer's client id, it
+    /// carries its write context too, and an ordinary write's events carry
+    /// the default. Subscribers of `subscribe_to_events` get the same
+    /// envelopes, in the same order.
+    #[tokio::test]
+    async fn every_event_of_a_write_carries_the_writers_write_context() {
+        let (service, _temp) = create_test_service().await;
+        let writer = service.with_client("apply").with_write_context(SKIP_RULES);
+        let mut rx = service.subscribe_to_emitted_events();
+        let mut public_rx = service.subscribe_to_events();
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+
+        let parent = writer.create_node(text("parent")).await.unwrap();
+        let child = writer.create_node(text("child")).await.unwrap();
+        writer
+            .create_parent_edge(&child, &parent, InsertPosition::End)
+            .await
+            .unwrap();
+        let bulk = writer
+            .bulk_create(vec![text("bulk a"), text("bulk b")])
+            .await
+            .unwrap();
+        let version = writer.get_node(&child).await.unwrap().unwrap().version;
+        let updated = writer
+            .update_node(
+                &child,
+                version,
+                crate::models::NodeUpdate::new().with_content("updated".to_string()),
+            )
+            .await
+            .unwrap();
+        writer
+            .update_node_unchecked(
+                &child,
+                crate::models::NodeUpdate::new().with_content("unchecked".to_string()),
+            )
+            .await
+            .unwrap();
+        let version = writer.get_node(&child).await.unwrap().unwrap().version;
+        assert!(version > updated.version);
+        writer
+            .update_node_with_version_bump(&child, version)
+            .await
+            .unwrap();
+        writer.bulk_delete(bulk).await.unwrap();
+        let version = writer.get_node(&parent).await.unwrap().unwrap().version;
+        writer.delete_node(&parent, version).await.unwrap();
+        let unchecked = writer.create_node(text("unchecked delete")).await.unwrap();
+        writer.delete_node_unchecked(&unchecked).await.unwrap();
+        let checked = writer.create_node(text("checked delete")).await.unwrap();
+        let version = writer.get_node(&checked).await.unwrap().unwrap().version;
+        writer
+            .delete_with_version_check(&checked, version)
+            .await
+            .unwrap();
+        let local = service.create_node(text("local")).await.unwrap();
+
+        let mut seen = std::collections::HashSet::new();
+        let mut local_events = 0;
+        let mut envelopes = Vec::new();
+        while let Ok(emitted) = rx.try_recv() {
+            let envelope = &emitted.envelope;
+            if envelope.metadata.source_client_id.as_deref() == Some("apply") {
+                assert_eq!(emitted.write_context, SKIP_RULES, "{emitted:?}");
+                seen.insert(match &envelope.event {
+                    DomainEvent::NodeCreated { .. } => "created",
+                    DomainEvent::NodeUpdated { .. } => "updated",
+                    DomainEvent::NodeDeleted { .. } => "deleted",
+                    DomainEvent::RelationshipCreated { .. } => "relationship created",
+                    _ => "other",
+                });
+            } else {
+                assert_eq!(
+                    emitted.write_context,
+                    crate::db::events::WriteContext::default(),
+                    "{emitted:?}"
+                );
+                if matches!(&envelope.event, DomainEvent::NodeCreated { node_id, .. } if *node_id == local)
+                {
+                    local_events += 1;
+                }
+            }
+            envelopes.push(emitted.envelope);
+        }
+        assert_eq!(local_events, 1, "the ordinary write's create was seen");
+        let mut public = Vec::new();
+        while let Ok(envelope) = public_rx.try_recv() {
+            public.push(envelope);
+        }
+        assert_eq!(public, envelopes);
+        for kind in ["created", "updated", "deleted", "relationship created"] {
+            assert!(seen.contains(kind), "the writer's {kind} events were seen");
+        }
+    }
+
+    /// Two writes to one node by the same client never merge in a batch when
+    /// their write contexts differ: a write that skips playbook triggers must
+    /// not reach the engine relabelled as one that does, nor the reverse.
+    #[tokio::test]
+    async fn batch_keeps_writes_with_different_write_contexts_apart() {
+        let (service, _temp) = create_test_service().await;
+        let plain = service.with_client("apply");
+        let skipping = plain.with_write_context(SKIP_RULES);
+        let mut rx = service.subscribe_to_emitted_events();
+        let node = Node::new("text".to_string(), "applied".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        skipping.emit_event(DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        plain.emit_event(updated(
+            &node,
+            vec![change("text.k", None, Some(json!("local")))],
+        ));
+        drop(guard);
+
+        let mut flushed = Vec::new();
+        while let Ok(emitted) = rx.try_recv() {
+            flushed.push(emitted);
+        }
+        assert_eq!(
+            flushed.len(),
+            2,
+            "one event per write context, got {flushed:?}"
+        );
+        assert!(matches!(
+            flushed[0].envelope.event,
+            DomainEvent::NodeCreated { .. }
+        ));
+        assert_eq!(flushed[0].write_context, SKIP_RULES);
+        assert!(matches!(
+            flushed[1].envelope.event,
+            DomainEvent::NodeUpdated { .. }
+        ));
+        assert_eq!(
+            flushed[1].write_context,
+            crate::db::events::WriteContext::default()
+        );
+    }
+
+    /// Writes to one node from one writer merge in a batch as before, and the
+    /// merged event keeps the writer's write context.
+    #[tokio::test]
+    async fn a_batch_merge_keeps_the_write_context() {
+        let (service, _temp) = create_test_service().await;
+        let skipping = service.with_client("apply").with_write_context(SKIP_RULES);
+        let mut rx = service.subscribe_to_emitted_events();
+        let node = Node::new("text".to_string(), "applied".to_string(), json!({}));
+
+        let guard = service.begin_batch_emit();
+        skipping.emit_event(DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: "text".to_string(),
+        });
+        skipping.emit_event(updated(
+            &node,
+            vec![change("text.k", None, Some(json!("applied")))],
+        ));
+        drop(guard);
+
+        let emitted = rx.try_recv().expect("the merged event");
+        assert!(matches!(
+            emitted.envelope.event,
+            DomainEvent::NodeCreated { .. }
+        ));
+        assert_eq!(emitted.write_context, SKIP_RULES);
+        assert!(rx.try_recv().is_err(), "the two writes merged into one");
+    }
+
+    /// Echo suppression is unchanged by a write context: the origin-filtered
+    /// channel withholds a writer's events by its client id alone, whatever
+    /// context it writes with, and a write context without the excluded
+    /// client id is not withheld.
+    #[tokio::test]
+    async fn origin_filter_excludes_by_client_id_whatever_the_write_context() {
+        let (mut service, _temp) = create_test_service().await;
+        service.set_excluded_event_origin(EXCLUDED_ORIGIN);
+        let mut main_rx = service.subscribe_to_events();
+        let mut filtered_rx = service.subscribe_to_events_excluding_origin();
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+
+        let excluded_skipping = service
+            .with_client(EXCLUDED_ORIGIN)
+            .with_write_context(SKIP_RULES)
+            .create_node(text("excluded, skipping rules"))
+            .await
+            .unwrap();
+        let excluded_plain = service
+            .with_client(EXCLUDED_ORIGIN)
+            .create_node(text("excluded, plain"))
+            .await
+            .unwrap();
+        let other_skipping = service
+            .with_client("other")
+            .with_write_context(SKIP_RULES)
+            .create_node(text("other client, skipping rules"))
+            .await
+            .unwrap();
+
+        let main_ids = drain_node_ids(&mut main_rx);
+        let filtered_ids = drain_node_ids(&mut filtered_rx);
+        for id in [&excluded_skipping, &excluded_plain, &other_skipping] {
+            assert!(main_ids.contains(id), "the main channel sees every write");
+        }
+        assert!(!filtered_ids.contains(&excluded_skipping));
+        assert!(!filtered_ids.contains(&excluded_plain));
+        assert!(
+            filtered_ids.contains(&other_skipping),
+            "a write context alone never withholds an event"
+        );
+    }
+
     /// A play's write and a user's edit to one node never merge, even from
     /// one client: each keeps its own playbook context.
     #[tokio::test]
@@ -11457,6 +11823,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
+                crate::db::WriteContext::default(),
             )
             .await
             .unwrap();
@@ -12158,6 +12525,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
+                crate::db::WriteContext::default(),
             )
             .await
             .unwrap();
@@ -12254,6 +12622,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
+                crate::db::WriteContext::default(),
             )
             .await
             .unwrap();

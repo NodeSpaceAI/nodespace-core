@@ -426,3 +426,188 @@ async fn an_edge_field_declaration_on_has_child_stops_startup() {
         "{err:#}"
     );
 }
+
+/// The client id the fixture reserves for its own writers.
+const FIXTURE_WRITER: &str = "fixture-writer";
+
+/// A `CreateNode` request presenting `client_id` as its `x-ns-client-id`.
+fn create_as(client_id: &str) -> tonic::Request<nodespace_daemon::nodespace::CreateNodeRequest> {
+    let mut request = tonic::Request::new(nodespace_daemon::nodespace::CreateNodeRequest {
+        node_type: "text".into(),
+        content: format!("written as {client_id}"),
+        properties: "{}".into(),
+        ..Default::default()
+    });
+    request
+        .metadata_mut()
+        .insert("x-ns-client-id", client_id.parse().unwrap());
+    request
+}
+
+/// A client id the build reserves is refused, with `PERMISSION_DENIED`, on
+/// the node API of every database the daemon opens; any other id is served.
+/// The build's own writer still writes under it in process.
+#[tokio::test]
+async fn a_reserved_client_id_is_refused_in_every_database() {
+    use nodespace_daemon::nodespace::node_service_server::NodeService as _;
+
+    let home = IsolatedDaemonHome::new();
+    let shared = shared_services(DaemonExtensions::none().reserved_client_id(FIXTURE_WRITER)).await;
+    assert_eq!(
+        shared.context.extensions.reserved_client_ids(),
+        [FIXTURE_WRITER]
+    );
+    let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
+        .await
+        .unwrap();
+
+    for name in ["first", "second"] {
+        let path = database_requiring(home.path(), name, &[]).await;
+        let id = manager.register(path).await.unwrap().id;
+        let database = manager.get_or_open(&id).await.unwrap();
+        let grpc = &database.node_service_grpc;
+
+        let refused = grpc
+            .create_node(create_as(FIXTURE_WRITER))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.code(),
+            tonic::Code::PermissionDenied,
+            "{name}: {refused:?}"
+        );
+        grpc.create_node(create_as("window"))
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+
+        grpc.node_service()
+            .with_client(FIXTURE_WRITER)
+            .create_node(Node::new(
+                "text".to_string(),
+                "in process".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+/// Core's own daemon reserves no client id: the same request is served.
+#[tokio::test]
+async fn core_reserves_no_client_id() {
+    use nodespace_daemon::nodespace::node_service_server::NodeService as _;
+
+    let home = IsolatedDaemonHome::new();
+    let shared = shared_services(DaemonExtensions::none()).await;
+    assert!(shared.context.extensions.reserved_client_ids().is_empty());
+    let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
+        .await
+        .unwrap();
+    let path = database_requiring(home.path(), "core", &[]).await;
+    let id = manager.register(path).await.unwrap().id;
+    let database = manager.get_or_open(&id).await.unwrap();
+
+    database
+        .node_service_grpc
+        .create_node(create_as(FIXTURE_WRITER))
+        .await
+        .unwrap();
+}
+
+/// A reserved client id no request could present stops the daemon at
+/// startup, with the error `check` reports for it.
+#[tokio::test]
+async fn an_invalid_reserved_client_id_stops_startup() {
+    let _home = IsolatedDaemonHome::new();
+    let extensions = DaemonExtensions::none().reserved_client_id(" padded ");
+    let expected = DaemonExtensionsError::InvalidReservedClientId(" padded ".to_string());
+    assert_eq!(extensions.check(), Err(expected.clone()));
+
+    let err = build_shared_services(extensions)
+        .await
+        .err()
+        .expect("startup is refused");
+
+    assert_eq!(err.downcast_ref::<DaemonExtensionsError>(), Some(&expected));
+}
+
+/// A request's client id never switches playbook triggers off: a reactive
+/// play fires for a node created over the node API whatever id the request
+/// presents, as it does for one with none.
+#[tokio::test]
+async fn a_client_id_never_skips_playbook_triggers() {
+    use nodespace_daemon::nodespace::node_service_server::NodeService as _;
+
+    let home = IsolatedDaemonHome::new();
+    let shared = shared_services(DaemonExtensions::none()).await;
+    let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
+        .await
+        .unwrap();
+    let path = database_requiring(home.path(), "plays", &[]).await;
+    let id = manager.register(path).await.unwrap().id;
+    let database = manager.get_or_open(&id).await.unwrap();
+    let node_service = database.node_service_grpc.node_service();
+    nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({
+            "name": "fixture-task",
+            "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await
+    .unwrap();
+    node_service
+        .create_node(Node::new(
+            "play".to_string(),
+            "close open fixture tasks".to_string(),
+            json!({ "rules": [{
+                "name": "close-open",
+                "description": "Closes an open task",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "fixture-task" } },
+                "conditions": [{ "expr": "node.status == 'open'", "description": "The task is open" }],
+                "actions": [{
+                    "description": "Close it",
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
+                }]
+            }] }),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    for client_id in [None, Some("window"), Some("apply")] {
+        let mut request = tonic::Request::new(nodespace_daemon::nodespace::CreateNodeRequest {
+            node_type: "fixture-task".into(),
+            content: format!("created as {client_id:?}"),
+            properties: r#"{"status":"open"}"#.into(),
+            ..Default::default()
+        });
+        if let Some(client_id) = client_id {
+            request
+                .metadata_mut()
+                .insert("x-ns-client-id", client_id.parse().unwrap());
+        }
+        let created = database
+            .node_service_grpc
+            .create_node(request)
+            .await
+            .unwrap_or_else(|e| panic!("{client_id:?}: {e:?}"))
+            .into_inner()
+            .node_id;
+
+        let mut closed = false;
+        for _ in 0..200 {
+            let node = node_service.get_node(&created).await.unwrap().unwrap();
+            if node.properties["fixture-task"]["status"] == json!("done") {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            closed,
+            "{client_id:?}: the play fired on the request's write"
+        );
+    }
+}

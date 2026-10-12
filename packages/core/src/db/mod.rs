@@ -10,7 +10,7 @@ mod sqlite_store;
 pub use error::DatabaseError;
 pub use events::{
     DomainEvent, EventEnvelope, EventMetadata, PlaybookExecutionContext, PropertyChange,
-    RelationshipEvent,
+    RelationshipEvent, WriteContext,
 };
 pub use fractional_ordering::FractionalOrderCalculator;
 pub(crate) use sqlite_store::path_reaches_condition;

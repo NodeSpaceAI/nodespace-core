@@ -1363,7 +1363,7 @@ impl NodeService {
 
         // Schema nodes go through the normal update path
         self.store
-            .update_node(id, node_update, self.client_id.clone())
+            .update_node(id, node_update, self.client_id.clone(), self.write_context)
             .await
             .map_err(NodeServiceError::from_store)?;
 
@@ -2367,7 +2367,7 @@ impl NodeService {
         // Delegate to SqliteStore
         let result = self
             .store
-            .delete_node(id, self.client_id.clone())
+            .delete_node(id, self.client_id.clone(), self.write_context)
             .await
             .map_err(|e| {
                 NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
@@ -2423,7 +2423,12 @@ impl NodeService {
     ) -> Result<usize, NodeServiceError> {
         let rows_affected = self
             .store
-            .delete_with_version_check(id, expected_version, self.client_id.clone())
+            .delete_with_version_check(
+                id,
+                expected_version,
+                self.client_id.clone(),
+                self.write_context,
+            )
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!(
@@ -2503,6 +2508,7 @@ impl NodeService {
                 expected_version,
                 &subtree_ids,
                 self.client_id.clone(),
+                self.write_context,
             )
             .await
             .map_err(NodeServiceError::from_store)??;
@@ -2569,6 +2575,7 @@ impl NodeService {
                 expected_version,
                 node_update,
                 self.client_id.clone(),
+                self.write_context,
                 self.execution_context.clone(),
             )
             .await

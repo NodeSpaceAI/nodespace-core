@@ -157,6 +157,7 @@ mod entity_resolution_tests {
                 &id,
                 nodespace_core::NodeUpdate::new().with_lifecycle_status("archived".to_string()),
                 None,
+                nodespace_core::WriteContext::default(),
             )
             .await?;
 
