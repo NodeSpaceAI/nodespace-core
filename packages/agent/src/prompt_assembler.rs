@@ -16,8 +16,8 @@ use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::Node;
 use nodespace_core::services::{render_subtree_markdown, NodeService};
 
-use crate::agent_types::ToolDefinition;
 use crate::skill_rules::{resolve_includes, RuleForm};
+use nodespace_nlp_engine::ToolDefinition;
 
 // ---------------------------------------------------------------------------
 // Types

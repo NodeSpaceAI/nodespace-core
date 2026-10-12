@@ -21,16 +21,16 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::agent_types::{
-    ChatInferenceEngine, ChatMessage, InferenceRequest, ModelFamily, Role, StreamingChunk,
-    ToolDefinition,
-};
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::tools::{all_tool_definitions, GraphToolExecutor};
 use nodespace_agent::AgentToolExecutor;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::services::NodeService;
 use nodespace_nlp_engine::chat::ChatConfig;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, InferenceRequest, ModelFamily, Role, StreamingChunk,
+    ToolDefinition,
+};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
@@ -51,8 +51,13 @@ fn load_engine() -> LlamaChatInferenceEngine {
         default_temperature: 0.1,
         ..Default::default()
     };
-    LlamaChatInferenceEngine::load(&model_path(), ModelFamily::Gemma4, config)
-        .expect("model must load from the standard catalog path")
+    LlamaChatInferenceEngine::load(
+        &model_path(),
+        ModelFamily::Gemma4,
+        config,
+        nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&model_path()),
+    )
+    .expect("model must load from the standard catalog path")
 }
 
 async fn make_executor() -> (GraphToolExecutor, Arc<NodeService>, TempDir) {

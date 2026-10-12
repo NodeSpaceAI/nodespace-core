@@ -95,7 +95,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nodespace_agent::agent_types::{SkillCandidate, ToolDefinition};
+use nodespace_agent::agent_types::SkillCandidate;
 use nodespace_agent::local_agent::agent_loop::stage1_system_prompt;
 use nodespace_agent::local_agent::routing::{
     declare_write_tool_fields, hold_to_offered_types, offered_types, render_candidates_for_prompt,
@@ -104,6 +104,7 @@ use nodespace_agent::local_agent::routing::{
 use nodespace_agent::local_agent::tools::model_facing_tool_definitions;
 use nodespace_agent::prompt_assembler::PromptAssembler;
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
+use nodespace_nlp_engine::ToolDefinition;
 
 use nodespace_core::db::ResolvedEntity;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, PreparedNode};

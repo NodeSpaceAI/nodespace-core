@@ -19,9 +19,10 @@
 //! tool and letting it call retrieval itself), because that removes the
 //! system's ability to bound K and enforce the trust boundary.
 
-use crate::agent_types::{SkillCandidate, ToolCallRaw, ToolDefinition};
+use crate::agent_types::SkillCandidate;
 use nodespace_core::models::SkillRole;
 use nodespace_core::ops::context_ops::EXISTING_SCHEMAS_HEADER;
+use nodespace_nlp_engine::{ToolCallRaw, ToolDefinition};
 use serde::Deserialize;
 
 use super::tools::Tool;

@@ -28,8 +28,8 @@
 //! shape of degenerate response; if you see it, restart the server rather
 //! than debugging this test's code.
 
-use nodespace_agent::local_agent::openai_compat_inference::OpenAiCompatInferenceEngine;
 use nodespace_agent::local_agent::routing_probe::probe_routing_ok;
+use nodespace_nlp_engine::inference::openai_compat::OpenAiCompatInferenceEngine;
 
 const BASE_URL: &str = "http://127.0.0.1:11434/v1";
 

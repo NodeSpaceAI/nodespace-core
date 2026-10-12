@@ -16,9 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nodespace_agent::agent_types::{
-    AgentToolExecutor, ChatInferenceEngine, ChatMessage, ChatModelSpec, ClarifyPrompt,
-    InferenceError, InferenceUsage, LocalAgentStatus, MentionedEntity, ModelManager, ModelStatus,
-    PinnedSubject, PriorTurn, PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
+    AgentToolExecutor, ClarifyPrompt, LocalAgentStatus, MentionedEntity, ModelManager,
+    PinnedSubject, PriorTurn, PriorWrite, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
@@ -35,6 +34,10 @@ use nodespace_core::models::{
     NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, ChatModelSpec, InferenceError, InferenceUsage, ModelStatus,
+    Role, StreamingChunk,
+};
 use nodespace_types::{DatabaseSettingsNodeUpdate, DATABASE_SETTINGS_NODE_ID};
 
 use crate::services::ai_chat_title;
@@ -71,7 +74,7 @@ struct NoOpInferenceEngine;
 impl ChatInferenceEngine for NoOpInferenceEngine {
     async fn generate(
         &self,
-        _request: nodespace_agent::agent_types::InferenceRequest,
+        _request: nodespace_nlp_engine::InferenceRequest,
         _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
     ) -> Result<InferenceUsage, InferenceError> {
         Err(InferenceError::NoModelLoaded)
@@ -79,7 +82,7 @@ impl ChatInferenceEngine for NoOpInferenceEngine {
 
     async fn model_info(
         &self,
-    ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+    ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
         Ok(None)
     }
 
@@ -407,12 +410,8 @@ struct LocalAgentServiceInner {
     /// round completes. Bypassed (but still refreshed) when a `ListModels`
     /// call sets `force_refresh`. Per database, because each database
     /// configures its own providers (ADR-095).
-    openai_compat_discovery_cache: Mutex<
-        Option<(
-            std::time::Instant,
-            Vec<nodespace_agent::agent_types::ModelInfo>,
-        )>,
-    >,
+    openai_compat_discovery_cache:
+        Mutex<Option<(std::time::Instant, Vec<nodespace_nlp_engine::ModelInfo>)>>,
     /// Broadcast channel for streaming tokens → all SubscribeTokenStream clients.
     token_tx: broadcast::Sender<AgentChunk>,
     /// Cancellation tokens keyed by node_id.
@@ -1866,7 +1865,7 @@ impl LocalAgentServiceImpl {
     async fn discover_openai_compat_models(
         &self,
         force_refresh: bool,
-    ) -> Vec<nodespace_agent::agent_types::ModelInfo> {
+    ) -> Vec<nodespace_nlp_engine::ModelInfo> {
         {
             let cache = self.inner.openai_compat_discovery_cache.lock().await;
             if let Some((fetched_at, models)) = cache.as_ref() {
@@ -1884,10 +1883,8 @@ impl LocalAgentServiceImpl {
     }
 
     /// The actual discovery round `discover_openai_compat_models` caches.
-    async fn discover_openai_compat_models_uncached(
-        &self,
-    ) -> Vec<nodespace_agent::agent_types::ModelInfo> {
-        use nodespace_agent::local_agent::openai_compat_discovery::{
+    async fn discover_openai_compat_models_uncached(&self) -> Vec<nodespace_nlp_engine::ModelInfo> {
+        use nodespace_nlp_engine::inference::openai_compat_discovery::{
             discover_models_or_empty, discovered_model_info,
         };
 
@@ -1935,11 +1932,11 @@ impl LocalAgentServiceImpl {
         model_id: &str,
         live_tx: Option<&tokio::sync::mpsc::Sender<Result<ModelLoadProgressEvent, Status>>>,
     ) -> Vec<ModelLoadProgressEvent> {
-        use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
-        use nodespace_agent::local_agent::openai_compat_inference::{
+        use nodespace_nlp_engine::chat::ChatConfig;
+        use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+        use nodespace_nlp_engine::inference::openai_compat::{
             is_openai_compat, parse_openai_compat_id, OpenAiCompatInferenceEngine,
         };
-        use nodespace_nlp_engine::chat::ChatConfig;
 
         let mut events = Vec::new();
         macro_rules! emit {
@@ -2063,9 +2060,9 @@ impl LocalAgentServiceImpl {
                 .await
                 {
                     Ok(result) => result,
-                    Err(_) => Err(nodespace_agent::agent_types::InferenceError::Engine(
-                        format!("routing probe exceeded {ROUTING_PROBE_TIMEOUT:?}"),
-                    )),
+                    Err(_) => Err(nodespace_nlp_engine::InferenceError::Engine(format!(
+                        "routing probe exceeded {ROUTING_PROBE_TIMEOUT:?}"
+                    ))),
                 };
                 match probe_result {
                     Ok(routing_ok) => {
@@ -2274,7 +2271,14 @@ impl LocalAgentServiceImpl {
 
         let model_path_str = model_path.to_string_lossy().to_string();
         let engine_result = tokio::task::spawn_blocking(move || {
-            LlamaChatInferenceEngine::load(&model_path_str, family, chat_config)
+            LlamaChatInferenceEngine::load(
+                &model_path_str,
+                family,
+                chat_config,
+                nodespace_agent::local_agent::model_manager::expected_sha256_for_path(
+                    &model_path_str,
+                ),
+            )
         })
         .await;
 
@@ -3880,7 +3884,7 @@ mod tests {
     impl ChatInferenceEngine for StubEngine {
         async fn generate(
             &self,
-            _request: nodespace_agent::agent_types::InferenceRequest,
+            _request: nodespace_nlp_engine::InferenceRequest,
             on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             self.generate_count
@@ -3902,7 +3906,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             Ok(None)
         }
 
@@ -3919,7 +3923,7 @@ mod tests {
     impl ChatInferenceEngine for OnThisMachine {
         async fn generate(
             &self,
-            request: nodespace_agent::agent_types::InferenceRequest,
+            request: nodespace_nlp_engine::InferenceRequest,
             on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             self.0.generate(request, on_chunk).await
@@ -3927,7 +3931,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             self.0.model_info().await
         }
 
@@ -4039,7 +4043,7 @@ mod tests {
     impl ChatInferenceEngine for DeletingEngine {
         async fn generate(
             &self,
-            request: nodespace_agent::agent_types::InferenceRequest,
+            request: nodespace_nlp_engine::InferenceRequest,
             on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             let offered = request
@@ -4076,7 +4080,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             Ok(None)
         }
 
@@ -4103,7 +4107,7 @@ mod tests {
     impl ChatInferenceEngine for BlockingEngine {
         async fn generate(
             &self,
-            _request: nodespace_agent::agent_types::InferenceRequest,
+            _request: nodespace_nlp_engine::InferenceRequest,
             _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             let rx = self.release.lock().await.take();
@@ -4115,7 +4119,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             Ok(None)
         }
 
@@ -4135,7 +4139,7 @@ mod tests {
     impl ChatInferenceEngine for SpecEngine {
         async fn generate(
             &self,
-            _request: nodespace_agent::agent_types::InferenceRequest,
+            _request: nodespace_nlp_engine::InferenceRequest,
             _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             Err(InferenceError::Engine("not used".into()))
@@ -4144,7 +4148,7 @@ mod tests {
         async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
             Ok(Some(ChatModelSpec {
                 model_id: self.model_id.clone(),
-                family: nodespace_agent::agent_types::ModelFamily::Gemma4,
+                family: nodespace_nlp_engine::ModelFamily::Gemma4,
                 context_window: self.context_window,
                 default_temperature: 0.7,
                 type_k: None,
@@ -4174,7 +4178,7 @@ mod tests {
     impl ChatInferenceEngine for MutexHeldDuringGenerationEngine {
         async fn generate(
             &self,
-            _request: nodespace_agent::agent_types::InferenceRequest,
+            _request: nodespace_nlp_engine::InferenceRequest,
             _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             let started = self.started.lock().await.take();
@@ -4202,7 +4206,7 @@ mod tests {
             let _guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
             Ok(Some(ChatModelSpec {
                 model_id: "held-model".to_string(),
-                family: nodespace_agent::agent_types::ModelFamily::Gemma4,
+                family: nodespace_nlp_engine::ModelFamily::Gemma4,
                 context_window: 8192,
                 default_temperature: 0.7,
                 type_k: None,
@@ -4490,7 +4494,7 @@ mod tests {
     impl ChatInferenceEngine for HangingModelInfoEngine {
         async fn generate(
             &self,
-            _request: nodespace_agent::agent_types::InferenceRequest,
+            _request: nodespace_nlp_engine::InferenceRequest,
             _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             Err(InferenceError::Engine("not used".into()))
@@ -4669,7 +4673,7 @@ mod tests {
     impl ChatInferenceEngine for RecordingEngine {
         async fn generate(
             &self,
-            request: nodespace_agent::agent_types::InferenceRequest,
+            request: nodespace_nlp_engine::InferenceRequest,
             on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             self.requests.lock().unwrap().push(request.messages.clone());
@@ -4678,7 +4682,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             self.inner.model_info().await
         }
 
@@ -5698,7 +5702,7 @@ mod tests {
     impl ChatInferenceEngine for FailingEngine {
         async fn generate(
             &self,
-            _request: nodespace_agent::agent_types::InferenceRequest,
+            _request: nodespace_nlp_engine::InferenceRequest,
             _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             Err((self.make_error)())
@@ -5706,7 +5710,7 @@ mod tests {
 
         async fn model_info(
             &self,
-        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+        ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, InferenceError> {
             Ok(None)
         }
 
@@ -8041,8 +8045,8 @@ mod tests {
 
     // -- OpenAI-compat discovery cache ---------------------
 
-    fn fake_discovered_model(label: &str) -> nodespace_agent::agent_types::ModelInfo {
-        use nodespace_agent::local_agent::openai_compat_discovery::discovered_model_info;
+    fn fake_discovered_model(label: &str) -> nodespace_nlp_engine::ModelInfo {
+        use nodespace_nlp_engine::inference::openai_compat_discovery::discovered_model_info;
         discovered_model_info("test-config", "Test Provider", label)
     }
 
@@ -8053,7 +8057,7 @@ mod tests {
     async fn seed_discovery_cache(
         svc: &LocalAgentServiceImpl,
         fetched_at: std::time::Instant,
-        models: Vec<nodespace_agent::agent_types::ModelInfo>,
+        models: Vec<nodespace_nlp_engine::ModelInfo>,
     ) {
         let mut cache = svc.inner.openai_compat_discovery_cache.lock().await;
         *cache = Some((fetched_at, models));

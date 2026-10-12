@@ -1,130 +1,172 @@
 #!/usr/bin/env bun
 /**
- * prompt-dump.ts — read and pretty-print an agent prompt/response dump.
+ * prompt-dump.ts — read and pretty-print a prompt/response dump.
  *
- * The local agent can write the EXACT assembled prompt + raw model response per
- * ReAct iteration to a JSONL file when `NODESPACE_PROMPT_DUMP` is set (see
- * packages/agent/src/local_agent/prompt_dump.rs). The daemon log only records the
- * system-prompt *length* and a short preview, which is insufficient for
- * diagnosing prompt/tool-call issues. This reader renders the dump so you can see
- * verbatim what reached the model and what it produced.
+ * Every inference engine can write what it put on the wire, and the raw model
+ * response, to a JSONL file when `NODESPACE_PROMPT_DUMP` is set (see
+ * packages/nlp-engine/src/inference/prompt_dump.rs). One writer and one
+ * sequence counter serve both engines, so a turn served locally and a turn
+ * served by a remote endpoint appear in one file as one numbered timeline.
+ * The daemon log only records sizes and a short preview, which is
+ * insufficient for diagnosing prompt/tool-call issues. This reader renders the
+ * dump so you can see verbatim what reached the model and what it produced.
  *
  * Workflow:
  *   1. Run the daemon with dumping on:
  *        NODESPACE_PROMPT_DUMP=/tmp/dump.jsonl <launch nodespaced>
  *   2. Drive a turn (e.g. `bun run chat ask "Create an invoice database"`).
  *   3. Inspect:
- *        bun run prompt:dump /tmp/dump.jsonl            # full, pretty
- *        bun run prompt:dump /tmp/dump.jsonl --prompt   # system prompts only
- *        bun run prompt:dump /tmp/dump.jsonl --tools    # tools offered only
- *        bun run prompt:dump /tmp/dump.jsonl --last     # only the most recent turn
+ *        bun run prompt:dump /tmp/dump.jsonl            # full, in order
+ *        bun run prompt:dump /tmp/dump.jsonl --prompt   # what was sent, verbatim
+ *        bun run prompt:dump /tmp/dump.jsonl --tools    # tools offered (remote only)
+ *        bun run prompt:dump /tmp/dump.jsonl --last     # only the most recent call
  *        bun run prompt:dump /tmp/dump.jsonl --raw      # raw JSONL lines
  *
- * Each line in the dump is one JSON object:
- *   {"kind":"turn","iteration":N,"system_prompt":"…","messages":[…],"tools":[…]}
- *   {"kind":"response","iteration":N,"raw_response":"…","tool_calls":[…]}
+ * A record has the same shape whichever engine wrote it, tagged with the
+ * engine. What differs is only what was put on the wire:
+ *   {"kind":"prompt","engine":"native","seq":0,"target":null,
+ *    "sent":"<rendered prompt text>","sent_len":N}
+ *   {"kind":"prompt","engine":"openai_compat","seq":1,"target":"<base url>",
+ *    "sent":{<request body>},"sent_len":N}
+ *   {"kind":"response","engine":"native"|"openai_compat","seq":N,
+ *    "raw_response":"…","raw_response_len":N}
  */
 
 import { readFileSync } from "node:fs";
 
-type TurnRecord = {
-  kind: "turn";
-  session_id: string;
-  iteration: number;
-  user_message: string;
-  system_prompt: string;
-  system_prompt_len: number;
-  messages: Array<{ role: string; content: string }>;
-  tools: Array<{ name: string; description: string; parameters?: unknown }>;
+export type Engine = "native" | "openai_compat";
+
+export type RequestBody = {
+  model?: string;
+  messages?: Array<{ role: string; content: unknown }>;
+  tools?: Array<{ function?: { name: string; description?: string } }>;
 };
 
-type ResponseRecord = {
+export type PromptRecord = {
+  kind: "prompt";
+  engine: Engine;
+  seq: number;
+  target: string | null;
+  sent: string | RequestBody;
+  sent_len: number;
+};
+
+export type ResponseRecord = {
   kind: "response";
-  session_id: string;
-  iteration: number;
+  engine: Engine;
+  seq: number;
   raw_response: string;
   raw_response_len: number;
-  tool_calls: Array<{ id?: string; name?: string; arguments?: string }>;
 };
 
-type Record = TurnRecord | ResponseRecord;
+export type DumpRecord = PromptRecord | ResponseRecord;
 
-const args = process.argv.slice(2);
-const file = args.find((a) => !a.startsWith("--"));
-const flags = new Set(args.filter((a) => a.startsWith("--")));
+const RULE = "=".repeat(72);
 
-if (!file) {
-  console.error(
-    "usage: bun run prompt:dump <dump.jsonl> [--prompt|--tools|--last|--raw]",
-  );
-  process.exit(1);
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-let lines: string[];
-try {
-  lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
-} catch (e) {
-  console.error(`Cannot read ${file}: ${(e as Error).message}`);
-  process.exit(1);
+function contentText(content: unknown): string {
+  return typeof content === "string" ? content : JSON.stringify(content);
 }
 
-if (flags.has("--raw")) {
-  for (const l of lines) console.log(l);
-  process.exit(0);
+/** The tool names a request body offers; empty for rendered prompt text. */
+function offeredTools(sent: PromptRecord["sent"]): string[] {
+  if (typeof sent === "string") return [];
+  return (sent.tools ?? []).map((t) => t.function?.name ?? "?");
 }
 
-let records: Record[] = lines.map((l) => JSON.parse(l));
-
-// --last: keep only records from the most recent session.
-if (flags.has("--last")) {
-  const lastSession = [...records].reverse().find((r) => r.session_id)?.session_id;
-  records = records.filter((r) => r.session_id === lastSession);
+function renderPrompt(r: PromptRecord, flags: Set<string>): string[] {
+  const where = r.target ? ` → ${r.target}` : "";
+  if (flags.has("--tools")) {
+    const tools = offeredTools(r.sent);
+    const lines = [`\n${RULE}\nTOOLS OFFERED #${r.seq} [${r.engine}]${where}`];
+    if (typeof r.sent === "string") {
+      lines.push("  (rendered into the prompt text — see --prompt)");
+    } else {
+      lines.push(...tools.map((name) => `  • ${name}`));
+    }
+    return lines;
+  }
+  if (flags.has("--prompt")) {
+    const verbatim =
+      typeof r.sent === "string" ? r.sent : JSON.stringify(r.sent, null, 2);
+    return [
+      `\n${RULE}\nPROMPT #${r.seq} [${r.engine}]${where} | sent_len=${r.sent_len}\n${RULE}`,
+      verbatim,
+    ];
+  }
+  const lines = [
+    `\n${RULE}\nPROMPT #${r.seq} [${r.engine}]${where} | sent_len=${r.sent_len}`,
+  ];
+  if (typeof r.sent === "string") {
+    lines.push("--- rendered prompt text ---", `  ${JSON.stringify(clip(r.sent, 400))}`);
+  } else {
+    if (r.sent.model) lines.push(`model: ${r.sent.model}`);
+    lines.push("--- messages sent ---");
+    for (const m of r.sent.messages ?? []) {
+      lines.push(`  [${m.role}] ${JSON.stringify(clip(contentText(m.content), 200))}`);
+    }
+    const tools = offeredTools(r.sent);
+    if (tools.length) lines.push(`--- tools (${tools.length}) ---`, ...tools.map((n) => `  • ${n}`));
+  }
+  return lines;
 }
 
-const rule = "=".repeat(72);
+function renderResponse(r: ResponseRecord): string[] {
+  const lines = [`--- RESPONSE #${r.seq} [${r.engine}] (raw_len=${r.raw_response_len}) ---`];
+  if (r.raw_response) lines.push(`  raw: ${JSON.stringify(clip(r.raw_response, 300))}`);
+  return lines;
+}
 
-for (const r of records) {
-  if (r.kind === "turn") {
-    if (flags.has("--tools")) {
-      if (r.iteration === 0) {
-        console.log(`\n${rule}\nTOOLS OFFERED (${r.tools.length})`);
-        for (const t of r.tools) {
-          console.log(`  • ${t.name}: ${t.description.slice(0, 90)}`);
-        }
-      }
-      continue;
-    }
-    if (flags.has("--prompt")) {
-      console.log(
-        `\n${rule}\nTURN iter=${r.iteration} | system_prompt_len=${r.system_prompt_len}\n${rule}`,
-      );
-      console.log(r.system_prompt);
-      continue;
-    }
-    // default: full
-    console.log(
-      `\n${rule}\nTURN iter=${r.iteration} | user: ${r.user_message}`,
-    );
-    console.log(`system_prompt_len=${r.system_prompt_len}`);
-    console.log("--- messages sent ---");
-    for (const m of r.messages) {
-      const c = m.content.length > 200 ? m.content.slice(0, 200) + "…" : m.content;
-      console.log(`  [${m.role}] ${JSON.stringify(c)}`);
-    }
-    if (r.iteration === 0 && r.tools.length) {
-      console.log(`--- tools (${r.tools.length}) ---`);
-      for (const t of r.tools) console.log(`  • ${t.name}`);
-    }
-  } else if (r.kind === "response") {
-    if (flags.has("--prompt") || flags.has("--tools")) continue;
-    console.log(`--- RESPONSE iter=${r.iteration} (raw_len=${r.raw_response_len}) ---`);
-    if (r.raw_response) {
-      const raw =
-        r.raw_response.length > 300 ? r.raw_response.slice(0, 300) + "…" : r.raw_response;
-      console.log(`  raw: ${JSON.stringify(raw)}`);
-    }
-    for (const tc of r.tool_calls) {
-      console.log(`  → tool_call ${tc.name}: ${(tc.arguments ?? "").slice(0, 400)}`);
+/**
+ * Render a dump's lines, in file order, as the lines the CLI prints.
+ *
+ * File order is the timeline: one counter numbers every call across both
+ * engines, so records from a local turn and a remote turn interleave exactly
+ * as the calls happened.
+ */
+export function renderDump(lines: string[], flags: Set<string>): string[] {
+  if (flags.has("--raw")) return lines;
+
+  let records: DumpRecord[] = lines.map((l) => JSON.parse(l) as DumpRecord);
+
+  // --last: keep only the most recent call — the last prompt and its response.
+  if (flags.has("--last")) {
+    const lastPrompt = [...records].reverse().find((r) => r.kind === "prompt");
+    records = lastPrompt ? records.filter((r) => r.seq === lastPrompt.seq) : [];
+  }
+
+  const out: string[] = [];
+  for (const r of records) {
+    if (r.kind === "prompt") {
+      out.push(...renderPrompt(r, flags));
+    } else if (r.kind === "response") {
+      if (flags.has("--prompt") || flags.has("--tools")) continue;
+      out.push(...renderResponse(r));
     }
   }
+  return out;
+}
+
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const file = args.find((a) => !a.startsWith("--"));
+  const flags = new Set(args.filter((a) => a.startsWith("--")));
+
+  if (!file) {
+    console.error("usage: bun run prompt:dump <dump.jsonl> [--prompt|--tools|--last|--raw]");
+    process.exit(1);
+  }
+
+  let lines: string[];
+  try {
+    lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+  } catch (e) {
+    console.error(`Cannot read ${file}: ${(e as Error).message}`);
+    process.exit(1);
+  }
+
+  for (const line of renderDump(lines, flags)) console.log(line);
 }

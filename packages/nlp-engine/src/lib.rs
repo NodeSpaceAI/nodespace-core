@@ -43,6 +43,7 @@ pub mod chat;
 pub mod config;
 pub mod embedding;
 pub mod error;
+pub mod inference;
 
 // Re-export embedding types
 pub use config::EmbeddingConfig;
@@ -56,3 +57,10 @@ pub use chat::types::{
     ToolCallRaw, ToolSpec,
 };
 pub use chat::ChatEngine;
+
+// Re-export inference types
+pub use inference::engine::{
+    ChatInferenceEngine, ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage,
+    StreamingChunk, ToolDefinition,
+};
+pub use inference::model::{ModelBackend, ModelError, ModelFamily, ModelInfo, ModelStatus};

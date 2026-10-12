@@ -6,11 +6,14 @@
 //! here through its OpenAI-compatible `/v1` API rather than its native wire
 //! format — one protocol implementation serves every such provider.
 
-use crate::agent_types::{
-    ChatInferenceEngine, ChatMessage, ChatModelSpec, InferenceError, InferenceRequest,
-    InferenceUsage, ModelFamily, StreamingChunk,
+use super::engine::{
+    ChatInferenceEngine, ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage,
+    StreamingChunk,
 };
-use crate::local_agent::ndjson::NdjsonLineBuffer;
+use super::model::ModelFamily;
+use super::ndjson::NdjsonLineBuffer;
+use super::prompt_dump::{self, Engine, Sent};
+use crate::chat::ChatMessage;
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -523,16 +526,17 @@ impl OpenAiCompatInferenceEngine {
             }
         }
         // Dev-only full-fidelity dump (NODESPACE_PROMPT_DUMP) — see
-        // openai_compat_prompt_dump's module doc. Complements the debug-log
+        // prompt_dump's module doc. Complements the debug-log
         // line above: that line requires RUST_LOG=debug and is not persisted
         // beyond the log; this is a durable, structured record correlated
         // with its response via `dump_seq`.
-        let dump_seq = crate::local_agent::openai_compat_prompt_dump::enabled().then(|| {
+        let dump_seq = prompt_dump::enabled().then(|| {
             let request_json =
                 serde_json::to_value(&openai_request).unwrap_or(serde_json::Value::Null);
-            crate::local_agent::openai_compat_prompt_dump::dump_request(
-                &self.base_url,
-                &request_json,
+            prompt_dump::dump_prompt(
+                Engine::OpenAiCompat,
+                Some(&self.base_url),
+                Sent::Body(&request_json),
             )
         });
         tracing::info!(
@@ -641,7 +645,8 @@ impl OpenAiCompatInferenceEngine {
                     let data = data.trim();
                     if data == "[DONE]" {
                         if let Some(seq) = dump_seq {
-                            crate::local_agent::openai_compat_prompt_dump::dump_response(
+                            prompt_dump::dump_response(
+                                Engine::OpenAiCompat,
                                 seq,
                                 &raw_response_accum,
                             );
@@ -713,10 +718,7 @@ impl OpenAiCompatInferenceEngine {
             }
             // Stream ended without an explicit [DONE] sentinel.
             if let Some(seq) = dump_seq {
-                crate::local_agent::openai_compat_prompt_dump::dump_response(
-                    seq,
-                    &raw_response_accum,
-                );
+                prompt_dump::dump_response(Engine::OpenAiCompat, seq, &raw_response_accum);
             }
             on_chunk(StreamingChunk::Done { usage: final_usage });
         } else {
@@ -726,7 +728,7 @@ impl OpenAiCompatInferenceEngine {
                 .map_err(|e| InferenceError::Engine(e.to_string()))?;
 
             if let Some(seq) = dump_seq {
-                crate::local_agent::openai_compat_prompt_dump::dump_response(seq, &body);
+                prompt_dump::dump_response(Engine::OpenAiCompat, seq, &body);
             }
 
             match serde_json::from_str::<OpenAiChatResponse>(&body) {
@@ -782,7 +784,7 @@ impl OpenAiCompatInferenceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_types::{Role, ToolCallRaw};
+    use crate::chat::{Role, ToolCallRaw};
 
     #[test]
     fn test_is_openai_compat_prefix() {

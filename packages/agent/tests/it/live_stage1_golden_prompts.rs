@@ -25,16 +25,16 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::agent_types::{ChatInferenceEngine, ChatMessage, InferenceRequest, Role};
 use nodespace_agent::local_agent::agent_loop::{
     stage1_system_prompt, stage1_type_names, STAGE1_MAX_TOKENS,
 };
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::routing::{
     asks_about_the_message_first, decision_on_the_message_alone, parse_route_decision,
     stage1_tool_definitions, RouteDecision,
 };
 use nodespace_nlp_engine::chat::ChatConfig;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::{ChatInferenceEngine, ChatMessage, InferenceRequest, Role};
 
 /// The skill names production's Stage-1 prompt carries on a freshly seeded
 /// registry — what `GraphToolExecutor::skill_names` returns there.
@@ -61,8 +61,9 @@ fn load_engine() -> LlamaChatInferenceEngine {
     };
     LlamaChatInferenceEngine::load(
         &model_path(),
-        nodespace_agent::agent_types::ModelFamily::Gemma4,
+        nodespace_nlp_engine::ModelFamily::Gemma4,
         config,
+        nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&model_path()),
     )
     .expect("model must load from the standard catalog path — see model_path()")
 }
@@ -112,7 +113,7 @@ async fn run_stage1_request(
     routing_query: String,
 ) -> (
     Option<RouteDecision>,
-    nodespace_agent::agent_types::InferenceUsage,
+    nodespace_nlp_engine::InferenceUsage,
     std::time::Duration,
 ) {
     let request = InferenceRequest {
@@ -143,15 +144,13 @@ async fn run_stage1_request(
 
     let collected = chunks.lock().expect("chunk mutex").clone();
     let name = collected.iter().find_map(|c| match c {
-        nodespace_agent::agent_types::StreamingChunk::ToolCallStart { name, .. } => {
-            Some(name.clone())
-        }
+        nodespace_nlp_engine::StreamingChunk::ToolCallStart { name, .. } => Some(name.clone()),
         _ => None,
     });
     let args_json: String = collected
         .iter()
         .filter_map(|c| match c {
-            nodespace_agent::agent_types::StreamingChunk::ToolCallArgs { args_json, .. } => {
+            nodespace_nlp_engine::StreamingChunk::ToolCallArgs { args_json, .. } => {
                 Some(args_json.as_str())
             }
             _ => None,

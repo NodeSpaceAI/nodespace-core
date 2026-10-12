@@ -35,16 +35,14 @@
 //! endpoint reachable and no local GGUF model downloaded).
 
 use async_trait::async_trait;
-use nodespace_agent::agent_types::{
-    AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ModelFamily, StreamingChunk,
-    ToolDefinition, ToolError, ToolResult,
-};
+use nodespace_agent::agent_types::{AgentToolExecutor, AgentTurnResult, ToolError, ToolResult};
 use nodespace_agent::local_agent::agent_loop::LocalAgentService;
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
-use nodespace_agent::local_agent::openai_compat_discovery::discover_models;
-use nodespace_agent::local_agent::openai_compat_inference::OpenAiCompatInferenceEngine;
 use nodespace_nlp_engine::chat::ChatConfig;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::inference::openai_compat::OpenAiCompatInferenceEngine;
+use nodespace_nlp_engine::inference::openai_compat_discovery::discover_models;
+use nodespace_nlp_engine::{ChatInferenceEngine, ModelFamily, StreamingChunk, ToolDefinition};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -101,7 +99,12 @@ async fn resolve_backend() -> Option<(Arc<dyn ChatInferenceEngine>, String)> {
 
     let path_str = model_path.to_string_lossy().to_string();
     let engine = tokio::task::spawn_blocking(move || {
-        LlamaChatInferenceEngine::load(&path_str, ModelFamily::Gemma4, ChatConfig::default())
+        LlamaChatInferenceEngine::load(
+            &path_str,
+            ModelFamily::Gemma4,
+            ChatConfig::default(),
+            nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&path_str),
+        )
     })
     .await
     .ok()?

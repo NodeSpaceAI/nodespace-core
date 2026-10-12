@@ -1,21 +1,22 @@
-//! Bridge between `nlp-engine::ChatEngine` and the `ChatInferenceEngine` trait.
+//! Bridge between [`ChatEngine`] and the [`ChatInferenceEngine`] trait.
 //!
-//! Adapts the nlp-engine's `ChatEngine` (which speaks its own `ChatChunk` and
-//! `ToolSpec` types) to the app-crate's `ChatInferenceEngine` trait (which uses
-//! `StreamingChunk` and `ToolDefinition`). `ChatMessage` is the canonical type
-//! shared by both crates — no conversion needed on the message path.
+//! Adapts the chat engine (which speaks its own `ChatChunk` and `ToolSpec`
+//! types) to the `ChatInferenceEngine` trait (which uses `StreamingChunk` and
+//! `ToolDefinition`). `ChatMessage` is the one type on both sides — no
+//! conversion needed on the message path.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nodespace_nlp_engine::chat::{ChatChunk, ChatConfig, ChatEngine, Role, ToolSpec};
 
-use super::openai_compat_inference::RequestSizes;
-use crate::agent_types::{
+use super::engine::{
     ChatInferenceEngine, ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage,
-    ModelFamily, StreamingChunk, ToolDefinition,
+    StreamingChunk, ToolDefinition,
 };
+use super::model::ModelFamily;
+use super::openai_compat::RequestSizes;
+use crate::chat::{ChatChunk, ChatConfig, ChatEngine, Role, ToolSpec};
 
 /// Chat inference engine backed by llama.cpp via `nlp-engine::ChatEngine`.
 ///
@@ -31,27 +32,25 @@ pub struct LlamaChatInferenceEngine {
 impl LlamaChatInferenceEngine {
     /// Create a new engine, load the GGUF model, and return the bridge.
     ///
+    /// `expected_sha256` is the pinned digest of the model file: the load-time
+    /// integrity gate refuses a swapped-on-disk GGUF before native llama.cpp
+    /// parses it. `None` is a file with no pinned digest (a user-supplied
+    /// model), which loads without the gate — there is nothing to verify
+    /// against.
+    ///
     /// This is a blocking operation (model load + Metal kernel compilation)
     /// and should be called from a context that can tolerate latency.
     pub fn load(
         model_path: &str,
         family: ModelFamily,
         config: ChatConfig,
+        expected_sha256: Option<&str>,
     ) -> Result<Self, InferenceError> {
         let context_window = config.n_ctx;
         let default_temperature = config.default_temperature;
 
         let engine = ChatEngine::new(config)
             .map_err(|e| InferenceError::Engine(format!("Failed to create ChatEngine: {e}")))?;
-
-        // Look up the pinned digest for this model file so the load-time integrity
-        // gate refuses a swapped-on-disk GGUF before native llama.cpp parses it. A
-        // path outside the catalog (a user-supplied model) resolves to None and
-        // loads without the gate — there is nothing to verify against.
-        let expected_sha256 = std::path::Path::new(model_path)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .and_then(super::model_manager::expected_sha256_for_filename);
 
         engine
             .load_model(model_path, expected_sha256)
@@ -207,8 +206,7 @@ impl ChatInferenceEngine for LlamaChatInferenceEngine {
     }
 }
 
-/// Maps one nlp-engine `ChatChunk` to the app-crate `StreamingChunk` and
-/// forwards it via `on_chunk`.
+/// Maps one `ChatChunk` to a `StreamingChunk` and forwards it via `on_chunk`.
 ///
 /// Extracted from the inline closure passed to `generate_streaming` so the
 /// mapping is directly unit-testable without a loaded model -- in
@@ -257,7 +255,7 @@ fn bridge_chat_chunk(chunk: ChatChunk, on_chunk: &dyn Fn(StreamingChunk)) {
 // Convert ToolDefinition → ToolSpec (utility for external callers)
 // ---------------------------------------------------------------------------
 
-/// Convert app-crate `ToolDefinition` to nlp-engine `ToolSpec`.
+/// Convert a `ToolDefinition` to the chat engine's `ToolSpec`.
 pub fn to_tool_spec(def: &ToolDefinition) -> ToolSpec {
     ToolSpec {
         name: def.name.clone(),

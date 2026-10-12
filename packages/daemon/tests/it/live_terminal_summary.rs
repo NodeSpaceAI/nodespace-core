@@ -14,11 +14,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use nodespace_agent::agent_types::{ChatInferenceEngine, ModelFamily};
-use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::pty::{OutputChunk, SessionCapture};
 use nodespace_daemon::services::terminal_summary::{copied_from_output, generate_summary};
 use nodespace_nlp_engine::chat::ChatConfig;
+use nodespace_nlp_engine::inference::local::LlamaChatInferenceEngine;
+use nodespace_nlp_engine::{ChatInferenceEngine, ModelFamily};
 
 /// Independent repetitions per session. Single runs on this stack are not
 /// decision-grade.
@@ -96,8 +96,13 @@ async fn the_native_model_summarizes_a_terminal_session_in_prose() {
         ..Default::default()
     };
     let engine: Arc<dyn ChatInferenceEngine> = Arc::new(
-        LlamaChatInferenceEngine::load(&model_path(), ModelFamily::Gemma4, config)
-            .expect("load the native model"),
+        LlamaChatInferenceEngine::load(
+            &model_path(),
+            ModelFamily::Gemma4,
+            config,
+            nodespace_agent::local_agent::model_manager::expected_sha256_for_path(&model_path()),
+        )
+        .expect("load the native model"),
     );
     assert!(engine.runs_on_this_machine());
 

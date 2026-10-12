@@ -17,9 +17,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_types::{
-    AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatMessage,
-    ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, PriorTurn,
-    Role, StreamingChunk, ToolCallRaw, ToolDefinition, ToolExecutionRecord,
+    AgentSession, AgentToolExecutor, AgentTurnResult, LocalAgentStatus, PriorTurn,
+    ToolExecutionRecord,
 };
 use crate::local_agent::decisions;
 use crate::local_agent::otlp_tracer::TRACER_NAME;
@@ -28,6 +27,10 @@ use crate::local_agent::response_processing::{normalize_response, normalize_resp
 use crate::local_agent::routing::{self, RouteDecision};
 use crate::local_agent::tools::{is_cross_turn_guarded_tool, requires_routed_guidance_tool};
 use crate::prompt_assembler::{PromptAssembler, EMERGENCY_FALLBACK_PROMPT};
+use nodespace_nlp_engine::{
+    ChatInferenceEngine, ChatMessage, ChatModelSpec, InferenceError, InferenceRequest,
+    InferenceUsage, Role, StreamingChunk, ToolCallRaw, ToolDefinition,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -6474,10 +6477,9 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_types::{
-        ChatModelSpec, ModelFamily, PriorWrite, ToolDefinition, ToolError, ToolResult,
-    };
+    use crate::agent_types::{PriorWrite, ToolError, ToolResult};
     use async_trait::async_trait;
+    use nodespace_nlp_engine::{ChatModelSpec, ModelFamily, ToolDefinition};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
