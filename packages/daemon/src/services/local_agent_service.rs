@@ -8187,28 +8187,40 @@ mod tests {
         );
     }
 
+    /// Restores environment variables to their prior values on drop, so a
+    /// panicking `f` in [`with_env`] cannot leak a changed variable.
+    struct RestoreEnv(Vec<(String, Option<std::ffi::OsString>)>);
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, old) in self.0.drain(..) {
+                match old {
+                    Some(old) => std::env::set_var(&key, old),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+    }
+
     /// Runs `f` with each environment variable set (`Some`) or removed
-    /// (`None`), restoring every one afterwards.
+    /// (`None`), restoring every one afterwards, panic or not.
     ///
     /// The environment is process-global, so callers keep `f` narrow: the
     /// window is exactly one synchronous call (no `.await`, so no other task
     /// can interleave), and nextest runs each test in its own process.
     fn with_env<R>(vars: &[(&str, Option<&std::path::Path>)], f: impl FnOnce() -> R) -> R {
-        let saved: Vec<_> = vars.iter().map(|(k, _)| std::env::var_os(k)).collect();
+        let _restore = RestoreEnv(
+            vars.iter()
+                .map(|(key, _)| (key.to_string(), std::env::var_os(key)))
+                .collect(),
+        );
         for (key, value) in vars {
             match value {
                 Some(path) => std::env::set_var(key, path),
                 None => std::env::remove_var(key),
             }
         }
-        let out = f();
-        for ((key, _), old) in vars.iter().zip(saved) {
-            match old {
-                Some(old) => std::env::set_var(key, old),
-                None => std::env::remove_var(key),
-            }
-        }
-        out
+        f()
     }
 
     /// Drives `SharedLocalAgent::new` itself — not `from_model_manager`'s
