@@ -54,7 +54,8 @@ const PROMPTS: &[&str] = &[
 /// that does not apply to what ships, and a 4096-token server context against
 /// the engine's `N_CTX_MINIMUM` produced a full table of error timings.
 async fn resolve_backend() -> Option<(Arc<dyn ChatInferenceEngine>, String)> {
-    let gguf = GgufModelManager::new().ok()?;
+    let gguf =
+        GgufModelManager::with_dir(dirs::home_dir()?.join(".nodespace").join("models")).ok()?;
     let path = gguf.model_path(LOCKED_NATIVE_MODEL).ok()?;
     if !path.exists() {
         return None;

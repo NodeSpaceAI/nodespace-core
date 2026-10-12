@@ -91,7 +91,8 @@ async fn resolve_backend() -> Option<(Arc<dyn ChatInferenceEngine>, String)> {
         }
     }
 
-    let gguf = GgufModelManager::new().ok()?;
+    let gguf =
+        GgufModelManager::with_dir(dirs::home_dir()?.join(".nodespace").join("models")).ok()?;
     let model_path = gguf.model_path("gemma-4-e4b-q4km").ok()?;
     if !model_path.exists() {
         return None;

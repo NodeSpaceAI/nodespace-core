@@ -137,15 +137,12 @@ pub struct GgufModelManager {
 }
 
 impl GgufModelManager {
-    /// Create a new model manager using the platform-appropriate data directory.
+    /// Create a model manager over `models_dir`, creating it if it does not
+    /// exist.
     ///
-    /// Creates the models directory if it does not exist.
-    pub fn new() -> Result<Self, ModelError> {
-        let models_dir = default_models_dir()?;
-        Self::with_dir(models_dir)
-    }
-
-    /// Create a model manager with a specific directory (useful for testing).
+    /// The caller decides where models live: the daemon passes the `models/`
+    /// directory under its NodeSpace home, so the models follow
+    /// `NODESPACE_HOME` exactly as the database does.
     pub fn with_dir(models_dir: PathBuf) -> Result<Self, ModelError> {
         std::fs::create_dir_all(&models_dir).map_err(|e| {
             ModelError::Other(anyhow::anyhow!(
@@ -790,20 +787,6 @@ async fn sha256_file(path: &PathBuf) -> Result<String, ModelError> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Resolve the models directory.
-///
-/// Always `~/.nodespace/models/` — consistent with the database path
-/// (`~/.nodespace/database/`) resolved by `resolve_db_path` in the daemon.
-/// Both paths honour `$HOME`; override with `NODESPACED_DB_PATH` for tests.
-fn default_models_dir() -> Result<PathBuf, ModelError> {
-    let home = std::env::var("HOME").map_err(|_| {
-        ModelError::Other(anyhow::anyhow!(
-            "could not determine models directory: $HOME is unset"
-        ))
-    })?;
-    Ok(PathBuf::from(home).join(".nodespace").join("models"))
-}
 
 /// Look up a catalog entry by model ID, returning `ModelError::NotFound` if absent.
 fn find_catalog_entry(model_id: &str) -> Result<&'static CatalogEntry, ModelError> {

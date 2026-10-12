@@ -63,6 +63,16 @@ pub fn nodespace_dir() -> Result<PathBuf> {
     Ok(nodespace_home()?.join(".nodespace"))
 }
 
+/// The `models/` directory under [`nodespace_dir`], where the embedding model
+/// and the local GGUF chat models live.
+///
+/// The single resolution for both, so the models follow `NODESPACE_HOME`
+/// exactly as the database and the registry do, and find the user's home
+/// through the platform on Windows, where `HOME` is not set.
+pub fn models_dir() -> Result<PathBuf> {
+    Ok(nodespace_dir()?.join("models"))
+}
+
 /// Resolve the on-disk database path the daemon (and any in-process clients
 /// such as the CLI's `diagnostics` subcommand) should consult.
 ///

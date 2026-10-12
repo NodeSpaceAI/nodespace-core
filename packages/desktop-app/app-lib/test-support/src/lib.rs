@@ -369,9 +369,9 @@ impl Drop for EnvGuard {
     }
 }
 
-/// True if `~/.nodespace/models/<filename>` already exists — the same
-/// resolution `GgufModelManager::new()` uses (`$HOME/.nodespace/models`).
-/// Tests that need a REAL loaded model (ai-chat send, model-download
+/// True if `$HOME/.nodespace/models/<filename>` already exists, which is where
+/// the daemon looks when `NODESPACE_HOME` is unset. A machine with no `HOME`
+/// reports it unavailable, so the test skips. Tests that need a REAL loaded model (ai-chat send, model-download
 /// terminal state) call this to skip cleanly with a clear message on a
 /// machine that hasn't downloaded the model, instead of silently kicking
 /// off a live multi-gigabyte fetch from HuggingFace and hanging the pre-push
