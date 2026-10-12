@@ -129,7 +129,8 @@ export interface TurnRecord {
    * Stage 1's routing outcome for this turn: `"query"`, `"lookup"`, `"multi"`,
    * `"multi_rejected"` (route_multi called with fewer than two usable
    * queries — a single intent split as if compound), `"clarify"`,
-   * `"clarify_suppressed"`, `"none"`, `"unavailable"`, or `"failed"`.
+   * `"clarify_suppressed"`, `"clarify_pinned"` (Stage 1 asked to clarify in a
+   * chat that pins a skill, and the turn went on to Stage 2), `"none"`, `"unavailable"`, or `"failed"`.
    *
    * Undefined when the daemon log carried no routing line at all (a build
    * predating this field, or a log slice that was truncated). A scenario whose

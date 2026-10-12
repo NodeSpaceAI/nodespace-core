@@ -534,6 +534,78 @@ pub fn lookup_without_stage1(
     }
 }
 
+/// Whether `message` is one of `options`, as the user would pick or retype
+/// it: compared without case, surrounding whitespace or closing punctuation.
+pub fn is_offered_option(message: &str, options: &[String]) -> bool {
+    fn normalised(text: &str) -> String {
+        text.trim()
+            .trim_end_matches(['.', '!', '?', '？'])
+            .trim_end()
+            .to_lowercase()
+    }
+    let message = normalised(message);
+    !message.is_empty() && options.iter().any(|o| normalised(o) == message)
+}
+
+/// The decision for a reply that is one of the options a chat's opening
+/// message offered, in a chat that pins a skill (ADR-090 §5).
+///
+/// The chat offered it, so it is not ambiguous and is not put to Stage 1.
+/// What it asks for is read off its words, as [`is_lookup_shaped`] and the
+/// write verbs read any message: an option that asks to be told something
+/// ("Explain this play") is a lookup, which runs the turn without the write
+/// tools ([`read_only_candidates`]), and every other option is a query in
+/// its own words.
+pub fn decision_for_an_offered_option(message: &str) -> RouteDecision {
+    let message = message.trim();
+    let lowered = message.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if is_lookup_shaped(message) && !asks_for_a_write(&words) {
+        RouteDecision::Lookup(message.to_string())
+    } else {
+        RouteDecision::Query(message.to_string())
+    }
+}
+
+/// Whether `message` leans on the message before it: it is one or two words,
+/// or it is short and points back with a pronoun, an ordinal or a yes or no.
+///
+/// "Change it", "the second one", "yes, that", "Tuesday". Read by itself such
+/// a message names no subject, and what it asks for is in the assistant's
+/// last message. This decides no route. It decides how Stage 1 is shown the
+/// turns ahead of the message (`agent_loop`'s `stage1_query_framed`): as the
+/// conversation the message replies to, or as background to a request that
+/// stands alone.
+///
+/// English only. A pointing-back word counts in a message of at most
+/// [`LEANING_MESSAGE_WORDS`] words: a longer one names its own subject and
+/// the word points inside it. Measured on the built-in model, "Also the
+/// search indexer, that one's twenty-one days" shown the reply frame was
+/// routed as two tasks, the turn before it and its own, on every run. A
+/// short request that stands alone and uses one of these words ("send that
+/// invoice to Acme") is still shown the reply frame, which asks for the last
+/// message to be read into the request only when it does not stand alone.
+pub fn leans_on_the_last_message(message: &str) -> bool {
+    /// The longest message a pointing-back word makes a reply of.
+    const LEANING_MESSAGE_WORDS: usize = 6;
+    const POINTING_BACK: [&str; 22] = [
+        "it", "its", "that", "this", "these", "those", "them", "one", "ones", "same", "both",
+        "first", "second", "third", "last", "yes", "no", "yeah", "yep", "ok", "okay", "sure",
+    ];
+    let lowered = message.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    !words.is_empty()
+        && (words.len() <= 2
+            || (words.len() <= LEANING_MESSAGE_WORDS
+                && words.iter().any(|w| POINTING_BACK.contains(w))))
+}
+
 /// The retrieval query for a lookup: the capability, then the topic.
 ///
 /// A topic alone embeds nearest whichever skill shares a noun with it ("the
@@ -1221,6 +1293,41 @@ pub fn with_pinned_skills(
     selected
 }
 
+/// `candidates` with the pinned skills first, each scored just above the best
+/// of the others: the candidates of a reply that picked one of the
+/// options a pinned chat's opening message offered (ADR-090 §5).
+///
+/// Everywhere else a pinned skill leads only when retrieval scored it first,
+/// so a request on another topic is led by the skill found for it. An option
+/// the chat offered is not another topic: the chat was opened for the pinned
+/// skill and the option is its own. Its words are still all retrieval has,
+/// and they are generic. Measured on the locked embedding model, "Change a
+/// condition" in a play's edit chat ranked Graph Editing (0.938) ahead of
+/// Play Authoring (0.870), and the reply asked which play was meant.
+///
+/// A pinned skill that can remove user data is left where it was: it still
+/// has to clear its own bar ([`clears_score_gate`]).
+pub fn led_by_pinned_skills(candidates: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+    let leads = |c: &SkillCandidate| c.pinned && !skill_is_destructive(c);
+    let (mut pinned, others): (Vec<_>, Vec<_>) = candidates.into_iter().partition(leads);
+    let top = others
+        .iter()
+        .map(|c| c.score)
+        .fold(f32::NEG_INFINITY, f32::max);
+    // Strictly above, not level: a tie for the lead goes to the last
+    // candidate that holds it ([`leading_tool_bearing_candidate`]). Stepped
+    // from the last pinned skill to the first, so the first one pinned leads.
+    let mut floor = top;
+    for skill in pinned.iter_mut().rev() {
+        if skill.score <= floor {
+            skill.score = floor.next_up();
+        }
+        floor = skill.score;
+    }
+    pinned.extend(others);
+    pinned
+}
+
 /// The highest score among gate-clearing candidates that whitelist at least
 /// one tool — "which *tool-bearing* candidate won retrieval". `NEG_INFINITY`
 /// when there are none, which every `score >= max` comparison admits, so a
@@ -1439,11 +1546,25 @@ pub fn all_candidate_scores(candidates: &[SkillCandidate]) -> String {
 /// Stage 1 labels a lookup but that also asks for a change ("find the task and
 /// mark it done") runs the turn without the write skills, and the model says
 /// it cannot, rather than acting.
+///
+/// A skill the chat pins is kept whatever it whitelists, without its write
+/// tools (ADR-090 §5). The chat was opened for it, so a question asked there
+/// is answered with its procedure and its read tools, and a turn that only
+/// reads cannot write through it: "Explain this play" is offered `get_play`
+/// and not `update_play`.
 pub fn read_only_candidates(candidates: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
     let read_only: Vec<SkillCandidate> = candidates
         .iter()
-        .filter(|c| !c.tools.iter().any(|t| super::tools::is_write_tool(t)))
-        .cloned()
+        .filter_map(|c| {
+            if !c.tools.iter().any(|t| super::tools::is_write_tool(t)) {
+                return Some(c.clone());
+            }
+            c.pinned.then(|| {
+                let mut reads = c.clone();
+                reads.tools.retain(|t| !super::tools::is_write_tool(t));
+                reads
+            })
+        })
         .collect();
     if read_only.iter().any(clears_score_gate) {
         read_only
@@ -4493,6 +4614,151 @@ mod tests {
         assert_eq!(names(&candidates), names(&selected));
         assert!(candidates.iter().all(|c| !c.pinned));
         assert!(!clears_score_gate(&candidates[1]));
+    }
+
+    #[test]
+    fn a_message_leans_on_the_last_one_when_it_is_short_or_points_back() {
+        for leaning in [
+            "Change when it runs",
+            "the second one",
+            "yes, that",
+            "change it",
+            "Tuesday",
+            "the client ones?",
+            "Remove them",
+            "mark the last one as done",
+            "OK",
+        ] {
+            assert!(leans_on_the_last_message(leaning), "{leaning}");
+        }
+        for standing in [
+            "add a task for the launch review",
+            "find what I wrote about rate limiting",
+            "how do we onboard a new reviewer?",
+            "set up postmortems with a severity",
+            // One word past the longest message a pointing-back word makes a
+            // reply of ("mark the last one as done" leans).
+            "mark the last one as done today",
+            // Long enough to name its own subject: "that one" points inside it.
+            "Also the search indexer, that one's twenty-one days",
+            "make sure that the invoice for Acme is sent",
+            "   ",
+        ] {
+            assert!(!leans_on_the_last_message(standing), "{standing}");
+        }
+    }
+
+    #[test]
+    fn an_offered_option_matches_as_picked_or_retyped() {
+        let options = vec!["Explain this play".to_string(), "Add a rule".to_string()];
+        assert!(is_offered_option("Explain this play", &options));
+        assert!(is_offered_option("  add a rule. ", &options));
+        assert!(!is_offered_option(
+            "Add a rule that closes parents",
+            &options
+        ));
+        assert!(!is_offered_option("", &options));
+        assert!(!is_offered_option("Add a rule", &[]));
+    }
+
+    /// An option that asks to be told something is a lookup, so its turn has
+    /// no write tools; one that asks for a change is a query in its words.
+    #[test]
+    fn an_offered_option_is_a_lookup_only_when_it_asks_to_be_told() {
+        assert_eq!(
+            decision_for_an_offered_option(" Explain this play "),
+            RouteDecision::Lookup("Explain this play".to_string())
+        );
+        for change in [
+            "Change when it runs",
+            "Change a condition",
+            "Change an action",
+            "Add a rule",
+            "Remove a rule",
+            "Show me, then remove the last rule",
+        ] {
+            assert_eq!(
+                decision_for_an_offered_option(change),
+                RouteDecision::Query(change.to_string()),
+                "{change}"
+            );
+        }
+    }
+
+    /// A picked option is led by the pinned skill, whatever retrieval made of
+    /// its words; the other candidates keep their order and scores.
+    #[test]
+    fn a_picked_option_is_led_by_the_pinned_skill() {
+        let mut authoring = candidate("authoring", 0.87, &["get_play", "update_play"]);
+        authoring.pinned = true;
+        let led = led_by_pinned_skills(vec![
+            candidate("editing", 0.94, &["update_node"]),
+            authoring,
+            candidate("research", 0.8, &["search_nodes"]),
+        ]);
+
+        assert_eq!(names(&led), ["authoring", "editing", "research"]);
+        assert!(
+            led[0].score > 0.94 && led[0].score < 0.941,
+            "{}",
+            led[0].score
+        );
+        assert_eq!(
+            leading_tool_bearing_candidate(&led).map(|c| c.name.as_str()),
+            Some("authoring")
+        );
+
+        // Of two pinned skills, the first one pinned leads.
+        let mut second = candidate("second", 0.5, &["get_play"]);
+        second.pinned = true;
+        let mut first = candidate("first", 0.1, &["get_play"]);
+        first.pinned = true;
+        let both = led_by_pinned_skills(vec![
+            first,
+            second,
+            candidate("editing", 0.94, &["update_node"]),
+        ]);
+        assert_eq!(
+            leading_tool_bearing_candidate(&both).map(|c| c.name.as_str()),
+            Some("first")
+        );
+
+        // A pinned skill that can remove user data does not lead on a pin.
+        let mut deleting = candidate("deleting", 0.2, &["delete_node"]);
+        deleting.pinned = true;
+        let kept =
+            led_by_pinned_skills(vec![candidate("editing", 0.94, &["update_node"]), deleting]);
+        assert_eq!(names(&kept), ["editing", "deleting"]);
+        assert_eq!(kept[1].score, 0.2);
+    }
+
+    /// On a lookup a pinned skill is kept with the tools that read. A skill
+    /// that writes and is not pinned is left out, as before.
+    #[test]
+    fn a_lookup_keeps_a_pinned_skill_without_its_write_tools() {
+        let mut authoring = candidate("authoring", 0.0, &["get_play", "update_play"]);
+        authoring.pinned = true;
+        let editing = candidate("editing", 0.8, &["update_node"]);
+        let research = candidate("research", 0.9, &["search_nodes"]);
+
+        let kept = read_only_candidates(vec![research.clone(), editing.clone(), authoring]);
+        assert_eq!(
+            kept.iter()
+                .map(|c| (c.name.as_str(), c.tools.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("research", vec!["search_nodes".to_string()]),
+                ("authoring", vec!["get_play".to_string()]),
+            ]
+        );
+
+        // With no pin the same lookup is narrowed as it always was.
+        let unpinned = candidate("authoring", 0.0, &["get_play", "update_play"]);
+        let kept = read_only_candidates(vec![research, editing, unpinned]);
+        assert_eq!(
+            kept.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["research"]
+        );
     }
 
     /// A pinned skill counts toward the offered set like any linked

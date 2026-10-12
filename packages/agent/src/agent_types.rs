@@ -504,6 +504,21 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_skills: Vec<SkillCandidate>,
 
+    /// The other nodes this session's chat pins: what the conversation is
+    /// about (ADR-090 §4). Stage 1 is told of them beside the pinned skills,
+    /// so a request that names nothing is read as one about them. Empty for
+    /// a chat that pins no such node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_subjects: Vec<PinnedSubject>,
+
+    /// The options of the message the chat was opened with (ADR-090 §3),
+    /// while they are the ones on offer. A message that is one of them in a
+    /// chat that pins a skill is routed without asking Stage 1 (ADR-090 §5).
+    /// Empty on a turn that answers a later message's own options, and in a
+    /// chat the user opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offered_options: Vec<String>,
+
     /// Every `nodespace://` id a tool result or system record has produced in
     /// this session: the only ids a reply may link.
     ///
@@ -517,6 +532,15 @@ pub struct AgentSession {
     /// enters it.
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
     pub grounded_node_uris: HashSet<String>,
+}
+
+/// A node a chat pins that is not a skill, as Stage 1 is told of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedSubject {
+    /// The node's name, when it has one.
+    pub title: Option<String>,
+    /// The node's type.
+    pub node_type: String,
 }
 
 /// An earlier turn as the clarification contract sees it.

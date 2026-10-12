@@ -270,7 +270,7 @@ export function formatTurnLogLines(slice: string): string[] {
   // path a turn took (see agent_loop.rs::route): "routing unavailable for
   // this turn", "stage-1 routing failed", "stage-1 routing decision" (the
   // clarify path, which returns before the line below), or "two-stage
-  // routing overhead" (query/lookup/multi/multi_rejected/clarify_suppressed/none).
+  // routing overhead" (query/lookup/multi/multi_rejected/clarify_suppressed/clarify_pinned/none).
   // Take the last, in case a prior context turn in the same slice also routed.
   const routingLine = lines
     .filter(

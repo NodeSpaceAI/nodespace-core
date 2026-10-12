@@ -8,7 +8,11 @@
 
 use nodespace_agent::skill_pipeline::PLAY_AUTHORING_SKILL_ID;
 use nodespace_core::models::{
-    AiChatMessageRole, AiChatTurnOutcome, CoreNodeType, AI_CHAT_PINS, NODESPACE_AGENT,
+    AiChatMessageRole, AiChatTurnOutcome, CoreNodeType, Node, PlayFields, AI_CHAT_PINS,
+    NODESPACE_AGENT, PLAY_RULES_FIELD,
+};
+use nodespace_core::playbook::types::{
+    GraphEventType, RuleClass, RuleDefinition, Selector, Trigger,
 };
 use nodespace_core::services::{
     CreateNodeParams, InsertPositionOwned, NewRelationship, NodeService, NodeServiceError,
@@ -16,8 +20,11 @@ use nodespace_core::services::{
 
 use crate::services::chat_messages::{append_message, display_title, NewMessage};
 
-/// What the opening message offers to change, in the order shown.
-pub const EDIT_OPTIONS: [&str; 5] = [
+/// What the opening message offers, in the order shown. The first is not a
+/// change: it is there so the user knows the play can be asked about as well
+/// as changed (ADR-090 §3).
+pub const EDIT_OPTIONS: [&str; 6] = [
+    "Explain this play",
     "Change when it runs",
     "Change a condition",
     "Change an action",
@@ -66,11 +73,12 @@ impl From<NodeServiceError> for PlayEditChatError {
 ///
 /// The chat, titled `Edit <play title>`, is created with its pins to the
 /// play-authoring skill and the play in one transaction. Its opening message
-/// follows: an assistant message that asks what to change and links the
-/// play, with `outcome: clarified` and [`EDIT_OPTIONS`]. The link records a
-/// `mentions` edge from the message to the play, so the play's backlinks
-/// lead to the chat. A chat whose opening message cannot be written is
-/// removed, so the caller gets the whole chat or none.
+/// follows: an assistant message that links the play, describes it from
+/// what it stores ([`opening_message`]) and asks what to change, with
+/// `outcome: clarified` and [`EDIT_OPTIONS`]. The link records a `mentions`
+/// edge from the message to the play, so the play's backlinks lead to the
+/// chat. A chat whose opening message cannot be written is removed, so the
+/// caller gets the whole chat or none.
 ///
 /// A database with no play-authoring skill still gets the chat, pinned to
 /// the play alone: retrieval offers whatever skills it has.
@@ -136,7 +144,7 @@ pub async fn create_play_edit_chat(
     }
 
     let options: Vec<String> = EDIT_OPTIONS.iter().map(|o| o.to_string()).collect();
-    let content = opening_message(&title, &play.id);
+    let content = opening_message(&title, &play);
     let opening = NewMessage {
         outcome: Some(AiChatTurnOutcome::Clarified),
         options: &options,
@@ -172,9 +180,22 @@ async fn remove_chat(node_service: &NodeService, chat_id: &str) {
     }
 }
 
-/// The opening message: what to change, with a link to the play. The link
-/// text is the play's title with the characters that would end it removed.
-fn opening_message(title: &str, play_id: &str) -> String {
+/// The opening message: a link to the play, what the play does, and the
+/// question of what to change.
+///
+/// The description is built from what the play stores, with no model call:
+/// the play's own description, then each rule with what triggers it, what it
+/// checks and what it does, in the words of the rule's, conditions' and
+/// actions' required descriptions (ADR-090 §1). A trigger has no description
+/// of its own, so it is described from its fields ([`describe_trigger`]).
+///
+/// The message is stored content: it describes the play as it was when the
+/// chat was opened, and a play changed later, in this chat or elsewhere, is
+/// not described again. The agent reads the play as it is before it answers.
+///
+/// The link text is the play's title with the characters that would end it
+/// removed.
+fn opening_message(title: &str, play: &Node) -> String {
     let label: String = title
         .chars()
         .filter(|c| !matches!(c, '[' | ']' | '\n' | '\r'))
@@ -184,7 +205,137 @@ fn opening_message(title: &str, play_id: &str) -> String {
     } else {
         label.trim()
     };
-    format!("What would you like to change in [{label}](nodespace://{play_id})?")
+    let mut message = format!("Here is what [{label}](nodespace://{}) does.", play.id);
+
+    // A play with a field that does not decode still shows the ones that
+    // do. Its rules are unreadable only when some are stored and none
+    // decoded: another field failing leaves them as readable as they were,
+    // and a stored empty list is a play with no rules yet.
+    let (fields, rules_readable) = match PlayFields::from_properties(&play.properties) {
+        Ok(fields) => (fields, true),
+        Err(_) => {
+            let fields = PlayFields::readable_from_properties(&play.properties);
+            let none_stored = PlayFields::stored_field(&play.properties, PLAY_RULES_FIELD)
+                .is_none_or(|rules| rules.as_array().is_some_and(Vec::is_empty));
+            let readable = none_stored || !fields.rules.is_empty();
+            (fields, readable)
+        }
+    };
+    if let Some(description) = fields.description.as_deref().map(one_line) {
+        if !description.is_empty() {
+            message.push(' ');
+            message.push_str(&description);
+        }
+    }
+
+    message.push_str("\n\n");
+    message.push_str(&match (rules_readable, fields.rules.len()) {
+        (false, _) => "Its rules can't be read as they are stored.".to_string(),
+        (true, 0) => "It has no rules yet.".to_string(),
+        (true, 1) => "It has one rule.".to_string(),
+        (true, count) => format!("It has {count} rules."),
+    });
+    for rule in &fields.rules {
+        message.push_str("\n\n");
+        message.push_str(&describe_rule(rule));
+    }
+
+    message.push_str("\n\nWhat would you like to change?");
+    message
+}
+
+/// One rule as the opening message shows it: its name and description, then
+/// a line each for its trigger, its conditions and its actions.
+fn describe_rule(rule: &RuleDefinition) -> String {
+    let mut lines = vec![format!(
+        "**{}**: {}",
+        one_line(&rule.name),
+        one_line(&rule.description)
+    )];
+    let trigger = describe_trigger(&rule.trigger);
+    lines.push(match rule.class {
+        RuleClass::Reactive => format!("- {trigger}"),
+        // An invariant rule runs inside the write that triggered it and can
+        // refuse it (ADR-060), which is what a user changing it needs to know.
+        RuleClass::Invariant => format!("- {trigger}, before that change is saved"),
+    });
+    for condition in &rule.conditions {
+        lines.push(format!("- Only if: {}", one_line(&condition.description)));
+    }
+    for action in &rule.actions {
+        let step = one_line(action.description());
+        lines.push(match action.for_each() {
+            Some(collection) => format!("- Then, for each of `{collection}`: {step}"),
+            None => format!("- Then: {step}"),
+        });
+    }
+    lines.join("\n")
+}
+
+/// A trigger in words, from its fields: it carries no authored description
+/// (ADR-090 §1). The wording is the play viewer's (`describeTrigger` in
+/// `play-node-model.ts`), so the chat and the view beside it say the same
+/// thing about the same rule.
+fn describe_trigger(trigger: &Trigger) -> String {
+    let noun = selector_noun(trigger.selector());
+    match trigger {
+        Trigger::Scheduled { cron, .. } => format!("On the schedule {cron}, for every {noun}"),
+        Trigger::GraphEvent {
+            on, property_key, ..
+        } => {
+            let target = with_article(&noun);
+            match on {
+                GraphEventType::NodeCreated => format!("When {target} is created"),
+                GraphEventType::PropertyChanged => match property_key {
+                    // The field a `<type>.<field>` key names.
+                    Some(key) => format!(
+                        "When {} changes on {target}",
+                        key.rsplit('.').next().unwrap_or(key)
+                    ),
+                    None => format!("When any property changes on {target}"),
+                },
+                GraphEventType::RelationshipAdded => {
+                    format!("When a relationship is added from {target}")
+                }
+                GraphEventType::RelationshipRemoved => {
+                    format!("When a relationship is removed from {target}")
+                }
+            }
+        }
+    }
+}
+
+/// The noun a selector's nodes are named by: `task`, `node the saved query
+/// selects`.
+fn selector_noun(select: &Selector) -> String {
+    match select {
+        Selector::Query(_) => "node the saved query selects".to_string(),
+        Selector::Inline(inline) => {
+            let noun = if inline.target_type == "*" {
+                "node"
+            } else {
+                inline.target_type.as_str()
+            };
+            match inline.filters.len() {
+                0 => noun.to_string(),
+                1 => format!("{noun} matching 1 filter"),
+                count => format!("{noun} matching {count} filters"),
+            }
+        }
+    }
+}
+
+fn with_article(noun: &str) -> String {
+    let vowel = noun
+        .chars()
+        .next()
+        .is_some_and(|c| "aeiou".contains(c.to_ascii_lowercase()));
+    format!("{} {noun}", if vowel { "an" } else { "a" })
+}
+
+/// Author text on one line, so it cannot break the list it is shown in.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -193,7 +344,7 @@ mod tests {
     use crate::services::chat_messages::load_messages;
     use crate::services::chat_pins::load_chat_pins;
     use nodespace_core::db::SqliteStore;
-    use nodespace_core::models::{AiChatNativeNode, Node, SkillFields};
+    use nodespace_core::models::{AiChatNativeNode, SkillFields};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -264,8 +415,236 @@ mod tests {
         );
     }
 
+    /// A play with `rules`, described as "Closes a parent once its sub-tasks
+    /// are done."
+    async fn play_with_rules(svc: &NodeService, rules: serde_json::Value) -> String {
+        svc.create_node(Node::new(
+            "play".to_string(),
+            "Close finished parents".to_string(),
+            json!({
+                "description": "Closes a parent once its sub-tasks are done.",
+                "rules": rules,
+            }),
+        ))
+        .await
+        .unwrap()
+    }
+
+    fn close_parent_rule() -> serde_json::Value {
+        json!({
+            "name": "close parent",
+            "description": "Marks a parent task done when its last sub-task is.",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "select": { "target_type": "task" },
+                "property_key": "task.status"
+            },
+            "conditions": [
+                { "expr": "node.status == 'done'", "description": "The task was just finished" },
+                {
+                    "expr": "node.child_of.has_child.all(status == 'done')",
+                    "description": "Every other sub-task of its parent is done"
+                }
+            ],
+            "actions": [{
+                "action_type": "update_node",
+                "description": "Set the parent's status to done",
+                "params": { "node_id": "{trigger.node.child_of.id}", "properties": { "status": "done" } }
+            }]
+        })
+    }
+
+    async fn opening_content(svc: &NodeService, play_id: &str) -> String {
+        let chat_id = create_play_edit_chat(svc, play_id, ChatModel::default())
+            .await
+            .unwrap();
+        load_messages(svc, &chat_id)
+            .await
+            .unwrap()
+            .remove(0)
+            .content
+    }
+
+    /// The opening message describes the play before it asks: the play's
+    /// description, then the rule's trigger, conditions and actions in their
+    /// authors' words.
     #[tokio::test]
-    async fn the_opening_message_asks_what_to_change_and_offers_the_options() {
+    async fn the_opening_message_describes_a_play_with_one_rule() {
+        let (svc, _dir) = test_service().await;
+        let play_id = play_with_rules(&svc, json!([close_parent_rule()])).await;
+
+        assert_eq!(
+            opening_content(&svc, &play_id).await,
+            format!(
+                "Here is what [Close finished parents](nodespace://{play_id}) does. \
+                 Closes a parent once its sub-tasks are done.\n\
+                 \n\
+                 It has one rule.\n\
+                 \n\
+                 **close parent**: Marks a parent task done when its last sub-task is.\n\
+                 - When status changes on a task\n\
+                 - Only if: The task was just finished\n\
+                 - Only if: Every other sub-task of its parent is done\n\
+                 - Then: Set the parent's status to done\n\
+                 \n\
+                 What would you like to change?"
+            )
+        );
+    }
+
+    /// Each rule of a play with several is described, in rule order: a
+    /// scheduled trigger, an action that runs over a collection, and an
+    /// invariant rule, which says it runs before the change is saved.
+    #[test]
+    fn the_opening_message_describes_each_rule_of_a_play_with_several() {
+        let roll_over = json!({
+            "name": "roll over",
+            "description": "Moves unfinished tasks to the next cycle.",
+            "trigger": {
+                "type": "scheduled",
+                "cron": "0 5 0 * * * *",
+                "select": {
+                    "target_type": "cycle",
+                    "filters": [
+                        { "type": "property", "operator": "equals", "property": "state", "value": "active" }
+                    ]
+                }
+            },
+            "actions": [{
+                "action_type": "add_relationship",
+                "description": "Link the task\nto the next cycle",
+                "for_each": "trigger.node.tasks",
+                "params": { "source_id": "{item.id}", "relationship_type": "cycle", "target_id": "next" }
+            }]
+        });
+        let guard = json!({
+            "name": "no empty epic",
+            "description": "Refuses an epic with no owner.",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "epic" } },
+            "conditions": [{ "expr": "!has(node.owner)", "description": "The epic has no owner" }],
+            "actions": [{
+                "action_type": "reject",
+                "description": "Refuse the write",
+                "params": { "message": "An epic needs an owner" }
+            }]
+        });
+        // Built in memory: the message is made from the rules as stored, and
+        // these name types this database does not define.
+        let play = Node::new(
+            "play".to_string(),
+            "Close finished parents".to_string(),
+            json!({ "rules": [close_parent_rule(), roll_over, guard] }),
+        );
+
+        let content = opening_message("Close finished parents", &play);
+        assert!(content.contains("It has 3 rules."), "{content}");
+        let rules: Vec<usize> = ["**close parent**", "**roll over**", "**no empty epic**"]
+            .iter()
+            .map(|name| {
+                content
+                    .find(name)
+                    .unwrap_or_else(|| panic!("{name}: {content}"))
+            })
+            .collect();
+        assert!(rules.is_sorted(), "{content}");
+        assert!(
+            content.contains(
+                "**roll over**: Moves unfinished tasks to the next cycle.\n\
+                 - On the schedule 0 5 0 * * * *, for every cycle matching 1 filter\n\
+                 - Then, for each of `trigger.node.tasks`: Link the task to the next cycle"
+            ),
+            "{content}"
+        );
+        assert!(
+            content.contains(
+                "**no empty epic**: Refuses an epic with no owner.\n\
+                 - When an epic is created, before that change is saved\n\
+                 - Only if: The epic has no owner\n\
+                 - Then: Refuse the write\n\
+                 \n\
+                 What would you like to change?"
+            ),
+            "{content}"
+        );
+    }
+
+    /// A play with no rules, and one whose stored rules do not decode, still
+    /// get an opening message that says so.
+    #[tokio::test]
+    async fn the_opening_message_says_when_there_are_no_rules_to_describe() {
+        let (svc, _dir) = test_service().await;
+        let empty = play(&svc, "Close finished parents").await;
+        assert_eq!(
+            opening_content(&svc, &empty).await,
+            format!(
+                "Here is what [Close finished parents](nodespace://{empty}) does.\n\
+                 \n\
+                 It has no rules yet.\n\
+                 \n\
+                 What would you like to change?"
+            )
+        );
+
+        // Another field failing to decode does not make the rules unreadable.
+        let bad_switch = Node::new(
+            "play".to_string(),
+            "Half broken".to_string(),
+            json!({ "enabled": "yes", "rules": [close_parent_rule()] }),
+        );
+        let content = opening_message("Half broken", &bad_switch);
+        assert!(
+            content.contains("It has one rule.\n\n**close parent**"),
+            "{content}"
+        );
+
+        let empty_and_bad_switch = Node::new(
+            "play".to_string(),
+            "Empty".to_string(),
+            json!({ "enabled": "yes", "rules": [] }),
+        );
+        let content = opening_message("Empty", &empty_and_bad_switch);
+        assert!(content.contains("It has no rules yet."), "{content}");
+
+        let unreadable = Node::new(
+            "play".to_string(),
+            "Broken".to_string(),
+            json!({ "description": "Does something.", "rules": "nope" }),
+        );
+        let content = opening_message("Broken", &unreadable);
+        assert!(
+            content
+                .contains("does. Does something.\n\nIts rules can't be read as they are stored."),
+            "{content}"
+        );
+    }
+
+    #[test]
+    fn a_trigger_is_described_from_its_fields() {
+        let described = |trigger: serde_json::Value| {
+            describe_trigger(&serde_json::from_value(trigger).unwrap())
+        };
+        let event = |on: &str, select: serde_json::Value| json!({ "type": "graph_event", "on": on, "select": select });
+        assert_eq!(
+            described(event("property_changed", json!({ "target_type": "*" }))),
+            "When any property changes on a node"
+        );
+        assert_eq!(
+            described(event(
+                "relationship_added",
+                json!({ "target_type": "invoice" })
+            )),
+            "When a relationship is added from an invoice"
+        );
+        assert_eq!(
+            described(event("relationship_removed", json!({ "query_id": "q-1" }))),
+            "When a relationship is removed from a node the saved query selects"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_opening_message_offers_the_options_explaining_first() {
         let (svc, _dir) = test_service().await;
         seed_authoring_skill(&svc).await;
         let play_id = play(&svc, "Close finished parents").await;
@@ -280,11 +659,19 @@ mod tests {
         assert_eq!(opening.role, AiChatMessageRole::Assistant);
         assert_eq!(opening.outcome, Some(AiChatTurnOutcome::Clarified));
         assert_eq!(opening.options, EDIT_OPTIONS);
-        assert_eq!(
-            opening.content,
-            format!(
-                "What would you like to change in [Close finished parents](nodespace://{play_id})?"
-            )
+        assert_eq!(opening.options.len(), 6);
+        assert_eq!(opening.options[0], "Explain this play");
+        assert!(
+            opening.content.starts_with(&format!(
+                "Here is what [Close finished parents](nodespace://{play_id}) does."
+            )),
+            "{}",
+            opening.content
+        );
+        assert!(
+            opening.content.ends_with("What would you like to change?"),
+            "{}",
+            opening.content
         );
         assert!(opening.reasoning.is_none());
         assert!(opening.completed_writes.is_empty() && opening.resolved_entities.is_empty());
@@ -397,13 +784,15 @@ mod tests {
     /// A title cannot break the link that records the mention.
     #[test]
     fn the_link_text_drops_the_characters_that_would_end_it() {
-        assert_eq!(
-            opening_message("Close [done] parents", "p1"),
-            "What would you like to change in [Close done parents](nodespace://p1)?"
+        let play = Node::new_with_id(
+            "p1".to_string(),
+            "play".to_string(),
+            String::new(),
+            json!({ "rules": [] }),
         );
-        assert_eq!(
-            opening_message("  ", "p1"),
-            "What would you like to change in [this play](nodespace://p1)?"
-        );
+        assert!(opening_message("Close [done] parents", &play)
+            .starts_with("Here is what [Close done parents](nodespace://p1) does."));
+        assert!(opening_message("  ", &play)
+            .starts_with("Here is what [this play](nodespace://p1) does."));
     }
 }

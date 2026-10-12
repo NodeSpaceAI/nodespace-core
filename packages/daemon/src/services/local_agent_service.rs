@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentToolExecutor, ChatInferenceEngine, ChatMessage, ChatModelSpec, ClarifyPrompt,
     InferenceError, InferenceUsage, LocalAgentStatus, MentionedEntity, ModelManager, ModelStatus,
-    PriorTurn, PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
+    PinnedSubject, PriorTurn, PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
@@ -810,6 +810,7 @@ impl LocalAgentServiceImpl {
 
         let prior_writes = prior_writes_from_history(&messages);
         let prior_turns = prior_turns_from_history(&messages);
+        let offered_options = opening_options_on_offer(&messages);
         let history = node_history_from_messages(messages);
         if history.is_empty() {
             tracing::warn!(node_id, "ai-chat history empty — skipping turn");
@@ -896,10 +897,24 @@ impl LocalAgentServiceImpl {
         }
 
         // A pinned skill is a Stage-2 candidate on every routed turn of this
-        // chat, beside what retrieval finds (ADR-090 §5).
+        // chat, beside what retrieval finds, and Stage 1 is told what the
+        // chat pins (ADR-090 §5).
         if !pins.skills.is_empty() {
+            let subjects = pins
+                .nodes
+                .iter()
+                .map(|node| PinnedSubject {
+                    title: node.title.clone(),
+                    node_type: node.node_type.clone(),
+                })
+                .collect();
             service
-                .set_session_pinned_skills(&session_id, pins.skills)
+                .set_session_pins(&session_id, pins.skills, subjects)
+                .await;
+        }
+        if !offered_options.is_empty() {
+            service
+                .set_session_offered_options(&session_id, offered_options)
                 .await;
         }
 
@@ -2804,6 +2819,39 @@ fn prior_turns_from_history(messages: &[StoredMessage]) -> Vec<PriorTurn> {
             })
         })
         .collect()
+}
+
+/// The options of the message a chat was opened with (ADR-090 §3), while
+/// the user's latest message can be picking one of them.
+///
+/// [`prior_turns_from_history`] leaves the opening message out, because it
+/// answered no request. A message of the user's can still be one of the
+/// choices it offered, and those are the chat's own for as long as it runs
+/// (ADR-090 §5): measured on the built-in model, "Change a condition" sent
+/// after "Explain this play" was put to Stage 1, led by Graph Editing, and
+/// answered with a question about which play was meant.
+///
+/// Only the opening message's, and not while the assistant's last message
+/// offered options of its own. Those belong to whichever skill asked, on
+/// whatever topic the chat had moved to, and a reply to one is routed as the
+/// answer to a clarification is.
+fn opening_options_on_offer(messages: &[StoredMessage]) -> Vec<String> {
+    let [opening, later @ ..] = messages else {
+        return Vec::new();
+    };
+    let answered = later
+        .last()
+        .is_some_and(|m| m.role == AiChatMessageRole::User);
+    let asked_since = later
+        .iter()
+        .rev()
+        .find(|m| m.role == AiChatMessageRole::Assistant)
+        .is_some_and(|m| !m.options.is_empty());
+    if opening.role == AiChatMessageRole::Assistant && answered && !asked_since {
+        opening.options.clone()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
@@ -4728,8 +4776,17 @@ mod tests {
         let opened = load_chat_messages(&node_service, &chat_id).await;
         assert_eq!(opened[0].outcome, Some(AiChatTurnOutcome::Clarified));
         assert!(prior_turns_from_history(&opened).is_empty());
+        // No user message yet, so nothing is being answered.
+        assert!(opening_options_on_offer(&opened).is_empty());
 
         send_user_message(&node_service, &chat_id, "Change a condition").await;
+        // The user's first message answers the opening message, whose
+        // options are the ones it may have picked.
+        let answered = load_chat_messages(&node_service, &chat_id).await;
+        assert_eq!(
+            opening_options_on_offer(&answered),
+            play_edit_chat::EDIT_OPTIONS
+        );
         svc.maybe_handle_ai_chat_node(&chat_id).await;
 
         // One generation: the reply was not put back as a second question.
@@ -4742,6 +4799,40 @@ mod tests {
                 response: "Which rule?".to_string(),
             }]
         );
+        // The opening message's options stay on offer after the first
+        // reply: "Change a condition", then "Add a rule".
+        send_user_message(&node_service, &chat_id, "Add a rule").await;
+        let second = load_chat_messages(&node_service, &chat_id).await;
+        assert_eq!(
+            opening_options_on_offer(&second),
+            play_edit_chat::EDIT_OPTIONS
+        );
+        // Not while the assistant's last message offered its own. A later
+        // clarification's options are its asker's: the answer to one is
+        // routed as the answer to a clarification.
+        let asked = ["Website".to_string(), "Mobile".to_string()];
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage {
+                outcome: Some(AiChatTurnOutcome::Clarified),
+                options: &asked,
+                ..NewMessage::text(AiChatMessageRole::Assistant, "Which project?")
+            },
+        )
+        .await
+        .expect("append a clarification");
+        send_user_message(&node_service, &chat_id, "Website").await;
+        let next = load_chat_messages(&node_service, &chat_id).await;
+        assert!(opening_options_on_offer(&next).is_empty());
+
+        // A chat the user opened has no opening message to pick from.
+        let asked = next[1].clone();
+        let answered = next[2].clone();
+        assert_eq!(asked.role, AiChatMessageRole::User);
+        assert_eq!(answered.role, AiChatMessageRole::Assistant);
+        let user_opened = [asked.clone(), answered, asked];
+        assert!(opening_options_on_offer(&user_opened).is_empty());
     }
 
     /// A chat's pinned skill reaches the turn: read from the chat's `pins`
