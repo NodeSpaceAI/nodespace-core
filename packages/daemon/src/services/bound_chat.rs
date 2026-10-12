@@ -9,14 +9,15 @@
 //! describer, a skill and the options for a change. It is found through the
 //! type registry, so a subtype of a type that takes part takes part too.
 
-use nodespace_agent::skill_pipeline::PLAY_AUTHORING_SKILL_ID;
+use nodespace_agent::skill_pipeline::{PLAY_AUTHORING_SKILL_ID, QUERY_BUILDING_SKILL_ID};
 use nodespace_core::models::{
-    AiChatMessageRole, AiChatTurnOutcome, CoreNodeType, Node, PlayFields, AI_CHAT_PINS,
-    NODESPACE_AGENT, PLAY_RULES_FIELD,
+    AiChatMessageRole, AiChatTurnOutcome, CoreNodeType, Node, PlayFields, QueryFields,
+    AI_CHAT_PINS, NODESPACE_AGENT, PLAY_RULES_FIELD,
 };
 use nodespace_core::playbook::types::{
     GraphEventType, RuleClass, RuleDefinition, Selector, Trigger,
 };
+use nodespace_core::services::query_service::description::describe_query;
 use nodespace_core::services::{
     CreateNodeParams, InsertPositionOwned, NewRelationship, NodeService, NodeServiceError,
 };
@@ -66,9 +67,24 @@ const PLAY: BoundChatType = BoundChatType {
     describe: describe_play,
 };
 
+/// A saved query is described from its definition, asked about and changed
+/// with the view-building skill, and changed in four ways (ADR-100 §6).
+const QUERY: BoundChatType = BoundChatType {
+    noun: "view",
+    skill_id: QUERY_BUILDING_SKILL_ID,
+    changes: &[
+        "Add or change a filter",
+        "Change the sorting",
+        "Change what it lists",
+        "Change how it is shown",
+    ],
+    describe: describe_query_node,
+};
+
 /// The types that take part, each with what it supplies. A type is matched by
 /// what it is or extends, so a subtype takes part with its ancestor's.
-const PARTICIPANTS: [(CoreNodeType, &BoundChatType); 1] = [(CoreNodeType::Play, &PLAY)];
+const PARTICIPANTS: [(CoreNodeType, &BoundChatType); 2] =
+    [(CoreNodeType::Play, &PLAY), (CoreNodeType::Query, &QUERY)];
 
 /// What `node_type` supplies, or `None` when it does not take part.
 async fn bound_chat_type(
@@ -264,6 +280,15 @@ fn node_link(noun: &str, title: &str, id: &str) -> String {
         label.trim().to_string()
     };
     format!("[{label}](nodespace://{id})")
+}
+
+/// A saved query in words, with no model call: what it lists, rendered from
+/// its definition ([`describe_query`]).
+fn describe_query_node(query: &Node, link: &str) -> String {
+    match QueryFields::from_properties(&query.properties) {
+        Ok(fields) => format!("Here is what {link} shows. {}", describe_query(&fields)),
+        Err(_) => format!("Here is {link}. Its definition can't be read as it is stored."),
+    }
 }
 
 /// A play in words, with no model call: the play's own description, then each
@@ -940,6 +965,60 @@ mod tests {
             ..schema_like
         };
         assert_eq!(none.options(), ["Explain this type"]);
+    }
+
+    /// A saved query opens on what it lists, then offers to explain it first.
+    #[tokio::test]
+    async fn a_saved_query_opens_on_what_it_lists() {
+        let (svc, _dir) = test_service().await;
+        let query_id = svc
+            .create_node(Node::new(
+                "query".to_string(),
+                "Open tasks".to_string(),
+                json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "property", "operator": "equals",
+                        "property": "status", "value": "open"
+                    }],
+                    "sorting": [{ "field": "priority", "direction": "asc" }]
+                }),
+            ))
+            .await
+            .unwrap();
+
+        let chat_id = open_bound_chat(&svc, &query_id, ChatModel::default())
+            .await
+            .unwrap();
+
+        let opening = load_messages(&svc, &chat_id).await.unwrap().remove(0);
+        assert_eq!(
+            opening.content,
+            format!(
+                "Here is what [Open tasks](nodespace://{query_id}) shows. \
+                 Lists tasks whose status is open. Sorted by priority. Shows at most 50.\n\
+                 \n\
+                 What would you like to change?"
+            )
+        );
+        assert_eq!(
+            opening.options,
+            [
+                "Explain this view",
+                "Add or change a filter",
+                "Change the sorting",
+                "Change what it lists",
+                "Change how it is shown",
+            ]
+        );
+        let pins = load_chat_pins(&svc, &chat_id).await;
+        assert_eq!(
+            pins.nodes
+                .iter()
+                .map(|n| n.node_type.as_str())
+                .collect::<Vec<_>>(),
+            ["query"]
+        );
     }
 
     /// A title cannot break the link that records the mention.

@@ -325,6 +325,7 @@ async fn resolve_property(
              type's schema: name the type the query selects instead of every type"
         )));
     }
+    let refuse_unknown = declared_fields.refuse_unknown;
     let TypeFields { fields, owners } = declared_fields.of(node_service, target_type).await?;
     let bucket = owners
         .get(segments[0])
@@ -333,6 +334,23 @@ async fn resolve_property(
     if segments.len() < 2 {
         if !fields.iter().any(|field| field.name == name) {
             refuse_relationship_as_field(node_service, target_type, name, label).await?;
+            // A name no schema declares matches no node, and an empty view
+            // reads as an answer. Said with the fields this type has, so the
+            // next attempt can be the right one. A name another type declares
+            // is not refused: a subtype's field, or an attribute a type
+            // derives, still runs and matches nothing here.
+            if refuse_unknown
+                && !NODE_COLUMNS.contains(&name)
+                && !declared_anywhere(node_service, name).await?
+            {
+                let mut declared: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                declared.sort_unstable();
+                return Err(OpsError::InvalidParams(format!(
+                    "{label} '{name}': the '{target_type}' schema declares no field '{name}'. \
+                     Its fields are: {}",
+                    declared.join(", ")
+                )));
+            }
         }
         // An enum has no path into it, so a path has no subtype buckets.
         let subtypes = subtype_buckets(node_service, declared_fields, target_type, name).await?;
@@ -511,6 +529,21 @@ async fn refuse_relationship_as_field(
     )))
 }
 
+/// Whether any schema declares a field called `name`, or a core type derives
+/// an attribute of that name (`checked` on a checkbox).
+async fn declared_anywhere(node_service: &NodeService, name: &str) -> Result<bool, OpsError> {
+    if !crate::models::DerivedAttribute::declared_as(name).is_empty() {
+        return Ok(true);
+    }
+    let schemas = node_service
+        .get_all_schemas()
+        .await
+        .map_err(|e| OpsError::Internal(e.to_string()))?;
+    Ok(schemas
+        .iter()
+        .any(|schema| schema.fields.iter().any(|field| field.name == name)))
+}
+
 /// The subtypes of `target_type` whose rows keep `field` in a bucket of
 /// their own, with what each stored value reads as at `target_type`
 /// (ADR-078).
@@ -593,6 +626,21 @@ pub async fn resolve_sorting(
     sorting: Vec<SortConfig>,
 ) -> Result<Vec<SortConfig>, OpsError> {
     let mut declared_fields = DeclaredFields::default();
+    resolve_sorting_with(node_service, &mut declared_fields, target_type, sorting).await
+}
+
+/// [`resolve_sorting`] for a saved query being written: a field no schema
+/// declares is refused, naming the fields the type has. A run resolves
+/// without this check, so a search by a name that matches nothing still runs.
+pub async fn resolve_saved_sorting(
+    node_service: &NodeService,
+    target_type: &str,
+    sorting: Vec<SortConfig>,
+) -> Result<Vec<SortConfig>, OpsError> {
+    let mut declared_fields = DeclaredFields {
+        refuse_unknown: true,
+        ..DeclaredFields::default()
+    };
     resolve_sorting_with(node_service, &mut declared_fields, target_type, sorting).await
 }
 
@@ -718,6 +766,9 @@ struct DeclaredFields {
     types: std::collections::HashMap<String, TypeFields>,
     /// Each type's subtypes, itself left out.
     subtypes: std::collections::HashMap<String, Vec<String>>,
+    /// Refuse a name no schema declares, instead of leaving it to match
+    /// nothing. Set when a saved query is written.
+    refuse_unknown: bool,
 }
 
 impl DeclaredFields {
@@ -776,6 +827,20 @@ pub async fn resolve_filters(
     filters: Vec<QueryFilter>,
 ) -> Result<Vec<QueryFilter>, OpsError> {
     let mut declared_fields = DeclaredFields::default();
+    resolve_filters_with(node_service, &mut declared_fields, target_type, filters).await
+}
+
+/// [`resolve_filters`] for a saved query being written: a property no schema
+/// declares is refused, naming the fields the type has.
+pub async fn resolve_saved_filters(
+    node_service: &NodeService,
+    target_type: &str,
+    filters: Vec<QueryFilter>,
+) -> Result<Vec<QueryFilter>, OpsError> {
+    let mut declared_fields = DeclaredFields {
+        refuse_unknown: true,
+        ..DeclaredFields::default()
+    };
     resolve_filters_with(node_service, &mut declared_fields, target_type, filters).await
 }
 
@@ -4410,8 +4475,8 @@ mod tests {
             let refused = execute_query(&svc, sorted).await.unwrap_err().to_string();
             assert!(refused.contains("sort field 'assignee'"), "{refused}");
 
-            // A declared field and a name that is no relationship at all still
-            // run: the second matches nothing, as it always has.
+            // A declared field and a name that is no relationship at all
+            // still run: the second matches nothing, as it always has.
             for property in ["status", "no_such_field"] {
                 let input: ExecuteQueryInput = serde_json::from_value(json!({
                     "target_type": "task",
@@ -4423,6 +4488,96 @@ mod tests {
                 execute_query(&svc, input)
                     .await
                     .unwrap_or_else(|e| panic!("{property}: {e}"));
+            }
+
+            // Writing a saved query refuses a name no schema declares, with
+            // the fields the type has: it would match nothing, and an empty
+            // view reads as an answer.
+            let filter = |property: &str| -> Vec<QueryFilter> {
+                serde_json::from_value(json!([{
+                    "type": "property", "operator": "exists", "property": property
+                }]))
+                .unwrap()
+            };
+            resolve_saved_filters(&svc, "task", filter("status"))
+                .await
+                .expect("a declared field is accepted");
+            let refused = resolve_saved_filters(&svc, "task", filter("no_such_field"))
+                .await
+                .unwrap_err();
+            assert!(matches!(refused, OpsError::InvalidParams(_)), "{refused:?}");
+            let message = refused.to_string();
+            assert!(
+                message.contains("declares no field 'no_such_field'")
+                    && message.contains("Its fields are:")
+                    && message.contains("priority")
+                    && message.contains("status"),
+                "{message}"
+            );
+
+            let sort = |field: &str| -> Vec<SortConfig> {
+                serde_json::from_value(json!([{ "field": field, "direction": "asc" }])).unwrap()
+            };
+            resolve_saved_sorting(&svc, "task", sort("created_at"))
+                .await
+                .expect("a node column is accepted");
+            let refused = resolve_saved_sorting(&svc, "task", sort("no_such_field"))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                refused.contains("sort field 'no_such_field'")
+                    && refused.contains("Its fields are:"),
+                "{refused}"
+            );
+        }
+
+        /// Saving a query node refuses a name no schema declares, at the top
+        /// level and inside a related filter, with the fields the type has;
+        /// a declared name saves.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn saving_a_query_refuses_an_undeclared_field_and_names_the_ones_that_exist() {
+            let (svc, _tmp) = make_test_service().await;
+            let query = |properties: serde_json::Value| {
+                Node::new("query".to_string(), "A view".to_string(), properties)
+            };
+
+            svc.create_node(query(json!({
+                "target_type": "task",
+                "filters": [{ "type": "property", "operator": "exists", "property": "status" }],
+                "sorting": [{ "field": "priority", "direction": "asc" }]
+            })))
+            .await
+            .expect("a declared field saves");
+
+            for properties in [
+                json!({
+                    "target_type": "task",
+                    "filters": [{ "type": "property", "operator": "exists", "property": "no_such_field" }]
+                }),
+                json!({
+                    "target_type": "task",
+                    "filters": [],
+                    "sorting": [{ "field": "no_such_field", "direction": "asc" }]
+                }),
+                json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "related", "operator": "exists", "path": ["blocked_by"],
+                        "filter": { "type": "property", "operator": "exists", "property": "no_such_field" }
+                    }]
+                }),
+            ] {
+                let refused = svc
+                    .create_node(query(properties.clone()))
+                    .await
+                    .expect_err(&format!("{properties} must be refused"))
+                    .to_string();
+                assert!(
+                    refused.contains("declares no field 'no_such_field'")
+                        && refused.contains("Its fields are:"),
+                    "{refused}"
+                );
             }
         }
 

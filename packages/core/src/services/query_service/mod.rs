@@ -41,6 +41,7 @@
 //! ```
 
 pub mod core_queries;
+pub mod description;
 
 use crate::db::SqliteStore;
 use crate::models::Node;
