@@ -41,13 +41,13 @@ use nodespace_nlp_engine::{
 use nodespace_types::{DatabaseSettingsNodeUpdate, DATABASE_SETTINGS_NODE_ID};
 
 use crate::services::ai_chat_title;
+use crate::services::bound_chat::{self, BoundChatError, ChatModel};
 use crate::services::chat_idle_gate::ChatIdleGate;
 use crate::services::chat_messages::{
     self, clip_summary, flatten_label, write_target, CompletedWrite, NewMessage, ResolvedEntity,
     StoredMessage,
 };
 use crate::services::chat_pins;
-use crate::services::play_edit_chat::{self, ChatModel, PlayEditChatError};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -56,12 +56,11 @@ use tonic::{Request, Response, Status};
 use crate::nodespace::{
     local_agent_service_server::LocalAgentService as GrpcLocalAgentService, AgentChunk,
     CancelModelDownloadRequest, CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse,
-    CreatePlayEditChatRequest, CreatePlayEditChatResponse, DeleteModelRequest, DeleteModelResponse,
-    DownloadModelRequest, EnsureModelReadyRequest, GetLocalStatusRequest, GetSystemRamRequest,
-    GetSystemRamResponse, ListModelsRequest, ListModelsResponse, LoadModelRequest,
-    LoadModelResponse, LocalAgentStatusResponse, ModelEntry, ModelLoadProgressEvent,
-    RecommendedModelRequest, RecommendedModelResponse, SubscribeTokenStreamRequest,
-    UnloadModelRequest, UnloadModelResponse,
+    DeleteModelRequest, DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest,
+    GetLocalStatusRequest, GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest,
+    ListModelsResponse, LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
+    ModelLoadProgressEvent, OpenBoundChatRequest, OpenBoundChatResponse, RecommendedModelRequest,
+    RecommendedModelResponse, SubscribeTokenStreamRequest, UnloadModelRequest, UnloadModelResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -1476,27 +1475,24 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         Ok(Response::new(CancelTurnResponse {}))
     }
 
-    async fn create_play_edit_chat(
+    async fn open_bound_chat(
         &self,
-        request: Request<CreatePlayEditChatRequest>,
-    ) -> Result<Response<CreatePlayEditChatResponse>, Status> {
+        request: Request<OpenBoundChatRequest>,
+    ) -> Result<Response<OpenBoundChatResponse>, Status> {
         let this = self.route(&request).await?;
         let req = request.into_inner();
         let model = ChatModel {
             provider: req.provider,
             model: req.model,
         };
-        let chat_id =
-            play_edit_chat::create_play_edit_chat(&this.inner.node_service, &req.play_id, model)
-                .await
-                .map_err(|error| match error {
-                    PlayEditChatError::PlayNotFound(_) => Status::not_found(error.to_string()),
-                    PlayEditChatError::NotAPlay { .. } => {
-                        Status::invalid_argument(error.to_string())
-                    }
-                    PlayEditChatError::Service(_) => Status::internal(error.to_string()),
-                })?;
-        Ok(Response::new(CreatePlayEditChatResponse { chat_id }))
+        let chat_id = bound_chat::open_bound_chat(&this.inner.node_service, &req.node_id, model)
+            .await
+            .map_err(|error| match error {
+                BoundChatError::NodeNotFound(_) => Status::not_found(error.to_string()),
+                BoundChatError::NotSupported { .. } => Status::invalid_argument(error.to_string()),
+                BoundChatError::Service(_) => Status::internal(error.to_string()),
+            })?;
+        Ok(Response::new(OpenBoundChatResponse { chat_id }))
     }
 
     async fn get_status(
@@ -4693,7 +4689,7 @@ mod tests {
 
     /// A play's edit chat, on a service whose engine records what it is sent.
     /// Returns the play's and the chat's ids and the recorded requests.
-    async fn play_edit_chat_on_a_recording_engine(
+    async fn bound_chat_on_a_recording_engine(
         svc: &LocalAgentServiceImpl,
         node_service: &Arc<NodeService>,
     ) -> (String, String, Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>) {
@@ -4711,10 +4707,9 @@ mod tests {
             ))
             .await
             .expect("create play");
-        let chat_id =
-            play_edit_chat::create_play_edit_chat(node_service, &play_id, ChatModel::default())
-                .await
-                .expect("create edit chat");
+        let chat_id = bound_chat::open_bound_chat(node_service, &play_id, ChatModel::default())
+            .await
+            .expect("create edit chat");
         (play_id, chat_id, requests)
     }
 
@@ -4735,7 +4730,7 @@ mod tests {
     async fn an_edit_chats_first_turn_answers_the_reply_to_its_opening_message() {
         let (svc, node_service, _tempdir) = test_service().await;
         let (play_id, chat_id, requests) =
-            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+            bound_chat_on_a_recording_engine(&svc, &node_service).await;
         assert!(
             requests.lock().unwrap().is_empty(),
             "creating the chat must not call a model"
@@ -4775,7 +4770,7 @@ mod tests {
     async fn an_edit_chats_opening_message_is_not_a_requests_clarification() {
         let (svc, node_service, _tempdir) = test_service().await;
         let (_play_id, chat_id, requests) =
-            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+            bound_chat_on_a_recording_engine(&svc, &node_service).await;
 
         let opened = load_chat_messages(&node_service, &chat_id).await;
         assert_eq!(opened[0].outcome, Some(AiChatTurnOutcome::Clarified));
@@ -4787,10 +4782,7 @@ mod tests {
         // The user's first message answers the opening message, whose
         // options are the ones it may have picked.
         let answered = load_chat_messages(&node_service, &chat_id).await;
-        assert_eq!(
-            opening_options_on_offer(&answered),
-            play_edit_chat::EDIT_OPTIONS
-        );
+        assert_eq!(opening_options_on_offer(&answered), opened[0].options);
         svc.maybe_handle_ai_chat_node(&chat_id).await;
 
         // One generation: the reply was not put back as a second question.
@@ -4807,10 +4799,7 @@ mod tests {
         // reply: "Change a condition", then "Add a rule".
         send_user_message(&node_service, &chat_id, "Add a rule").await;
         let second = load_chat_messages(&node_service, &chat_id).await;
-        assert_eq!(
-            opening_options_on_offer(&second),
-            play_edit_chat::EDIT_OPTIONS
-        );
+        assert_eq!(opening_options_on_offer(&second), opened[0].options);
         // Not while the assistant's last message offered its own. A later
         // clarification's options are its asker's: the answer to one is
         // routed as the answer to a clarification.
@@ -4857,7 +4846,7 @@ mod tests {
             .await
             .expect("seed the skill");
         let (_play_id, chat_id, requests) =
-            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+            bound_chat_on_a_recording_engine(&svc, &node_service).await;
         let unpinned_chat =
             create_processing_node_with_user_message(&node_service, "Change a condition").await;
 
@@ -4881,7 +4870,7 @@ mod tests {
     async fn a_pinned_node_stays_in_the_entity_list_past_the_cap() {
         let (svc, node_service, _tempdir) = test_service().await;
         let (play_id, chat_id, requests) =
-            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+            bound_chat_on_a_recording_engine(&svc, &node_service).await;
 
         send_user_message(&node_service, &chat_id, "Which tasks does it touch?").await;
         let mut looked_up = Vec::new();

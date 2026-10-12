@@ -23,8 +23,7 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import { getNavigationService } from '$lib/services/navigation-service';
-  import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+  import BoundChatButton from '$lib/components/chat/bound-chat-button.svelte';
   import {
     actionForEach,
     asPlayNode,
@@ -79,23 +78,10 @@
     confirmingDisable = false;
   }
 
-  // Why the last Edit opened no chat. View state, not play state.
+  // Why the last Edit opened no chat. View state, not play state. Edit opens
+  // a chat bound to this play beside it (ADR-090 §3), which the play stays in
+  // view of and follows.
   let editError = $state('');
-
-  /**
-   * Edit: a new chat bound to this play, opened beside it (ADR-090 §3). Each
-   * click makes a new chat. The play stays in view and follows what the chat
-   * writes.
-   */
-  async function handleEdit() {
-    editError = '';
-    const chat = await aiChatsData.createPlayEditChat(nodeId);
-    if (!chat) {
-      editError = aiChatsData.createError;
-      return;
-    }
-    await getNavigationService().navigateToNodeInOtherPane(chat.id);
-  }
 
   function formatTime(timestamp: string): string {
     const date = new Date(timestamp);
@@ -117,15 +103,7 @@
           aria-label="Play on"
           bind:checked={() => playStatus === 'on', handleSwitch}
         />
-        <Button
-          class="play-edit"
-          variant="outline"
-          size="sm"
-          disabled={aiChatsData.createBusy}
-          onclick={handleEdit}
-        >
-          Edit
-        </Button>
+        <BoundChatButton class="play-edit" {nodeId} bind:error={editError} />
       </div>
 
       {#if editError}

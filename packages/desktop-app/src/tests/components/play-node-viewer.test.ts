@@ -302,7 +302,7 @@ describe('PlayNodeViewer', () => {
     } as unknown as Node;
 
     it('creates a chat bound to the play and opens it beside the play', async () => {
-      const createPlayEditChat = vi.spyOn(aiChatsData, 'createPlayEditChat').mockResolvedValue(chat);
+      const openBoundChat = vi.spyOn(aiChatsData, 'openBoundChat').mockResolvedValue(chat);
       const navigateToNodeInOtherPane = vi
         .spyOn(getNavigationService(), 'navigateToNodeInOtherPane')
         .mockResolvedValue();
@@ -311,7 +311,7 @@ describe('PlayNodeViewer', () => {
       await fireEvent.click(getByRole('button', { name: 'Edit' }));
       await tick();
 
-      expect(createPlayEditChat).toHaveBeenCalledWith(PLAY_ID);
+      expect(openBoundChat).toHaveBeenCalledWith(PLAY_ID);
       expect(navigateToNodeInOtherPane).toHaveBeenCalledWith('chat-1');
       expect(container.querySelector('.edit-error')).toBeNull();
       // Opening the chat writes nothing to the play.
@@ -319,7 +319,7 @@ describe('PlayNodeViewer', () => {
     });
 
     it('makes a new chat on every click', async () => {
-      const createPlayEditChat = vi.spyOn(aiChatsData, 'createPlayEditChat').mockResolvedValue(chat);
+      const openBoundChat = vi.spyOn(aiChatsData, 'openBoundChat').mockResolvedValue(chat);
       vi.spyOn(getNavigationService(), 'navigateToNodeInOtherPane').mockResolvedValue();
       const { getByRole } = open();
 
@@ -328,11 +328,11 @@ describe('PlayNodeViewer', () => {
       await fireEvent.click(getByRole('button', { name: 'Edit' }));
       await tick();
 
-      expect(createPlayEditChat).toHaveBeenCalledTimes(2);
+      expect(openBoundChat).toHaveBeenCalledTimes(2);
     });
 
     it('says why when the chat could not be created, and opens nothing', async () => {
-      vi.spyOn(aiChatsData, 'createPlayEditChat').mockImplementation(async () => {
+      vi.spyOn(aiChatsData, 'openBoundChat').mockImplementation(async () => {
         aiChatsData.createError = 'the daemon is not running';
         return null;
       });

@@ -6,6 +6,7 @@
 pub mod agent_session_service;
 pub mod ai_chat_title;
 pub mod assembly;
+pub mod bound_chat;
 pub mod capture_service;
 pub mod chat_idle_gate;
 pub mod chat_messages;
@@ -17,7 +18,6 @@ pub mod extensions;
 pub mod import_service;
 pub mod local_agent_service;
 pub mod node_service;
-pub mod play_edit_chat;
 #[cfg(test)]
 pub(crate) mod required_extensions_tests;
 pub mod terminal_summary;

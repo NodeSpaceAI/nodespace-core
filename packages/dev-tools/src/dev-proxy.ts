@@ -1321,17 +1321,17 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
-  // POST /api/agent/play-edit-chat
-  if (method === 'POST' && pathname === '/api/agent/play-edit-chat') {
+  // POST /api/agent/bound-chat
+  if (method === 'POST' && pathname === '/api/agent/bound-chat') {
     try {
-      const body = await req.json() as { playId: string; provider?: string | null; model?: string | null };
+      const body = await req.json() as { nodeId: string; provider?: string | null; model?: string | null };
       const res = await agentCall<
-        { playId: string; provider?: string; model?: string },
+        { nodeId: string; provider?: string; model?: string },
         { chatId: string }
       >(
-        (agentClient as unknown as Record<string, Function>).createPlayEditChat,
+        (agentClient as unknown as Record<string, Function>).openBoundChat,
         {
-          playId: body.playId,
+          nodeId: body.nodeId,
           ...(body.provider ? { provider: body.provider } : {}),
           ...(body.model ? { model: body.model } : {}),
         }
