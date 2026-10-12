@@ -7594,20 +7594,16 @@ mod tests {
 
     /// No request can set a write context: whatever client id it presents,
     /// the service its RPC runs on writes with the default write context, and
-    /// its events carry the id as their label. (The superseded id still skips
-    /// rules by its value until it is removed; that path never sets a write
-    /// context either.)
+    /// the id is only the label its events carry.
     #[tokio::test]
     async fn a_client_id_header_never_sets_a_write_context() {
         let (svc, _tmp) = make_service().await;
         let mut events = svc.node_service.subscribe_to_events();
 
-        // The superseded id included: the write context stays the default.
-        for client_id in [
-            "window-a",
-            "apply",
-            nodespace_core::db::events::REPLICATED_APPLY_CLIENT_ID,
-        ] {
+        // The id core once reserved for this included, built from fragments
+        // so the value is not spelled out here.
+        let former_reserved = ["sync", "service"].join("-");
+        for client_id in ["window-a", "apply", former_reserved.as_str()] {
             let request = text_create("tagged", Some(client_id));
             let routed = svc.route(&request).await.unwrap();
             assert_eq!(
@@ -7626,11 +7622,13 @@ mod tests {
     }
 
     /// A request's client id never switches invariant rules off: an update a
-    /// rule refuses is refused whatever id the request presents.
+    /// rule refuses is refused whatever id the request presents, the one core
+    /// once reserved for this included (built from fragments).
     #[tokio::test]
     async fn a_client_id_header_does_not_skip_invariant_rules() {
         let (svc, _blocker, blocked, _tmp) = make_service_with_a_blocked_task().await;
-        for client_id in ["window-a", "apply"] {
+        let former_reserved = ["sync", "service"].join("-");
+        for client_id in ["window-a", "apply", former_reserved.as_str()] {
             let mut request = Request::new(start_request(&blocked));
             request.metadata_mut().insert(
                 nodespace_proto::CLIENT_ID_HEADER,

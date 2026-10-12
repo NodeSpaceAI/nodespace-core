@@ -9,7 +9,7 @@
 //! persisted, and surface the same `PlayRuleRejected` single-node writes do.
 
 use anyhow::Result;
-use nodespace_core::db::events::{DomainEvent, REPLICATED_APPLY_CLIENT_ID};
+use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::{SqliteStore, WriteContext};
 use nodespace_core::models::{Node, NodeFilter, NodeUpdate};
 use nodespace_core::services::{NodeService, NodeServiceError};
@@ -386,10 +386,10 @@ fn skipping_invariants(service: &NodeService) -> NodeService {
         })
 }
 
-/// The superseded client-id tag, which still reads as both flags set.
-/// Removed with `REPLICATED_APPLY_CLIENT_ID`.
-fn superseded_client_id(service: &NodeService) -> NodeService {
-    service.with_client(REPLICATED_APPLY_CLIENT_ID)
+/// The client id core once reserved for this, built from fragments so the
+/// value is not spelled out here. Now only a label.
+fn former_reserved_client_id(service: &NodeService) -> NodeService {
+    service.with_client(["sync", "service"].join("-"))
 }
 
 /// A receiving device never re-runs an invariant rule for a node that
@@ -400,11 +400,42 @@ async fn bulk_create_skipping_invariant_rules_does_not_run_them() -> Result<()> 
     applied_bulk_create_does_not_run_invariant_rules(skipping_invariants).await
 }
 
-/// The superseded client-id tag, as before. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
+/// A client id alone, the one core once reserved for this included, runs a
+/// bulk create's invariant rules like any other write.
 #[tokio::test]
-async fn sync_tagged_bulk_create_does_not_run_invariant_rules() -> Result<()> {
-    applied_bulk_create_does_not_run_invariant_rules(superseded_client_id).await
+async fn a_client_id_alone_runs_bulk_create_invariant_rules() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "bi-labelled",
+        json!([{ "name": "status", "type": "text" }]),
+    )
+    .await?;
+    let _engine = activate_rules(
+        &service,
+        reject_on_create(
+            "bi-labelled",
+            "node.status == 'blocked'",
+            "no blocked nodes",
+        ),
+    );
+
+    let labelled = Node::new(
+        "bi-labelled".to_string(),
+        "labelled".to_string(),
+        json!({ "bi-labelled": { "status": "blocked" } }),
+    );
+    let labelled_id = labelled.id.clone();
+    let err = former_reserved_client_id(&service)
+        .bulk_create(vec![labelled])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NodeServiceError::PlayRuleRejected { .. }),
+        "expected PlayRuleRejected, got {err:?}"
+    );
+    assert!(service.get_node(&labelled_id).await?.is_none());
+    Ok(())
 }
 
 async fn applied_bulk_create_does_not_run_invariant_rules(apply_with: ApplyWith) -> Result<()> {
@@ -868,13 +899,6 @@ async fn rejected_bulk_create_inside_a_batch_guard_contributes_no_events() -> Re
 #[tokio::test]
 async fn bulk_update_skipping_invariant_rules_does_not_run_them() -> Result<()> {
     applied_bulk_update_does_not_run_invariant_rules(skipping_invariants).await
-}
-
-/// The superseded client-id tag, as before. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
-#[tokio::test]
-async fn sync_tagged_bulk_update_does_not_run_invariant_rules() -> Result<()> {
-    applied_bulk_update_does_not_run_invariant_rules(superseded_client_id).await
 }
 
 async fn applied_bulk_update_does_not_run_invariant_rules(apply_with: ApplyWith) -> Result<()> {

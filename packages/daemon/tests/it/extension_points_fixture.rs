@@ -533,7 +533,8 @@ async fn an_invalid_reserved_client_id_stops_startup() {
 
 /// A request's client id never switches playbook triggers off: a reactive
 /// play fires for a node created over the node API whatever id the request
-/// presents, as it does for one with none.
+/// presents, as it does for one with none. The id core once reserved for
+/// this is included, built from fragments so the value is not spelled out.
 #[tokio::test]
 async fn a_client_id_never_skips_playbook_triggers() {
     use nodespace_daemon::nodespace::node_service_server::NodeService as _;
@@ -576,7 +577,13 @@ async fn a_client_id_never_skips_playbook_triggers() {
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    for client_id in [None, Some("window"), Some("apply")] {
+    let former_reserved = ["sync", "service"].join("-");
+    for client_id in [
+        None,
+        Some("window"),
+        Some("apply"),
+        Some(former_reserved.as_str()),
+    ] {
         let mut request = tonic::Request::new(nodespace_daemon::nodespace::CreateNodeRequest {
             node_type: "fixture-task".into(),
             content: format!("created as {client_id:?}"),

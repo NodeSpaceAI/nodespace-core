@@ -587,8 +587,8 @@ impl PlaybookEngine {
         // be installed locally once written here. What IS gated is trigger
         // evaluation against a mutation, by the write context the write was
         // made with (`WriteContext`, delivered beside the event and set only
-        // in-process through `NodeService::with_write_context`).
-        let write_context = write_context_of(&envelope, write_context);
+        // in-process through `NodeService::with_write_context`). The event's
+        // client id plays no part: it is a label for echo suppression.
 
         // ADR-060 §7: repair-and-log, for a write whose invariant rules were
         // skipped in its transaction because they already ran where the data
@@ -1586,33 +1586,6 @@ pub(crate) async fn rule_processor_loop(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// The write context the ADR-073 gate and repair-and-log read for
-/// `envelope`: `write_context`, the one its write was made with, or both
-/// flags set for a write tagged with the superseded
-/// [`REPLICATED_APPLY_CLIENT_ID`](crate::db::events::REPLICATED_APPLY_CLIENT_ID)
-/// (see [`is_replicated_apply`]).
-pub(crate) fn write_context_of(
-    envelope: &EventEnvelope,
-    write_context: WriteContext,
-) -> WriteContext {
-    if is_replicated_apply(envelope) {
-        return WriteContext {
-            skip_playbook_triggers: true,
-            skip_invariant_rules: true,
-        };
-    }
-    write_context
-}
-
-/// Whether `envelope` is tagged with the superseded
-/// [`REPLICATED_APPLY_CLIENT_ID`](crate::db::events::REPLICATED_APPLY_CLIENT_ID),
-/// which [`write_context_of`] treats as a write context with both flags set.
-/// Removed with the constant in the next release.
-pub(crate) fn is_replicated_apply(envelope: &EventEnvelope) -> bool {
-    envelope.metadata.source_client_id.as_deref()
-        == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
-}
 
 /// The chain depth to enforce `MAX_CHAIN_DEPTH` against for `work_item`
 /// (ADR-060 §5).

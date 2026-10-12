@@ -274,16 +274,6 @@ pub fn chain_depth_of_write(
     }
 }
 
-/// Superseded by [`WriteContext`]; removed in the next release.
-///
-/// A write whose `source_client_id` is this value is treated as if it had
-/// been made with a [`WriteContext`] that sets both flags: the playbook
-/// engine evaluates no trigger against its events and repairs it instead
-/// (ADR-073, ADR-060 §7), and no invariant rule runs in its transaction.
-/// Writers outside core still set the literal; once they make these writes
-/// through [`WriteContext`], the constant and the client-id comparison go.
-pub const REPLICATED_APPLY_CLIENT_ID: &str = "sync-service";
-
 /// How the rules that run on every write treat the writes made through one
 /// `NodeService`: the playbook engine's event triggers, and the invariant
 /// rules run inside a write's transaction.
@@ -293,7 +283,9 @@ pub const REPLICATED_APPLY_CLIENT_ID: &str = "sync-service";
 /// and validated on another device, say) sets it with
 /// [`NodeService::with_write_context`](crate::services::NodeService::with_write_context).
 /// It has no wire form: no request field or header sets it, so a client of
-/// the daemon can never switch rules off for its own writes this way.
+/// the daemon can never switch rules off for its own writes. A client id is
+/// only a label for echo suppression and never changes how a write is
+/// treated.
 ///
 /// Every event the write emits travels to the playbook engine with it (on
 /// the engine's own channel, beside the [`EventEnvelope`] every subscriber
@@ -426,14 +418,6 @@ pub enum DomainEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Writers outside core tag replicated writes with this literal instead of
-    /// importing the constant, so its value is part of the contract: changing
-    /// it would make those writes fire local rules and invariants again.
-    #[test]
-    fn replicated_apply_client_id_value_is_stable() {
-        assert_eq!(REPLICATED_APPLY_CLIENT_ID, "sync-service");
-    }
 
     /// Locks in the `node_thing` normalizer contract: bare ids (date
     /// pages, raw UUIDs) get prefixed; anything already containing
