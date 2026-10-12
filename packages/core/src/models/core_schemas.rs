@@ -201,32 +201,24 @@ fn task_status_field() -> SchemaField {
 }
 
 /// An issue's `status` field (ADR-098): the one it inherits from `task`,
-/// declared again with the issue's own statuses added. Each added value maps
+/// declared again with only the statuses the issue adds. Each added value maps
 /// to the task status it reads as at `task` scope (ADR-078), so a rule or a
-/// query written against `task` sees a status it knows. The values, their
-/// labels and the mapping are [`IssueStatus`]'s.
+/// query written against `task` sees a status it knows. The task's own values
+/// are not copied: the field's values are the task's current ones plus these,
+/// each placed after the value it maps to, which gives the order a
+/// board's columns and a status menu follow. The values, their labels and the
+/// mapping are [`IssueStatus`]'s.
 fn issue_status_field() -> SchemaField {
     let mut field = task_status_field();
-    let task_values = field
-        .core_values
-        .take()
-        .expect("a task's status declares its core values");
-    // In workflow order, which is the order a board's columns and a status
-    // menu follow: the review statuses sit between review and done.
     field.core_values = Some(
         IssueStatus::CORE
             .iter()
-            .map(|status| match status.own_label() {
-                Some(label) => EnumValue {
+            .filter_map(|status| {
+                status.own_label().map(|label| EnumValue {
                     value: status.as_str().to_string(),
                     label: label.to_string(),
                     maps_to: Some(status.task_status().as_str().to_string()),
-                },
-                None => task_values
-                    .iter()
-                    .find(|value| value.value == status.as_str())
-                    .expect("every other issue status is a task status")
-                    .clone(),
+                })
             })
             .collect(),
     );
@@ -3073,8 +3065,9 @@ mod tests {
     }
 
     /// ADR-098 §1: an issue's status is a task's with two values added, each
-    /// mapped to the task status it reads as. The values, the labels and the
-    /// mapping are `IssueStatus`'s, in both directions.
+    /// mapped to the task status it reads as. The schema stores only the two;
+    /// the effective field is the task's current values plus them. The values,
+    /// the labels and the mapping are `IssueStatus`'s, in both directions.
     #[test]
     fn issue_status_is_a_tasks_with_two_mapped_values() {
         use crate::models::TaskStatus;
@@ -3090,7 +3083,34 @@ mod tests {
                 .clone()
         };
         let task = status("task");
-        let issue = status("issue");
+        // The issue schema stores only the two statuses it adds; the task's
+        // five are inherited, not copied.
+        let stored = status("issue");
+        let stored_added: Vec<&str> = stored
+            .core_values
+            .iter()
+            .flatten()
+            .map(|v| v.value.as_str())
+            .collect();
+        assert_eq!(stored_added, ["changes_requested", "ready_to_merge"]);
+        // The field an issue's nodes see: the task's values with those two
+        // placed after the values they map to.
+        let issue = crate::schema::extends_chain::flatten_chain_fields(
+            ["issue", "task"]
+                .into_iter()
+                .map(|id| {
+                    schemas
+                        .iter()
+                        .find(|s| s.envelope.id == id)
+                        .unwrap()
+                        .fields
+                        .clone()
+                })
+                .collect(),
+        )
+        .into_iter()
+        .find(|f| f.name == "status")
+        .unwrap();
         let task_values = task.core_values.clone().unwrap();
         let issue_values = issue.core_values.clone().unwrap();
 
@@ -3113,8 +3133,8 @@ mod tests {
             .collect();
         assert_eq!(inherited, task_values);
         assert!(task_values.iter().all(|v| v.maps_to.is_none()));
-        // The whole list is in workflow order: review, then the review
-        // statuses, then done.
+        // The whole list is in the order each added status follows the task
+        // status it maps to.
         let order: Vec<&str> = issue_values.iter().map(|v| v.value.as_str()).collect();
         let workflow: Vec<&str> = IssueStatus::CORE.iter().map(IssueStatus::as_str).collect();
         assert_eq!(order, workflow);

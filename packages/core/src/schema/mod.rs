@@ -698,10 +698,12 @@ async fn validate_in_declarations_paired(
 /// `maps_to` would be unresolvable at that scope, which is a correctness bug
 /// rather than a cosmetic one.
 ///
-/// The inherited definition is materialized onto this schema as its own
-/// declaration of the field, carrying the parent's definition plus the new
-/// values. The parent is left untouched — its own vocabulary must not grow
-/// because a descendant extended it.
+/// The extension is stored on this schema as its own declaration of the field,
+/// listing only the values it adds: the parent's values are not copied, so a
+/// value the parent gains later is inherited live (the field's values are
+/// built by [`extends_chain::flatten_chain_fields`]). The parent is left
+/// untouched — its own vocabulary must not grow because a descendant extended
+/// it.
 ///
 /// Returns how many values were added.
 fn extend_inherited_field(
@@ -728,20 +730,23 @@ fn extend_inherited_field(
         )));
     }
 
-    // A previous extension may already have materialized this field onto the
-    // schema. Its values count as pre-existing — both for collision checks and
-    // as legal `maps_to` targets — so start from the materialized copy when
-    // one is present, falling back to the ancestor's definition otherwise.
-    let current = fields
-        .iter()
-        .find(|f| f.name == addition.field)
-        .unwrap_or(&inherited);
+    // `inherited` is the ancestors' effective field, so it already holds every
+    // value they have now. A previous extension may have stored values of its
+    // own on this schema; they count as pre-existing too, both for collision
+    // checks and as legal `maps_to` targets.
+    let own = fields.iter().find(|f| f.name == addition.field);
 
-    let mut existing_values: std::collections::HashSet<String> = current
+    let mut existing_values: std::collections::HashSet<String> = inherited
         .core_values
         .iter()
         .flatten()
-        .chain(current.user_values.iter().flatten())
+        .chain(inherited.user_values.iter().flatten())
+        .chain(own.iter().flat_map(|f| {
+            f.core_values
+                .iter()
+                .flatten()
+                .chain(f.user_values.iter().flatten())
+        }))
         .map(|ev| ev.value.clone())
         .collect();
 
@@ -798,9 +803,10 @@ fn extend_inherited_field(
         existing_values.insert(new_value.value.clone());
     }
 
-    // Materialize the inherited field as this schema's own, so the added
-    // values live on the extending schema rather than mutating the parent.
-    // Append to the existing materialized copy if one is already present.
+    // Store the extension as this schema's own declaration of the field,
+    // listing only the added values, so they live on the extending schema
+    // rather than mutating the parent. Append to the existing declaration if
+    // one is already present.
     match fields.iter_mut().find(|f| f.name == addition.field) {
         Some(existing) => {
             existing
@@ -809,16 +815,77 @@ fn extend_inherited_field(
                 .extend(addition.values.iter().cloned());
         }
         None => {
-            let mut materialized = inherited;
-            materialized
-                .user_values
-                .get_or_insert_with(Vec::new)
-                .extend(addition.values.iter().cloned());
-            fields.push(materialized);
+            let mut extension = inherited;
+            extension.core_values = Some(Vec::new());
+            extension.user_values = Some(addition.values.clone());
+            fields.push(extension);
         }
     }
 
     Ok(addition.values.len())
+}
+
+/// Refuse added values that a type extending `schema_id` already added to the
+/// same field, naming that type.
+///
+/// A descendant's stored extension lists only its own values, and the field's
+/// values are the ancestors' plus each descendant's, so a parent adding a value
+/// its descendant already carries would list it twice with two meanings. The
+/// parent's author resolves it (rename the value, or drop the descendant's).
+///
+/// The descendants are read once for the whole call, through the same closure
+/// `validate_no_shadowed_extension_fields` walks.
+async fn reject_descendant_value_collisions(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    additions: &[FieldValueAddition],
+) -> Result<(), MarkdownError> {
+    if additions.is_empty() {
+        return Ok(());
+    }
+    let mut descendants = node_service
+        .store()
+        .get_subtype_closure(schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve the types extending '{schema_id}': {e}"
+            ))
+        })?;
+    descendants.retain(|id| id != schema_id);
+    descendants.sort();
+
+    for id in &descendants {
+        let schema = node_service.get_schema_node(id).await.map_err(|e| {
+            MarkdownError::internal_error(format!("Failed to resolve schema '{id}': {e}"))
+        })?;
+        let Some(schema) = schema else { continue };
+        for addition in additions {
+            let Some(field) = schema.get_field(&addition.field) else {
+                continue;
+            };
+            let held: std::collections::HashSet<&str> = field
+                .core_values
+                .iter()
+                .flatten()
+                .chain(field.user_values.iter().flatten())
+                .map(|ev| ev.value.as_str())
+                .collect();
+            if let Some(clash) = addition
+                .values
+                .iter()
+                .find(|v| held.contains(v.value.as_str()))
+            {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Value '{}' cannot be added to field '{}' of '{}': '{}', which extends it, \
+                     already adds a value of that name. Choose a different value string, or \
+                     remove it from '{}' first.",
+                    clash.value, addition.field, schema_id, id, id
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Which reserved-name category a relationship name falls into, if any. The
@@ -3333,7 +3400,7 @@ pub async fn update_schema(
         // this schema's own list currently lacks it.
         //
         // The distinction is load-bearing. Extending an inherited field
-        // materializes it onto this schema (see `extend_inherited_field`), so
+        // stores the extension on this schema (see `extend_inherited_field`), so
         // an "absent from my own fields" test would report it as no longer
         // inherited on the very next call, and a second extension would take
         // the own-field path and escape the `maps_to` requirement entirely.
@@ -3347,12 +3414,14 @@ pub async fn update_schema(
             None => Vec::new(),
         };
 
+        reject_descendant_value_collisions(node_service, &params.schema_id, additions).await?;
+
         for addition in additions {
             // Extending an INHERITED field's vocabulary (ADR-078). The field
             // is not in `fields` at all, so it cannot be mutated in place —
-            // the added values are validated here and then materialized onto
-            // this schema as its own declaration of that field, carrying the
-            // inherited definition plus the new values.
+            // the added values are validated here and then stored on this
+            // schema as its own declaration of that field, listing only the
+            // new values: the inherited ones are read from the ancestors.
             if let Some(inherited) = inherited_fields
                 .iter()
                 .find(|f| f.name == addition.field)

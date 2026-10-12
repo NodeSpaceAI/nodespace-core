@@ -11,8 +11,8 @@
 export type IssueStatus =
   | 'open'
   | 'in_progress'
-  | 'in_review'
   | 'changes_requested'
+  | 'in_review'
   | 'ready_to_merge'
   | 'done'
   | 'cancelled'

@@ -19,9 +19,9 @@ pub enum IssueStatus {
     #[default]
     Open,
     InProgress,
-    InReview,
     /// Reviewed, with findings to fix.
     ChangesRequested,
+    InReview,
     /// Passed review, waiting to land.
     ReadyToMerge,
     Done,
@@ -35,13 +35,14 @@ impl IssueStatus {
     /// The statuses an issue adds to a task's.
     pub const OWN: [Self; 2] = [Self::ChangesRequested, Self::ReadyToMerge];
 
-    /// The core statuses, in workflow order: every variant but the
-    /// user-defined one.
+    /// The core statuses, in the order of an issue's effective status field:
+    /// each added status follows the task status it maps to. Every variant but
+    /// the user-defined one.
     pub const CORE: [Self; 7] = [
         Self::Open,
         Self::InProgress,
-        Self::InReview,
         Self::ChangesRequested,
+        Self::InReview,
         Self::ReadyToMerge,
         Self::Done,
         Self::Cancelled,
@@ -272,8 +273,8 @@ mod tests {
             [
                 "open",
                 "in_progress",
-                "in_review",
                 "changes_requested",
+                "in_review",
                 "ready_to_merge",
                 "done",
                 "cancelled"

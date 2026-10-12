@@ -1241,3 +1241,218 @@ async fn a_title_search_scoped_to_a_base_type_finds_subtype_instances() {
             .collect::<Vec<_>>()
     );
 }
+
+// ============================================================================
+// An extension stores only the values it adds, and inherits the rest live
+// ============================================================================
+
+/// The effective `state` values of `schema_id`, in order.
+async fn effective_state_values(svc: &Arc<NodeService>, schema_id: &str) -> Vec<String> {
+    let fields = nodespace_core::schema::resolve_effective_fields(svc, schema_id)
+        .await
+        .expect("effective fields resolve");
+    let state = fields
+        .iter()
+        .find(|f| f.name == "state")
+        .expect("state is an effective field");
+    state
+        .core_values
+        .iter()
+        .flatten()
+        .chain(state.user_values.iter().flatten())
+        .map(|v| v.value.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_extension_stores_only_the_values_it_adds() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    let bug = svc
+        .get_schema_node("bug")
+        .await
+        .expect("schema read")
+        .expect("bug exists");
+    let stored = bug.get_field("state").expect("bug declares state");
+    let stored_values: Vec<&str> = stored
+        .core_values
+        .iter()
+        .flatten()
+        .chain(stored.user_values.iter().flatten())
+        .map(|v| v.value.as_str())
+        .collect();
+    assert_eq!(stored_values, ["backlog"]);
+
+    // The effective field places it after the value it maps to.
+    assert_eq!(
+        effective_state_values(&svc, "bug").await,
+        ["open", "backlog", "done"]
+    );
+    // The parent's vocabulary is untouched.
+    assert_eq!(
+        effective_state_values(&svc, "ticket").await,
+        ["open", "done"]
+    );
+}
+
+#[tokio::test]
+async fn a_value_added_to_the_parent_later_is_valid_on_an_extension_with_its_own() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    let before = svc
+        .create_node(Node::new(
+            "bug".to_string(),
+            "early".to_string(),
+            json!({ "state": "blocked" }),
+        ))
+        .await;
+    assert!(before.is_err(), "a value nobody declared is refused");
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "blocked", "label": "Blocked" }]
+            }]
+        }),
+    )
+    .await
+    .expect("adding to the parent succeeds");
+
+    create_instance(&svc, "bug", json!({ "state": "blocked" })).await;
+    create_instance(&svc, "bug", json!({ "state": "backlog" })).await;
+    assert_eq!(
+        effective_state_values(&svc, "bug").await,
+        ["open", "backlog", "done", "blocked"]
+    );
+}
+
+#[tokio::test]
+async fn a_value_a_descendant_already_added_cannot_be_added_to_the_parent() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "backlog", "label": "Backlog" }]
+            }]
+        }),
+    )
+    .await
+    .expect_err("a value a descendant added must be refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("backlog") && msg.contains("'bug'"),
+        "the refusal names the value and the descendant: {msg}"
+    );
+    // Nothing was written to the parent.
+    assert_eq!(
+        effective_state_values(&svc, "ticket").await,
+        ["open", "done"]
+    );
+}
+
+#[tokio::test]
+async fn each_level_of_a_chain_adds_after_the_value_it_maps_to() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Crash", "extends": "bug", "fields": [] }),
+    )
+    .await
+    .expect("crash schema creation failed");
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "crash",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "triaged", "label": "Triaged", "mapsTo": "backlog" }]
+            }]
+        }),
+    )
+    .await
+    .expect("extending through the middle type succeeds");
+
+    assert_eq!(
+        effective_state_values(&svc, "crash").await,
+        ["open", "backlog", "triaged", "done"]
+    );
+    // A mid-chain type does not see its descendant's value.
+    assert_eq!(
+        effective_state_values(&svc, "bug").await,
+        ["open", "backlog", "done"]
+    );
+
+    // A value added to the root reaches every level.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "parked", "label": "Parked" }]
+            }]
+        }),
+    )
+    .await
+    .expect("adding to the root succeeds");
+    create_instance(&svc, "crash", json!({ "state": "parked" })).await;
+    create_instance(&svc, "crash", json!({ "state": "triaged" })).await;
+    assert_eq!(
+        effective_state_values(&svc, "crash").await,
+        ["open", "backlog", "triaged", "done", "parked"]
+    );
+}
+
+/// An extension is the type's own declaration of the field, so moving the type
+/// under a parent that has the field is a redeclaration and is refused rather
+/// than resolved in the parent's favour. (A descendant of the moved type is not
+/// checked: that is the retroactive-addition case ADR-078 leaves open.)
+#[tokio::test]
+async fn re_pointing_a_type_with_an_extension_under_another_vocabulary_is_refused() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Story",
+            "fields": [{
+                "name": "state",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "extensible": true,
+                "coreValues": [
+                    { "value": "open", "label": "Open" },
+                    { "value": "backlog", "label": "Backlog" }
+                ]
+            }]
+        }),
+    )
+    .await
+    .expect("story schema creation failed");
+
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "story" })).await;
+    let err =
+        result.expect_err("a type holding its own extension cannot move under another `state`");
+    assert!(
+        err.to_string().contains("already declared"),
+        "refused as a redeclaration: {err}"
+    );
+    // The type is unchanged.
+    assert_eq!(
+        effective_state_values(&svc, "bug").await,
+        ["open", "backlog", "done"]
+    );
+}

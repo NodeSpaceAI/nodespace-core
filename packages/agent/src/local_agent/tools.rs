@@ -6475,6 +6475,10 @@ impl GraphToolExecutor {
     /// lifetime, and a value cached before that extension would reject a status
     /// the schema now declares valid — the same staleness this function exists
     /// to remove. The read is a single indexed lookup by schema id.
+    ///
+    /// The stored schema is the effective one only because `task` extends
+    /// nothing. For a subtype, read the effective field (`resolve_field_owners`):
+    /// its stored declaration lists only the values it adds.
     async fn valid_task_statuses(&self, ns: &NodeService) -> Result<Vec<String>, ToolError> {
         let schema = ns
             .get_schema_node("task")

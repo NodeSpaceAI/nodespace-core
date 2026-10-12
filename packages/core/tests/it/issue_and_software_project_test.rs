@@ -963,10 +963,10 @@ async fn a_status_addressed_to_the_task_bucket_is_written_as_the_issues() -> Res
     Ok(())
 }
 
-/// An issue's `status` is its own declaration of the field, so a value a
-/// user adds to `task`'s status afterwards is a task's and not an issue's.
+/// An issue's `status` adds two values to the ones it inherits from `task`, so
+/// a value a user adds to `task`'s status afterwards is an issue's too.
 #[tokio::test]
-async fn a_status_added_to_task_is_not_an_issues() -> Result<()> {
+async fn a_status_added_to_task_is_an_issues() -> Result<()> {
     let h = Harness::start().await?;
     nodespace_core::schema::handle_update_schema(
         &h.service,
@@ -985,7 +985,10 @@ async fn a_status_added_to_task_is_not_an_issues() -> Result<()> {
     let task = h.task().await?;
     h.set_status(&task, "waiting").await?;
     let id = issue(&h).await?;
-    assert_refused(h.set_status(&id, "waiting").await, "status");
+    h.set_status(&id, "waiting").await?;
+    // The two statuses an issue adds are still its own.
+    h.set_status(&id, "changes_requested").await?;
+    assert_refused(h.set_status(&task, "changes_requested").await, "status");
     h.stop().await;
     Ok(())
 }
