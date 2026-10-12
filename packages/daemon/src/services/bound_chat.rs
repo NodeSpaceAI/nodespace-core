@@ -1,10 +1,13 @@
-//! The chat a play is edited through (ADR-090 §3).
+//! The chat a node is asked about and changed through (ADR-100 §1, ADR-090 §3).
 //!
-//! A play's rules are changed by asking for the change in a chat bound to
-//! the play. [`create_play_edit_chat`] creates that chat: a native chat that
-//! pins the play-authoring skill and the play, opened by a message the system
-//! writes. No model is called, so the chat is there at once, whether or not a
-//! model is loaded.
+//! A node of a type that takes part is opened in a chat bound to it.
+//! [`open_bound_chat`] creates that chat: a native chat that pins the node and
+//! the skill for its type, opened by a message the system writes. No model is
+//! called, so the chat is there at once, whether or not a model is loaded.
+//!
+//! A type takes part by supplying a [`BoundChatType`] (ADR-100 §2): a
+//! describer, a skill and the options for a change. It is found through the
+//! type registry, so a subtype of a type that takes part takes part too.
 
 use nodespace_agent::skill_pipeline::PLAY_AUTHORING_SKILL_ID;
 use nodespace_core::models::{
@@ -20,17 +23,66 @@ use nodespace_core::services::{
 
 use crate::services::chat_messages::{append_message, display_title, NewMessage};
 
-/// What the opening message offers, in the order shown. The first is not a
-/// change: it is there so the user knows the play can be asked about as well
-/// as changed (ADR-090 §3).
-pub const EDIT_OPTIONS: [&str; 6] = [
-    "Explain this play",
-    "Change when it runs",
-    "Change a condition",
-    "Change an action",
-    "Add a rule",
-    "Remove a rule",
-];
+/// What a type supplies to take part in a bound chat (ADR-100 §2).
+pub struct BoundChatType {
+    /// What one is called in the chat's title, link and first option: `play`.
+    pub noun: &'static str,
+    /// The skill the chat pins: how to explain a node of the type and how to
+    /// change one.
+    pub skill_id: &'static str,
+    /// The kinds of change offered, in the order shown. The option to explain
+    /// is not among them: the mechanism puts it first ([`Self::options`]).
+    pub changes: &'static [&'static str],
+    /// The node in plain language, from what it stores and with no model
+    /// call. It is given the node and the markdown link to it, and returns the
+    /// text that goes before the question.
+    pub describe: fn(&Node, &str) -> String,
+}
+
+impl BoundChatType {
+    /// What the opening message offers: to explain the node, which is not a
+    /// change and is first for every type so a person knows the node can be
+    /// asked about as well as changed (ADR-100 §3), then the changes.
+    pub fn options(&self) -> Vec<String> {
+        std::iter::once(format!("Explain this {}", self.noun))
+            .chain(self.changes.iter().map(|change| change.to_string()))
+            .collect()
+    }
+}
+
+/// A play is described from its rules' required descriptions, edited with the
+/// play-authoring skill, and changed in the five ways a rule can be
+/// (ADR-100 §2, ADR-090 §3).
+const PLAY: BoundChatType = BoundChatType {
+    noun: "play",
+    skill_id: PLAY_AUTHORING_SKILL_ID,
+    changes: &[
+        "Change when it runs",
+        "Change a condition",
+        "Change an action",
+        "Add a rule",
+        "Remove a rule",
+    ],
+    describe: describe_play,
+};
+
+/// The types that take part, each with what it supplies. A type is matched by
+/// what it is or extends, so a subtype takes part with its ancestor's.
+const PARTICIPANTS: [(CoreNodeType, &BoundChatType); 1] = [(CoreNodeType::Play, &PLAY)];
+
+/// What `node_type` supplies, or `None` when it does not take part.
+async fn bound_chat_type(
+    node_service: &NodeService,
+    node_type: &str,
+) -> Result<Option<&'static BoundChatType>, NodeServiceError> {
+    let Some(core) = node_service.core_type_of(node_type).await? else {
+        return Ok(None);
+    };
+    Ok(PARTICIPANTS
+        .iter()
+        .find(|(base, _)| core.is_a(*base))
+        .map(|(_, supplied)| *supplied))
+}
 
 /// The model a new chat starts on, when the client has a default.
 #[derive(Debug, Clone, Default)]
@@ -41,66 +93,71 @@ pub struct ChatModel {
     pub model: Option<String>,
 }
 
-/// Why an edit chat was not created.
+/// Why a bound chat was not created.
 #[derive(Debug)]
-pub enum PlayEditChatError {
-    PlayNotFound(String),
-    NotAPlay { id: String, node_type: String },
+pub enum BoundChatError {
+    NodeNotFound(String),
+    /// The node's type supplies no describer, skill and options.
+    NotSupported {
+        id: String,
+        node_type: String,
+    },
     Service(NodeServiceError),
 }
 
-impl std::fmt::Display for PlayEditChatError {
+impl std::fmt::Display for BoundChatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PlayNotFound(id) => write!(f, "play {id} not found"),
-            Self::NotAPlay { id, node_type } => {
-                write!(f, "node {id} is a {node_type}, not a play")
+            Self::NodeNotFound(id) => write!(f, "node {id} not found"),
+            Self::NotSupported { id, node_type } => {
+                write!(
+                    f,
+                    "node {id} is a {node_type}, which cannot be opened in a chat"
+                )
             }
             Self::Service(error) => write!(f, "{error}"),
         }
     }
 }
 
-impl std::error::Error for PlayEditChatError {}
+impl std::error::Error for BoundChatError {}
 
-impl From<NodeServiceError> for PlayEditChatError {
+impl From<NodeServiceError> for BoundChatError {
     fn from(error: NodeServiceError) -> Self {
         Self::Service(error)
     }
 }
 
-/// Create the chat that edits `play_id`, and return its id.
+/// Create the chat bound to `node_id`, and return its id.
 ///
-/// The chat, titled `Edit <play title>`, is created with its pins to the
-/// play-authoring skill and the play in one transaction. Its opening message
-/// follows: an assistant message that links the play, describes it from
-/// what it stores ([`opening_message`]) and asks what to change, with
-/// `outcome: clarified` and [`EDIT_OPTIONS`]. The link records a `mentions`
-/// edge from the message to the play, so the play's backlinks lead to the
-/// chat. A chat whose opening message cannot be written is removed, so the
-/// caller gets the whole chat or none.
+/// The chat, titled `Edit <node title>`, is created with its pins to the
+/// type's skill and the node in one transaction. Its opening message follows:
+/// an assistant message that the type's describer writes from what the node
+/// stores ([`opening_message`]), then asks what to change, with
+/// `outcome: clarified` and the type's options ([`BoundChatType::options`]).
+/// The describer links the node, which records a `mentions` edge from the
+/// message to it, so the node's backlinks lead to the chat. A chat whose
+/// opening message cannot be written is removed, so the caller gets the whole
+/// chat or none.
 ///
-/// A database with no play-authoring skill still gets the chat, pinned to
-/// the play alone: retrieval offers whatever skills it has.
-pub async fn create_play_edit_chat(
+/// A database with no skill of the type's still gets the chat, pinned to the
+/// node alone: retrieval offers whatever skills it has.
+pub async fn open_bound_chat(
     node_service: &NodeService,
-    play_id: &str,
+    node_id: &str,
     model: ChatModel,
-) -> Result<String, PlayEditChatError> {
-    let play = node_service
-        .get_node(play_id)
+) -> Result<String, BoundChatError> {
+    let node = node_service
+        .get_node(node_id)
         .await?
-        .ok_or_else(|| PlayEditChatError::PlayNotFound(play_id.to_string()))?;
-    if !node_service
-        .type_is_a(&play.node_type, CoreNodeType::Play)
-        .await?
-    {
-        return Err(PlayEditChatError::NotAPlay {
-            id: play.id,
-            node_type: play.node_type,
+        .ok_or_else(|| BoundChatError::NodeNotFound(node_id.to_string()))?;
+    let Some(supplied) = bound_chat_type(node_service, &node.node_type).await? else {
+        return Err(BoundChatError::NotSupported {
+            id: node.id,
+            node_type: node.node_type,
         });
-    }
-    let title = display_title(&play).unwrap_or_else(|| "Untitled play".to_string());
+    };
+    let title = display_title(&node).unwrap_or_else(|| format!("Untitled {}", supplied.noun));
 
     let mut properties = serde_json::json!({ "agent": NODESPACE_AGENT });
     // A blank value is no value: the schema's default stands.
@@ -120,7 +177,7 @@ pub async fn create_play_edit_chat(
         properties,
         lifecycle_status: None,
     };
-    let pinned = [PLAY_AUTHORING_SKILL_ID, play.id.as_str()];
+    let pinned = [supplied.skill_id, node.id.as_str()];
     let pins = pinned
         .into_iter()
         .map(|target| NewRelationship {
@@ -137,14 +194,14 @@ pub async fn create_play_edit_chat(
         let missing: Vec<&str> = unpinned.iter().map(|index| pinned[*index]).collect();
         tracing::warn!(
             chat_id,
-            play_id,
+            node_id,
             ?missing,
-            "a play's edit chat was created without a pin: its node does not exist"
+            "a bound chat was created without a pin: its node does not exist"
         );
     }
 
-    let options: Vec<String> = EDIT_OPTIONS.iter().map(|o| o.to_string()).collect();
-    let content = opening_message(&title, &play);
+    let options = supplied.options();
+    let content = opening_message(supplied, &title, &node);
     let opening = NewMessage {
         outcome: Some(AiChatTurnOutcome::Clarified),
         options: &options,
@@ -171,41 +228,51 @@ async fn remove_chat(node_service: &NodeService, chat_id: &str) {
         Ok(Some(chat)) => chat.version,
         Ok(None) => return,
         Err(error) => {
-            tracing::warn!(chat_id, %error, "could not read a play edit chat to remove it");
+            tracing::warn!(chat_id, %error, "could not read a bound chat to remove it");
             return;
         }
     };
     if let Err(error) = node_service.delete_node(chat_id, version).await {
-        tracing::warn!(chat_id, %error, "could not remove a play edit chat left without its opening message");
+        tracing::warn!(chat_id, %error, "could not remove a bound chat left without its opening message");
     }
 }
 
-/// The opening message: a link to the play, what the play does, and the
-/// question of what to change.
+/// The opening message: what the type's describer says about the node, then
+/// the question of what to change.
 ///
-/// The description is built from what the play stores, with no model call:
-/// the play's own description, then each rule with what triggers it, what it
-/// checks and what it does, in the words of the rule's, conditions' and
-/// actions' required descriptions (ADR-090 §1). A trigger has no description
-/// of its own, so it is described from its fields ([`describe_trigger`]).
-///
-/// The message is stored content: it describes the play as it was when the
-/// chat was opened, and a play changed later, in this chat or elsewhere, is
-/// not described again. The agent reads the play as it is before it answers.
-///
-/// The link text is the play's title with the characters that would end it
-/// removed.
-fn opening_message(title: &str, play: &Node) -> String {
+/// The message is stored content: it describes the node as it was when the
+/// chat was opened, and a node changed later, in this chat or elsewhere, is
+/// not described again. The agent reads the node as it is before it answers.
+fn opening_message(supplied: &BoundChatType, title: &str, node: &Node) -> String {
+    let link = node_link(supplied.noun, title, &node.id);
+    format!(
+        "{}\n\nWhat would you like to change?",
+        (supplied.describe)(node, &link)
+    )
+}
+
+/// A markdown link to the node, whose text is its title with the characters
+/// that would end it removed.
+fn node_link(noun: &str, title: &str, id: &str) -> String {
     let label: String = title
         .chars()
         .filter(|c| !matches!(c, '[' | ']' | '\n' | '\r'))
         .collect();
     let label = if label.trim().is_empty() {
-        "this play"
+        format!("this {noun}")
     } else {
-        label.trim()
+        label.trim().to_string()
     };
-    let mut message = format!("Here is what [{label}](nodespace://{}) does.", play.id);
+    format!("[{label}](nodespace://{id})")
+}
+
+/// A play in words, with no model call: the play's own description, then each
+/// rule with what triggers it, what it checks and what it does, in the words
+/// of the rule's, conditions' and actions' required descriptions (ADR-090 §1).
+/// A trigger has no description of its own, so it is described from its
+/// fields ([`describe_trigger`]).
+fn describe_play(play: &Node, link: &str) -> String {
+    let mut message = format!("Here is what {link} does.");
 
     // A play with a field that does not decode still shows the ones that
     // do. Its rules are unreadable only when some are stored and none
@@ -239,8 +306,6 @@ fn opening_message(title: &str, play: &Node) -> String {
         message.push_str("\n\n");
         message.push_str(&describe_rule(rule));
     }
-
-    message.push_str("\n\nWhat would you like to change?");
     message
 }
 
@@ -360,6 +425,11 @@ mod tests {
         (service, temp_dir)
     }
 
+    /// The opening message of a play built in memory.
+    fn play_opening(title: &str, play: &Node) -> String {
+        opening_message(&PLAY, title, play)
+    }
+
     async fn play(svc: &NodeService, title: &str) -> String {
         svc.create_node(Node::new(
             "play".to_string(),
@@ -389,7 +459,7 @@ mod tests {
         seed_authoring_skill(&svc).await;
         let play_id = play(&svc, "Close finished parents").await;
 
-        let chat_id = create_play_edit_chat(&svc, &play_id, ChatModel::default())
+        let chat_id = open_bound_chat(&svc, &play_id, ChatModel::default())
             .await
             .unwrap();
 
@@ -456,7 +526,7 @@ mod tests {
     }
 
     async fn opening_content(svc: &NodeService, play_id: &str) -> String {
-        let chat_id = create_play_edit_chat(svc, play_id, ChatModel::default())
+        let chat_id = open_bound_chat(svc, play_id, ChatModel::default())
             .await
             .unwrap();
         load_messages(svc, &chat_id)
@@ -538,7 +608,7 @@ mod tests {
             json!({ "rules": [close_parent_rule(), roll_over, guard] }),
         );
 
-        let content = opening_message("Close finished parents", &play);
+        let content = play_opening("Close finished parents", &play);
         assert!(content.contains("It has 3 rules."), "{content}");
         let rules: Vec<usize> = ["**close parent**", "**roll over**", "**no empty epic**"]
             .iter()
@@ -593,7 +663,7 @@ mod tests {
             "Half broken".to_string(),
             json!({ "enabled": "yes", "rules": [close_parent_rule()] }),
         );
-        let content = opening_message("Half broken", &bad_switch);
+        let content = play_opening("Half broken", &bad_switch);
         assert!(
             content.contains("It has one rule.\n\n**close parent**"),
             "{content}"
@@ -604,7 +674,7 @@ mod tests {
             "Empty".to_string(),
             json!({ "enabled": "yes", "rules": [] }),
         );
-        let content = opening_message("Empty", &empty_and_bad_switch);
+        let content = play_opening("Empty", &empty_and_bad_switch);
         assert!(content.contains("It has no rules yet."), "{content}");
 
         let unreadable = Node::new(
@@ -612,7 +682,7 @@ mod tests {
             "Broken".to_string(),
             json!({ "description": "Does something.", "rules": "nope" }),
         );
-        let content = opening_message("Broken", &unreadable);
+        let content = play_opening("Broken", &unreadable);
         assert!(
             content
                 .contains("does. Does something.\n\nIts rules can't be read as they are stored."),
@@ -649,7 +719,7 @@ mod tests {
         seed_authoring_skill(&svc).await;
         let play_id = play(&svc, "Close finished parents").await;
 
-        let chat_id = create_play_edit_chat(&svc, &play_id, ChatModel::default())
+        let chat_id = open_bound_chat(&svc, &play_id, ChatModel::default())
             .await
             .unwrap();
 
@@ -658,8 +728,17 @@ mod tests {
         let opening = &messages[0];
         assert_eq!(opening.role, AiChatMessageRole::Assistant);
         assert_eq!(opening.outcome, Some(AiChatTurnOutcome::Clarified));
-        assert_eq!(opening.options, EDIT_OPTIONS);
-        assert_eq!(opening.options.len(), 6);
+        assert_eq!(
+            opening.options,
+            [
+                "Explain this play",
+                "Change when it runs",
+                "Change a condition",
+                "Change an action",
+                "Add a rule",
+                "Remove a rule",
+            ]
+        );
         assert_eq!(opening.options[0], "Explain this play");
         assert!(
             opening.content.starts_with(&format!(
@@ -686,7 +765,7 @@ mod tests {
         seed_authoring_skill(&svc).await;
         let play_id = play(&svc, "Close finished parents").await;
 
-        let chat_id = create_play_edit_chat(&svc, &play_id, ChatModel::default())
+        let chat_id = open_bound_chat(&svc, &play_id, ChatModel::default())
             .await
             .unwrap();
 
@@ -704,7 +783,7 @@ mod tests {
         let (svc, _dir) = test_service().await;
         let play_id = play(&svc, "Close finished parents").await;
 
-        let chat_id = create_play_edit_chat(
+        let chat_id = open_bound_chat(
             &svc,
             &play_id,
             ChatModel {
@@ -726,7 +805,7 @@ mod tests {
         let (svc, _dir) = test_service().await;
         let play_id = play(&svc, "Close finished parents").await;
 
-        let chat_id = create_play_edit_chat(
+        let chat_id = open_bound_chat(
             &svc,
             &play_id,
             ChatModel {
@@ -750,7 +829,7 @@ mod tests {
         let (svc, _dir) = test_service().await;
         let play_id = play(&svc, "Close finished parents").await;
 
-        let chat_id = create_play_edit_chat(&svc, &play_id, ChatModel::default())
+        let chat_id = open_bound_chat(&svc, &play_id, ChatModel::default())
             .await
             .unwrap();
 
@@ -760,7 +839,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_a_play_gets_an_edit_chat() {
+    async fn only_a_type_that_takes_part_gets_a_bound_chat() {
         let (svc, _dir) = test_service().await;
         let note_id = svc
             .create_node(Node::new(
@@ -771,14 +850,65 @@ mod tests {
             .await
             .unwrap();
 
+        let refusal = open_bound_chat(&svc, &note_id, ChatModel::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(refusal, BoundChatError::NotSupported { .. }));
+        assert_eq!(
+            refusal.to_string(),
+            format!("node {note_id} is a text, which cannot be opened in a chat")
+        );
+        // The refusal leaves no chat behind.
+        assert!(svc
+            .query_nodes_by_type("ai-chat-native", true)
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert!(bound_chat_type(&svc, "play").await.unwrap().is_some());
+        assert!(bound_chat_type(&svc, "text").await.unwrap().is_none());
+        assert!(bound_chat_type(&svc, "no-such-type")
+            .await
+            .unwrap()
+            .is_none());
         assert!(matches!(
-            create_play_edit_chat(&svc, &note_id, ChatModel::default()).await,
-            Err(PlayEditChatError::NotAPlay { .. })
+            open_bound_chat(&svc, "no-such-node", ChatModel::default()).await,
+            Err(BoundChatError::NodeNotFound(_))
         ));
-        assert!(matches!(
-            create_play_edit_chat(&svc, "no-such-node", ChatModel::default()).await,
-            Err(PlayEditChatError::PlayNotFound(_))
-        ));
+    }
+
+    /// A type supplies a describer, a skill and its changes, and the
+    /// mechanism does the rest: the option to explain comes first whatever
+    /// the type lists, and the question follows the description.
+    #[test]
+    fn the_mechanism_puts_explaining_first_for_any_type() {
+        let schema_like = BoundChatType {
+            noun: "type",
+            skill_id: "skill-1",
+            changes: &["Add a field", "Remove a field"],
+            describe: |node, link| format!("{link} is a type with {} fields.", node.content.len()),
+        };
+        assert_eq!(
+            schema_like.options(),
+            ["Explain this type", "Add a field", "Remove a field"]
+        );
+
+        let node = Node::new_with_id(
+            "t1".to_string(),
+            "schema".to_string(),
+            "Invoice".to_string(),
+            json!({}),
+        );
+        assert_eq!(
+            opening_message(&schema_like, "Invoice", &node),
+            "[Invoice](nodespace://t1) is a type with 7 fields.\n\nWhat would you like to change?"
+        );
+
+        let none = BoundChatType {
+            changes: &[],
+            ..schema_like
+        };
+        assert_eq!(none.options(), ["Explain this type"]);
     }
 
     /// A title cannot break the link that records the mention.
@@ -790,9 +920,10 @@ mod tests {
             String::new(),
             json!({ "rules": [] }),
         );
-        assert!(opening_message("Close [done] parents", &play)
+        assert!(play_opening("Close [done] parents", &play)
             .starts_with("Here is what [Close done parents](nodespace://p1) does."));
-        assert!(opening_message("  ", &play)
-            .starts_with("Here is what [this play](nodespace://p1) does."));
+        assert!(
+            play_opening("  ", &play).starts_with("Here is what [this play](nodespace://p1) does.")
+        );
     }
 }

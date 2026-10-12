@@ -159,29 +159,29 @@ describe('Tauri System Commands - API Surface', () => {
       expect(mockInvoke).toHaveBeenCalledWith('local_agent_cancel_turn', { nodeId: 'node-1' });
     });
 
-    it('localAgentCreatePlayEditChat invokes local_agent_create_play_edit_chat and returns the chat id', async () => {
+    it('localAgentOpenBoundChat invokes local_agent_open_bound_chat and returns the chat id', async () => {
       mockInvoke.mockResolvedValue('chat-1');
 
-      const chatId = await tauriCommands.localAgentCreatePlayEditChat('play-1', {
+      const chatId = await tauriCommands.localAgentOpenBoundChat('play-1', {
         provider: 'native',
         model: 'gemma-4-e4b'
       });
 
-      expect(mockInvoke).toHaveBeenCalledWith('local_agent_create_play_edit_chat', {
-        playId: 'play-1',
+      expect(mockInvoke).toHaveBeenCalledWith('local_agent_open_bound_chat', {
+        nodeId: 'play-1',
         provider: 'native',
         model: 'gemma-4-e4b'
       });
       expect(chatId).toBe('chat-1');
     });
 
-    it('localAgentCreatePlayEditChat sends no model when there is no default', async () => {
+    it('localAgentOpenBoundChat sends no model when there is no default', async () => {
       mockInvoke.mockResolvedValue('chat-1');
 
-      await tauriCommands.localAgentCreatePlayEditChat('play-1', null);
+      await tauriCommands.localAgentOpenBoundChat('play-1', null);
 
-      expect(mockInvoke).toHaveBeenCalledWith('local_agent_create_play_edit_chat', {
-        playId: 'play-1',
+      expect(mockInvoke).toHaveBeenCalledWith('local_agent_open_bound_chat', {
+        nodeId: 'play-1',
         provider: null,
         model: null
       });
@@ -309,7 +309,7 @@ describe('Tauri System Commands - API Surface', () => {
       });
     });
 
-    it('localAgentCreatePlayEditChat proxies to POST /api/agent/play-edit-chat and returns the chat id', async () => {
+    it('localAgentOpenBoundChat proxies to POST /api/agent/bound-chat and returns the chat id', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
         status: 200,
@@ -317,12 +317,12 @@ describe('Tauri System Commands - API Surface', () => {
         json: () => Promise.resolve({ chatId: 'chat-1' })
       });
 
-      const chatId = await tauriCommands.localAgentCreatePlayEditChat('play-1');
+      const chatId = await tauriCommands.localAgentOpenBoundChat('play-1');
 
-      expect(fetchMock).toHaveBeenCalledWith('http://localhost:3001/api/agent/play-edit-chat', {
+      expect(fetchMock).toHaveBeenCalledWith('http://localhost:3001/api/agent/bound-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playId: 'play-1', provider: null, model: null })
+        body: JSON.stringify({ nodeId: 'play-1', provider: null, model: null })
       });
       expect(chatId).toBe('chat-1');
     });

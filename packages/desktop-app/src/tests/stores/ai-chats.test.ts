@@ -25,10 +25,10 @@ vi.mock('$lib/services/backend-adapter', () => ({
   }
 }));
 
-const mockCreatePlayEditChat = vi.fn<(playId: string, model: unknown) => Promise<string>>();
+const mockOpenBoundChat = vi.fn<(nodeId: string, model: unknown) => Promise<string>>();
 vi.mock('$lib/services/tauri-commands', () => ({
-  localAgentCreatePlayEditChat: (playId: string, model: unknown) =>
-    mockCreatePlayEditChat(playId, model)
+  localAgentOpenBoundChat: (nodeId: string, model: unknown) =>
+    mockOpenBoundChat(nodeId, model)
 }));
 
 const mockDefaultModel = vi.fn<() => { provider: string; model: string } | null>();
@@ -394,7 +394,7 @@ describe('aiChatsData', () => {
     });
   });
 
-  describe('createPlayEditChat', () => {
+  describe('openBoundChat', () => {
     const editChat = () => makeChat('edit-chat', 'Edit Roll completion up', '2026-06-01T00:00:00.000Z');
 
     beforeEach(() => {
@@ -404,12 +404,12 @@ describe('aiChatsData', () => {
     it('asks the backend for the chat on the default model, and prepends it to the list', async () => {
       mockQueryNodes.mockResolvedValue([makeChat('existing', 'Existing', '2026-01-01T00:00:00.000Z')]);
       await aiChatsData.loadAiChats();
-      mockCreatePlayEditChat.mockResolvedValue('edit-chat');
+      mockOpenBoundChat.mockResolvedValue('edit-chat');
       mockGetNode.mockResolvedValue(editChat());
 
-      const result = await aiChatsData.createPlayEditChat('play-1');
+      const result = await aiChatsData.openBoundChat('play-1');
 
-      expect(mockCreatePlayEditChat).toHaveBeenCalledWith('play-1', {
+      expect(mockOpenBoundChat).toHaveBeenCalledWith('play-1', {
         provider: 'native',
         model: 'gemma-4-e4b'
       });
@@ -421,10 +421,10 @@ describe('aiChatsData', () => {
     });
 
     it('registers the new chat as persisted in SharedNodeStore', async () => {
-      mockCreatePlayEditChat.mockResolvedValue('edit-chat');
+      mockOpenBoundChat.mockResolvedValue('edit-chat');
       mockGetNode.mockResolvedValue(editChat());
 
-      await aiChatsData.createPlayEditChat('play-1');
+      await aiChatsData.openBoundChat('play-1');
 
       expect(sharedNodeStore.getNode('edit-chat')?.content).toBe('Edit Roll completion up');
       expect(sharedNodeStore.isNodePersisted('edit-chat')).toBe(true);
@@ -432,18 +432,18 @@ describe('aiChatsData', () => {
 
     it('creates the chat with no model when there is no default', async () => {
       mockDefaultModel.mockReturnValue(null);
-      mockCreatePlayEditChat.mockResolvedValue('edit-chat');
+      mockOpenBoundChat.mockResolvedValue('edit-chat');
       mockGetNode.mockResolvedValue(editChat());
 
-      await aiChatsData.createPlayEditChat('play-1');
+      await aiChatsData.openBoundChat('play-1');
 
-      expect(mockCreatePlayEditChat).toHaveBeenCalledWith('play-1', null);
+      expect(mockOpenBoundChat).toHaveBeenCalledWith('play-1', null);
     });
 
     it('surfaces a failure via createError, returns null, and frees the create', async () => {
-      mockCreatePlayEditChat.mockRejectedValue(new Error('play play-1 not found'));
+      mockOpenBoundChat.mockRejectedValue(new Error('play play-1 not found'));
 
-      const result = await aiChatsData.createPlayEditChat('play-1');
+      const result = await aiChatsData.openBoundChat('play-1');
 
       expect(result).toBeNull();
       expect(aiChatsData.createError).toBe('play play-1 not found');
@@ -453,12 +453,12 @@ describe('aiChatsData', () => {
 
     it('discards a create that resolves after invalidateForDatabaseSwitch', async () => {
       let resolveCreate!: (id: string) => void;
-      mockCreatePlayEditChat.mockImplementation(
+      mockOpenBoundChat.mockImplementation(
         () => new Promise<string>((resolve) => (resolveCreate = resolve))
       );
       mockGetNode.mockResolvedValue(editChat());
 
-      const pending = aiChatsData.createPlayEditChat('play-1');
+      const pending = aiChatsData.openBoundChat('play-1');
       aiChatsData.invalidateForDatabaseSwitch();
       resolveCreate('edit-chat');
 

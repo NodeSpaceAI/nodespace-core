@@ -15,7 +15,7 @@
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { createSchemaInstance } from '$lib/services/schema-authoring';
 import { getDefaultAiChatModelProperties } from '$lib/services/ai-chat-default-model';
-import { localAgentCreatePlayEditChat } from '$lib/services/tauri-commands';
+import { localAgentOpenBoundChat } from '$lib/services/tauri-commands';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { createLogger } from '$lib/utils/logger';
 import { onDaemonReconnect } from '$lib/services/daemon-status';
@@ -159,24 +159,25 @@ class AiChatsStore {
   }
 
   /**
-   * Create the chat a play is edited through (ADR-090 §3): a new native chat
-   * titled `Edit <play title>`, bound to the play, opening on a message that
-   * asks what to change. The backend creates the chat, its pins and that
-   * message in one operation; the chat starts on the user's default model.
+   * Open a chat bound to a node (ADR-100 §1): a new native chat titled
+   * `Edit <node title>`, bound to the node, opening on a message that
+   * describes it and asks what to change. The backend creates the chat, its
+   * pins and that message in one operation; the chat starts on the user's
+   * default model.
    *
    * Returns the created chat, or null on failure or when a database switch
    * invalidated the create, as `createChat` does. Each call creates a new
    * chat. It shares `createBusy` with `createChat`, so one create runs at a
    * time.
    */
-  async createPlayEditChat(playId: string): Promise<Node | null> {
+  async openBoundChat(nodeId: string): Promise<Node | null> {
     if (this.createBusy) return null;
     const generation = this.#generation;
     this.createBusy = true;
     this.createError = '';
 
     try {
-      const chatId = await localAgentCreatePlayEditChat(playId, getDefaultAiChatModelProperties());
+      const chatId = await localAgentOpenBoundChat(nodeId, getDefaultAiChatModelProperties());
       const created = await backendAdapter.getNode(chatId);
       if (generation !== this.#generation) return null;
       if (!created) {
@@ -190,7 +191,7 @@ class AiChatsStore {
     } catch (err) {
       if (generation !== this.#generation) return null;
       const message = err instanceof Error ? err.message : 'Failed to create chat';
-      log.error('Failed to create a play edit chat', { error: message });
+      log.error('Failed to open a bound chat', { error: message });
       this.createError = message;
       return null;
     } finally {

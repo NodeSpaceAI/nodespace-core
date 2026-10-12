@@ -59,17 +59,18 @@ export async function localAgentCancelTurn(nodeId: string): Promise<void> {
 }
 
 /**
- * Create the chat a play is edited through (ADR-090 §3) and return its id.
- * The daemon creates the chat, its pins to the play-authoring skill and the
- * play, and its opening message; `model` is the model the chat starts on.
+ * Open a chat bound to a node (ADR-100 §1) and return its id. The daemon
+ * creates the chat, its pins to the node and the skill for its type, and its
+ * opening message; `model` is the model the chat starts on. A node whose type
+ * supplies no describer, skill and options is refused.
  */
-export async function localAgentCreatePlayEditChat(
-  playId: string,
+export async function localAgentOpenBoundChat(
+  nodeId: string,
   model?: { provider: string; model: string } | null
 ): Promise<string> {
-  const args = { playId, provider: model?.provider ?? null, model: model?.model ?? null };
-  if (isTauri()) return invoke<string>('local_agent_create_play_edit_chat', args);
-  const created = await proxyPost<{ chatId: string }>('/api/agent/play-edit-chat', args);
+  const args = { nodeId, provider: model?.provider ?? null, model: model?.model ?? null };
+  if (isTauri()) return invoke<string>('local_agent_open_bound_chat', args);
+  const created = await proxyPost<{ chatId: string }>('/api/agent/bound-chat', args);
   return created.chatId;
 }
 
