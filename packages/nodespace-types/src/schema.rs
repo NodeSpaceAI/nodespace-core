@@ -16,8 +16,8 @@ fn default_schema_version() -> u32 {
 /// Namespace prefixes (`custom:`, `org:`, `plugin:`, ...) are stripped before
 /// humanizing — a display-only operation with no effect on the stored name.
 /// This is reachable *today*, not just as a future hazard: adding
-/// `custom:status` next to an existing core `status` field derives "Status"
-/// for both, since the two have different storage keys but the same
+/// `custom:storyPoints` next to an existing `custom:story_points` derives
+/// "Story points" for both, since the two have different storage keys but the same
 /// stripped/humanized text. This function does not resolve that on its own —
 /// callers (`apply_friendly_name_defaults` in `packages/core/src/schema/mod.rs`)
 /// are responsible for disambiguating a derived value that collides with
