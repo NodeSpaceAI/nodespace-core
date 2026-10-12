@@ -615,7 +615,8 @@ impl PlaybookEngine {
             return;
         }
 
-        // Trigger matching for non-lifecycle, locally-originated events.
+        // Trigger matching for non-lifecycle events of writes whose write
+        // context leaves playbook triggers on.
         //
         // A relationship event carries no node type inline the way
         // NodeCreated/NodeUpdated do (see `relationship_source_id`'s doc), so

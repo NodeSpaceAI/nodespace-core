@@ -65,8 +65,9 @@ impl DaemonExtensions {
     /// `NodeService::set_excluded_event_origin` can then rely on every event
     /// carrying it being that writer's. Core reserves none.
     ///
-    /// The id must be non-empty visible ASCII, the only form the header can
-    /// carry; any other id is rejected when the daemon starts (see
+    /// The id must be a value the header can carry: non-empty, printable
+    /// ASCII (visible characters and interior spaces), with no leading or
+    /// trailing space; any other id is rejected when the daemon starts (see
     /// [`DaemonExtensionsError`]). Reserving an id twice is the same as
     /// reserving it once.
     pub fn reserved_client_id(mut self, id: impl Into<String>) -> Self {
@@ -171,7 +172,8 @@ impl std::fmt::Display for DaemonExtensionsError {
             ),
             Self::InvalidReservedClientId(id) => write!(
                 f,
-                "'{id}' cannot be reserved as a client id: use non-empty visible ASCII"
+                "'{id}' cannot be reserved as a client id: use non-empty printable ASCII \
+                 with no leading or trailing space"
             ),
             Self::Data(err) => write!(f, "{err}"),
         }

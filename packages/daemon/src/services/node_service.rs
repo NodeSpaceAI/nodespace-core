@@ -7593,8 +7593,10 @@ mod tests {
     }
 
     /// No request can set a write context: whatever client id it presents,
-    /// the service its RPC runs on writes with the default write context,
-    /// and the id is only the label its events carry.
+    /// the service its RPC runs on writes with the default write context, and
+    /// its events carry the id as their label. (The superseded id still skips
+    /// rules by its value until it is removed; that path never sets a write
+    /// context either.)
     #[tokio::test]
     async fn a_client_id_header_never_sets_a_write_context() {
         let (svc, _tmp) = make_service().await;

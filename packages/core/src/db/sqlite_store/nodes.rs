@@ -416,6 +416,9 @@ pub(crate) struct EffectiveFieldValue {
 }
 
 impl SqliteStore {
+    /// Notifies with the default write context: every rule runs on the
+    /// write's event. A writer whose rules already ran elsewhere writes
+    /// through `NodeService` with its write context instead.
     pub async fn create_node(
         &self,
         node: Node,
@@ -573,6 +576,9 @@ impl SqliteStore {
         }
     }
 
+    /// Notifies with the default write context: every rule runs on the
+    /// write's event. A writer whose rules already ran elsewhere writes
+    /// through `NodeService` with its write context instead.
     pub async fn create_child_node_atomic(
         &self,
         parent_id: &str,
@@ -1241,6 +1247,9 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Notifies with the default write context: every rule runs on the
+    /// write's event. A writer whose rules already ran elsewhere writes
+    /// through `NodeService` with its write context instead.
     pub async fn switch_node_type_atomic(
         &self,
         node_id: &str,

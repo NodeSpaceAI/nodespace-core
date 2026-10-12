@@ -841,8 +841,14 @@ fn flush_events(
         if passes_origin_filter(excluded_origin, &event.envelope) {
             let _ = filtered_tx.send(event.envelope.clone());
         }
-        let _ = tx.send(event.envelope.clone());
-        let _ = emitted_tx.send(event);
+        // Copy the envelope for the engine's channel only while something
+        // reads it: a service without a running engine pays nothing extra.
+        if emitted_tx.receiver_count() > 0 {
+            let _ = tx.send(event.envelope.clone());
+            let _ = emitted_tx.send(event);
+        } else {
+            let _ = tx.send(event.envelope);
+        }
     }
 }
 
