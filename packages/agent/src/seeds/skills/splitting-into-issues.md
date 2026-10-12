@@ -26,7 +26,7 @@ LINK IT TO THE PLAN AND TO THE SPEC: both, so the spec is one step away. <!-- in
 
 LINK ITS BLOCKERS: <!-- include: task-breakdown-blocks --> Link only real dependencies: a blocked slice is not offered as ready until its blockers are done or cancelled.
 
-READINESS IS NOT YOURS TO SET: an issue is ready when the Ready tasks queue lists it, which needs a checklist, no unfinished blocker, and an approved spec and plan. Never set a status or a tag to say so, and do not change the spec or the plan.
+READINESS IS NOT YOURS TO SET: an issue is ready when the Ready tasks queue lists it, which needs a checklist, no unfinished blocker, and, if it has a spec or a plan, those approved. Never set a status or a tag to say so, and do not change the spec or the plan.
 
 WHEN DONE: tell the user the issues written, which can start now, and which wait on another issue or on the plan's approval. Do not start any of them.
 

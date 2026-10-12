@@ -830,9 +830,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Asking the User
         //
         // Adapted from `grilling` (mattpocock/skills, MIT) with the decision
-        // brief of gstack (MIT). Attached to nothing: Writing a Spec,
-        // Reviewing a Plan and Splitting a Plan into Tasks name it, so it arrives
-        // with the work, and its description finds it with no task.
+        // brief of gstack (MIT). Attached to the two boards the planning
+        // procedures are attached to, so a spec or a plan carries it, and
+        // named by those procedures. Its description finds it with no task.
         id: ASKING_THE_USER_SKILL_ID,
         title: "Asking the User",
         use_for: "Work through something unclear with the user, one question at a time, until nothing is assumed. Use when the user says this is unclear or they are not sure what they want, when a request is ambiguous, or when they want to think something through.",
@@ -842,7 +842,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Separates it from Explaining on the request that is not a decision.
         not_for: Some("The user does not understand something or asks what it means."),
         applies_to: &[],
-        attached_to: &[],
+        attached_to: &[SPECS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/asking-the-user.md"),
     },

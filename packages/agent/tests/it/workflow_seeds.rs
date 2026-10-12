@@ -317,6 +317,10 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
         attached("Splitting a Plan into Tasks"),
         [PLANS_BY_STATUS_QUERY_ID]
     );
+    assert_eq!(
+        attached("Asking the User"),
+        [SPECS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID]
+    );
     // No other built-in is attached to anything.
     let attached_titles = [
         IMPLEMENTING,
@@ -324,6 +328,7 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
         "Writing a Spec",
         "Reviewing a Plan",
         "Splitting a Plan into Tasks",
+        "Asking the User",
     ];
     for seed in SKILL_SEEDS {
         if !attached_titles.contains(&seed.title) {
@@ -363,6 +368,8 @@ fn every_planning_skill_arrives_with_the_work() {
             "{title} does not name Asking the User"
         );
     }
+    // Asking the User is attached, and names Explaining.
+    assert!(attached("Asking the User"));
     assert!(
         body("Asking the User").contains("Explaining"),
         "Asking the User does not name Explaining"
@@ -396,16 +403,43 @@ fn the_planning_skills_name_no_harness_tracker_or_link() {
     ];
     for title in planning {
         let seed = SKILL_SEEDS.iter().find(|seed| seed.title == title).unwrap();
-        // A slash command is a word that opens with a slash.
-        for word in seed.body.split_whitespace() {
-            assert!(
-                !(word.starts_with('/') && word.len() > 1),
-                "{title} names a slash command: {word}"
-            );
+        // What each audience reads: the rules are rendered into both forms.
+        for (form, text) in [
+            ("agent", seed.template().markdown_content),
+            ("external", seed.external_body()),
+        ] {
+            // A slash command is a word that opens with a slash.
+            for word in text.split_whitespace() {
+                assert!(
+                    !(word.starts_with('/') && word.len() > 1),
+                    "{title} ({form}) names a slash command: {word}"
+                );
+            }
+            for needle in forbidden {
+                assert!(
+                    !text.contains(needle),
+                    "{title} ({form}) contains {needle:?}"
+                );
+            }
+            // A skill that was replaced is named by no one.
+            for gone in [
+                "Writing a Plan",
+                "Breaking a Plan into Tasks",
+                "Splitting into Issues",
+            ] {
+                assert!(!text.contains(gone), "{title} ({form}) names {gone:?}");
+            }
         }
-        for needle in forbidden {
-            assert!(!seed.body.contains(needle), "{title} contains {needle:?}");
-        }
+    }
+
+    // The splitting steps name the relationships the tools write.
+    let splitting = SKILL_SEEDS
+        .iter()
+        .find(|seed| seed.title == "Splitting a Plan into Tasks")
+        .unwrap();
+    let rendered = splitting.template().markdown_content;
+    for needle in ["\"tasks\"", "\"blocks\"", "\"issue\""] {
+        assert!(rendered.contains(needle), "splitting never names {needle}");
     }
 }
 
@@ -419,17 +453,27 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
     let spec = h.create("spec", "Export", json!({})).await;
     h.child(&spec, "checkbox", "- [ ] Exports finish in a second")
         .await;
+    let spec_read = h.context(&spec).await;
+    let mut on_spec = skill_names(&spec_read);
+    on_spec.sort_unstable();
     assert_eq!(
-        skill_names(&h.context(&spec).await),
-        ["Writing a Spec"],
-        "a spec carries the spec-writing procedure"
+        on_spec,
+        ["Asking the User", "Writing a Spec"],
+        "a spec carries the spec-writing procedure and asking the user"
     );
     let plan = h.create("plan", "Streamed export", json!({})).await;
     h.link(&plan, "spec", &spec).await;
+    let plan_read = h.context(&plan).await;
+    let mut on_plan = skill_names(&plan_read);
+    on_plan.sort_unstable();
     assert_eq!(
-        skill_names(&h.context(&plan).await),
-        ["Reviewing a Plan", "Splitting a Plan into Tasks"],
-        "a plan carries the review and the splitting procedures"
+        on_plan,
+        [
+            "Asking the User",
+            "Reviewing a Plan",
+            "Splitting a Plan into Tasks"
+        ],
+        "a plan carries the review, the splitting and asking the user"
     );
     h.set(&spec, json!({ "spec_status": "approved" })).await;
     h.set(&plan, json!({ "plan_status": "approved" })).await;

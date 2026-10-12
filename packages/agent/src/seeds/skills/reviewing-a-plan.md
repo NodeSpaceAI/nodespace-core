@@ -1,6 +1,6 @@
 A plan says how one approved spec will be met: the approach, tied to the spec's criteria, and the risks of that approach. This is also where the plan is checked, before any work is split from it, for its architecture, its tests and its performance, and for what it leaves out. Review it the way an engineering lead would before committing a team to it: the smallest clear change, explicit over clever, every behaviour tested, every edge case handled, and no abstraction the work does not need.
 
-READ THE SPEC FIRST: a plan written from a spec's title is a guess. <!-- include: plan-read-spec --> Read its `objective`, its `boundaries`, including where the tests go, and every criterion before drafting anything. If the spec is still a draft, say that it needs the user's approval first, and write no plan yet.
+READ THE SPEC FIRST: a plan written from a spec's title is a guess. <!-- include: plan-read-spec --> Read its `objective`, its `boundaries`, including where the tests go, and every criterion before drafting anything. If the spec is still a draft, say that it needs the user's approval first: the plan can be drafted and reviewed now, and cannot be approved until the spec is.
 
 ONE LIVE PLAN PER SPEC: <!-- include: plan-existing-plans --> A draft plan that is already there is edited, not written again. An approved one is replaced: ask the user whether the old plan is superseded before leaving two live plans against one spec.
 
