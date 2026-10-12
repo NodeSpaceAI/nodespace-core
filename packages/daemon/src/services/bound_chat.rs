@@ -877,6 +877,37 @@ mod tests {
         ));
     }
 
+    /// A subtype of a type that takes part takes part with its ancestor's
+    /// describer, skill and options, and its nodes get the chat.
+    #[tokio::test]
+    async fn a_subtype_of_a_type_that_takes_part_takes_part() {
+        let (svc, _dir) = test_service().await;
+        nodespace_core::schema::handle_create_schema(
+            &svc,
+            json!({ "name": "Nightly play", "extends": "play", "fields": [] }),
+        )
+        .await
+        .expect("create the play subtype");
+        let subtype = bound_chat_type(&svc, "nightly-play").await.unwrap();
+        assert!(subtype.is_some_and(|supplied| supplied.noun == "play"));
+
+        let id = svc
+            .create_node(Node::new(
+                "nightly-play".to_string(),
+                "Nightly".to_string(),
+                json!({ "rules": [] }),
+            ))
+            .await
+            .unwrap();
+        let chat_id = open_bound_chat(&svc, &id, ChatModel::default())
+            .await
+            .unwrap();
+
+        let opening = load_messages(&svc, &chat_id).await.unwrap().remove(0);
+        assert_eq!(opening.options[0], "Explain this play");
+        assert!(opening.content.contains(&format!("nodespace://{id}")));
+    }
+
     /// A type supplies a describer, a skill and its changes, and the
     /// mechanism does the rest: the option to explain comes first whatever
     /// the type lists, and the question follows the description.

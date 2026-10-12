@@ -33,6 +33,12 @@
   }
 </script>
 
-<Button class={className} variant="outline" size="sm" disabled={aiChatsData.createBusy} onclick={open}>
+<Button
+  class={className}
+  variant="outline"
+  size="sm"
+  disabled={aiChatsData.createBusy}
+  onclick={open}
+>
   {label}
 </Button>
