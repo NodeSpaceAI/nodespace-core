@@ -328,6 +328,13 @@ struct MergeConflictParams {
 /// Maximum characters for node body in full node results.
 const BODY_TRUNCATE_FULL: usize = 2000;
 
+/// Maximum characters of a record read whole as markdown (`get_node` with
+/// format "markdown"): the record and its subtree. A spec or a plan carries
+/// its sections as nodes beneath it, and a procedure reads them here, so the
+/// cut is set well past a realistic document and not at the search-result
+/// limit, which would drop the last sections and the criteria.
+const NODE_MARKDOWN_TRUNCATE: usize = 16_000;
+
 /// Maximum characters for node body in list/summary results.
 const BODY_TRUNCATE_SUMMARY: usize = 500;
 
@@ -4933,7 +4940,7 @@ impl GraphToolExecutor {
                         .get("markdown")
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
-                    let mut payload = json!({ "markdown": truncate(md, BODY_TRUNCATE_FULL) });
+                    let mut payload = json!({ "markdown": truncate(md, NODE_MARKDOWN_TRUNCATE) });
                     attach_set_fields(&mut payload, &node_data);
                     Ok(ok_result(tool_call_id, "get_node", payload))
                 }

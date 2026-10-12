@@ -888,7 +888,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         title: "Implementing a Task",
         use_for: "Implement a task from the ready queue: take the next ready task, start it, work through its checklist with evidence, record the pull request, and hand it over for review. Use when the user says to pick up the next task, do the ready work, or continue or resume the task in progress.",
         tools: &["run_query", "get_node_context", "update_task_status", "update_node", "create_node", "get_node"],
-        max_iterations: 12,
+        max_iterations: 20,
         not_for: None,
         applies_to: &[
             CoreNodeType::Task.as_str(),
@@ -909,7 +909,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         title: "Reviewing a Task",
         use_for: "Review finished work that is awaiting review: check the pull request and the evidence against the task's checklist, record the review's outcome, and approve it or send it back. Use when the user asks for a review of finished work, or to work the review queue.",
         tools: &["run_query", "get_node_context", "get_node", "update_task_status", "update_node", "create_node"],
-        max_iterations: 10,
+        max_iterations: 16,
         // Separates it from Recording a Decision in the procedure lane on a
         // request to point a task at a decision; the matrix holds it.
         not_for: Some("Link or point one record at another."),

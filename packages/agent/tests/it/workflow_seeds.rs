@@ -1050,6 +1050,81 @@ async fn a_specs_sections_are_read_back_with_the_markdown_read() {
     );
 }
 
+/// A real spec is several kilobytes of sections. The markdown read returns
+/// all of it, the last section and a gap in a plan's failure modes included,
+/// and an issue's brief reads back the same way.
+#[tokio::test]
+async fn a_long_record_is_read_back_whole_with_its_last_section() {
+    let h = start().await;
+    let spec = h.create("spec", "Export", json!({})).await;
+    let stories: Vec<String> = (1..=40)
+        .map(|n| {
+            format!(
+                "As user {n}, I want to export project {n} as a CSV file, so that I can \
+                 share it with the people I work with"
+            )
+        })
+        .collect();
+    let story_refs: Vec<&str> = stories.iter().map(String::as_str).collect();
+    h.section(&spec, "User stories", &story_refs).await;
+    h.section(&spec, "Out of scope", &["Other formats"]).await;
+    h.child(&spec, "checkbox", "- [ ] The last criterion").await;
+
+    let text = h
+        .ok(
+            "get_node",
+            json!({ "id": uri(&spec), "format": "markdown" }),
+        )
+        .await
+        .to_string();
+    assert!(text.len() > 4_000, "the fixture must exceed the search cut");
+    for needle in [
+        "As user 40",
+        "## Out of scope",
+        "Other formats",
+        "The last criterion",
+    ] {
+        assert!(text.contains(needle), "{needle} cut from the read");
+    }
+    assert!(!text.contains("[truncated]"), "{text}");
+
+    let plan = h.create("plan", "Streamed export", json!({})).await;
+    let failures = h
+        .section(&plan, "Failure modes", &["A write fails half way"])
+        .await;
+    h.child(&failures, "checkbox", "- [ ] GAP: wide rows are untested")
+        .await;
+    let issue = h.create("issue", "Stream the rows", json!({})).await;
+    h.section(&issue, "Behaviour", &["Rows are written as they are read"])
+        .await;
+    for (id, needles) in [
+        (
+            &plan,
+            [
+                "## Failure modes",
+                "A write fails half way",
+                "GAP: wide rows are untested",
+            ],
+        ),
+        (
+            &issue,
+            [
+                "## Behaviour",
+                "Rows are written as they are read",
+                "Behaviour",
+            ],
+        ),
+    ] {
+        let text = h
+            .ok("get_node", json!({ "id": uri(id), "format": "markdown" }))
+            .await
+            .to_string();
+        for needle in needles {
+            assert!(text.contains(needle), "{needle} missing from {text}");
+        }
+    }
+}
+
 /// A plan's review is ordinary nodes beneath it: a Not in scope and a Failure
 /// modes section, with a gap as a checkbox until it is closed. None of it is
 /// a criterion, so the plan is approved on its spec alone.
