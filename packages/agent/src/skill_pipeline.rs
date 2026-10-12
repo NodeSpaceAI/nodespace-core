@@ -49,7 +49,7 @@ pub const REVIEWING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1
 
 /// The Addressing Review Findings skill's fixed id: the procedure of the
 /// "Changes requested" queue.
-pub const ADDRESSING_REVIEW_FINDINGS_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c19";
+pub const ADDRESSING_REVIEW_FINDINGS_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1a";
 
 /// The Asking the User skill's fixed id: the procedures that write a spec, a
 /// plan and issues name it.
@@ -1605,7 +1605,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 25, "Should have 25 seed skills");
+        assert_eq!(seeds.len(), 26, "Should have 26 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());
