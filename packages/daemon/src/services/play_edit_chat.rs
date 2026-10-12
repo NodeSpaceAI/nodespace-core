@@ -208,14 +208,16 @@ fn opening_message(title: &str, play: &Node) -> String {
     let mut message = format!("Here is what [{label}](nodespace://{}) does.", play.id);
 
     // A play with a field that does not decode still shows the ones that
-    // do. Its rules are unreadable only when rules are stored and none
-    // decoded: another field failing leaves them as readable as they were.
+    // do. Its rules are unreadable only when some are stored and none
+    // decoded: another field failing leaves them as readable as they were,
+    // and a stored empty list is a play with no rules yet.
     let (fields, rules_readable) = match PlayFields::from_properties(&play.properties) {
         Ok(fields) => (fields, true),
         Err(_) => {
             let fields = PlayFields::readable_from_properties(&play.properties);
-            let stored = PlayFields::stored_field(&play.properties, PLAY_RULES_FIELD).is_some();
-            let readable = !stored || !fields.rules.is_empty();
+            let none_stored = PlayFields::stored_field(&play.properties, PLAY_RULES_FIELD)
+                .is_none_or(|rules| rules.as_array().is_some_and(Vec::is_empty));
+            let readable = none_stored || !fields.rules.is_empty();
             (fields, readable)
         }
     };
@@ -596,6 +598,14 @@ mod tests {
             content.contains("It has one rule.\n\n**close parent**"),
             "{content}"
         );
+
+        let empty_and_bad_switch = Node::new(
+            "play".to_string(),
+            "Empty".to_string(),
+            json!({ "enabled": "yes", "rules": [] }),
+        );
+        let content = opening_message("Empty", &empty_and_bad_switch);
+        assert!(content.contains("It has no rules yet."), "{content}");
 
         let unreadable = Node::new(
             "play".to_string(),

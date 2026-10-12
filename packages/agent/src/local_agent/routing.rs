@@ -4626,6 +4626,7 @@ mod tests {
             "Tuesday",
             "the client ones?",
             "Remove them",
+            "mark the last one as done",
             "OK",
         ] {
             assert!(leans_on_the_last_message(leaning), "{leaning}");
@@ -4635,6 +4636,9 @@ mod tests {
             "find what I wrote about rate limiting",
             "how do we onboard a new reviewer?",
             "set up postmortems with a severity",
+            // One word past the longest message a pointing-back word makes a
+            // reply of ("mark the last one as done" leans).
+            "mark the last one as done today",
             // Long enough to name its own subject: "that one" points inside it.
             "Also the search indexer, that one's twenty-one days",
             "make sure that the invoice for Acme is sent",
