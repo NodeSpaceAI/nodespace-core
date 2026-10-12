@@ -1461,7 +1461,7 @@ mod tests {
         let ranked = vec![
             ranked_skill("Completing a Task", SkillRole::Procedure, 0.95),
             ranked_skill("Node Deletion", SkillRole::Tool, 0.9),
-            ranked_skill("Writing a Plan", SkillRole::Procedure, 0.85),
+            ranked_skill("Reviewing a Plan", SkillRole::Procedure, 0.85),
             ranked_skill("Graph Editing", SkillRole::Tool, 0.8),
             ranked_skill("Organization", SkillRole::Tool, 0.7),
         ];

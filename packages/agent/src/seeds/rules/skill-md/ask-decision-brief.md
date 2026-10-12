@@ -1,0 +1,1 @@
+Put the whole decision brief to the user in one message, and do nothing else until they answer.

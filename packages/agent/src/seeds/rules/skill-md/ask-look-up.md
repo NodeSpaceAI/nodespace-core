@@ -1,0 +1,1 @@
+Run `nodespace search "<the thing>"`, then `nodespace node get <id>` on the best match to read it. Do not ask the user for what a search returns.

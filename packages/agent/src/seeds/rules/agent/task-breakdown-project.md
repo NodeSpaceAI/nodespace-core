@@ -1,0 +1,1 @@
+Call create_relationship with from_id the project's id, relationship_type "tasks" and to_id the issue's id.

@@ -1,0 +1,1 @@
+Call search_nodes with a query naming the thing, then get_node on the best match to read it. Explain from what it says, never from a guess.

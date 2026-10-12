@@ -29,7 +29,8 @@ use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::{CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
+    SPECS_BY_STATUS_QUERY_ID,
 };
 use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 
@@ -44,6 +45,13 @@ pub const IMPLEMENTING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b
 /// The Reviewing a Task skill's fixed id: the procedure of the "Awaiting
 /// review" queue.
 pub const REVIEWING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c11";
+
+/// The Asking the User skill's fixed id: the procedures that write a spec, a
+/// plan and issues name it.
+pub const ASKING_THE_USER_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c15";
+
+/// The Explaining skill's fixed id: Asking the User names it.
+pub const EXPLAINING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c16";
 
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
@@ -756,52 +764,103 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
     // recorded in `tests/golden/skill_retrieval/current.tsv`.
     SkillSeed {
         // Writing a Spec
+        //
+        // Adapted from `to-spec` (mattpocock/skills, MIT). Attached to
+        // "Specs by status", so a spec carries it. It names Asking the User.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0d",
         title: "Writing a Spec",
-        use_for: "Write a spec: capture a feature's objective, boundaries and success criteria as a draft spec for the user to approve. Use when the user wants to spec out a feature, write its requirements or acceptance criteria, or approve, revise or supersede a spec.",
+        use_for: "Write a spec: capture a feature's objective, boundaries, where its tests go and its success criteria as a draft spec for the user to approve. Use when the user wants to spec out a feature, write its requirements or acceptance criteria, or approve, revise or supersede a spec.",
         // `route_clarify` is how the skill asks before an approval.
         tools: &["create_node", "update_node", "search_nodes", "get_node", "route_clarify"],
         // A find, the spec, a criterion each, and the question.
-        max_iterations: 8,
+        max_iterations: 10,
         not_for: Some("Plan out how to build something."),
         applies_to: &[CoreNodeType::Spec.as_str(), CoreNodeType::Checkbox.as_str()],
-        attached_to: &[],
+        attached_to: &[SPECS_BY_STATUS_QUERY_ID],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/writing-a-spec.md"),
     },
     SkillSeed {
-        // Writing a Plan
+        // Reviewing a Plan
+        //
+        // Writes the plan and reviews it before any work is split. Adapted
+        // from `plan-eng-review` (garrytan/gstack, MIT): the procedure and
+        // the rubric only. Replaces Writing a Plan, so there is one
+        // procedure for the plan step. Attached to "Plans by status".
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0e",
-        title: "Writing a Plan",
-        use_for: "Write the implementation plan for an approved spec: the approach that meets the spec's criteria and the risks of that approach. Use when the user wants an implementation plan drafted, approved, or superseded.",
+        title: "Reviewing a Plan",
+        use_for: "Write the implementation plan for an approved spec: the approach that meets the spec's criteria and the risks of that approach, reviewed before any work is split. Use when the user wants an implementation plan drafted, reviewed, approved, or superseded.",
         tools: &["create_node", "update_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
-        max_iterations: 6,
+        // The plan, its link, and the questions put to the user.
+        max_iterations: 10,
         not_for: None,
         applies_to: &[CoreNodeType::Plan.as_str(), CoreNodeType::Spec.as_str()],
-        attached_to: &[],
+        attached_to: &[PLANS_BY_STATUS_QUERY_ID],
         role: SkillRole::Procedure,
-        body: include_str!("seeds/skills/writing-a-plan.md"),
+        body: include_str!("seeds/skills/reviewing-a-plan.md"),
     },
     SkillSeed {
-        // Breaking a Plan into Tasks
+        // Splitting a Plan into Tasks
         //
-        // Also the skill for a task with a checklist and no plan: the small
-        // change that needs neither a spec nor a plan (ADR-092 §7).
+        // Adapted from `to-tickets` and the agent brief of `triage`
+        // (mattpocock/skills, MIT). Replaces Breaking a Plan into Tasks. It
+        // is also the skill for the small change that needs neither a spec
+        // nor a plan (ADR-092 §7). Attached to "Plans by status".
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0f",
-        title: "Breaking a Plan into Tasks",
-        use_for: "Split an implementation plan into tasks with acceptance checklists.",
-        tools: &["create_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes"],
-        max_iterations: 12,
+        title: "Splitting a Plan into Tasks",
+        use_for: "Split an implementation plan into tasks, issues for a code change, each with an acceptance checklist, a brief and blocking links. Use when the user wants an approved plan broken down into tasks.",
+        tools: &["create_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
+        // An issue, its brief, its checklist and its links, for several.
+        max_iterations: 16,
         not_for: None,
         applies_to: &[
+            CoreNodeType::Issue.as_str(),
             CoreNodeType::Task.as_str(),
             CoreNodeType::Plan.as_str(),
             CoreNodeType::Spec.as_str(),
+            CoreNodeType::Project.as_str(),
             CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
         ],
+        attached_to: &[PLANS_BY_STATUS_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/splitting-into-issues.md"),
+    },
+    SkillSeed {
+        // Asking the User
+        //
+        // Adapted from `grilling` (mattpocock/skills, MIT) with the decision
+        // brief of gstack (MIT). Attached to the two boards the planning
+        // procedures are attached to, so a spec or a plan carries it, and
+        // named by those procedures. Its description finds it with no task.
+        id: ASKING_THE_USER_SKILL_ID,
+        title: "Asking the User",
+        use_for: "Work through something unclear with the user, one question at a time, until nothing is assumed. Use when the user says this is unclear or they are not sure what they want, when a request is ambiguous, or when they want to think something through.",
+        tools: &["route_clarify", "search_nodes", "get_node", "get_node_context"],
+        // A lookup, and a question per round.
+        max_iterations: 6,
+        // Separates it from Explaining on the request that is not a decision.
+        not_for: Some("The user does not understand something or asks what it means."),
+        applies_to: &[],
+        attached_to: &[SPECS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/asking-the-user.md"),
+    },
+    SkillSeed {
+        // Explaining
+        //
+        // Adapted from `wait-what` and `teach` (mattpocock/skills, MIT).
+        // Writes nothing. Named by Asking the User.
+        id: EXPLAINING_SKILL_ID,
+        title: "Explaining",
+        use_for: "Explain something in plain words: re-pitch the one part the user did not follow, with a little context and an example. Use when the user says they do not understand or do not follow, or asks what something means.",
+        tools: &["get_node", "search_nodes", "search_semantic"],
+        max_iterations: 4,
+        not_for: None,
+        applies_to: &[],
         attached_to: &[],
         role: SkillRole::Procedure,
-        body: include_str!("seeds/skills/breaking-a-plan-into-tasks.md"),
+        body: include_str!("seeds/skills/explaining.md"),
     },
     SkillSeed {
         // Implementing a Task
@@ -1414,7 +1473,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 20, "Should have 20 seed skills");
+        assert_eq!(seeds.len(), 22, "Should have 22 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());

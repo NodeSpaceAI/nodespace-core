@@ -3298,13 +3298,13 @@ mod tests {
     #[test]
     fn only_the_best_procedure_is_kept() {
         let ranked = vec![
-            procedure("Writing a Plan", 0.9, &["create_node"]),
+            procedure("Reviewing a Plan", 0.9, &["create_node"]),
             procedure("Writing a Spec", 0.8, &["create_node"]),
             candidate("Graph Editing", 0.7, &["update_node"]),
         ];
         assert_eq!(
             names(&select_candidates(ranked)),
-            vec!["Graph Editing", "Writing a Plan"]
+            vec!["Graph Editing", "Reviewing a Plan"]
         );
     }
 

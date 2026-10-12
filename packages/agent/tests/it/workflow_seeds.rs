@@ -13,14 +13,15 @@ use std::time::Duration;
 use nodespace_agent::local_agent::tools::GraphToolExecutor;
 use nodespace_agent::skill_pipeline::{
     link_seeded_skills, seed_skill_nodes, seed_tool_nodes, shipped_attached_to_for,
-    IMPLEMENTING_A_TASK_SKILL_ID, REVIEWING_A_TASK_SKILL_ID, SKILL_SEEDS,
+    IMPLEMENTING_A_TASK_SKILL_ID, SKILL_SEEDS,
 };
 use nodespace_agent::{AgentToolExecutor, ToolResult};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::{Node, NodeUpdate, SkillFields, SKILL_APPLIES_TO, SKILL_ATTACHED_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
+    SPECS_BY_STATUS_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use nodespace_core::PlaybookEngine;
@@ -245,15 +246,17 @@ fn reached(paths: &Value) -> Vec<(String, Vec<String>)> {
 }
 
 #[tokio::test]
-async fn the_eight_procedures_are_seeded_with_their_links() {
+async fn the_ten_procedures_are_seeded_with_their_links() {
     let h = start().await;
     // A second open changes nothing.
     seed_agent_tables(&h.ns).await;
 
     let titles = [
         "Writing a Spec",
-        "Writing a Plan",
-        "Breaking a Plan into Tasks",
+        "Reviewing a Plan",
+        "Splitting a Plan into Tasks",
+        "Asking the User",
+        "Explaining",
         IMPLEMENTING,
         REVIEWING,
         "Completing a Task",
@@ -274,7 +277,10 @@ async fn the_eight_procedures_are_seeded_with_their_links() {
             !h.ns.get_children(seed.id).await.unwrap().is_empty(),
             "{title} has no body"
         );
-        assert!(!seed.applies_to.is_empty(), "{title} is linked to no type");
+        // Asking the User and Explaining are about no type.
+        if title != "Asking the User" && title != "Explaining" {
+            assert!(!seed.applies_to.is_empty(), "{title} is linked to no type");
+        }
 
         for (relationship, named) in [
             (SKILL_APPLIES_TO, seed.applies_to),
@@ -305,12 +311,276 @@ async fn the_eight_procedures_are_seeded_with_their_links() {
         [READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID]
     );
     assert_eq!(attached(REVIEWING), [AWAITING_REVIEW_QUERY_ID]);
+    assert_eq!(attached("Writing a Spec"), [SPECS_BY_STATUS_QUERY_ID]);
+    assert_eq!(attached("Reviewing a Plan"), [PLANS_BY_STATUS_QUERY_ID]);
+    assert_eq!(
+        attached("Splitting a Plan into Tasks"),
+        [PLANS_BY_STATUS_QUERY_ID]
+    );
+    assert_eq!(
+        attached("Asking the User"),
+        [SPECS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID]
+    );
     // No other built-in is attached to anything.
+    let attached_titles = [
+        IMPLEMENTING,
+        REVIEWING,
+        "Writing a Spec",
+        "Reviewing a Plan",
+        "Splitting a Plan into Tasks",
+        "Asking the User",
+    ];
     for seed in SKILL_SEEDS {
-        if seed.id != IMPLEMENTING_A_TASK_SKILL_ID && seed.id != REVIEWING_A_TASK_SKILL_ID {
+        if !attached_titles.contains(&seed.title) {
             assert!(seed.attached_to.is_empty(), "{}", seed.title);
         }
     }
+}
+
+/// Every procedure the planning skills depend on reaches an agent with the
+/// work: it is attached to a queue, or a skill that is names it, and so on
+/// down the chain. None depends on the agent searching for it.
+#[test]
+fn every_planning_skill_arrives_with_the_work() {
+    let body = |title: &str| {
+        SKILL_SEEDS
+            .iter()
+            .find(|seed| seed.title == title)
+            .unwrap_or_else(|| panic!("{title} is not in the seed table"))
+            .body
+    };
+    let attached = |title: &str| {
+        !SKILL_SEEDS
+            .iter()
+            .find(|seed| seed.title == title)
+            .unwrap()
+            .attached_to
+            .is_empty()
+    };
+    for title in [
+        "Writing a Spec",
+        "Reviewing a Plan",
+        "Splitting a Plan into Tasks",
+    ] {
+        assert!(attached(title), "{title} is attached to no queue");
+        assert!(
+            body(title).contains("Asking the User"),
+            "{title} does not name Asking the User"
+        );
+    }
+    // Asking the User is attached, and names Explaining.
+    assert!(attached("Asking the User"));
+    assert!(
+        body("Asking the User").contains("Explaining"),
+        "Asking the User does not name Explaining"
+    );
+}
+
+/// An adapted skill speaks NodeSpace and nothing else: no harness skill
+/// tool, slash command, relative file link, issue tracker or label.
+#[test]
+fn the_planning_skills_name_no_harness_tracker_or_link() {
+    let planning = [
+        "Writing a Spec",
+        "Reviewing a Plan",
+        "Splitting a Plan into Tasks",
+        "Asking the User",
+        "Explaining",
+    ];
+    // Built from fragments so this list is not itself a hit for a checker.
+    let forbidden = [
+        "Skill tool",
+        "slash command",
+        "](",
+        ".md",
+        "GitHub",
+        "issue tracker",
+        "label",
+        "Linear",
+        "Jira",
+        "ready-for-agent",
+        "setup-matt",
+    ];
+    for title in planning {
+        let seed = SKILL_SEEDS.iter().find(|seed| seed.title == title).unwrap();
+        // What each audience reads: the rules are rendered into both forms.
+        for (form, text) in [
+            ("agent", seed.template().markdown_content),
+            ("external", seed.external_body()),
+        ] {
+            // A slash command is a word that opens with a slash.
+            for word in text.split_whitespace() {
+                assert!(
+                    !(word.starts_with('/') && word.len() > 1),
+                    "{title} ({form}) names a slash command: {word}"
+                );
+            }
+            for needle in forbidden {
+                assert!(
+                    !text.contains(needle),
+                    "{title} ({form}) contains {needle:?}"
+                );
+            }
+            // A skill that was replaced is named by no one.
+            for gone in [
+                "Writing a Plan",
+                "Breaking a Plan into Tasks",
+                "Splitting into Issues",
+            ] {
+                assert!(!text.contains(gone), "{title} ({form}) names {gone:?}");
+            }
+        }
+    }
+
+    // The splitting steps name the relationships the tools write.
+    let splitting = SKILL_SEEDS
+        .iter()
+        .find(|seed| seed.title == "Splitting a Plan into Tasks")
+        .unwrap();
+    let rendered = splitting.template().markdown_content;
+    for needle in ["\"tasks\"", "\"blocks\"", "\"issue\""] {
+        assert!(rendered.contains(needle), "splitting never names {needle}");
+    }
+}
+
+/// A spec and a plan each carry the procedure for working them, and the
+/// splitting procedure's steps can be followed through the tools: issues
+/// that link the plan and the spec, each with a brief and its own checklist,
+/// the later one blocked by the first, and only the first one ready.
+#[tokio::test]
+async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
+    let h = start().await;
+    let spec = h.create("spec", "Export", json!({})).await;
+    h.child(&spec, "checkbox", "- [ ] Exports finish in a second")
+        .await;
+    let spec_read = h.context(&spec).await;
+    let mut on_spec = skill_names(&spec_read);
+    on_spec.sort_unstable();
+    assert_eq!(
+        on_spec,
+        ["Asking the User", "Writing a Spec"],
+        "a spec carries the spec-writing procedure and asking the user"
+    );
+    let plan = h.create("plan", "Streamed export", json!({})).await;
+    h.link(&plan, "spec", &spec).await;
+    let plan_read = h.context(&plan).await;
+    let mut on_plan = skill_names(&plan_read);
+    on_plan.sort_unstable();
+    assert_eq!(
+        on_plan,
+        [
+            "Asking the User",
+            "Reviewing a Plan",
+            "Splitting a Plan into Tasks"
+        ],
+        "a plan carries the review, the splitting and asking the user"
+    );
+    h.set(&spec, json!({ "spec_status": "approved" })).await;
+    h.set(&plan, json!({ "plan_status": "approved" })).await;
+
+    // Each slice, in dependency order: the issue, its brief, its checklist,
+    // its links.
+    let mut issues = Vec::new();
+    for (title, criterion) in [
+        ("Stream the rows", "- [ ] Rows are streamed"),
+        (
+            "Offer the export in the menu",
+            "- [ ] The menu offers the export",
+        ),
+    ] {
+        let created = h
+            .ok(
+                "create_node",
+                json!({ "node_type": "issue", "content": title }),
+            )
+            .await;
+        let issue = created["id"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("nodespace://")
+            .to_string();
+        for part in [
+            "Behaviour: rows are written as they are read",
+            "Interfaces: the exporter takes a row source",
+            "Out of scope: other formats",
+        ] {
+            h.ok(
+                "create_node",
+                json!({ "node_type": "text", "parent_id": uri(&issue), "content": part }),
+            )
+            .await;
+        }
+        h.ok(
+            "create_node",
+            json!({ "node_type": "checkbox", "parent_id": uri(&issue), "content": criterion }),
+        )
+        .await;
+        for owner in [&plan, &spec] {
+            h.ok(
+                "create_relationship",
+                json!({
+                    "from_id": uri(owner),
+                    "relationship_type": "tasks",
+                    "to_id": uri(&issue)
+                }),
+            )
+            .await;
+        }
+        issues.push(issue);
+    }
+    h.ok(
+        "create_relationship",
+        json!({
+            "from_id": uri(&issues[0]),
+            "relationship_type": "blocks",
+            "to_id": uri(&issues[1])
+        }),
+    )
+    .await;
+
+    // Each issue is its own checklist beneath a brief, and is linked to the
+    // spec and the plan.
+    for issue in &issues {
+        let children = h.ns.get_children(issue).await.unwrap();
+        assert_eq!(
+            children
+                .iter()
+                .filter(|c| c.node_type == "checkbox")
+                .count(),
+            1
+        );
+        assert_eq!(children.iter().filter(|c| c.node_type == "text").count(), 3);
+        let read = h
+            .ok(
+                "get_node_context",
+                json!({ "id": uri(issue), "paths": [["spec"], ["plan"]] }),
+            )
+            .await;
+        let paths = reached(&read["paths"]);
+        assert!(
+            paths.contains(&("spec".to_string(), vec![uri(&spec)])),
+            "{read}"
+        );
+        assert!(
+            paths.contains(&("plan".to_string(), vec![uri(&plan)])),
+            "{read}"
+        );
+    }
+
+    // Readiness is the queue, not a mark: only the unblocked issue is listed.
+    let run = h
+        .ok(
+            "run_query",
+            json!({ "query": "Ready tasks", "with_context": true }),
+        )
+        .await;
+    let listed: Vec<&str> = run["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, [uri(&issues[0])], "{run}");
 }
 
 /// A run of "Ready tasks" with context hands over the top task whole, and

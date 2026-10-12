@@ -1,1 +1,1 @@
-Run `nodespace node create --type task --content "<title>"`. A new task is open.
+Run `nodespace node create --type issue --content "<title>"` for a change to code, and `nodespace node create --type task --content "<title>"` for anything else. A new one is open.
