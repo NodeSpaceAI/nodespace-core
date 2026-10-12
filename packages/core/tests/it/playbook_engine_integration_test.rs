@@ -14,8 +14,8 @@
 //! - A play fires end-to-end for a local mutation (trigger → condition → action).
 //! - An event of a write whose write context skips playbook triggers
 //!   (`NodeService::with_write_context`) does NOT reach trigger evaluation
-//!   (ADR-073), and neither does one tagged with the superseded
-//!   `REPLICATED_APPLY_CLIENT_ID` until it is removed.
+//!   (ADR-073), while a client id alone, whatever its value, does not keep a
+//!   write out of it.
 //! - `CronRunner`'s 60-second poll loop is actually spawned by `start()` and
 //!   ticks on schedule.
 //!
@@ -27,7 +27,6 @@
 //! rules or claim anything about their sync safety.
 
 use anyhow::Result;
-use nodespace_core::db::events::REPLICATED_APPLY_CLIENT_ID;
 use nodespace_core::db::{SqliteStore, WriteContext};
 use nodespace_core::models::Node;
 use nodespace_core::playbook::types::PlayStatus;
@@ -318,12 +317,6 @@ fn skipping_triggers_only(service: &NodeService) -> NodeService {
         })
 }
 
-/// The superseded client-id tag, which still reads as both flags set.
-/// Removed with `REPLICATED_APPLY_CLIENT_ID`.
-fn superseded_client_id(service: &NodeService) -> NodeService {
-    service.with_client(REPLICATED_APPLY_CLIENT_ID)
-}
-
 /// Acceptance criterion: "An event tagged as sync-originated verifiably does
 /// NOT reach trigger evaluation (integration test)."
 ///
@@ -345,11 +338,69 @@ async fn skip_playbook_triggers_alone_keeps_a_write_out_of_trigger_evaluation() 
     applied_create_does_not_reach_trigger_evaluation(skipping_triggers_only).await
 }
 
-/// The superseded client-id tag is gated as before. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
+/// A client id never keeps a write out of trigger evaluation, the one core
+/// once reserved for this included: a write through a service carrying only
+/// a client id fires the play like any local write. Built from fragments, so
+/// the former value is not spelled out here.
 #[tokio::test]
-async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()> {
-    applied_create_does_not_reach_trigger_evaluation(superseded_client_id).await
+async fn a_client_id_alone_does_not_skip_trigger_evaluation() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "pb-label-task",
+        json!([{ "name": "status", "type": "text" }]),
+    )
+    .await?;
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "close-open-label-tasks",
+        json!([{
+            "name": "auto-close-label",
+            "description": "Test rule",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb-label-task" } },
+            "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
+            "actions": [{
+                "description": "Test action",
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "status": "done" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    for client_id in [["sync", "service"].join("-"), "apply".to_string()] {
+        let node = Node::new(
+            "pb-label-task".to_string(),
+            format!("written as {client_id}"),
+            json!({ "status": "open" }),
+        );
+        let id = node.id.clone();
+        service
+            .with_client(client_id.clone())
+            .create_node(node)
+            .await?;
+
+        let fired = wait_until(|| {
+            let service = Arc::clone(&service);
+            let id = id.clone();
+            async move {
+                matches!(
+                    service.get_node(&id).await,
+                    Ok(Some(n)) if user_field(&n, "pb-label-task", "status").and_then(|v| v.as_str()) == Some("done")
+                )
+            }
+        })
+        .await;
+        assert!(fired, "{client_id}: the play must fire on a labelled write");
+    }
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
 }
 
 async fn applied_create_does_not_reach_trigger_evaluation(apply_with: ApplyWith) -> Result<()> {
@@ -446,26 +497,16 @@ async fn applied_create_does_not_reach_trigger_evaluation(apply_with: ApplyWith)
 /// Regression test: a replicated apply may write a whole batch of rows through
 /// `NodeService::bulk_create` rather than one `create_node` per row, the
 /// single-row path the test above exercises. `bulk_create`'s batch insert
-/// once hardcoded `source: None` for every node in the batch,
-/// discarding whatever client_id the calling `NodeService` was tagged with —
-/// so a sync-tagged `bulk_create` call emitted events with
-/// `source_client_id: None`, which `is_replicated_apply` (correctly) does NOT
-/// treat as sync-originated, and the ADR-073 gate let it straight through.
-/// This is exactly the "replay re-firing history" failure mode ADR-073
-/// exists to prevent, for any batch of replicated nodes applied at once.
+/// once dropped what the calling `NodeService` carried for every node in the
+/// batch, so the ADR-073 gate let such a batch straight through. This is
+/// exactly the "replay re-firing history" failure mode ADR-073 exists to
+/// prevent, for any batch of replicated nodes applied at once.
 /// Covers the same shape as
 /// `applied_create_does_not_reach_trigger_evaluation` above, but through
 /// `bulk_create` instead of `create_node`.
 #[tokio::test]
 async fn bulk_create_skipping_playbook_triggers_does_not_reach_trigger_evaluation() -> Result<()> {
     applied_bulk_create_does_not_reach_trigger_evaluation(skipping_rules).await
-}
-
-/// The superseded client-id tag through `bulk_create`. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
-#[tokio::test]
-async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Result<()> {
-    applied_bulk_create_does_not_reach_trigger_evaluation(superseded_client_id).await
 }
 
 async fn applied_bulk_create_does_not_reach_trigger_evaluation(

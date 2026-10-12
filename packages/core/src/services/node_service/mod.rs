@@ -2692,11 +2692,10 @@ impl NodeService {
     }
 
     /// Whether this instance's writes run no invariant rule inside their
-    /// transaction: its write context says so, or its client id is the
-    /// superseded [`REPLICATED_APPLY_CLIENT_ID`](crate::db::events::REPLICATED_APPLY_CLIENT_ID).
+    /// transaction (`WriteContext::skip_invariant_rules`). The client id
+    /// plays no part.
     pub(crate) fn skips_invariant_rules(&self) -> bool {
         self.write_context.skip_invariant_rules
-            || self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
     }
 
     /// Return a scoped `NodeService` that tags all emitted events with the given
@@ -8907,7 +8906,7 @@ mod tests {
     #[tokio::test]
     async fn batch_keeps_writes_from_different_origins_apart() {
         let (service, _temp) = create_test_service().await;
-        let sync = service.with_client(crate::db::events::REPLICATED_APPLY_CLIENT_ID);
+        let sync = service.with_client("apply");
         let mut rx = service.subscribe_to_events();
         let node = Node::new("text".to_string(), "synced".to_string(), json!({}));
 
@@ -8930,12 +8929,12 @@ mod tests {
         assert!(matches!(flushed[0].event, DomainEvent::NodeCreated { .. }));
         assert_eq!(
             flushed[0].metadata.source_client_id.as_deref(),
-            Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
+            Some("apply")
         );
         assert!(matches!(flushed[1].event, DomainEvent::NodeUpdated { .. }));
         assert_ne!(
             flushed[1].metadata.source_client_id.as_deref(),
-            Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID)
+            Some("apply")
         );
     }
 
@@ -8945,7 +8944,7 @@ mod tests {
     #[tokio::test]
     async fn batch_flushes_the_newest_write_last_across_origins() {
         let (service, _temp) = create_test_service().await;
-        let sync = service.with_client(crate::db::events::REPLICATED_APPLY_CLIENT_ID);
+        let sync = service.with_client("apply");
         let mut rx = service.subscribe_to_events();
         let v1 = Node::new("text".to_string(), "v1".to_string(), json!({}));
         let mut v2 = v1.clone();

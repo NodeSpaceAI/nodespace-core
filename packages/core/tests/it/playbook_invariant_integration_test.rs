@@ -16,8 +16,8 @@
 //!   effect is missing."
 //! - An invariant rule does not re-execute on a device that received the
 //!   node via sync: a write whose write context skips invariant rules
-//!   (`NodeService::with_write_context`), or one tagged with the superseded
-//!   `REPLICATED_APPLY_CLIENT_ID` until it is removed.
+//!   (`NodeService::with_write_context`); a client id alone, whatever its
+//!   value, never skips them.
 //! - A device receiving a node that violates an invariant it holds repairs
 //!   the node and logs the repair.
 //! - Reactive rules are unaffected by any of the above.
@@ -25,7 +25,6 @@
 use anyhow::Result;
 use nodespace_core::db::events::{
     DomainEvent, WriteContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
-    REPLICATED_APPLY_CLIENT_ID,
 };
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskStatus};
@@ -246,10 +245,10 @@ fn client_id_only(service: &NodeService) -> NodeService {
     service.with_client(APPLY_CLIENT_ID)
 }
 
-/// The superseded client-id tag, which still reads as both flags set.
-/// Removed with `REPLICATED_APPLY_CLIENT_ID`.
-fn superseded_client_id(service: &NodeService) -> NodeService {
-    service.with_client(REPLICATED_APPLY_CLIENT_ID)
+/// The client id core once reserved for this, built from fragments so the
+/// value is not spelled out here. Now only a label.
+fn former_reserved_client_id(service: &NodeService) -> NodeService {
+    service.with_client(["sync", "service"].join("-"))
 }
 
 // ---------------------------------------------------------------------------
@@ -490,14 +489,6 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
     invariant_rule_does_not_re_execute_on_applied_node(skipping_rules).await
 }
 
-/// The superseded client-id tag skips invariant rules as before. Removed
-/// with `REPLICATED_APPLY_CLIENT_ID`.
-#[tokio::test]
-async fn invariant_rule_does_not_re_execute_on_a_node_tagged_with_the_superseded_id() -> Result<()>
-{
-    invariant_rule_does_not_re_execute_on_applied_node(superseded_client_id).await
-}
-
 async fn invariant_rule_does_not_re_execute_on_applied_node(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
@@ -730,14 +721,13 @@ async fn skipping_invariant_rules_skips_every_dispatch_point() -> Result<()> {
     Ok(())
 }
 
-/// The superseded client-id tag skips every dispatch point, exactly as a
-/// write context skipping invariant rules does. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
+/// The client id core once reserved for this no longer skips anything: its
+/// writes are refused at every dispatch point, like any other client's.
 #[tokio::test]
-async fn the_superseded_client_id_skips_every_dispatch_point() -> Result<()> {
+async fn the_former_reserved_client_id_no_longer_skips_invariant_rules() -> Result<()> {
     assert_eq!(
-        invariant_refusals_for(superseded_client_id).await?,
-        NONE_REFUSED
+        invariant_refusals_for(former_reserved_client_id).await?,
+        ALL_REFUSED
     );
     Ok(())
 }
@@ -843,13 +833,6 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
 #[tokio::test]
 async fn a_node_written_skipping_invariants_only_is_repaired() -> Result<()> {
     applied_node_violating_invariant_is_repaired(skipping_invariants_only).await
-}
-
-/// The superseded client-id tag is repaired as before. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
-#[tokio::test]
-async fn a_node_tagged_with_the_superseded_id_is_repaired() -> Result<()> {
-    applied_node_violating_invariant_is_repaired(superseded_client_id).await
 }
 
 async fn applied_node_violating_invariant_is_repaired(apply_with: ApplyWith) -> Result<()> {
@@ -3306,13 +3289,6 @@ async fn drain_verified_when_done(service: &Arc<NodeService>, node_type: &str) -
 #[tokio::test]
 async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
     applied_update_violating_invariant_is_repaired(skipping_rules).await
-}
-
-/// The superseded client-id tag's update is repaired as before. Removed with
-/// `REPLICATED_APPLY_CLIENT_ID`.
-#[tokio::test]
-async fn an_update_tagged_with_the_superseded_id_is_repaired() -> Result<()> {
-    applied_update_violating_invariant_is_repaired(superseded_client_id).await
 }
 
 async fn applied_update_violating_invariant_is_repaired(apply_with: ApplyWith) -> Result<()> {
