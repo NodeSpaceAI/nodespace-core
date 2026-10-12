@@ -186,12 +186,109 @@ pub fn flatten_chain_by_name<T>(chain_items: Vec<Vec<T>>, name_of: impl Fn(&T) -
 /// Flatten a resolved chain's field definitions into one effective set.
 ///
 /// `chain_fields` is the per-schema field list in [`resolve_ancestor_chain`]
-/// order (own schema first, then each ancestor). A field declared by a nearer
-/// scope shadows a same-named field from a further one. Field-specific
-/// wrapper around [`flatten_chain_by_name`] — see its doc for the shadowing
-/// rationale (and the by-value signature), which applies here unchanged.
+/// order (own schema first, then each ancestor). This is the one place the
+/// effective field set is built, so everything that reads a type's fields
+/// (validation, property forms, `maps_to` resolution, boards, tables, the
+/// agent's tools, the entity-type prompt blocks) sees the same result.
+///
+/// A nearer scope's declaration of an enum field a further scope also
+/// declares is an *extension*: it stores only the values it adds, and the
+/// effective field is the further scope's current values plus those, each
+/// placed after the value it maps to (see [`extend_enum_field`]). A nearer
+/// declaration of any other kind of field shadows the further one, which is
+/// the backstop described on [`flatten_chain_by_name`].
 pub fn flatten_chain_fields(chain_fields: Vec<Vec<SchemaField>>) -> Vec<SchemaField> {
-    flatten_chain_by_name(chain_fields, |f| f.name.as_str())
+    let mut out: Vec<SchemaField> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for fields in chain_fields {
+        for field in fields {
+            match index.get(&field.name) {
+                None => {
+                    index.insert(field.name.clone(), out.len());
+                    out.push(field);
+                }
+                Some(&at) => {
+                    let is_enum =
+                        |f: &SchemaField| f.field_type == crate::models::SchemaFieldType::Enum;
+                    if is_enum(&out[at]) && is_enum(&field) {
+                        let merged = extend_enum_field(field, &out[at]);
+                        out[at] = merged;
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// The effective enum field a nearer scope's extension makes of a further
+/// scope's field (ADR-078).
+///
+/// The result carries the nearer declaration's own attributes (its
+/// description, default) and the further field's values as they are now, with
+/// each value the extension adds inserted after the value it maps to. A value
+/// the extension also lists but the further field already has is the further
+/// field's: a value is never listed twice.
+///
+/// An added value goes into the list that holds the value it maps to, so the
+/// field's combined order (`core_values`, then `user_values`) reads it right
+/// after its target. The effective field orders values; it does not record
+/// which declaration contributed one, and nothing reads that from it.
+fn extend_enum_field(base: SchemaField, extension: &SchemaField) -> SchemaField {
+    let mut core = base.core_values.clone().unwrap_or_default();
+    let mut user = base.user_values.clone().unwrap_or_default();
+    let mut present: std::collections::HashSet<String> = core
+        .iter()
+        .chain(user.iter())
+        .map(|ev| ev.value.clone())
+        .collect();
+    // Values already inserted after a given target, so siblings keep their
+    // declaration order rather than reversing.
+    let mut inserted_after: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+
+    let added = extension
+        .core_values
+        .iter()
+        .flatten()
+        .map(|ev| (true, ev))
+        .chain(extension.user_values.iter().flatten().map(|ev| (false, ev)));
+    for (is_core, ev) in added {
+        if !present.insert(ev.value.clone()) {
+            continue;
+        }
+        let target = ev.maps_to.as_deref();
+        let siblings = target
+            .map(|t| *inserted_after.entry(t.to_string()).or_insert(0))
+            .unwrap_or(0);
+        let after_target = |list: &[crate::models::schema::EnumValue]| {
+            target
+                .and_then(|t| list.iter().position(|v| v.value == t))
+                .map(|i| i + 1 + siblings)
+        };
+        // The value goes into the list its target is in, so the combined order
+        // (core values, then user values) reads it after its target.
+        if let Some(at) = after_target(&core) {
+            core.insert(at, ev.clone());
+        } else if let Some(at) = after_target(&user) {
+            user.insert(at, ev.clone());
+        } else if is_core {
+            core.push(ev.clone());
+        } else {
+            user.push(ev.clone());
+        }
+        if let Some(t) = target {
+            *inserted_after.entry(t.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    SchemaField {
+        core_values: Some(core),
+        user_values: Some(user),
+        ..extension.clone()
+    }
 }
 
 /// Resolve one stored enum value to what it means at `target_scope` (ADR-078).
@@ -460,6 +557,76 @@ mod tests {
             ),
             ..Default::default()
         }
+    }
+
+    fn values_of(field: &SchemaField) -> Vec<String> {
+        field
+            .core_values
+            .iter()
+            .flatten()
+            .chain(field.user_values.iter().flatten())
+            .map(|v| v.value.clone())
+            .collect()
+    }
+
+    #[test]
+    fn an_extension_lists_only_what_it_adds_and_inherits_the_rest() {
+        let base = enum_field("status", &["todo", "doing", "done"], &[]);
+        let mut child = enum_field("status", &[], &[]);
+        child.core_values = Some(vec![EnumValue {
+            value: "blocked".to_string(),
+            label: "blocked".to_string(),
+            maps_to: Some("doing".to_string()),
+        }]);
+
+        let flat = flatten_chain_fields(vec![vec![child], vec![base]]);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(values_of(&flat[0]), ["todo", "doing", "blocked", "done"]);
+    }
+
+    #[test]
+    fn a_value_the_parent_gains_later_is_inherited_by_an_extension() {
+        let mut base = enum_field("status", &["todo", "done"], &[]);
+        let child = enum_field("status", &[], &[("queued", "todo")]);
+        let before = flatten_chain_fields(vec![vec![child.clone()], vec![base.clone()]]);
+        assert_eq!(values_of(&before[0]), ["todo", "queued", "done"]);
+
+        base.user_values = Some(vec![EnumValue::new("waiting", "waiting")]);
+        let after = flatten_chain_fields(vec![vec![child], vec![base]]);
+        assert_eq!(values_of(&after[0]), ["todo", "queued", "done", "waiting"]);
+    }
+
+    #[test]
+    fn siblings_mapping_to_one_value_keep_their_declaration_order() {
+        let base = enum_field("status", &["todo", "done"], &[]);
+        let child = enum_field("status", &[], &[("a", "todo"), ("b", "todo")]);
+
+        let flat = flatten_chain_fields(vec![vec![child], vec![base]]);
+        assert_eq!(values_of(&flat[0]), ["todo", "a", "b", "done"]);
+    }
+
+    #[test]
+    fn each_level_of_a_chain_adds_after_its_target() {
+        let root = enum_field("status", &["todo", "done"], &[]);
+        let mid = enum_field("status", &[], &[("queued", "todo")]);
+        let leaf = enum_field("status", &[], &[("triage", "queued")]);
+
+        let flat = flatten_chain_fields(vec![vec![leaf], vec![mid.clone()], vec![root.clone()]]);
+        assert_eq!(values_of(&flat[0]), ["todo", "queued", "triage", "done"]);
+        // The middle type does not see its descendant's value.
+        let mid_only = flatten_chain_fields(vec![vec![mid], vec![root]]);
+        assert_eq!(values_of(&mid_only[0]), ["todo", "queued", "done"]);
+    }
+
+    #[test]
+    fn an_extension_keeps_its_own_attributes() {
+        let mut base = enum_field("status", &["todo"], &[]);
+        base.description = Some("base".to_string());
+        let mut child = enum_field("status", &[], &[("queued", "todo")]);
+        child.description = Some("child".to_string());
+
+        let flat = flatten_chain_fields(vec![vec![child], vec![base]]);
+        assert_eq!(flat[0].description.as_deref(), Some("child"));
     }
 
     #[test]
