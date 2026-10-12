@@ -24,6 +24,9 @@ use nodespace_types::RelationshipPath;
 /// The key a schema node's row stores its context paths under.
 pub const CONTEXT_PATHS_KEY: &str = "contextPaths";
 
+/// The key a schema node's row stores its field definitions under.
+pub const FIELDS_KEY: &str = "fields";
+
 /// Assemble a schema from its node row and its declaration edges.
 ///
 /// `declarations` are the rows of the `relationship` table the schema
