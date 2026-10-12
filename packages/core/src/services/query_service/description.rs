@@ -330,9 +330,10 @@ fn view_phrase(view_config: Option<&Value>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::services::query_service::core_queries::{
-        core_query_templates, AWAITING_REVIEW_QUERY_ID, DECISIONS_BY_STATUS_QUERY_ID,
-        IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID,
-        READY_TASKS_QUERY_ID, SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+        core_query_templates, AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID,
+        DECISIONS_BY_STATUS_QUERY_ID, IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID,
+        PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID, READY_TO_MERGE_QUERY_ID,
+        SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
     };
     use serde_json::json;
 
@@ -591,11 +592,22 @@ mod tests {
         );
         assert_eq!(
             sentence(IN_PROGRESS_QUERY_ID),
-            format!("Lists tasks whose status is in_progress. {by_priority}")
+            format!(
+                "Lists tasks whose status is in_progress, \
+                 and whose status is not changes_requested. {by_priority}"
+            )
         );
         assert_eq!(
             sentence(AWAITING_REVIEW_QUERY_ID),
-            format!("Lists tasks whose status is in_review. {by_priority}")
+            format!("Lists issues whose status is in_review. {by_priority}")
+        );
+        assert_eq!(
+            sentence(CHANGES_REQUESTED_QUERY_ID),
+            format!("Lists issues whose status is changes_requested. {by_priority}")
+        );
+        assert_eq!(
+            sentence(READY_TO_MERGE_QUERY_ID),
+            format!("Lists issues whose status is ready_to_merge. {by_priority}")
         );
         assert_eq!(
             sentence(READY_TASKS_QUERY_ID),
