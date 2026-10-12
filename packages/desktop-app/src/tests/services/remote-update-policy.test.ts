@@ -76,8 +76,8 @@ describe('decideRemoteUpdate', () => {
   // ADR-026 C5 extension: the daemon suppresses a connection's own write
   // echoes before they ever reach WatchNodes, so a database-sourced event
   // from the SAME connection can no longer reach this policy — but a
-  // genuinely newer foreign write (a different window, or a sync-service
-  // pull) still must always notify.
+  // genuinely newer foreign write (a different window, or another client)
+  // still must always notify.
   it('notifies a genuinely newer foreign write to an actively-edited node', () => {
     const decision = decideRemoteUpdate(
       makeNode({ content: 'bob wrote this', version: 9 }),

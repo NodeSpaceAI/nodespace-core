@@ -86,7 +86,7 @@ describe('Phase 3: MCP Integration (Simulated)', () => {
       const externalUpdate: NodeUpdate = {
         nodeId: mockNode.id,
         changes: { content: 'External system update' },
-        source: { type: 'mcp-server', serverId: 'sync-service' },
+        source: { type: 'mcp-server', serverId: 'external-system' },
         timestamp: Date.now()
       };
 

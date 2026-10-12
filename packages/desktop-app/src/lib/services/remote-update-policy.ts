@@ -68,8 +68,8 @@ export type RemoteUpdateDecision =
  * never applied — the optimistic local content is always protected. A
  * conflict notification is raised only when the incoming version is
  * strictly newer than the local version (a genuine foreign write); a
- * same-or-older version is a stale broadcast (most commonly a sync-service
- * replay — same-connection echoes are now suppressed daemon-side, see this
+ * same-or-older version is a stale broadcast (most commonly a replayed
+ * write — same-connection echoes are now suppressed daemon-side, see this
  * module's doc comment) and must not raise a phantom notification.
  *
  * ai-chat nodes are exempt from the focus/content-editing skip — see
