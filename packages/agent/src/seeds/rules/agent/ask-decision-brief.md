@@ -1,0 +1,1 @@
+Ask by calling route_clarify, with the whole decision brief as `question` and `options` empty, and do nothing else until they answer.

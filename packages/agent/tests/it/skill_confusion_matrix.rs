@@ -315,32 +315,40 @@ const CASES: &[Case] = &[
         "Writing a Spec",
     ),
     window("approve the offline sync spec", "Writing a Spec"),
-    // Writing a Plan: how one spec will be met.
+    // Reviewing a Plan: how one spec will be met, checked before it is split.
     first(
         "write an implementation plan for the export spec",
-        "Writing a Plan",
+        "Reviewing a Plan",
     ),
     first(
         "plan out how we are going to build the offline sync spec",
-        "Writing a Plan",
+        "Reviewing a Plan",
     ),
     first(
         "draft a plan for the billing spec with its risks",
-        "Writing a Plan",
+        "Reviewing a Plan",
     ),
-    // Breaking a Plan into Tasks.
+    // Splitting a Plan into Tasks.
     first(
         "break the export plan down into tasks",
-        "Breaking a Plan into Tasks",
+        "Splitting a Plan into Tasks",
     ),
     first(
         "split this plan into work items with checklists",
-        "Breaking a Plan into Tasks",
+        "Splitting a Plan into Tasks",
     ),
     first(
         "turn the approved plan into tasks",
-        "Breaking a Plan into Tasks",
+        "Splitting a Plan into Tasks",
     ),
+    // Asking the User: an unclear request, worked through one decision at a
+    // time.
+    window("this is unclear", "Asking the User"),
+    window("I'm not sure what I want", "Asking the User"),
+    window("help me think this through", "Asking the User"),
+    // Explaining: a request to be told again, which a question does not answer.
+    window("I don't understand", "Explaining"),
+    window("I don't follow what you mean", "Explaining"),
     // Implementing a Task: the work itself, from the queue to review.
     first("pick up the next ready task", "Implementing a Task"),
     first(
@@ -441,13 +449,17 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
         "Conflict Journal",
     ),
     ("show me the open conflicts", "Node Merge"),
+    // Not following something is a request to be told again, not a decision
+    // to work through.
+    ("I don't understand", "Asking the User"),
+    ("I don't follow what you mean", "Asking the User"),
     // One record is not a document to import.
     ("add a task to call the roofer on Friday", "Bulk Import"),
     ("new note: call the plumber", "Bulk Import"),
     // One new task is a record, not a plan's breakdown and not work to do.
     (
         "make a task to renew the domain",
-        "Breaking a Plan into Tasks",
+        "Splitting a Plan into Tasks",
     ),
     ("make a task to renew the domain", "Implementing a Task"),
     (

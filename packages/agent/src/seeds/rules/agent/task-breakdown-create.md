@@ -1,1 +1,1 @@
-Call create_node with node_type "task" and the task's title as content. A new task is open.
+Call create_node with node_type "issue" for a change to code and node_type "task" for anything else, and the title as content. A new one is open.

@@ -1980,6 +1980,9 @@ const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
     // their own lane; the matrix ranks every procedure request.
     ("Writing a Spec", &["skills_win_their_requests"]),
     ("Reviewing a Task", &["skills_win_their_requests"]),
+    // Separates it from Explaining on "I don't understand"; the matrix ranks
+    // that request against it.
+    ("Asking the User", &["skills_win_their_requests"]),
     (
         "Schema Creation",
         &[

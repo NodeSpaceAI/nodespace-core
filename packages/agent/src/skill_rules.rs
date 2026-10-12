@@ -721,6 +721,15 @@ pub const APPROVAL_ASK_FIRST: InteractionRule = InteractionRule {
     prose: skill_md_form!("approval-ask-first"),
 };
 
+/// Putting a decision brief to the user: one message, and nothing done until
+/// the answer. The local form asks through route_clarify for the reason
+/// [`APPROVAL_ASK_FIRST`] does.
+pub const ASK_DECISION_BRIEF: InteractionRule = InteractionRule {
+    id: "ask-decision-brief",
+    imperative: agent_form!("ask-decision-brief"),
+    prose: skill_md_form!("ask-decision-brief"),
+};
+
 /// Reading one task with what governs it, for a procedure that is given a
 /// task by name instead of taking the next one from its queue.
 pub const TASK_CONTEXT_READ: InteractionRule = InteractionRule {
@@ -736,6 +745,7 @@ pub const INTERACTION_RULES: &[InteractionRule] = &[
     VERSION_CONFLICT,
     CHECKBOX_ITEM_CREATE,
     APPROVAL_ASK_FIRST,
+    ASK_DECISION_BRIEF,
     TASK_CONTEXT_READ,
     FIND_THEN_ACT,
     NAMED_RECORD_RESOLUTION,
@@ -799,16 +809,18 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("spec-find-first"),
     procedure_rule!("spec-create"),
     procedure_rule!("spec-approve"),
-    // Writing a Plan
+    // Reviewing a Plan
     procedure_rule!("plan-read-spec"),
     procedure_rule!("plan-existing-plans"),
     procedure_rule!("plan-create-and-link"),
     procedure_rule!("plan-approve"),
-    // Breaking a Plan into Tasks
+    // Splitting a Plan into Tasks
     procedure_rule!("task-breakdown-read"),
     procedure_rule!("task-breakdown-existing"),
     procedure_rule!("task-breakdown-create"),
+    procedure_rule!("task-breakdown-brief"),
     procedure_rule!("task-breakdown-link"),
+    procedure_rule!("task-breakdown-project"),
     procedure_rule!("task-breakdown-blocks"),
     // Implementing a Task
     procedure_rule!("task-implement-take"),
@@ -833,6 +845,10 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("decision-accept"),
     procedure_rule!("decision-link"),
     procedure_rule!("decision-supersede"),
+    // Asking the User
+    procedure_rule!("ask-look-up"),
+    // Explaining
+    procedure_rule!("explain-look-up"),
     // Authoring a Skill
     procedure_rule!("skill-authoring-find-first"),
     procedure_rule!("skill-authoring-tools"),

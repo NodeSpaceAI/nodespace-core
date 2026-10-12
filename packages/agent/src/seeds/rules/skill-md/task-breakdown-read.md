@@ -1,1 +1,1 @@
-Run `nodespace node context <plan-id> --path spec`: it prints the plan, and its spec with the spec's criteria under `checkboxes`.
+Run `nodespace node context <plan-id> --path spec --path spec.decisions`: it prints the plan, its spec with the spec's criteria under `checkboxes`, and the decisions linked from the spec.
