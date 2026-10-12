@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_dump_writes_nothing_but_still_numbers_calls() {
+    fn numbering_stays_monotonic_with_the_dump_off() {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(ENV_DUMP_PATH);
         let a = dump_prompt(Engine::Native, None, Sent::Text("x"));
