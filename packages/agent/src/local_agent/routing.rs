@@ -571,7 +571,7 @@ pub fn decision_for_an_offered_option(message: &str) -> RouteDecision {
 }
 
 /// Whether `message` leans on the message before it: it is one or two words,
-/// or it points back with a pronoun, an ordinal or a yes or no.
+/// or it is short and points back with a pronoun, an ordinal or a yes or no.
 ///
 /// "Change it", "the second one", "yes, that", "Tuesday". Read by itself such
 /// a message names no subject, and what it asks for is in the assistant's
@@ -580,11 +580,17 @@ pub fn decision_for_an_offered_option(message: &str) -> RouteDecision {
 /// conversation the message replies to, or as background to a request that
 /// stands alone.
 ///
-/// English only, and loose on purpose. A request that stands alone and uses
-/// one of these words ("make sure that the invoice is sent") is shown the
-/// reply frame, which asks for the last message to be read into the request
-/// only when the request does not stand alone.
+/// English only. A pointing-back word counts in a message of at most
+/// [`LEANING_MESSAGE_WORDS`] words: a longer one names its own subject and
+/// the word points inside it. Measured on the built-in model, "Also the
+/// search indexer, that one's twenty-one days" shown the reply frame was
+/// routed as two tasks, the turn before it and its own, on every run. A
+/// short request that stands alone and uses one of these words ("send that
+/// invoice to Acme") is still shown the reply frame, which asks for the last
+/// message to be read into the request only when it does not stand alone.
 pub fn leans_on_the_last_message(message: &str) -> bool {
+    /// The longest message a pointing-back word makes a reply of.
+    const LEANING_MESSAGE_WORDS: usize = 6;
     const POINTING_BACK: [&str; 22] = [
         "it", "its", "that", "this", "these", "those", "them", "one", "ones", "same", "both",
         "first", "second", "third", "last", "yes", "no", "yeah", "yep", "ok", "okay", "sure",
@@ -594,7 +600,10 @@ pub fn leans_on_the_last_message(message: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    !words.is_empty() && (words.len() <= 2 || words.iter().any(|w| POINTING_BACK.contains(w)))
+    !words.is_empty()
+        && (words.len() <= 2
+            || (words.len() <= LEANING_MESSAGE_WORDS
+                && words.iter().any(|w| POINTING_BACK.contains(w))))
 }
 
 /// The retrieval query for a lookup: the capability, then the topic.
@@ -4626,6 +4635,9 @@ mod tests {
             "find what I wrote about rate limiting",
             "how do we onboard a new reviewer?",
             "set up postmortems with a severity",
+            // Long enough to name its own subject: "that one" points inside it.
+            "Also the search indexer, that one's twenty-one days",
+            "make sure that the invoice for Acme is sent",
             "   ",
         ] {
             assert!(!leans_on_the_last_message(standing), "{standing}");
