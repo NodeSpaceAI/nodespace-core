@@ -31,8 +31,13 @@ use super::case::{CaseError, GoldenCase, DEFAULT_TOOL_RESULT};
 
 /// The ADR-056 locked native model, at the path the golden tests use.
 pub fn default_model_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    format!("{home}/.nodespace/models/gemma-4-E4B-it-Q4_K_M.gguf")
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".nodespace")
+        .join("models")
+        .join("gemma-4-E4B-it-Q4_K_M.gguf")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Context window for the runner's engine. Matches the golden tests'.

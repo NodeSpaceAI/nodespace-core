@@ -75,7 +75,8 @@ const LOCKED_NATIVE_MODEL: &str = "gemma-4-e4b-q4km";
 /// already produced a suppression result on this project that turned out not
 /// to apply to the shipped model.
 async fn resolve_locked_model() -> Option<Arc<dyn ChatInferenceEngine>> {
-    let gguf = GgufModelManager::new().ok()?;
+    let gguf =
+        GgufModelManager::with_dir(dirs::home_dir()?.join(".nodespace").join("models")).ok()?;
     let path = gguf.model_path(LOCKED_NATIVE_MODEL).ok()?;
     if !path.exists() {
         return None;

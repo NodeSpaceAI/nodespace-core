@@ -152,7 +152,7 @@ const MAX_WRITE_ATTEMPTS: usize = 5;
 const TITLE_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// gRPC error message for local-GGUF-model-management calls made on a daemon
-/// whose `GgufModelManager::new()` failed at construction (see
+/// whose model manager failed to open at construction (see
 /// `SharedLocalAgent::new`). Chat turns and OpenAI-compatible models are
 /// unaffected — only local GGUF model management (list/download/delete/load/
 /// unload/cancel/recommended) is degraded.
@@ -181,8 +181,8 @@ pub struct SharedLocalAgent {
     /// model load; a turn already running keeps the engine it started with,
     /// since it holds its own `Arc`.
     engine: RwLock<Arc<dyn ChatInferenceEngine>>,
-    /// `None` when `GgufModelManager::new()` failed at construction (e.g.
-    /// `$HOME` unset, an unwritable/occupied models directory) — a recoverable
+    /// `None` when the model manager failed to open at construction (e.g. no
+    /// resolvable home directory, an unwritable/occupied models directory) — a recoverable
     /// environmental condition, not a programming error. The daemon still
     /// starts; local GGUF model management (list/download/delete/load/unload/
     /// cancel/recommended) reports `UNAVAILABLE` instead, while everything
@@ -237,11 +237,11 @@ impl SharedLocalAgent {
     /// [`crate::build_shared_services`].
     pub fn new() -> Arc<Self> {
         // A failed model-manager init is a recoverable environmental condition
-        // (`$HOME` unset, an unwritable/occupied models directory), not a
-        // programming error: degrade the local-GGUF RPCs to `UNAVAILABLE` the
-        // same way a missing NLP model disables only the embedding wiring,
-        // rather than failing daemon startup outright.
-        let model_manager = match GgufModelManager::new() {
+        // (no resolvable home directory, an unwritable/occupied models
+        // directory), not a programming error: degrade the local-GGUF RPCs to
+        // `UNAVAILABLE` the same way a missing NLP model disables only the
+        // embedding wiring, rather than failing daemon startup outright.
+        let model_manager = match Self::open_model_manager() {
             Ok(m) => Some(Arc::new(m)),
             Err(e) => {
                 tracing::error!(
@@ -255,10 +255,17 @@ impl SharedLocalAgent {
         Self::from_model_manager(model_manager, MODEL_SPEC_SNAPSHOT_TIMEOUT)
     }
 
+    /// The GGUF model manager over [`crate::models_dir`], the one resolution the
+    /// embedding model shares.
+    fn open_model_manager() -> Result<GgufModelManager, String> {
+        let dir = crate::models_dir().map_err(|e| format!("{e:#}"))?;
+        GgufModelManager::with_dir(dir).map_err(|e| e.to_string())
+    }
+
     /// Shared construction path for [`Self::new`] and for tests, which use it to
-    /// cover the degraded shape a failed `GgufModelManager::new()` produces
-    /// (`model_manager: None`) without breaking `$HOME` or the real models
-    /// directory, and to shorten `model_spec_snapshot_timeout` so the
+    /// cover the degraded shape a failed [`Self::open_model_manager`] produces
+    /// (`model_manager: None`) without breaking the home directory or the real
+    /// models directory, and to shorten `model_spec_snapshot_timeout` so the
     /// stalled-`model_info` path is exercised without paying the production
     /// bound in wall-clock time.
     fn from_model_manager(
@@ -304,8 +311,8 @@ impl SharedLocalAgent {
         engine.runs_on_this_machine().then_some(engine)
     }
 
-    /// The GGUF model manager, or `None` when `GgufModelManager::new()` failed
-    /// at construction (see the field's doc comment). Every gRPC handler that
+    /// The GGUF model manager, or `None` when it failed to open at
+    /// construction (see the field's doc comment). Every gRPC handler that
     /// manages local GGUF models (list/download/delete/load/unload/cancel/
     /// recommended) routes through this instead of unwrapping the field
     /// directly, pairing it with `MODEL_MANAGER_UNAVAILABLE` via
@@ -3472,8 +3479,8 @@ mod tests {
     }
 
     /// Like `test_service`, but with the GGUF model manager forced absent —
-    /// the shape `SharedLocalAgent::new` produces when `GgufModelManager::new()`
-    /// fails (unwritable models directory, `$HOME` unset). Regression coverage
+    /// the shape `SharedLocalAgent::new` produces when the model manager fails
+    /// to open (unwritable models directory, no resolvable home). Regression coverage
     /// for that failure staying a degradation of the local-GGUF RPCs rather
     /// than the panic it used to be, which — because it ran on every
     /// per-database open under ADR-053, not just once at startup — would
@@ -3505,7 +3512,7 @@ mod tests {
         let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
         let shared = if model_manager {
             SharedLocalAgent::from_model_manager(
-                GgufModelManager::new().ok().map(Arc::new),
+                SharedLocalAgent::open_model_manager().ok().map(Arc::new),
                 spec_timeout,
             )
         } else {
@@ -8161,14 +8168,12 @@ mod tests {
     // -- Model-manager init failure (degraded mode, not a panic) ------------
 
     /// The real environmental failure this regression guards against:
-    /// `GgufModelManager::with_dir` (what `GgufModelManager::new` calls after
-    /// resolving the default directory) fails, without panicking, when a
-    /// plain file already occupies the path it needs to `create_dir_all` —
-    /// one of the two ordinary conditions (`$HOME` unset is the other,
-    /// documented on `default_models_dir`) that used to reach an `expect` in
+    /// `GgufModelManager::with_dir` fails, without panicking, when a plain
+    /// file already occupies the path it needs to `create_dir_all` — an
+    /// ordinary condition that used to reach an `expect` in
     /// `LocalAgentServiceImpl::new`.
     #[test]
-    fn gguf_model_manager_new_fails_cleanly_when_models_dir_path_is_a_file() {
+    fn gguf_model_manager_with_dir_fails_cleanly_when_models_dir_path_is_a_file() {
         let tempdir = tempfile::TempDir::new().expect("tempdir");
         let occupied_path = tempdir.path().join("models");
         std::fs::write(&occupied_path, b"not a directory").expect("create blocking file");
@@ -8182,20 +8187,51 @@ mod tests {
         );
     }
 
-    /// Drives `SharedLocalAgent::new` itself — not `from_model_manager`'s
-    /// injected shortcut — through a real `GgufModelManager::new()` failure, by
-    /// pointing `$HOME` at a directory whose `.nodespace/models` path is
-    /// occupied by a plain file. This is the one test that actually exercises
-    /// the `match GgufModelManager::new() { Ok(..) => Some(..), Err(..) =>
-    /// None }` arm that replaced the original `.expect(...)`: the other
-    /// degraded-mode tests construct via `from_model_manager(..., None, ..)`
-    /// directly and would keep passing even if that match arm regressed back
-    /// to a panic.
+    /// Restores environment variables to their prior values on drop, so a
+    /// panicking `f` in [`with_env`] cannot leak a changed variable.
+    struct RestoreEnv(Vec<(String, Option<std::ffi::OsString>)>);
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, old) in self.0.drain(..) {
+                match old {
+                    Some(old) => std::env::set_var(&key, old),
+                    None => std::env::remove_var(&key),
+                }
+            }
+        }
+    }
+
+    /// Runs `f` with each environment variable set (`Some`) or removed
+    /// (`None`), restoring every one afterwards, panic or not.
     ///
-    /// Mutating `$HOME` is process-global, so this is deliberately narrow: the
-    /// window is exactly the synchronous `SharedLocalAgent::new` call (it
-    /// performs no `.await`, so no other task can interleave before `$HOME` is
-    /// restored), and nextest runs each test in its own process.
+    /// The environment is process-global, so callers keep `f` narrow: the
+    /// window is exactly one synchronous call (no `.await`, so no other task
+    /// can interleave), and nextest runs each test in its own process.
+    fn with_env<R>(vars: &[(&str, Option<&std::path::Path>)], f: impl FnOnce() -> R) -> R {
+        let _restore = RestoreEnv(
+            vars.iter()
+                .map(|(key, _)| (key.to_string(), std::env::var_os(key)))
+                .collect(),
+        );
+        for (key, value) in vars {
+            match value {
+                Some(path) => std::env::set_var(key, path),
+                None => std::env::remove_var(key),
+            }
+        }
+        f()
+    }
+
+    /// Drives `SharedLocalAgent::new` itself — not `from_model_manager`'s
+    /// injected shortcut — through a real model-manager open failure, by
+    /// pointing `NODESPACE_HOME` at a directory whose `.nodespace/models` path
+    /// is occupied by a plain file. This is the one test that actually
+    /// exercises the `match Self::open_model_manager() { Ok(..) => Some(..),
+    /// Err(..) => None }` arm that replaced the original `.expect(...)`: the
+    /// other degraded-mode tests construct via `from_model_manager(...,
+    /// None, ..)` directly and would keep passing even if that match arm
+    /// regressed back to a panic.
     #[tokio::test]
     async fn shared_local_agent_new_survives_a_real_model_manager_init_failure() {
         let fake_home = tempfile::TempDir::new().expect("fake home tempdir");
@@ -8208,21 +8244,48 @@ mod tests {
         .expect("create .nodespace dir");
         std::fs::write(&models_path, b"not a directory").expect("occupy the models path");
 
-        let original_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", fake_home.path());
-        let shared = SharedLocalAgent::new();
-        match original_home {
-            Some(h) => std::env::set_var("HOME", h),
-            None => std::env::remove_var("HOME"),
-        }
+        let shared = with_env(&[("NODESPACE_HOME", Some(fake_home.path()))], || {
+            SharedLocalAgent::new()
+        });
 
         // The construction above must not have panicked (if it had, this test
         // would already be reported as a failure) and must have landed in
         // degraded mode, not silently succeeded with some other directory.
         assert!(
             shared.model_manager.is_none(),
-            "a real GgufModelManager::new() failure during SharedLocalAgent::new \
+            "a real model-manager open failure during SharedLocalAgent::new \
              must degrade (model_manager: None), not panic or silently recover"
+        );
+    }
+
+    /// The Windows regression: a process with no `HOME` (Windows defines
+    /// `USERPROFILE`, not `HOME`) must still open its model manager, under the
+    /// models directory the embedding model shares. `NODESPACE_HOME` stands in
+    /// for the resolved home so the test never touches the real one.
+    #[tokio::test]
+    async fn shared_local_agent_new_opens_the_model_manager_when_home_is_unset() {
+        let nodespace_home = tempfile::TempDir::new().expect("nodespace home tempdir");
+
+        let shared = with_env(
+            &[
+                ("NODESPACE_HOME", Some(nodespace_home.path())),
+                ("HOME", None),
+            ],
+            SharedLocalAgent::new,
+        );
+
+        assert!(
+            shared.model_manager.is_some(),
+            "model management must not depend on HOME being set"
+        );
+        assert!(
+            nodespace_home
+                .path()
+                .join(".nodespace")
+                .join("models")
+                .is_dir(),
+            "the model manager must create the models directory the embedding \
+             model shares, under the NodeSpace home"
         );
     }
 

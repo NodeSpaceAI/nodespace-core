@@ -27,9 +27,7 @@
 use nodespace_app_lib::commands::chat_models::{
     chat_model_cancel_download, chat_model_list, chat_model_load, chat_model_unload,
 };
-use nodespace_app_test_support::{
-    model_file_available, SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT,
-};
+use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use nodespace_proto::nodespace::DownloadModelRequest;
 use serde_json::json;
 use tokio_stream::StreamExt;
@@ -44,16 +42,20 @@ const MODEL_FILENAME: &str = "gemma-4-E4B-it-Q4_K_M.gguf";
 /// today. Tests that need it already present skip cleanly with a clear
 /// message rather than silently kicking off a live multi-gigabyte
 /// HuggingFace fetch and hanging the merge gate on a machine that hasn't
-/// run `model load` for it before.
-macro_rules! skip_if_model_absent {
+/// run `model load` for it before. Evaluates to a daemon that can see the
+/// user's copy of the model, or returns from the test.
+macro_rules! daemon_with_model_or_skip {
     () => {
-        if !model_file_available(MODEL_FILENAME) {
-            eprintln!(
-                "SKIPPED: {MODEL_ID} not found under ~/.nodespace/models/{MODEL_FILENAME} — \
-                 run `target/debug/nodespace model load {MODEL_ID}` once to provision it, \
-                 then re-run this test."
-            );
-            return;
+        match SpawnedDaemon::spawn_with_user_model(MODEL_FILENAME) {
+            Some(daemon) => daemon,
+            None => {
+                eprintln!(
+                    "SKIPPED: {MODEL_ID} not found under ~/.nodespace/models/{MODEL_FILENAME} — \
+                     run `target/debug/nodespace model load {MODEL_ID}` once to provision it, \
+                     then re-run this test."
+                );
+                return;
+            }
         }
     };
 }
@@ -86,8 +88,7 @@ async fn drain_download_events(harness: &TauriTestApp, model_id: &str) -> Vec<St
 
 #[tokio::test]
 async fn download_of_an_already_present_model_reaches_ready_with_no_error() {
-    skip_if_model_absent!();
-    let daemon = SpawnedDaemon::spawn();
+    let daemon = daemon_with_model_or_skip!();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
 
     let event_types = drain_download_events(&harness, MODEL_ID).await;
@@ -104,8 +105,7 @@ async fn download_of_an_already_present_model_reaches_ready_with_no_error() {
 
 #[tokio::test]
 async fn chat_model_list_still_succeeds_after_a_download() {
-    skip_if_model_absent!();
-    let daemon = SpawnedDaemon::spawn();
+    let daemon = daemon_with_model_or_skip!();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
 
@@ -150,8 +150,7 @@ async fn cancel_of_a_download_with_no_stray_downloading_state_left_behind() {
 
 #[tokio::test]
 async fn load_then_unload_reaches_a_clean_terminal_state() {
-    skip_if_model_absent!();
-    let daemon = SpawnedDaemon::spawn();
+    let daemon = daemon_with_model_or_skip!();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
 

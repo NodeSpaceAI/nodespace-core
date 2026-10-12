@@ -704,8 +704,8 @@ async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
 
 /// Resolve the NLP model path without loading it. Returns `None` when absent.
 ///
-/// `NODESPACED_MODEL_PATH` when set, else `models/` under
-/// [`crate::nodespace_dir`], so the model follows `NODESPACE_HOME` exactly as
+/// `NODESPACED_MODEL_PATH` when set, else the file under
+/// [`crate::models_dir`], so the model follows `NODESPACE_HOME` exactly as
 /// the database and the registry do. An isolated daemon finds no
 /// model unless one is placed under its own home or named explicitly. Reading
 /// the real home instead made every isolated run load the user's model and
@@ -715,9 +715,8 @@ fn resolve_model_path() -> Option<std::path::PathBuf> {
     let p = if let Ok(custom) = std::env::var("NODESPACED_MODEL_PATH") {
         std::path::PathBuf::from(custom)
     } else {
-        crate::nodespace_dir()
+        crate::models_dir()
             .ok()?
-            .join("models")
             .join("nomic-embed-text-v1.5.Q8_0.gguf")
     };
     if !p.exists() {

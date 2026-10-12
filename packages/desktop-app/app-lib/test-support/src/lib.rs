@@ -88,6 +88,42 @@ impl SpawnedDaemon {
         Self::spawn_with_socket(tmp_dir, socket_path)
     }
 
+    /// Like [`Self::spawn`], with the model file `filename` from the user's
+    /// own `~/.nodespace/models/` made available to the daemon, or `None`
+    /// when the user has not downloaded it, so the caller skips.
+    ///
+    /// Tests that need a REAL loaded model (ai-chat send, model-download
+    /// terminal state) use this to skip cleanly, with a clear message, on a
+    /// machine that hasn't downloaded the model, instead of silently kicking
+    /// off a live multi-gigabyte fetch from HuggingFace and hanging the merge
+    /// gate for anyone but the one machine that already has it cached. There
+    /// is no provisioning step in `bun install`/`test-gate.ts` for this file.
+    ///
+    /// The daemon's models directory sits under its isolated `NODESPACE_HOME`,
+    /// so the user's model is invisible to it unless linked in. The check and
+    /// the link are one operation so they cannot disagree about where the
+    /// model is. Only that one file is linked, never the directory: the
+    /// embedding model beside it must stay invisible, or every isolated
+    /// daemon would load it and start GPU work nobody asked for.
+    pub fn spawn_with_user_model(filename: &str) -> Option<Self> {
+        let user_model = std::env::home_dir()?
+            .join(".nodespace")
+            .join("models")
+            .join(filename);
+        if !user_model.exists() {
+            return None;
+        }
+
+        let tmp_dir = tempfile::tempdir().expect("create temp dir for daemon fixture");
+        let models_dir = tmp_dir.path().join(".nodespace").join("models");
+        std::fs::create_dir_all(&models_dir).expect("create the daemon's models directory");
+        symlink_file(&user_model, &models_dir.join(filename))
+            .expect("link the user's model into the daemon's models directory");
+
+        let socket_path = tmp_dir.path().join("daemon.sock");
+        Some(Self::spawn_with_socket(tmp_dir, socket_path))
+    }
+
     /// Like [`Self::spawn`], but with the socket at a caller-chosen path
     /// instead of the standard `<tmp_dir>/daemon.sock` — for tests that need
     /// to control exactly what `NODESPACED_SOCKET` resolves to and where its
@@ -369,24 +405,16 @@ impl Drop for EnvGuard {
     }
 }
 
-/// True if `~/.nodespace/models/<filename>` already exists — the same
-/// resolution `GgufModelManager::new()` uses (`$HOME/.nodespace/models`).
-/// Tests that need a REAL loaded model (ai-chat send, model-download
-/// terminal state) call this to skip cleanly with a clear message on a
-/// machine that hasn't downloaded the model, instead of silently kicking
-/// off a live multi-gigabyte fetch from HuggingFace and hanging the pre-push
-/// gate for anyone but the one machine that already has it cached. There is
-/// no provisioning step in `bun install`/`test-gate.ts` for this file today —
-/// see the panic message for how to fetch it.
-pub fn model_file_available(filename: &str) -> bool {
-    let Some(home) = std::env::var_os("HOME") else {
-        return false;
-    };
-    PathBuf::from(home)
-        .join(".nodespace")
-        .join("models")
-        .join(filename)
-        .exists()
+/// Links `original` at `link`, a symbolic link to a single file.
+fn symlink_file(original: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(original, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(original, link)
+    }
 }
 
 /// The workspace root, derived from this crate's manifest directory

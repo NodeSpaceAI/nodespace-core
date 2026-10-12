@@ -31,9 +31,7 @@ use nodespace_app_lib::commands::nodes::{
     create_node, get_children, get_node, update_node, CreateNodeInput,
 };
 use nodespace_app_lib::types::NodeUpdate;
-use nodespace_app_test_support::{
-    model_file_available, SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT,
-};
+use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use nodespace_proto::nodespace::EnsureModelReadyRequest;
 use serde_json::json;
 use tokio_stream::StreamExt;
@@ -42,8 +40,8 @@ const MODEL_ID: &str = "gemma-4-e4b-q4km";
 // Filename mapped from MODEL_ID by the CATALOG entry in
 // packages/agent/src/local_agent/model_manager.rs — kept in sync manually
 // since this test has no dependency on that crate. If this test starts
-// failing the `model_file_available` skip-check spuriously, confirm that
-// mapping hasn't changed.
+// skipping spuriously (`spawn_with_user_model` finds no such file), confirm
+// that mapping hasn't changed.
 const MODEL_FILENAME: &str = "gemma-4-E4B-it-Q4_K_M.gguf";
 
 fn ai_chat_input(id: &str, provider_model: &str, turn_status: &str) -> CreateNodeInput {
@@ -117,16 +115,14 @@ async fn ai_chat_send_reaches_idle_with_no_stuck_processing_state() {
     // today. Skip cleanly with a clear message rather than silently kicking
     // off a live multi-gigabyte HuggingFace fetch and hanging the pre-push
     // gate on a machine that hasn't run `model load` for it before.
-    if !model_file_available(MODEL_FILENAME) {
+    let Some(daemon) = SpawnedDaemon::spawn_with_user_model(MODEL_FILENAME) else {
         eprintln!(
             "SKIPPED: {MODEL_ID} not found under ~/.nodespace/models/{MODEL_FILENAME} — \
              run `target/debug/nodespace model load {MODEL_ID}` once to provision it, \
              then re-run this test."
         );
         return;
-    }
-
-    let daemon = SpawnedDaemon::spawn();
+    };
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
 
