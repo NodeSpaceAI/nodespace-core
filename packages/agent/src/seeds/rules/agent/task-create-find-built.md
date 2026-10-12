@@ -1,0 +1,1 @@
+Call search_nodes with the request's subject as query, once with node_type "task" and once with node_type "spec". An open or finished task or spec that covers the request means it is already recorded or built.

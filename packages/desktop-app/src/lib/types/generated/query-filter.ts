@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { FilterAnchor } from './filter-anchor';
 import type { FilterOperator } from './filter-operator';
 import type { FilterType } from './filter-type';
 import type { RelationshipPath } from './relationship-path';
@@ -51,6 +52,12 @@ export type QueryFilter = {
    * The node a [`FilterType::Relationship`] filter's path must reach.
    */
   node_id?: string | null;
+  /**
+   * The node a [`FilterType::Relationship`] filter's path must reach,
+   * named by who is asking, in place of [`Self::node_id`]. A filter
+   * carries one or the other, never both.
+   */
+  anchor?: FilterAnchor | null;
   /**
    * The walk a [`FilterType::Relationship`] or [`FilterType::Related`]
    * filter makes from each candidate node: built-in, schema-declared and

@@ -1,9 +1,10 @@
 //! Saved queries that ship with the product (ADR-092 §8, ADR-094).
 //!
-//! Three list specs, plans and decisions by status, and three are queues of
-//! work: "Ready tasks", "In progress" and "Awaiting review". A queue is not a
-//! type: it is an ordinary saved query, and the procedure for working it is a
-//! skill attached to the query node (ADR-094 §1 and §3).
+//! Three list specs, plans and decisions by status, and five are queues of
+//! work: "Ready tasks", "In progress", "Awaiting review", "Needs shaping" and
+//! "Waiting on you". A queue is not a type: it is an ordinary saved query, and
+//! the procedure for working it is a skill attached to the query node
+//! (ADR-094 §1 and §3).
 //!
 //! Core queries are one of the seed tables (ADR-086 §10): each is a
 //! [`NodeTemplate`] reconciled by its fixed id on every open, like a core
@@ -32,6 +33,11 @@ pub const IN_PROGRESS_QUERY_ID: &str = "d1e5c9a8-d19c-401b-9277-40fd873fb205";
 /// Node id of the "Awaiting review" queue.
 pub const AWAITING_REVIEW_QUERY_ID: &str = "3eff80e8-9672-4896-ac0b-76a169062511";
 
+/// Node id of the "Needs shaping" queue.
+pub const NEEDS_SHAPING_QUERY_ID: &str = "bb611c45-2b82-47dd-ad53-560ec9b5447f";
+/// Node id of the "Waiting on you" queue.
+pub const WAITING_ON_YOU_QUERY_ID: &str = "62d6346f-0d71-4f36-bab3-94c2f98ed8ba";
+
 /// The id of every saved query that ships with the product: the core query
 /// table, in the order the queries are seeded.
 pub const CORE_QUERY_IDS: &[&str] = &[
@@ -41,6 +47,8 @@ pub const CORE_QUERY_IDS: &[&str] = &[
     READY_TASKS_QUERY_ID,
     IN_PROGRESS_QUERY_ID,
     AWAITING_REVIEW_QUERY_ID,
+    NEEDS_SHAPING_QUERY_ID,
+    WAITING_ON_YOU_QUERY_ID,
 ];
 
 /// A saved query as shipped: `fields` over a definition with nothing set.
@@ -157,6 +165,50 @@ pub fn ready_tasks_filters() -> Value {
     ])
 }
 
+/// The filters of "Needs shaping": an open task with no checkbox child that
+/// blocks no other task, one typed into the app by hand and not yet given a
+/// checklist.
+///
+/// The checklist condition is the complement of the one in
+/// [`ready_tasks_filters`], stated the same way: a child whose `checked`
+/// exists is a checkbox. A task that blocks another is left out: a question
+/// task is one (ADR-099), and it is answered, not shaped, from "Waiting on
+/// you". A task that only groups sub-tasks has no checklist of its own and is
+/// listed; shaping it means deciding that, not writing one.
+pub fn needs_shaping_filters() -> Value {
+    json!([
+        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+        {
+            "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
+            "filter": { "type": "property", "operator": "exists", "property": "checked" }
+        },
+        {
+            "type": "related", "operator": "exists", "path": ["blocks"], "negate": true,
+            "filter": { "type": "property", "operator": "exists", "property": "status" }
+        }
+    ])
+}
+
+/// The filters of "Waiting on you" (ADR-099 §4): an open task assigned to the
+/// reader that blocks another task, which is a question put to them. The
+/// reader is the `current_person` anchor, resolved to the local person each
+/// time the query runs, so the seed is the same in every database.
+///
+/// The blocked task is not filtered by status: a question blocks the task it
+/// stopped for as long as the question is open, and a finished question leaves
+/// the queue by its own status. The nested `status` existence only asks that
+/// the blocked node is a task: `status` is the one field every task has.
+pub fn waiting_on_you_filters() -> Value {
+    json!([
+        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+        { "type": "relationship", "operator": "equals", "path": ["assignee"], "anchor": "current_person" },
+        {
+            "type": "related", "operator": "exists", "path": ["blocks"],
+            "filter": { "type": "property", "operator": "exists", "property": "status" }
+        }
+    ])
+}
+
 /// Every saved query that ships with the product: the core query seed table.
 pub fn core_query_templates() -> Vec<NodeTemplate> {
     vec![
@@ -189,6 +241,24 @@ pub fn core_query_templates() -> Vec<NodeTemplate> {
         ),
         tasks_in_status(IN_PROGRESS_QUERY_ID, "In progress", "in_progress"),
         tasks_in_status(AWAITING_REVIEW_QUERY_ID, "Awaiting review", "in_review"),
+        seeded_query(
+            NEEDS_SHAPING_QUERY_ID,
+            "Needs shaping",
+            json!({
+                "target_type": CoreNodeType::Task.as_str(),
+                "filters": needs_shaping_filters(),
+                "sorting": by_priority_then_age(),
+            }),
+        ),
+        seeded_query(
+            WAITING_ON_YOU_QUERY_ID,
+            "Waiting on you",
+            json!({
+                "target_type": CoreNodeType::Task.as_str(),
+                "filters": waiting_on_you_filters(),
+                "sorting": by_priority_then_age(),
+            }),
+        ),
     ]
 }
 

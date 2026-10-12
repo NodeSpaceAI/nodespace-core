@@ -76,6 +76,17 @@ pub async fn selector_query(
         ));
     }
 
+    // The current person is whoever reads the query on this device, so a
+    // selector naming them would pick different nodes on each (ADR-099 §4).
+    if filters.iter().any(|filter| filter.has_anchor()) {
+        return Err(SelectorError::Invalid(
+            "a play's selector cannot anchor a filter to the current person: the person \
+             reading differs between devices, and a rule must select the same nodes on each. \
+             Name the person's node id in the filter instead."
+                .to_string(),
+        ));
+    }
+
     // A rule's selector runs in SQL and selects the same nodes whoever asks.
     // What a change would be rejected for is the rules' own answer, read at
     // one moment on one device (ADR-094 §9).

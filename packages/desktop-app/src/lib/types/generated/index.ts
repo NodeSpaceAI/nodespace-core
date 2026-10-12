@@ -36,6 +36,7 @@ export type { EdgeField } from './edge-field';
 export type { EnumValue } from './enum-value';
 export type { FieldRename } from './field-rename';
 export type { FieldValueAddition } from './field-value-addition';
+export type { FilterAnchor } from './filter-anchor';
 export type { FilterOperator } from './filter-operator';
 export type { FilterType } from './filter-type';
 export type { GraphEventType } from './graph-event-type';

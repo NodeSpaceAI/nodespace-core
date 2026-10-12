@@ -346,8 +346,8 @@ pub use node_service::{
     SubtreeData, WriteVerificationFault, DEFAULT_QUERY_LIMIT,
 };
 pub use query_service::{
-    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipHop,
-    RelationshipPath, RelativeDate, RelativeDateAnchor, SortConfig, SortDirection,
+    FilterAnchor, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
+    RelationshipHop, RelationshipPath, RelativeDate, RelativeDateAnchor, SortConfig, SortDirection,
 };
 
 #[cfg(test)]

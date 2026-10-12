@@ -302,6 +302,9 @@ function filterHolds(node: Node, filter: QueryFilter): boolean | null {
   if (filter.type === 'permitted') return null;
 
   if (filter.type === 'relationship') {
+    // An anchored filter names the person reading the query, which the
+    // client does not resolve: only the backend can answer it.
+    if (filter.anchor) return null;
     // A fixed hop travels as its bare name; an open-ended one is an object.
     const [hop, ...more] = filter.path ?? [];
     if (more.length > 0 || typeof hop !== 'string') return null;

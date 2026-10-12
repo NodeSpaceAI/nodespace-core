@@ -839,6 +839,15 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("task-review-pass"),
     procedure_rule!("task-review-return"),
     procedure_rule!("task-review-wait"),
+    // Creating a Task
+    procedure_rule!("task-create-find-built"),
+    procedure_rule!("task-create-node"),
+    procedure_rule!("task-create-brief"),
+    procedure_rule!("task-create-project-link"),
+    procedure_rule!("task-question-create"),
+    // Answering a Question
+    procedure_rule!("task-question-take"),
+    procedure_rule!("task-question-answer"),
     // Completing a Task
     procedure_rule!("task-complete-read"),
     procedure_rule!("task-complete-done"),

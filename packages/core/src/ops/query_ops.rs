@@ -9,9 +9,9 @@ use crate::ops::path_ops::{self, resolve_path};
 use crate::ops::OpsError;
 use crate::services::node_service::NodeService;
 use crate::services::query_service::{
-    EnumRank, FilterOperator, FilterType, PropertyScope, QueryDefinition, QueryFilter,
-    QueryService, RelationshipPath, RelativeDate, SortConfig, SortDirection, SubtypeBucket,
-    NODE_COLUMNS,
+    EnumRank, FilterAnchor, FilterOperator, FilterType, PropertyScope, QueryDefinition,
+    QueryFilter, QueryService, RelationshipPath, RelativeDate, SortConfig, SortDirection,
+    SubtypeBucket, NODE_COLUMNS,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -68,6 +68,10 @@ pub struct AgentFilterItem {
     /// The node a relationship filter's `path` must reach.
     #[serde(default)]
     pub node_id: Option<String>,
+    /// The node a relationship filter's `path` must reach, named by who is
+    /// asking, in place of `node_id`: `"current_person"` is the local person.
+    #[serde(default)]
+    pub anchor: Option<FilterAnchor>,
     /// The relationships to follow from each candidate node, for a
     /// relationship or related-node filter: built-in names (`has_child`,
     /// `mentions`), schema-declared names, or the reverse name of either
@@ -188,7 +192,7 @@ impl AgentFilterItem {
         if self.filter.is_some() {
             return Ok("related");
         }
-        if self.path.is_some() || self.node_id.is_some() {
+        if self.path.is_some() || self.node_id.is_some() || self.anchor.is_some() {
             return Ok("relationship");
         }
         if let Some(prop) = self.property.as_deref() {
@@ -247,9 +251,19 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
             item.category()?
         )));
     }
-    if filter_type == FilterType::Relationship && item.node_id.is_none() {
+    if filter_type == FilterType::Relationship && item.node_id.is_none() && item.anchor.is_none() {
         return Err(OpsError::InvalidParams(
             "Relationship filter missing 'node_id': the node the path must reach".to_string(),
+        ));
+    }
+    if item.node_id.is_some() && item.anchor.is_some() {
+        return Err(OpsError::InvalidParams(
+            "A filter takes 'node_id' or 'anchor', not both".to_string(),
+        ));
+    }
+    if item.anchor.is_some() && filter_type != FilterType::Relationship {
+        return Err(OpsError::InvalidParams(
+            "'anchor' applies only to a relationship filter".to_string(),
         ));
     }
     let filter = match (filter_type == FilterType::Related, item.filter) {
@@ -271,6 +285,7 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
         case_sensitive: item.case_sensitive,
         negate: item.negate,
         node_id: item.node_id,
+        anchor: item.anchor,
         path: item.path.filter(|_| walks),
         filter,
         resolved_path: None,
@@ -1695,6 +1710,7 @@ mod tests {
                 case_sensitive: None,
                 negate: Some(true),
                 node_id: None,
+                anchor: None,
                 path: Some(
                     serde_json::from_value(
                         json!([{ "name": "child_of", "open_ended": true }, "project"]),
@@ -1710,6 +1726,7 @@ mod tests {
                     case_sensitive: Some(false),
                     negate: Some(true),
                     node_id: None,
+                    anchor: None,
                     path: None,
                     filter: None,
                     resolved_path: None,
@@ -1727,6 +1744,7 @@ mod tests {
                 case_sensitive: None,
                 negate: None,
                 node_id: Some("n1".to_string()),
+                anchor: None,
                 path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
                 filter: None,
                 resolved_path: None,

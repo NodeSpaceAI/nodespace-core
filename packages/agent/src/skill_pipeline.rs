@@ -29,8 +29,9 @@ use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::{CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
-    SPECS_BY_STATUS_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID,
+    PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID, SPECS_BY_STATUS_QUERY_ID,
+    WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 
@@ -52,6 +53,14 @@ pub const ASKING_THE_USER_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c15
 
 /// The Explaining skill's fixed id: Asking the User names it.
 pub const EXPLAINING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c16";
+
+/// The Creating a Task skill's fixed id: the procedure of the "Needs
+/// shaping" queue, and of any task created outside a spec.
+pub const CREATING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c17";
+
+/// The Answering a Question skill's fixed id: the procedure of the "Waiting
+/// on you" queue.
+pub const ANSWERING_A_QUESTION_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c18";
 
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
@@ -923,6 +932,50 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         body: include_str!("seeds/skills/reviewing-a-task.md"),
     },
     SkillSeed {
+        // Creating a Task
+        //
+        // Adapted from the triage procedure of `mattpocock/skills` (MIT
+        // licensed). The procedure of "Needs shaping", and found by the
+        // skill match whenever work that did not come from a spec is about
+        // to be recorded. Shaping happens here, at creation: nothing is
+        // triaged later.
+        id: CREATING_A_TASK_SKILL_ID,
+        title: "Creating a Task",
+        use_for: "Record newly found work that has no spec: a bug report, a chore, or a follow-up found in the middle of other work. Check it is not already built or declined, reproduce the bug, and write its brief and checklist so it is ready the moment it exists.",
+        tools: &["search_nodes", "get_node", "create_node", "update_node", "create_relationship", "update_task_status", "route_clarify"],
+        // Two finds, the task, its brief and checklist, the project link, and
+        // the question that settles its size.
+        max_iterations: 14,
+        not_for: None,
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Issue.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
+            CoreNodeType::Decision.as_str(),
+        ],
+        attached_to: &[NEEDS_SHAPING_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/creating-a-task.md"),
+    },
+    SkillSeed {
+        // Answering a Question
+        //
+        // The procedure of the "Waiting on you" queue (ADR-099). It, and the
+        // spec and plan approvals, are where an agent puts a question to the
+        // user and waits: it records their answer and never gives one.
+        id: ANSWERING_A_QUESTION_SKILL_ID,
+        title: "Answering a Question",
+        use_for: "Show what is waiting on the user and record their answer to each question, so the blocked work can go on.",
+        tools: &["run_query", "get_node_context", "get_node", "create_node", "update_task_status", "route_clarify"],
+        max_iterations: 6,
+        not_for: None,
+        applies_to: &[CoreNodeType::Task.as_str(), CoreNodeType::Text.as_str()],
+        attached_to: &[WAITING_ON_YOU_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/answering-a-question.md"),
+    },
+    SkillSeed {
         // Completing a Task
         //
         // What the rules on `done` ask for, and what each rejection means.
@@ -1489,7 +1542,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 22, "Should have 22 seed skills");
+        assert_eq!(seeds.len(), 24, "Should have 24 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());

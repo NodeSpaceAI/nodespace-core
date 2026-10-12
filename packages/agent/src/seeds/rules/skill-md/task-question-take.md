@@ -1,0 +1,1 @@
+Run `nodespace query run "Waiting on you" --with-context --limit 1`. The question comes back with the task it blocks and its `version`. No task means no question is waiting on the user: say so and stop.

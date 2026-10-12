@@ -119,6 +119,20 @@ impl RelativeDate {
     }
 }
 
+/// The node a [`FilterType::Relationship`] filter's path must reach, named by
+/// who is asking instead of by id, so a saved query is the same in every
+/// database (ADR-099 §4).
+///
+/// It is stored as written and resolved each time the query runs, the way a
+/// [`RelativeDate`] is.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum FilterAnchor {
+    /// The local person: the one who owns the database being read.
+    CurrentPerson,
+}
+
 /// Individual filter condition
 ///
 /// A nested stored value: its keys are these field names, snake_case, in the
@@ -156,6 +170,11 @@ pub struct QueryFilter {
     pub negate: Option<bool>,
     /// The node a [`FilterType::Relationship`] filter's path must reach.
     pub node_id: Option<String>,
+    /// The node a [`FilterType::Relationship`] filter's path must reach,
+    /// named by who is asking, in place of [`Self::node_id`]. A filter
+    /// carries one or the other, never both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<FilterAnchor>,
     /// The walk a [`FilterType::Relationship`] or [`FilterType::Related`]
     /// filter makes from each candidate node: built-in, schema-declared and
     /// reverse names, fixed or open-ended. [`Self::resolved_path`] carries
@@ -269,6 +288,16 @@ impl QueryFilter {
     /// condition answers.
     pub fn is_permitted(&self) -> bool {
         self.filter_type == FilterType::Permitted
+    }
+
+    /// Whether this filter, or the filter nested in it, is anchored to the
+    /// current person.
+    pub fn has_anchor(&self) -> bool {
+        self.anchor.is_some()
+            || self
+                .filter
+                .as_ref()
+                .is_some_and(|nested| nested.has_anchor())
     }
 
     /// Whether this filter, or the filter nested in it, compares against a
@@ -670,6 +699,53 @@ mod tests {
         assert_eq!(wire["node_id"], "n1");
         assert_eq!(wire["case_sensitive"], false);
         assert!(wire.get("nodeId").is_none() && wire.get("caseSensitive").is_none());
+    }
+
+    /// The current-person anchor is stored as written, never as an id, at the
+    /// top level and inside a related filter, and an unknown anchor is
+    /// refused rather than dropped (ADR-099 §4).
+    #[test]
+    fn the_current_person_anchor_is_stored_as_written() {
+        let mine = json!({
+            "type": "relationship", "operator": "equals",
+            "path": ["assignee"], "anchor": "current_person"
+        });
+        let related = json!({
+            "type": "related", "operator": "exists",
+            "path": ["blocked_by"], "filter": mine.clone()
+        });
+        let fields =
+            QueryFields::from_properties(&json!({ "filters": [mine.clone(), related.clone()] }))
+                .unwrap();
+        assert_eq!(fields.filters[0].anchor, Some(FilterAnchor::CurrentPerson));
+        assert_eq!(fields.filters[0].node_id, None);
+        assert!(fields.filters[0].has_anchor());
+        assert!(fields.filters[1].has_anchor());
+        assert_eq!(
+            serde_json::to_value(&fields.filters[0]).unwrap()["anchor"],
+            "current_person"
+        );
+        assert_eq!(
+            serde_json::to_value(&fields.filters[1]).unwrap()["filter"]["anchor"],
+            "current_person"
+        );
+
+        let plain = QueryFields::from_properties(&json!({ "filters": [{
+            "type": "property", "operator": "equals", "property": "status", "value": "open"
+        }] }))
+        .unwrap();
+        assert!(!plain.filters[0].has_anchor());
+        assert!(serde_json::to_value(&plain.filters[0])
+            .unwrap()
+            .get("anchor")
+            .is_none());
+
+        let err = QueryFields::from_properties(&json!({ "filters": [{
+            "type": "relationship", "operator": "equals", "path": ["assignee"],
+            "anchor": "everyone"
+        }] }))
+        .unwrap_err();
+        assert!(err.to_string().contains("everyone"), "{err}");
     }
 
     /// A relative date is stored as written, with a zero offset left out, and
