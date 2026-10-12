@@ -3228,4 +3228,270 @@ mod tests {
             "{derived}"
         );
     }
+
+    // =========================================================================
+    // The current-person anchor (ADR-099 §4)
+    // =========================================================================
+
+    /// "Assigned to the current person": a relationship filter whose anchor
+    /// is the local person in place of a node id.
+    fn assigned_to_me() -> QueryFilter {
+        let (path, resolved_path) =
+            walk("assignee", "tasks", HopDirection::Inbound, Some("person"));
+        QueryFilter {
+            filter_type: FilterType::Relationship,
+            operator: FilterOperator::Equals,
+            path,
+            resolved_path,
+            anchor: Some(nodespace_types::FilterAnchor::CurrentPerson),
+            ..Default::default()
+        }
+    }
+
+    async fn task_named(node_service: &NodeService, content: &str) -> String {
+        node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: content.to_string(),
+                parent_id: None,
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({"task": {"status": "open"}}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap()
+    }
+
+    /// Two people and four tasks: `mine` and `theirs` are assigned to the
+    /// local person and to another, `unassigned` to nobody, and `blocked` is
+    /// blocked by `mine` and by `theirs`.
+    struct Queue {
+        mine: String,
+        theirs: String,
+        unassigned: String,
+        blocked: String,
+        other_person: String,
+    }
+
+    async fn queue(node_service: &NodeService) -> Queue {
+        let me = node_service.get_local_person().await.unwrap().unwrap().id;
+        let other_person = node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "person".to_string(),
+                content: String::new(),
+                parent_id: None,
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({"person": {"first_name": "Someone", "last_name": "Else"}}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let mine = task_named(node_service, "Question for me").await;
+        let theirs = task_named(node_service, "Question for them").await;
+        let unassigned = task_named(node_service, "Nobody's question").await;
+        let blocked = task_named(node_service, "Stopped work").await;
+        for (person, task) in [(&me, &mine), (&other_person, &theirs)] {
+            node_service
+                .create_relationship(person, "tasks", task, json!({}))
+                .await
+                .unwrap();
+        }
+        for blocker in [&mine, &theirs] {
+            node_service
+                .create_relationship(blocker, "blocks", &blocked, json!({}))
+                .await
+                .unwrap();
+        }
+        Queue {
+            mine,
+            theirs,
+            unassigned,
+            blocked,
+            other_person,
+        }
+    }
+
+    fn ids(nodes: &[Node]) -> Vec<&str> {
+        let mut ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// The anchor resolves to the local person each time the query runs, on
+    /// `assignee`.
+    #[tokio::test]
+    async fn test_current_person_anchor_selects_what_the_local_person_is_assigned() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let q = queue(&node_service).await;
+
+        let results = query_service
+            .execute(&tasks_where(vec![assigned_to_me()]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [q.mine.as_str()]);
+
+        // Negated, it keeps what is not the local person's.
+        let mut not_mine = assigned_to_me();
+        not_mine.negate = Some(true);
+        let results = query_service
+            .execute(&tasks_where(vec![not_mine]))
+            .await
+            .unwrap();
+        let mut expected = vec![q.theirs.as_str(), q.unassigned.as_str(), q.blocked.as_str()];
+        expected.sort_unstable();
+        assert_eq!(ids(&results), expected);
+    }
+
+    /// The anchor is not a stored id: when the owner changes, the same query
+    /// selects for the new owner.
+    #[tokio::test]
+    async fn test_current_person_anchor_follows_the_owner() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let q = queue(&node_service).await;
+        let me = node_service.get_local_person().await.unwrap().unwrap().id;
+
+        node_service
+            .store()
+            .delete_generic_relationship(
+                &me,
+                nodespace_types::DATABASE_SETTINGS_NODE_ID,
+                "has_role",
+            )
+            .await
+            .unwrap();
+        node_service
+            .create_relationship(
+                &q.other_person,
+                "has_role",
+                nodespace_types::DATABASE_SETTINGS_NODE_ID,
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let results = query_service
+            .execute(&tasks_where(vec![assigned_to_me()]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [q.theirs.as_str()]);
+    }
+
+    /// "Open tasks assigned to the reader that block another task": the
+    /// anchor beside a related filter, and inside a related filter's nested
+    /// filter.
+    #[tokio::test]
+    async fn test_current_person_anchor_works_beside_and_inside_a_related_filter() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let q = queue(&node_service).await;
+        let me = node_service.get_local_person().await.unwrap().unwrap().id;
+        // A task of mine that blocks nothing.
+        let idle = task_named(&node_service, "Mine, blocks nothing").await;
+        node_service
+            .create_relationship(&me, "tasks", &idle, json!({}))
+            .await
+            .unwrap();
+
+        let (blocks_path, blocks_resolved) =
+            walk("blocks", "blocks", HopDirection::Outbound, Some("task"));
+        let blocks_a_task = QueryFilter {
+            filter_type: FilterType::Related,
+            operator: FilterOperator::Exists,
+            path: blocks_path,
+            resolved_path: blocks_resolved,
+            filter: Some(Box::new(QueryFilter {
+                filter_type: FilterType::Property,
+                operator: FilterOperator::Exists,
+                property: Some("status".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let results = query_service
+            .execute(&tasks_where(vec![assigned_to_me(), blocks_a_task]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [q.mine.as_str()]);
+
+        // The anchor in the nested filter: tasks blocked by a task of mine.
+        let (blocked_by_path, blocked_by_resolved) =
+            walk("blocked_by", "blocks", HopDirection::Inbound, Some("task"));
+        let blocked_by_mine = QueryFilter {
+            filter_type: FilterType::Related,
+            operator: FilterOperator::Exists,
+            path: blocked_by_path,
+            resolved_path: blocked_by_resolved,
+            filter: Some(Box::new(assigned_to_me())),
+            ..Default::default()
+        };
+        let results = query_service
+            .execute(&tasks_where(vec![blocked_by_mine]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [q.blocked.as_str()]);
+    }
+
+    /// A filter takes a node id or an anchor, and an anchor belongs to a
+    /// relationship filter.
+    #[tokio::test]
+    async fn test_current_person_anchor_is_refused_beside_a_node_id_or_off_a_relationship() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let mut both = assigned_to_me();
+        both.node_id = Some("some-person".to_string());
+        let err = query_service
+            .execute(&tasks_where(vec![both]))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("'node_id' or 'anchor', not both"), "{err}");
+
+        let misplaced = QueryFilter {
+            filter_type: FilterType::Property,
+            operator: FilterOperator::Equals,
+            property: Some("status".to_string()),
+            value: Some(json!("open")),
+            anchor: Some(nodespace_types::FilterAnchor::CurrentPerson),
+            ..Default::default()
+        };
+        let err = query_service
+            .execute(&tasks_where(vec![misplaced]))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only to a relationship filter"), "{err}");
+    }
+
+    /// With no `has_role` edge the anchor falls back to the first person
+    /// node, which is what `get_local_person` falls back to: the two must
+    /// name the same person, whichever is asked.
+    #[tokio::test]
+    async fn test_current_person_anchor_agrees_with_get_local_person_without_an_owner_edge() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let q = queue(&node_service).await;
+        let me = node_service.get_local_person().await.unwrap().unwrap().id;
+        node_service
+            .store()
+            .delete_generic_relationship(
+                &me,
+                nodespace_types::DATABASE_SETTINGS_NODE_ID,
+                "has_role",
+            )
+            .await
+            .unwrap();
+
+        let local = node_service.get_local_person().await.unwrap().unwrap().id;
+        let assigned_to_local = if local == me {
+            q.mine.clone()
+        } else {
+            assert_eq!(local, q.other_person);
+            q.theirs.clone()
+        };
+        let results = query_service
+            .execute(&tasks_where(vec![assigned_to_me()]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [assigned_to_local.as_str()]);
+    }
 }

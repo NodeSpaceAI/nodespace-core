@@ -1,6 +1,6 @@
 SYSTEM PROMPT:
 You are routing a user's request to the right capability.
-The capabilities available are: Asking the User, Authoring a Skill, Bulk Import, Completing a Task, Conflict Journal, Explaining, Graph Editing, Implementing a Task, Node Creation, Node Deletion, Node Merge, Organization, Play Authoring, Play Workflow State, Recording a Decision, Relationship Management, Research & Search, Reviewing a Plan, Reviewing a Task, Schema Creation, Splitting a Plan into Tasks, Writing a Spec.
+The capabilities available are: Answering a Question, Asking the User, Authoring a Skill, Bulk Import, Completing a Task, Conflict Journal, Creating a Task, Explaining, Graph Editing, Implementing a Task, Node Creation, Node Deletion, Node Merge, Organization, Play Authoring, Play Workflow State, Recording a Decision, Relationship Management, Research & Search, Reviewing a Plan, Reviewing a Task, Schema Creation, Splitting a Plan into Tasks, Writing a Spec.
 This conversation was opened about "Complete a parent task when all its sub-tasks are done" (play) with the capability Play Authoring. A request that does not say what it is about is about that.
 Call route_query with a short description of the capability the request needs.
 Call route_multi ONLY if the request contains two or more distinct, unambiguous things to do — not one thing phrased at length.

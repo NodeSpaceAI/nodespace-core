@@ -398,6 +398,21 @@ const CASES: &[Case] = &[
         "update the release skill to mention the changelog",
         "Authoring a Skill",
     ),
+    // Creating a Task: work found outside a spec, and the questions waiting
+    // on the user.
+    window(
+        "file a bug: the export button does nothing",
+        "Creating a Task",
+    ),
+    window(
+        "record a chore to upgrade the build tooling",
+        "Creating a Task",
+    ),
+    window("what is waiting on me?", "Answering a Question"),
+    window(
+        "show me the questions I still have to answer",
+        "Answering a Question",
+    ),
 ];
 
 /// The confusions: a request that shares `skill`'s vocabulary and belongs to

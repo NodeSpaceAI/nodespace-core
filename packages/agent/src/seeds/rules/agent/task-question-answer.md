@@ -1,0 +1,1 @@
+Call create_node with node_type "text", parent_id the question's id and the answer as content. Then call update_task_status with the question's id, status "done" and version the question's node_version as you read it.

@@ -6131,6 +6131,44 @@ mod tests {
             }
         }
 
+        /// A selector cannot anchor a filter to the current person, inline or
+        /// through a saved query, at the top level or inside a related filter:
+        /// the person reading differs between devices, and a rule selects the
+        /// same nodes on each (ADR-099 §4).
+        #[tokio::test]
+        async fn a_selector_anchored_to_the_current_person_is_rejected() {
+            let (svc, _dir) = service().await;
+            let mine = json!({
+                "type": "relationship", "operator": "equals",
+                "path": ["assignee"], "anchor": "current_person"
+            });
+            let blocked_by_mine = json!({
+                "type": "related", "operator": "exists",
+                "path": ["blocked_by"], "filter": mine.clone()
+            });
+            saved_query(
+                &svc,
+                QUERY_ID,
+                json!({ "target_type": "task", "filters": [mine.clone()] }),
+            )
+            .await;
+
+            for select in [
+                json!({ "target_type": "task", "filters": [mine] }),
+                json!({ "target_type": "task", "filters": [blocked_by_mine] }),
+                json!({ "query_id": QUERY_ID }),
+            ] {
+                let rule = scheduled(select, "node.status == 'open'");
+                let errors = validate_play(&[rule], &svc).await.unwrap_err();
+                assert!(
+                    errors.iter().any(|e| matches!(e,
+                        PlayValidationError::InvalidSelector { message, .. }
+                            if message.contains("current person"))),
+                    "{errors:?}"
+                );
+            }
+        }
+
         /// A selector cannot use a `permitted` filter, inline or through a
         /// saved query: it asks the rules what they would reject, which a
         /// rule cannot select by (ADR-094 §9).

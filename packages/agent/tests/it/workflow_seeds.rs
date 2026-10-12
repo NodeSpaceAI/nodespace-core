@@ -20,8 +20,9 @@ use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::{Node, NodeUpdate, SkillFields, SKILL_APPLIES_TO, SKILL_ATTACHED_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
-    SPECS_BY_STATUS_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID,
+    PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID, SPECS_BY_STATUS_QUERY_ID,
+    WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use nodespace_core::PlaybookEngine;
@@ -31,6 +32,8 @@ use tokio::sync::{watch, RwLock};
 
 const IMPLEMENTING: &str = "Implementing a Task";
 const REVIEWING: &str = "Reviewing a Task";
+const CREATING: &str = "Creating a Task";
+const ANSWERING: &str = "Answering a Question";
 
 struct Harness {
     executor: GraphToolExecutor,
@@ -236,6 +239,11 @@ async fn planned_work(h: &Harness, project_type: &str, task_type: &str) -> Work 
     }
 }
 
+/// An id without the `nodespace://` scheme a tool result names it with.
+fn bare(id: &str) -> String {
+    id.strip_prefix("nodespace://").unwrap_or(id).to_string()
+}
+
 fn uri(id: &str) -> String {
     format!("nodespace://{id}")
 }
@@ -290,6 +298,8 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
         "Completing a Task",
         "Recording a Decision",
         "Authoring a Skill",
+        CREATING,
+        ANSWERING,
     ];
     for title in titles {
         let seed = SKILL_SEEDS
@@ -349,10 +359,14 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
         attached("Asking the User"),
         [SPECS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID]
     );
+    assert_eq!(attached(CREATING), [NEEDS_SHAPING_QUERY_ID]);
+    assert_eq!(attached(ANSWERING), [WAITING_ON_YOU_QUERY_ID]);
     // No other built-in is attached to anything.
     let attached_titles = [
         IMPLEMENTING,
         REVIEWING,
+        CREATING,
+        ANSWERING,
         "Writing a Spec",
         "Reviewing a Plan",
         "Splitting a Plan into Tasks",
@@ -1337,4 +1351,152 @@ async fn a_detached_procedure_stays_detached_and_a_reset_restores_it() {
     assert_eq!(attached(&h).await, shipped);
     seed_agent_tables(&h.ns).await;
     assert_eq!(attached(&h).await, shipped);
+}
+
+/// "Creating a Task" and "Answering a Question", each step made as its body
+/// says, through the tools: a task created outside a spec is ready as it is
+/// created, a task with no checklist is in Needs shaping with its procedure,
+/// and a question that blocks a task is the person's to answer, which
+/// releases it with its status and assignee as they were (ADR-099).
+#[tokio::test]
+async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_tools() {
+    let h = start().await;
+    let project = h.create("software-project", "Apollo", json!({})).await;
+
+    // Creating, steps 1 and 2: look for it built and for a decision that
+    // declined it. Nothing is found, and what was searched is said.
+    for node_type in ["task", "spec", "decision"] {
+        h.ok(
+            "search_nodes",
+            json!({ "query": "retry the upload", "node_type": node_type }),
+        )
+        .await;
+    }
+
+    // Steps 6 to 8: the issue, its brief, its checklist and its project.
+    let created = h
+        .ok(
+            "create_node",
+            json!({ "node_type": "issue", "content": "An upload retries on a dropped connection" }),
+        )
+        .await;
+    let issue = bare(created["id"].as_str().unwrap());
+    h.ok(
+        "create_node",
+        json!({
+            "node_type": "text", "parent_id": issue,
+            "content": "Uploads resume after a dropped connection. Out of scope: resumable chunks.",
+        }),
+    )
+    .await;
+    h.ok(
+        "create_node",
+        json!({
+            "node_type": "checkbox", "parent_id": issue,
+            "content": "- [ ] A dropped upload is retried up to three times",
+        }),
+    )
+    .await;
+    h.ok(
+        "create_relationship",
+        json!({ "from_id": uri(&project), "relationship_type": "tasks", "to_id": issue }),
+    )
+    .await;
+
+    // It is ready the moment it exists, and not in Needs shaping.
+    let ready = h
+        .ok(
+            "run_query",
+            json!({ "query": "Ready tasks", "with_context": true, "limit": 1 }),
+        )
+        .await;
+    assert_eq!(ready["items"][0]["id"], uri(&issue), "{ready}");
+    let shaping = h.ok("run_query", json!({ "query": "Needs shaping" })).await;
+    assert_eq!(shaping["count"], 0, "{shaping}");
+
+    // A task typed by hand has no checklist: Needs shaping lists it, with
+    // Creating a Task attached.
+    let by_hand = h
+        .create("task", "Look at the export timeout", json!({}))
+        .await;
+    let shaping = h
+        .ok(
+            "run_query",
+            json!({ "query": "Needs shaping", "with_context": true, "limit": 1 }),
+        )
+        .await;
+    assert_eq!(shaping["items"][0]["id"], uri(&by_hand), "{shaping}");
+    assert_eq!(skill_names(&shaping), [CREATING]);
+
+    // A question the issue's owner needs answered by the user: a task
+    // assigned to them that blocks the issue.
+    let me = h.ns.get_local_person().await.unwrap().unwrap().id;
+    let question = bare(
+        h.ok(
+            "create_node",
+            json!({ "node_type": "task", "content": "Is three retries enough, or is it five?" }),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap(),
+    );
+    h.ok(
+        "create_relationship",
+        json!({ "from_id": uri(&me), "relationship_type": "tasks", "to_id": question }),
+    )
+    .await;
+    h.ok(
+        "create_relationship",
+        json!({ "from_id": question, "relationship_type": "blocks", "to_id": issue }),
+    )
+    .await;
+
+    // The question has no checklist, and is not offered for shaping: it
+    // blocks a task, so it is answered from Waiting on you.
+    let shaping = h.ok("run_query", json!({ "query": "Needs shaping" })).await;
+    assert_eq!(
+        shaping["count"], 1,
+        "only the task typed by hand is shaped: {shaping}"
+    );
+
+    // The stopped issue is no longer ready and has not changed.
+    assert_eq!(h.status(&issue).await, "open");
+    let ready = h.ok("run_query", json!({ "query": "Ready tasks" })).await;
+    assert_eq!(ready["count"], 0, "{ready}");
+
+    // Answering, steps 1 to 3: the question is the user's, with its own
+    // procedure; the answer is recorded under it and it is completed.
+    let waiting = h
+        .ok(
+            "run_query",
+            json!({ "query": "Waiting on you", "with_context": true, "limit": 1 }),
+        )
+        .await;
+    let item = &waiting["items"][0];
+    assert_eq!(item["id"], uri(&question), "{waiting}");
+    assert_eq!(skill_names(&waiting), [ANSWERING], "{waiting}");
+    h.ok(
+        "create_node",
+        json!({ "node_type": "text", "parent_id": question, "content": "Five." }),
+    )
+    .await;
+    h.ok(
+        "update_task_status",
+        json!({ "id": uri(&question), "status": "done", "version": item["node_version"] }),
+    )
+    .await;
+
+    // The issue is ready again, with nothing else changed on it.
+    assert_eq!(h.status(&issue).await, "open");
+    let ready = h
+        .ok(
+            "run_query",
+            json!({ "query": "Ready tasks", "with_context": true, "limit": 1 }),
+        )
+        .await;
+    assert_eq!(ready["items"][0]["id"], uri(&issue), "{ready}");
+    let waiting = h
+        .ok("run_query", json!({ "query": "Waiting on you" }))
+        .await;
+    assert_eq!(waiting["count"], 0, "{waiting}");
 }

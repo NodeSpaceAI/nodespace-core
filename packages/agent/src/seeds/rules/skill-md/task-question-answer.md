@@ -1,0 +1,1 @@
+Run `nodespace node create --type text --parent <question-id> --content "<the answer>"`. Then run `nodespace node set-status <question-id> done --version <n>`, where `<n>` is the question's `version` as you read it.

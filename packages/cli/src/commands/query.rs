@@ -37,6 +37,10 @@ pub struct QueryArgs {
     /// A property filter on a date field takes `relative_date` in place of
     /// `value` for a date relative to the day the query runs, e.g.
     /// `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`.
+    /// A relationship filter takes `"anchor": "current_person"` in place of
+    /// `node_id` to reach the person using the database, resolved each time
+    /// the query runs, e.g.
+    /// `[{"type":"relationship","operator":"equals","path":["assignee"],"anchor":"current_person"}]`.
     /// Any filter takes `"negate": true` to keep the nodes it does not hold
     /// for; on a related filter that is "the path reaches no node matching
     /// the nested filter". A property may be a path into an object field's

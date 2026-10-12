@@ -52,9 +52,9 @@ use std::sync::Arc;
 // (`nodespace_types::QueryFields`), so a saved query's filters decode straight
 // into the types executed here.
 pub use nodespace_types::{
-    EnumRank, FilterOperator, FilterType, PropertyScope, QueryFilter, RelationshipHop,
-    RelationshipPath, RelativeDate, RelativeDateAnchor, ResolvedPath, SortConfig, SortDirection,
-    SubtypeBucket,
+    EnumRank, FilterAnchor, FilterOperator, FilterType, PropertyScope, QueryFilter,
+    RelationshipHop, RelationshipPath, RelativeDate, RelativeDateAnchor, ResolvedPath, SortConfig,
+    SortDirection, SubtypeBucket,
 };
 
 /// Structured query definition: what a query selects, for execution
@@ -214,13 +214,23 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
             anyhow::bail!("'relative_date' needs one of the operators equals, gt, lt, gte, lte");
         }
     }
+    if filter.anchor.is_some() && filter.filter_type != FilterType::Relationship {
+        anyhow::bail!("'anchor' applies only to a relationship filter");
+    }
     match filter.filter_type {
         FilterType::Relationship => {
             if filter.path.is_none() {
                 anyhow::bail!("Relationship filter missing 'path'");
             }
-            if filter.node_id.is_none() {
-                anyhow::bail!("Relationship filter missing 'node_id'");
+            match (&filter.node_id, &filter.anchor) {
+                (None, None) => anyhow::bail!(
+                    "Relationship filter missing 'node_id' (or an 'anchor'): the node the path \
+                     must reach"
+                ),
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("a relationship filter takes 'node_id' or 'anchor', not both")
+                }
+                _ => {}
             }
         }
         FilterType::Related => {
@@ -267,6 +277,28 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
         FilterType::Property | FilterType::Content | FilterType::Metadata => {}
     }
     Ok(())
+}
+
+/// The `SELECT` of node ids a `current_person` anchor names: the local
+/// person, as `NodeService::get_local_person` reads them (ADR-099 §4).
+///
+/// The person holding the `has_role` edge to the database settings node, the
+/// earliest created when more than one does; with no such edge, the first
+/// person node, the one the next open re-attaches the edge to. It is
+/// evaluated by the statement each time the query runs, so a saved query
+/// stores the anchor and never an id.
+fn current_person_seed() -> String {
+    format!(
+        "SELECT COALESCE(\
+         (SELECT r.in_node FROM relationship r JOIN node o ON o.id = r.in_node \
+          WHERE r.out_node = '{settings}' AND r.relationship_type = 'has_role' \
+          ORDER BY o.created_at, o.id LIMIT 1), \
+         (SELECT p.id FROM node p WHERE {is_person} \
+          ORDER BY p.created_at, p.id LIMIT 1))",
+        settings = nodespace_types::DATABASE_SETTINGS_NODE_ID,
+        is_person =
+            crate::db::schema::is_a_sql("p.node_type", &[crate::models::CoreNodeType::Person]),
+    )
 }
 
 /// `filter` with every relative date, its own and a nested filter's, replaced
@@ -1294,16 +1326,24 @@ impl QueryService {
         built: &mut BoundSql,
     ) -> Result<String> {
         let path = Self::resolved_path(filter)?;
-        let node_id = filter
-            .node_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Relationship filter missing 'node_id'"))?;
+        let seed = match (&filter.node_id, filter.anchor) {
+            (Some(node_id), None) => {
+                format!(
+                    "SELECT {}",
+                    built.bind(libsql::Value::Text(node_id.clone()))
+                )
+            }
+            (None, Some(FilterAnchor::CurrentPerson)) => current_person_seed(),
+            (Some(_), Some(_)) => {
+                anyhow::bail!("a relationship filter takes 'node_id' or 'anchor', not both")
+            }
+            (None, None) => anyhow::bail!("Relationship filter missing 'node_id'"),
+        };
 
-        let anchor = built.bind(libsql::Value::Text(node_id.clone()));
         Ok(crate::db::path_reaches_condition(
             id_field,
             path,
-            &format!("SELECT {anchor}"),
+            &seed,
             &mut |value| built.bind(value),
         ))
     }
