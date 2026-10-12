@@ -1,1 +1,0 @@
-Run `nodespace node create --type text --parent <issue-id> --content "<part>"` once per part of the brief: current and desired behaviour, key interfaces, and out of scope. Open each part with its name.

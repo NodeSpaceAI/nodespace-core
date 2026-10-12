@@ -1,1 +1,0 @@
-Call create_node with node_type "text" and parent_id the id of the issue, once per part of the brief: current and desired behaviour, key interfaces, and out of scope. Open each with the name of its part.

@@ -805,6 +805,10 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     // Organization
     procedure_rule!("organization-existing-only"),
     procedure_rule!("organization-add-existing"),
+    // Writing a Spec, Reviewing a Plan and Splitting a Plan into Tasks: a
+    // section beneath the record is a header with text nodes under it
+    procedure_rule!("section-create"),
+    procedure_rule!("section-read"),
     // Writing a Spec
     procedure_rule!("spec-find-first"),
     procedure_rule!("spec-create"),
@@ -818,7 +822,6 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("task-breakdown-read"),
     procedure_rule!("task-breakdown-existing"),
     procedure_rule!("task-breakdown-create"),
-    procedure_rule!("task-breakdown-brief"),
     procedure_rule!("task-breakdown-link"),
     procedure_rule!("task-breakdown-project"),
     procedure_rule!("task-breakdown-blocks"),

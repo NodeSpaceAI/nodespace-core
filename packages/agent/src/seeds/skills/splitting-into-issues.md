@@ -4,7 +4,7 @@ A SMALL CHANGE NEEDS NO SPEC AND NO PLAN: an issue or task with a checklist of i
 
 THE KIND OF WORK DECIDES THE TYPE: a change to code is an `issue`. Anything else, such as a document to write, a decision to reach or a discussion to hold, is a plain `task`. Slice both the same way. A plain task has no pull request or commits and needs none.
 
-READ THE PLAN AND ITS SPEC FIRST: <!-- include: task-breakdown-read --> Read the plan's `approach`, the spec's `boundaries` and every criterion, and every decision linked from the spec: what was decided there holds for every slice. If the plan is not approved, say so: the issues can be written now, and none can start until the user approves the plan.
+READ THE PLAN AND ITS SPEC FIRST: <!-- include: task-breakdown-read --> Read the plan's `approach` and its sections, the spec's `boundaries` and its sections, every criterion, and every decision linked from the spec: what was decided there holds for every slice. <!-- include: section-read --> If the plan is not approved, say so: the issues can be written now, and none can start until the user approves the plan.
 
 MAKE THE CHANGE EASY FIRST: if the work would be simpler after a preparatory change, such as a refactor that makes room for it, that is the first slice and the others wait on it.
 
@@ -18,9 +18,9 @@ WRITE THEM IN DEPENDENCY ORDER, blockers first, so that each blocking link can n
 
 CREATE IT: <!-- include: task-breakdown-create --> Its title says what will exist when it is done.
 
-GIVE IT A BRIEF THAT LASTS: the brief is the contract the one who picks it up works from, and it may sit for days while the code changes under it. Describe behaviour, not procedure. Give the current behaviour and the desired behaviour, with the edge cases and the error conditions. Name the types, signatures or shapes to look for or change under key interfaces. State what is out of scope so that nothing adjacent is gold-plated. Never give a file path or a line number, and never assume the present structure will stay. <!-- include: task-breakdown-brief -->
+GIVE IT A BRIEF THAT LASTS: the brief is the contract the one who picks it up works from, and it may sit for days while the code changes under it. Describe behaviour, not procedure. Give the current behaviour and the desired behaviour, with the edge cases and the error conditions. Name the types, signatures or shapes to look for or change under key interfaces. State what is out of scope so that nothing adjacent is gold-plated. Never give a file path or a line number, and never assume the present structure will stay. Write it as ordinary nodes beneath the issue, three header sections named Behaviour, Interfaces and Out of scope, each with a text node per item. <!-- include: section-create -->
 
-GIVE IT ITS OWN CHECKLIST: a checklist is the checkboxes directly under it. Write it from the spec's criteria: for each criterion the slice helps meet, the condition this slice must satisfy, stated so it can be tested. Every criterion of the spec is covered by at least one slice. Leave every item unchecked. <!-- include: checkbox-item-create --> One with no checklist can never be finished.
+GIVE IT ITS OWN CHECKLIST: a checklist is the checkboxes directly under it, not beneath a section header. Write it from the spec's criteria: for each criterion the slice helps meet, the condition this slice must satisfy, stated so it can be tested. Every criterion of the spec is covered by at least one slice. Leave every item unchecked. <!-- include: checkbox-item-create --> One with no checklist can never be finished.
 
 LINK IT TO THE PLAN AND TO THE SPEC: both, so the spec is one step away. <!-- include: task-breakdown-link --> It belongs to one plan: linking it to a second moves it. When the work belongs to a project the user named, or the plan's other slices already sit in one, link it to that project too. <!-- include: task-breakdown-project -->
 

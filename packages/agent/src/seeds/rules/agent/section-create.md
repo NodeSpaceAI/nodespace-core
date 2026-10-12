@@ -1,0 +1,1 @@
+Call create_node with node_type "header", parent_id the id of the spec, plan or issue, and content "## " followed by the section name, once per section. Then call create_node with node_type "text" and parent_id the header's id, once per item, one item to a node.

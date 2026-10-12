@@ -1,0 +1,1 @@
+Call get_node with the id of the spec, plan or task and format "markdown": it returns the record with its sections, each header with its items beneath it.
