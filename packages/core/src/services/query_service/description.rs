@@ -77,37 +77,12 @@ fn plural_of(target_type: &str) -> String {
 }
 
 /// One filter as a clause that follows the noun: `whose status is open`,
-/// `that have a child where checked is set`.
+/// `that have a node through child where checked is set`.
 fn filter_clause(filter: &QueryFilter) -> String {
     match filter.filter_type {
-        FilterType::Related => {
-            let path = path_phrase(filter);
-            let nested = filter
-                .filter
-                .as_deref()
-                .map(condition)
-                .unwrap_or_else(|| "it exists".to_string());
-            if filter.is_negated() {
-                format!("that have no {path} where {nested}")
-            } else {
-                format!("that have a {path} where {nested}")
-            }
-        }
+        FilterType::Related => format!("that {}", related_phrase(filter, "have")),
         FilterType::Relationship => format!("that are {}", relationship_condition(filter)),
-        FilterType::Permitted => {
-            let property = filter.property.as_deref().unwrap_or("a field");
-            let value = filter
-                .value
-                .as_ref()
-                .map(value_phrase)
-                .unwrap_or_else(|| "a value".to_string());
-            let verdict = if filter.is_negated() {
-                "would be refused"
-            } else {
-                "would not be refused"
-            };
-            format!("for which setting {property} to {value} {verdict} by a rule")
-        }
+        FilterType::Permitted => format!("for which {}", permitted_phrase(filter)),
         FilterType::Property | FilterType::Content | FilterType::Metadata => {
             format!("whose {}", condition(filter))
         }
@@ -118,36 +93,42 @@ fn filter_clause(filter: &QueryFilter) -> String {
 /// lead-in: `status is open`, `checked is set`, `title contains "report"`.
 fn condition(filter: &QueryFilter) -> String {
     match filter.filter_type {
-        FilterType::Related => {
-            let path = path_phrase(filter);
-            let nested = filter
-                .filter
-                .as_deref()
-                .map(condition)
-                .unwrap_or_else(|| "it exists".to_string());
-            if filter.is_negated() {
-                format!("it has no {path} where {nested}")
-            } else {
-                format!("it has a {path} where {nested}")
-            }
-        }
+        FilterType::Related => format!("it {}", related_phrase(filter, "has")),
         FilterType::Relationship => format!("it is {}", relationship_condition(filter)),
-        FilterType::Permitted => {
-            let property = filter.property.as_deref().unwrap_or("a field");
-            let value = filter
-                .value
-                .as_ref()
-                .map(value_phrase)
-                .unwrap_or_else(|| "a value".to_string());
-            let verdict = if filter.is_negated() {
-                "would be refused"
-            } else {
-                "would not be refused"
-            };
-            format!("setting {property} to {value} {verdict} by a rule")
-        }
+        FilterType::Permitted => permitted_phrase(filter),
         FilterType::Property | FilterType::Content | FilterType::Metadata => comparison(filter),
     }
+}
+
+/// What a related filter requires of the nodes its path reaches: `have a node
+/// through child where checked is set`. `has` is the verb that agrees with
+/// the subject the caller puts before it.
+fn related_phrase(filter: &QueryFilter, has: &str) -> String {
+    let path = path_phrase(filter);
+    let nested = filter
+        .filter
+        .as_deref()
+        .map(condition)
+        .unwrap_or_else(|| "it exists".to_string());
+    let article = if filter.is_negated() { "no" } else { "a" };
+    format!("{has} {article} node through {path} where {nested}")
+}
+
+/// What a permitted filter asks of a rule: `setting status to in_progress
+/// would not be refused by a rule`.
+fn permitted_phrase(filter: &QueryFilter) -> String {
+    let property = filter.property.as_deref().unwrap_or("a field");
+    let value = filter
+        .value
+        .as_ref()
+        .map(value_phrase)
+        .unwrap_or_else(|| "a value".to_string());
+    let verdict = if filter.is_negated() {
+        "would be refused"
+    } else {
+        "would not be refused"
+    };
+    format!("setting {property} to {value} {verdict} by a rule")
 }
 
 /// `status is open`, `due_date is before today`, `title contains "x"`.
@@ -504,7 +485,7 @@ mod tests {
                 "type": "related", "operator": "exists", "path": ["has_child"],
                 "filter": { "type": "property", "operator": "exists", "property": "checked" }
             }])),
-            "Lists tasks that have a child where checked is set."
+            "Lists tasks that have a node through child where checked is set."
         );
         assert_eq!(
             filters(json!([{
@@ -514,7 +495,7 @@ mod tests {
                     "value": ["done", "cancelled"], "negate": true
                 }
             }])),
-            "Lists tasks that have no blocked_by where status is none of done, cancelled."
+            "Lists tasks that have no node through blocked_by where status is none of done, cancelled."
         );
         // A related filter whose nested filter is itself one that reaches.
         assert_eq!(
@@ -525,7 +506,7 @@ mod tests {
                     "path": ["assignee"], "anchor": "current_person"
                 }
             }])),
-            "Lists tasks that have a blocks where it is connected through assignee to the current person."
+            "Lists tasks that have a node through blocks where it is connected through assignee to the current person."
         );
     }
 
@@ -619,9 +600,10 @@ mod tests {
         assert_eq!(
             sentence(READY_TASKS_QUERY_ID),
             format!(
-                "Lists tasks whose status is open, that have a child where checked is set, \
-                 that have no blocked_by where status is none of done, cancelled, \
-                 that have no plan where plan_status is not approved, \
+                "Lists tasks whose status is open, \
+                 that have a node through child where checked is set, \
+                 that have no node through blocked_by where status is none of done, cancelled, \
+                 that have no node through plan where plan_status is not approved, \
                  and for which setting status to in_progress would not be refused by a rule. \
                  {by_priority}"
             )
@@ -629,8 +611,9 @@ mod tests {
         assert_eq!(
             sentence(NEEDS_SHAPING_QUERY_ID),
             format!(
-                "Lists tasks whose status is open, that have no child where checked is set, \
-                 and that have no blocks where status is set. {by_priority}"
+                "Lists tasks whose status is open, \
+                 that have no node through child where checked is set, \
+                 and that have no node through blocks where status is set. {by_priority}"
             )
         );
         assert_eq!(
@@ -638,7 +621,7 @@ mod tests {
             format!(
                 "Lists tasks whose status is open, \
                  that are connected through assignee to the current person, \
-                 and that have a blocks where status is set. {by_priority}"
+                 and that have a node through blocks where status is set. {by_priority}"
             )
         );
     }

@@ -4532,6 +4532,55 @@ mod tests {
             );
         }
 
+        /// Saving a query node refuses a name no schema declares, at the top
+        /// level and inside a related filter, with the fields the type has;
+        /// a declared name saves.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn saving_a_query_refuses_an_undeclared_field_and_names_the_ones_that_exist() {
+            let (svc, _tmp) = make_test_service().await;
+            let query = |properties: serde_json::Value| {
+                Node::new("query".to_string(), "A view".to_string(), properties)
+            };
+
+            svc.create_node(query(json!({
+                "target_type": "task",
+                "filters": [{ "type": "property", "operator": "exists", "property": "status" }],
+                "sorting": [{ "field": "priority", "direction": "asc" }]
+            })))
+            .await
+            .expect("a declared field saves");
+
+            for properties in [
+                json!({
+                    "target_type": "task",
+                    "filters": [{ "type": "property", "operator": "exists", "property": "no_such_field" }]
+                }),
+                json!({
+                    "target_type": "task",
+                    "filters": [],
+                    "sorting": [{ "field": "no_such_field", "direction": "asc" }]
+                }),
+                json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "related", "operator": "exists", "path": ["blocked_by"],
+                        "filter": { "type": "property", "operator": "exists", "property": "no_such_field" }
+                    }]
+                }),
+            ] {
+                let refused = svc
+                    .create_node(query(properties.clone()))
+                    .await
+                    .expect_err(&format!("{properties} must be refused"))
+                    .to_string();
+                assert!(
+                    refused.contains("declares no field 'no_such_field'")
+                        && refused.contains("Its fields are:"),
+                    "{refused}"
+                );
+            }
+        }
+
         /// A path the schema does not declare is refused when the query is
         /// saved and when it runs, in a filter and in a sort, with a message
         /// naming it.
