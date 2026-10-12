@@ -257,7 +257,8 @@ impl NodeService {
     /// The checks every create owes a node before anything is written,
     /// whichever path creates it (single, with a parent, bulk, hierarchy
     /// import, an invariant action): its type can be instantiated, its id has
-    /// a legal form, and it is not a hand-made core schema. Its behaviours
+    /// a legal form, and it is not a hand-made core schema or a schema
+    /// carrying fields (`create_schema` writes those). Its behaviours
     /// validate it later, once its properties are in the buckets they will be
     /// stored in (see [`Self::rebucket_and_validate`]).
     pub(crate) async fn ensure_creatable(&self, node: &Node) -> Result<(), NodeServiceError> {
@@ -703,7 +704,7 @@ impl NodeService {
             return Err(NodeServiceError::invalid_update(format!(
                 "Schema '{}' cannot be created with fields: create it with create_schema, which \
                  checks them.",
-                node.id
+                node.content
             )));
         }
         Ok(())

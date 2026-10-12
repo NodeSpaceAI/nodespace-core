@@ -114,8 +114,9 @@ async fn a_generic_update_that_keeps_the_fields_still_succeeds() -> Result<()> {
 async fn a_schema_is_not_created_with_fields_through_the_generic_create() -> Result<()> {
     let (service, _tmp) = test_service().await?;
 
-    let minted = service
-        .create_node(Node::new(
+    let sidestep = || {
+        Node::new_with_id(
+            "sidestep".to_string(),
             "schema".to_string(),
             "Sidestep".to_string(),
             json!({
@@ -123,10 +124,22 @@ async fn a_schema_is_not_created_with_fields_through_the_generic_create() -> Res
                 "schemaVersion": 1,
                 "fields": [{ "name": "custom:state", "type": "text" }]
             }),
-        ))
+        )
+    };
+    let minted = service
+        .create_node(sidestep())
         .await
         .expect_err("a schema is not created with fields");
     assert!(minted.to_string().contains("create_schema"), "{minted}");
+    assert!(minted.to_string().contains("Sidestep"), "{minted}");
+
+    // The batch create is the same choke point.
+    let bulk = service
+        .bulk_create(vec![sidestep()])
+        .await
+        .expect_err("a batch does not create a schema with fields");
+    assert!(bulk.to_string().contains("create_schema"), "{bulk}");
+
     assert!(service.get_node("sidestep").await?.is_none());
     Ok(())
 }
