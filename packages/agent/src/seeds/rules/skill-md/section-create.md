@@ -1,0 +1,1 @@
+Run `nodespace node create --type header --parent <id> --content "## <section name>"` once per section, with the id of the spec, plan or issue. Then run `nodespace node create --type text --parent <header-id> --content "<item>"` once per item, one item to a node.

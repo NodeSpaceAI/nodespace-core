@@ -124,6 +124,34 @@ impl Harness {
             .unwrap_or_else(|e| panic!("placing '{content}' under {parent} failed: {e}"))
     }
 
+    /// A section beneath `parent`: a `## ` header named for it, as the
+    /// procedures write it, and a text node under it for each item. Written
+    /// through the tools, so a step the tools cannot perform fails here.
+    async fn section(&self, parent: &str, name: &str, items: &[&str]) -> String {
+        let header = self
+            .ok(
+                "create_node",
+                json!({
+                    "node_type": "header",
+                    "parent_id": uri(parent),
+                    "content": format!("## {name}")
+                }),
+            )
+            .await["id"]
+            .as_str()
+            .expect("create_node returns the id")
+            .trim_start_matches("nodespace://")
+            .to_string();
+        for item in items {
+            self.ok(
+                "create_node",
+                json!({ "node_type": "text", "parent_id": uri(&header), "content": item }),
+            )
+            .await;
+        }
+        header
+    }
+
     async fn link(&self, from: &str, name: &str, to: &str) {
         self.ns
             .create_relationship(from, name, to, json!({}))
@@ -438,7 +466,7 @@ fn the_planning_skills_name_no_harness_tracker_or_link() {
         .find(|seed| seed.title == "Splitting a Plan into Tasks")
         .unwrap();
     let rendered = splitting.template().markdown_content;
-    for needle in ["\"tasks\"", "\"blocks\"", "\"issue\""] {
+    for needle in ["\"tasks\"", "\"blocks\"", "\"issue\"", "\"header\""] {
         assert!(rendered.contains(needle), "splitting never names {needle}");
     }
 }
@@ -499,16 +527,12 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
             .unwrap()
             .trim_start_matches("nodespace://")
             .to_string();
-        for part in [
-            "Behaviour: rows are written as they are read",
-            "Interfaces: the exporter takes a row source",
-            "Out of scope: other formats",
+        for (section, item) in [
+            ("Behaviour", "Rows are written as they are read"),
+            ("Interfaces", "The exporter takes a row source"),
+            ("Out of scope", "Other formats"),
         ] {
-            h.ok(
-                "create_node",
-                json!({ "node_type": "text", "parent_id": uri(&issue), "content": part }),
-            )
-            .await;
+            h.section(&issue, section, &[item]).await;
         }
         h.ok(
             "create_node",
@@ -549,7 +573,18 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
                 .count(),
             1
         );
-        assert_eq!(children.iter().filter(|c| c.node_type == "text").count(), 3);
+        // The brief is three header sections, each with a text node beneath.
+        let sections: Vec<_> = children
+            .iter()
+            .filter(|c| c.node_type == "header")
+            .collect();
+        assert_eq!(sections.len(), 3);
+        for section in sections {
+            assert!(section.content.starts_with("## "), "{}", section.content);
+            let items = h.ns.get_children(&section.id).await.unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].node_type, "text");
+        }
         let read = h
             .ok(
                 "get_node_context",
@@ -893,11 +928,108 @@ async fn a_spec_is_written_as_a_draft_with_checkbox_criteria() {
         )
         .await;
     }
-    let criteria = h.ns.get_children(&spec).await.unwrap();
+    // The sections are ordinary nodes beside the criteria, not criteria.
+    for (section, items) in [
+        (
+            "User stories",
+            &["As a user, I want to export a project, so that I can share it"][..],
+        ),
+        (
+            "Testing decisions",
+            &[
+                "Tested at: the export command",
+                "Only visible behaviour is checked",
+            ][..],
+        ),
+        ("Out of scope", &["Other formats"][..]),
+    ] {
+        h.section(&spec, section, items).await;
+    }
+    let children = h.ns.get_children(&spec).await.unwrap();
+    let criteria: Vec<_> = children
+        .iter()
+        .filter(|c| c.node_type == "checkbox")
+        .collect();
     assert_eq!(criteria.len(), 2);
     assert!(criteria.iter().all(|c| c.content.starts_with("- [ ] ")));
+    assert_eq!(
+        children.iter().filter(|c| c.node_type == "header").count(),
+        3
+    );
     let still_draft = h.ns.get_node(&spec).await.unwrap().unwrap();
     assert_eq!(still_draft.properties["spec"]["spec_status"], "draft");
+
+    // With its criteria in, and its sections beside them, it can be
+    // approved: the user's call, made here as the user's write.
+    h.ok(
+        "update_node",
+        json!({
+            "id": uri(&spec),
+            "version": still_draft.version,
+            "field_values": { "spec_status": "approved" }
+        }),
+    )
+    .await;
+}
+
+/// A plan's review is ordinary nodes beneath it: a Not in scope and a Failure
+/// modes section, with a gap as a checkbox until it is closed. None of it is
+/// a criterion, so the plan is approved on its spec alone.
+#[tokio::test]
+async fn a_plans_review_is_ordinary_nodes_and_gates_nothing() {
+    let h = start().await;
+    let spec = h.create("spec", "Export", json!({})).await;
+    h.child(&spec, "checkbox", "- [ ] Exports finish in a second")
+        .await;
+    h.set(&spec, json!({ "spec_status": "approved" })).await;
+    let plan = h
+        .ok(
+            "create_node",
+            json!({
+                "node_type": "plan",
+                "content": "Streamed export",
+                "field_values": {
+                    "approach": "Stream rows to the file as they are read",
+                    "risks": "A very wide row exhausts the buffer"
+                }
+            }),
+        )
+        .await["id"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("nodespace://")
+        .to_string();
+    h.link(&plan, "spec", &spec).await;
+
+    h.section(&plan, "Not in scope", &["Other formats: CSV is the ask"])
+        .await;
+    let failures = h
+        .section(
+            &plan,
+            "Failure modes",
+            &["A write fails half way: handled, a test covers it, the user sees it"],
+        )
+        .await;
+    h.ok(
+        "create_node",
+        json!({
+            "node_type": "checkbox",
+            "parent_id": uri(&failures),
+            "content": "- [ ] GAP: a wide row has no test and no handling"
+        }),
+    )
+    .await;
+
+    // The gap is a checkbox beneath a section, not a direct child, so it
+    // is not a criterion of anything; the plan is approved on its spec.
+    let sections = h.ns.get_children(&plan).await.unwrap();
+    assert_eq!(sections.len(), 2);
+    assert!(sections.iter().all(|c| c.node_type == "header"));
+    h.set(&plan, json!({ "plan_status": "approved" })).await;
+    assert_eq!(
+        h.ns.get_node(&plan).await.unwrap().unwrap().properties["plan"]["plan_status"],
+        "approved"
+    );
 }
 
 /// A review that finds an item unmet unticks it, says why beneath it, and

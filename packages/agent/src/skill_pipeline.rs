@@ -772,10 +772,16 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         use_for: "Write a spec: capture a feature's objective, boundaries, where its tests go and its success criteria as a draft spec for the user to approve. Use when the user wants to spec out a feature, write its requirements or acceptance criteria, or approve, revise or supersede a spec.",
         // `route_clarify` is how the skill asks before an approval.
         tools: &["create_node", "update_node", "search_nodes", "get_node", "route_clarify"],
-        // A find, the spec, a criterion each, and the question.
-        max_iterations: 10,
+        // A find, the spec, a header and its items for each section, a
+        // criterion each, and the question.
+        max_iterations: 24,
         not_for: Some("Plan out how to build something."),
-        applies_to: &[CoreNodeType::Spec.as_str(), CoreNodeType::Checkbox.as_str()],
+        applies_to: &[
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Header.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
         attached_to: &[SPECS_BY_STATUS_QUERY_ID],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/writing-a-spec.md"),
@@ -791,10 +797,17 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         title: "Reviewing a Plan",
         use_for: "Write the implementation plan for an approved spec: the approach that meets the spec's criteria and the risks of that approach, reviewed before any work is split. Use when the user wants an implementation plan drafted, reviewed, approved, or superseded.",
         tools: &["create_node", "update_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
-        // The plan, its link, and the questions put to the user.
-        max_iterations: 10,
+        // The plan, its link, its two sections, and the questions put to the
+        // user.
+        max_iterations: 20,
         not_for: None,
-        applies_to: &[CoreNodeType::Plan.as_str(), CoreNodeType::Spec.as_str()],
+        applies_to: &[
+            CoreNodeType::Plan.as_str(),
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Header.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
         attached_to: &[PLANS_BY_STATUS_QUERY_ID],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/reviewing-a-plan.md"),
@@ -810,8 +823,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         title: "Splitting a Plan into Tasks",
         use_for: "Split an implementation plan into tasks, issues for a code change, each with an acceptance checklist, a brief and blocking links. Use when the user wants an approved plan broken down into tasks.",
         tools: &["create_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
-        // An issue, its brief, its checklist and its links, for several.
-        max_iterations: 16,
+        // An issue, its brief's sections, its checklist and its links, for
+        // several.
+        max_iterations: 40,
         not_for: None,
         applies_to: &[
             CoreNodeType::Issue.as_str(),
@@ -820,6 +834,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
             CoreNodeType::Spec.as_str(),
             CoreNodeType::Project.as_str(),
             CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Header.as_str(),
             CoreNodeType::Text.as_str(),
         ],
         attached_to: &[PLANS_BY_STATUS_QUERY_ID],
