@@ -9,8 +9,8 @@ use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::{Node, NodeUpdate, QueryFields};
 use nodespace_core::ops::query_ops::{run_saved_query_nodes, RunSavedQueryInput};
 use nodespace_core::services::query_service::core_queries::{
-    core_query_templates, AWAITING_REVIEW_QUERY_ID, CORE_QUERY_IDS, IN_PROGRESS_QUERY_ID,
-    READY_TASKS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+    core_query_templates, AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, CORE_QUERY_IDS,
+    IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID, READY_TO_MERGE_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use serde_json::{json, Value};
@@ -113,7 +113,7 @@ async fn run(service: &Arc<NodeService>, query: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn every_database_is_seeded_with_the_eight_queries_under_their_fixed_ids() -> Result<()> {
+async fn every_database_is_seeded_with_the_ten_queries_under_their_fixed_ids() -> Result<()> {
     let (service, _tmp) = test_service().await?;
 
     let mut titles = Vec::new();
@@ -136,6 +136,8 @@ async fn every_database_is_seeded_with_the_eight_queries_under_their_fixed_ids()
             "Ready tasks",
             "In progress",
             "Awaiting review",
+            "Changes requested",
+            "Ready to merge",
             "Needs shaping",
             "Waiting on you"
         ]
@@ -219,16 +221,13 @@ async fn ready_tasks_are_ordered_by_priority_then_by_creation_time() -> Result<(
 async fn a_task_moves_from_queue_to_queue_with_its_status() -> Result<()> {
     let (service, _tmp) = test_service().await?;
     let task = ready_task(&service, "the task", json!({})).await;
-    let queues = [
-        READY_TASKS_QUERY_ID,
-        IN_PROGRESS_QUERY_ID,
-        AWAITING_REVIEW_QUERY_ID,
-    ];
+    let queues = [READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID];
 
     for (status, queue) in [
         ("open", Some(READY_TASKS_QUERY_ID)),
         ("in_progress", Some(IN_PROGRESS_QUERY_ID)),
-        ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
+        // A plain task in review is in no queue: Awaiting review lists issues.
+        ("in_review", None),
         ("cancelled", None),
     ] {
         set(&service, &task, json!({ "status": status })).await;
@@ -238,6 +237,64 @@ async fn a_task_moves_from_queue_to_queue_with_its_status() -> Result<()> {
                 listed,
                 Some(candidate) == queue,
                 "a task that is {status} and the queue {candidate}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// An issue is in exactly the review queue of the status it stores: the
+/// three queues that follow it through review are written against `issue`,
+/// where `ready_to_merge` is not `in_review`. "In progress" is written against
+/// `task`, so it reads `changes_requested` as the `in_progress` it maps to.
+#[tokio::test]
+async fn an_issue_is_in_the_review_queue_of_the_status_it_stores() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let issue = create(&service, "issue", "the issue", json!({})).await;
+    create_child(&service, &issue, "checkbox", "- [x] It works").await;
+    let queues = [
+        AWAITING_REVIEW_QUERY_ID,
+        CHANGES_REQUESTED_QUERY_ID,
+        READY_TO_MERGE_QUERY_ID,
+    ];
+
+    for (status, queue) in [
+        ("in_progress", None),
+        ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
+        ("changes_requested", Some(CHANGES_REQUESTED_QUERY_ID)),
+        ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
+        ("ready_to_merge", Some(READY_TO_MERGE_QUERY_ID)),
+        ("done", None),
+    ] {
+        set(&service, &issue, json!({ "status": status })).await;
+        for candidate in queues {
+            let listed = !run(&service, candidate).await.is_empty();
+            assert_eq!(
+                listed,
+                Some(candidate) == queue,
+                "an issue that is {status} and the queue {candidate}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A plain task has neither review status, so none of the issue queues lists
+/// it, in review or out of it.
+#[tokio::test]
+async fn a_plain_task_is_in_none_of_the_issue_review_queues() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let task = ready_task(&service, "the task", json!({})).await;
+    for status in ["in_progress", "in_review", "done"] {
+        set(&service, &task, json!({ "status": status })).await;
+        for queue in [
+            AWAITING_REVIEW_QUERY_ID,
+            CHANGES_REQUESTED_QUERY_ID,
+            READY_TO_MERGE_QUERY_ID,
+        ] {
+            assert!(
+                run(&service, queue).await.is_empty(),
+                "a plain task that is {status} is in {queue}"
             );
         }
     }

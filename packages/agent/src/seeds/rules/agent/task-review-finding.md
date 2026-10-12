@@ -1,0 +1,1 @@
+Call create_node once per finding, with node_type "checkbox", parent_id the task's id and content "- [ ] Finding (<source>, <confidence>): " followed by what is wrong, quoting the spec or the standard it breaks. <source> is spec or standards, and <confidence> is high, medium or low. Write every finding before any is decided.

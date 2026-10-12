@@ -16,7 +16,8 @@ use nodespace_core::ops::query_ops::{
     execute_query_nodes, run_saved_query_nodes, ExecuteQueryInput, RunSavedQueryInput,
 };
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, IN_PROGRESS_QUERY_ID,
+    READY_TASKS_QUERY_ID, READY_TO_MERGE_QUERY_ID,
 };
 use nodespace_core::services::NodeServiceError;
 use serde_json::{json, Value};
@@ -488,13 +489,17 @@ async fn a_task_query_reads_an_issue_status_as_the_one_it_maps_to() -> Result<()
     assert_eq!(issue_row.properties["task"]["status"], "in_progress");
     assert!(issue_row.properties.get("issue").is_none());
 
-    // The seeded queues are written against `task`, so they list issues by
-    // what their status reads as there.
-    assert_eq!(saved_query(&h, IN_PROGRESS_QUERY_ID).await, [task, changes]);
+    // "In progress" is written against `task`, so it lists an issue by what
+    // its status reads as there. The three queues that follow an issue
+    // through review are written against `issue`, so each lists it by the
+    // status it stores.
     assert_eq!(
-        saved_query(&h, AWAITING_REVIEW_QUERY_ID).await,
-        [ready, reviewing]
+        saved_query(&h, IN_PROGRESS_QUERY_ID).await,
+        [task, changes.clone()]
     );
+    assert_eq!(saved_query(&h, AWAITING_REVIEW_QUERY_ID).await, [reviewing]);
+    assert_eq!(saved_query(&h, CHANGES_REQUESTED_QUERY_ID).await, [changes]);
+    assert_eq!(saved_query(&h, READY_TO_MERGE_QUERY_ID).await, [ready]);
     h.stop().await;
     Ok(())
 }

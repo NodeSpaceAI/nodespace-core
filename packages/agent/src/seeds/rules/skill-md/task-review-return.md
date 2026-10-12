@@ -1,1 +1,1 @@
-For each item that is not met, run `nodespace node update <checkbox-id> --content "- [ ] <the item's text>"`, then `nodespace node create --type text --parent <checkbox-id> --content "<what is missing>"`. Then run `nodespace node set-status <task-id> in_progress --version <n>`, where `<n>` is the task's `version` as you read it.
+Run `nodespace node set-status <task-id> changes_requested --version <n>` when the task is an issue, or `nodespace node set-status <task-id> in_progress --version <n>` when it is a plain task, where `<n>` is the task's `version` as you read it.

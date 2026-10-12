@@ -1,0 +1,1 @@
+Run `nodespace query run "Changes requested" --with-context --limit 1`. The issue comes back with its checklist and its findings, the nodes that govern it, its `version`, and the procedures and standards that apply to it. No task means no review is waiting on its fixes: say so and stop.

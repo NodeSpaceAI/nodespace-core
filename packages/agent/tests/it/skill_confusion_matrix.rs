@@ -367,6 +367,10 @@ const CASES: &[Case] = &[
         "check the finished work on the export task",
         "Reviewing a Task",
     ),
+    // Addressing Review Findings has no requests here: a procedure ranks in
+    // a lane that surfaces one skill, and its sibling Reviewing a Task owns
+    // the review vocabulary. It reaches an agent through the Changes
+    // requested queue it is attached to, and is not found by request.
     // Completing a Task: closing one, and a close that was refused.
     first("close out the export task", "Completing a Task"),
     first("it won't let me mark this task done", "Completing a Task"),

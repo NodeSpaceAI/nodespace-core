@@ -1,1 +1,1 @@
-Call update_task_status with the task's id, status "done" and version the task's node_version as you read it.
+Call update_task_status with the task's id, status "ready_to_merge" when the task is an issue or "done" when it is a plain task, and version the task's node_version as you read it.

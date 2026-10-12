@@ -1,0 +1,1 @@
+Run `nodespace node set-status <issue-id> in_review --version <n>`, where `<n>` is the issue's `version` as your last write to it printed.

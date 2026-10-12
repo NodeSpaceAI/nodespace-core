@@ -1,0 +1,1 @@
+For each finding, call update_node with the finding's id and content its text followed by " Decision: <fix, defer or reject>. Reason: <why>." A finding decided fix keeps "- [ ] " at its start. A finding decided defer or reject has "- [ ] " changed to "- [x] ", since nothing is left to do.
