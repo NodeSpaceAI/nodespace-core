@@ -1415,8 +1415,9 @@ async fn each_level_of_a_chain_adds_after_the_value_it_maps_to() {
 }
 
 /// An extension is the type's own declaration of the field, so moving the type
-/// under a parent that has the field is a redeclaration and is refused: the
-/// parent's values are never silently preferred over the type's.
+/// under a parent that has the field is a redeclaration and is refused rather
+/// than resolved in the parent's favour. (A descendant of the moved type is not
+/// checked: that is the retroactive-addition case ADR-078 leaves open.)
 #[tokio::test]
 async fn re_pointing_a_type_with_an_extension_under_another_vocabulary_is_refused() {
     let (svc, _tmp) = test_service().await;
@@ -1443,9 +1444,11 @@ async fn re_pointing_a_type_with_an_extension_under_another_vocabulary_is_refuse
 
     let result =
         handle_update_schema(&svc, json!({ "schema_id": "bug", "extends": "story" })).await;
+    let err =
+        result.expect_err("a type holding its own extension cannot move under another `state`");
     assert!(
-        result.is_err(),
-        "a type holding its own extension of `state` cannot move under another `state`: {result:?}"
+        err.to_string().contains("already declared"),
+        "refused as a redeclaration: {err}"
     );
     // The type is unchanged.
     assert_eq!(
