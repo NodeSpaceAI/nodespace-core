@@ -274,15 +274,45 @@ pub fn chain_depth_of_write(
     }
 }
 
-/// Reserved `source_client_id` for writes applied from another device, per
-/// ADR-027's origin-tagging convention.
+/// Superseded by [`WriteContext`]; removed in the next release.
 ///
-/// Consumers that must not treat such a write as a fresh local mutation (the
-/// playbook engine's local-origin gate, ADR-073, and invariant dispatch)
-/// compare against this constant. The value is a stable tag that writers
-/// outside core set as a literal. Changing it would make those writes fire
-/// local rules again.
+/// A write whose `source_client_id` is this value is treated as if it had
+/// been made with a [`WriteContext`] that sets both flags: the playbook
+/// engine evaluates no trigger against its events and repairs it instead
+/// (ADR-073, ADR-060 §7), and no invariant rule runs in its transaction.
+/// Writers outside core still set the literal; once they make these writes
+/// through [`WriteContext`], the constant and the client-id comparison go.
 pub const REPLICATED_APPLY_CLIENT_ID: &str = "sync-service";
+
+/// How the rules that run on every write treat the writes made through one
+/// `NodeService`: the playbook engine's event triggers, and the invariant
+/// rules run inside a write's transaction.
+///
+/// The default is an ordinary local write: both run. A trusted in-process
+/// caller that applies data whose rules already ran elsewhere (data written
+/// and validated on another device, say) sets it with
+/// [`NodeService::with_write_context`](crate::services::NodeService::with_write_context).
+/// It has no wire form: no request field or header sets it, so a client of
+/// the daemon can never switch rules off for its own writes this way.
+///
+/// Every event the write emits travels to the playbook engine with it (on
+/// the engine's own channel, beside the [`EventEnvelope`] every subscriber
+/// gets), so the engine reads it per event. It is not part of
+/// [`EventMetadata`]: the client id there stays a label for echo
+/// suppression.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct WriteContext {
+    /// The playbook engine evaluates no event trigger against the write's
+    /// events, so no reactive rule fires on them. Scheduled (cron) triggers
+    /// scan the graph and are unaffected.
+    pub skip_playbook_triggers: bool,
+    /// No invariant rule runs inside the write's transaction, so none can
+    /// refuse or extend it. Instead, after a node create or update commits,
+    /// the playbook engine checks the node against the invariant rules its
+    /// event matches and repairs a violation with an ordinary write that it
+    /// logs (ADR-060 §7, repair-and-log).
+    pub skip_invariant_rules: bool,
+}
 
 /// Metadata for cross-cutting concerns on domain events
 ///

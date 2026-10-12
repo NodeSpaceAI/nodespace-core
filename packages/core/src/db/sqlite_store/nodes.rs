@@ -416,6 +416,10 @@ pub(crate) struct EffectiveFieldValue {
 }
 
 impl SqliteStore {
+    /// Notifies with the default write context: the playbook engine
+    /// evaluates its event triggers against the event, and no invariant rule
+    /// runs for a store-level write. A writer whose rules already ran
+    /// elsewhere writes through `NodeService` with its write context instead.
     pub async fn create_node(
         &self,
         node: Node,
@@ -476,6 +480,7 @@ impl SqliteStore {
             source,
             previous_node: None,
             playbook_context,
+            write_context: WriteContext::default(),
         });
 
         if let Some(existing) = colliding_collection {
@@ -572,6 +577,10 @@ impl SqliteStore {
         }
     }
 
+    /// Notifies with the default write context: the playbook engine
+    /// evaluates its event triggers against the event, and no invariant rule
+    /// runs for a store-level write. A writer whose rules already ran
+    /// elsewhere writes through `NodeService` with its write context instead.
     pub async fn create_child_node_atomic(
         &self,
         parent_id: &str,
@@ -661,6 +670,7 @@ impl SqliteStore {
             source,
             previous_node: None,
             playbook_context: None,
+            write_context: WriteContext::default(),
         });
 
         Ok(node)
@@ -966,6 +976,7 @@ impl SqliteStore {
         id: &str,
         update: NodeUpdate,
         source: Option<String>,
+        write_context: WriteContext,
     ) -> Result<Node> {
         if let Some(ref status) = update.lifecycle_status {
             Self::validate_lifecycle_status(status)?;
@@ -1122,6 +1133,7 @@ impl SqliteStore {
             source,
             previous_node: None,
             playbook_context: None,
+            write_context,
         });
 
         if let Some(existing) = colliding_collection {
@@ -1237,6 +1249,10 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Notifies with the default write context: the playbook engine
+    /// evaluates its event triggers against the event, and no invariant rule
+    /// runs for a store-level write. A writer whose rules already ran
+    /// elsewhere writes through `NodeService` with its write context instead.
     pub async fn switch_node_type_atomic(
         &self,
         node_id: &str,
@@ -1274,6 +1290,7 @@ impl SqliteStore {
             source,
             previous_node: None,
             playbook_context: None,
+            write_context: WriteContext::default(),
         });
 
         Ok(node)
@@ -1305,6 +1322,7 @@ impl SqliteStore {
         expected_version: i64,
         update: NodeUpdate,
         source: Option<String>,
+        write_context: WriteContext,
         playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
     ) -> Result<Option<Node>> {
         if let Some(ref status) = update.lifecycle_status {
@@ -1388,6 +1406,7 @@ impl SqliteStore {
             source,
             previous_node: Some(previous_node),
             playbook_context,
+            write_context,
         });
 
         if let Some(existing) = colliding_collection {
@@ -1496,7 +1515,12 @@ impl SqliteStore {
         Ok(Ok(node))
     }
 
-    pub async fn delete_node(&self, id: &str, source: Option<String>) -> Result<DeleteResult> {
+    pub async fn delete_node(
+        &self,
+        id: &str,
+        source: Option<String>,
+        write_context: WriteContext,
+    ) -> Result<DeleteResult> {
         let node = match self.get_node(id).await? {
             Some(n) => n,
             None => {
@@ -1525,6 +1549,7 @@ impl SqliteStore {
             source,
             previous_node: None,
             playbook_context: None,
+            write_context,
         });
 
         Ok(DeleteResult {
@@ -1540,7 +1565,12 @@ impl SqliteStore {
     /// as `delete_node`); children not in `ids` are left in place (edges cascade).
     /// Emits one `Deleted` notification per node that existed, AFTER commit. Returns
     /// the nodes that were deleted.
-    pub async fn bulk_delete(&self, ids: &[String], source: Option<String>) -> Result<Vec<Node>> {
+    pub async fn bulk_delete(
+        &self,
+        ids: &[String],
+        source: Option<String>,
+        write_context: WriteContext,
+    ) -> Result<Vec<Node>> {
         if ids.is_empty() {
             return Ok(vec![]);
         }
@@ -1591,6 +1621,7 @@ impl SqliteStore {
                 source: source.clone(),
                 previous_node: None,
                 playbook_context: None,
+                write_context,
             });
         }
         Ok(to_delete)
@@ -1644,6 +1675,7 @@ impl SqliteStore {
         expected_version: i64,
         subtree_ids: &[String],
         source: Option<String>,
+        write_context: WriteContext,
     ) -> Result<std::result::Result<(bool, Vec<Node>), VersionConflict>> {
         // Collect the target + all descendants before mutating.
         let target = match self.get_node(node_id).await? {
@@ -1761,6 +1793,7 @@ impl SqliteStore {
                 source: source.clone(),
                 previous_node: None,
                 playbook_context: None,
+                write_context,
             });
         }
 
@@ -1980,6 +2013,7 @@ impl SqliteStore {
         id: &str,
         expected_version: i64,
         source: Option<String>,
+        write_context: WriteContext,
     ) -> Result<usize> {
         let node = match self.get_node(id).await? {
             Some(n) => n,
@@ -1990,7 +2024,7 @@ impl SqliteStore {
             return Ok(0);
         }
 
-        let result = self.delete_node(id, source).await?;
+        let result = self.delete_node(id, source, write_context).await?;
         Ok(if result.existed { 1 } else { 0 })
     }
 
@@ -3897,6 +3931,7 @@ impl SqliteStore {
                     source: None,
                     previous_node: None,
                     playbook_context: None,
+                    write_context: WriteContext::default(),
                 });
             }
         }
@@ -4008,6 +4043,7 @@ impl SqliteStore {
             source: Some("streaming_import".to_string()),
             previous_node: None,
             playbook_context: None,
+            write_context: WriteContext::default(),
         });
 
         Ok(id)
@@ -4999,12 +5035,22 @@ mod title_contains_stem_fallback_tests {
         };
 
         store
-            .update_node(&archived, set_status("archived"), None)
+            .update_node(
+                &archived,
+                set_status("archived"),
+                None,
+                crate::db::WriteContext::default(),
+            )
             .await?;
         assert_eq!(offered().await?, vec![active.clone()]);
 
         store
-            .update_node(&archived, set_status("active"), None)
+            .update_node(
+                &archived,
+                set_status("active"),
+                None,
+                crate::db::WriteContext::default(),
+            )
             .await?;
         let mut both = vec![active, archived];
         both.sort();
@@ -5925,7 +5971,13 @@ mod large_subtree_chunking_tests {
         // "Failed to fetch subtree nodes for deletion" / "Failed to delete
         // subtree nodes" without deleting anything.
         let (existed, deleted_nodes) = store
-            .delete_subtree_atomic(&root.id, root.version, &subtree_ids, None)
+            .delete_subtree_atomic(
+                &root.id,
+                root.version,
+                &subtree_ids,
+                None,
+                crate::db::WriteContext::default(),
+            )
             .await?
             .expect("target is at root.version");
 
@@ -5953,7 +6005,13 @@ mod large_subtree_chunking_tests {
         // version-conflict error, which is only possible if the very first
         // call's chunks committed together as one unit.
         let (existed_again, _) = store
-            .delete_subtree_atomic(&root.id, root.version, &subtree_ids, None)
+            .delete_subtree_atomic(
+                &root.id,
+                root.version,
+                &subtree_ids,
+                None,
+                crate::db::WriteContext::default(),
+            )
             .await?
             .expect("target is at root.version");
         assert!(!existed_again);
@@ -6028,7 +6086,13 @@ mod large_subtree_chunking_tests {
         assert_eq!(subtree_ids.len(), MULTI_CHUNK_COUNT + 1);
 
         let (existed, deleted_nodes) = store
-            .delete_subtree_atomic(&root.id, root.version, &subtree_ids, None)
+            .delete_subtree_atomic(
+                &root.id,
+                root.version,
+                &subtree_ids,
+                None,
+                crate::db::WriteContext::default(),
+            )
             .await?
             .expect("target is at root.version");
 

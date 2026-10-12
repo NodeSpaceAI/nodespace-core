@@ -272,3 +272,89 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
     server.await.unwrap();
     manager.shutdown_all().await;
 }
+
+/// A client id the build reserves is refused over the wire when the daemon
+/// serves the unrouted service set (its default database refused), for a
+/// request routed by database id to another database too: the check runs on
+/// the service set that receives every request. Any other id is served.
+#[tokio::test]
+async fn a_reserved_client_id_is_refused_by_the_unrouted_service_set() {
+    let tempdir = TempDir::new().unwrap();
+    let home = tempdir.path();
+    let mut context = test_context();
+    context.extensions = nodespace_daemon::DaemonExtensions::none().reserved_client_id("writer");
+    let default_path = database_requiring(home, "default", &["sync"]).await;
+    let other_path = database_requiring(home, "other", &[]).await;
+
+    let manager = Arc::new(
+        DatabaseManager::load(home.join("databases.toml"), context.clone())
+            .await
+            .unwrap(),
+    );
+    let default_id = manager
+        .ensure_default_registered("Default".into(), default_path.clone())
+        .await
+        .unwrap();
+    let other_id = manager.register(other_path).await.unwrap().id;
+    let marker = home.join("incompatible-database.json");
+    let open_err = open_default_or_record_refusal(&manager, &default_id, &default_path, &marker)
+        .await
+        .err()
+        .expect("the default is refused");
+    let bundle = unrouted_services_if_default_refused(open_err, &context)
+        .await
+        .expect("a required-extensions refusal does not stop the daemon");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let base_services = BaseServices {
+        node_service: bundle.node_service_grpc.clone(),
+        agent_session: bundle.agent_session.clone(),
+        import: bundle.import.clone(),
+        local_agent: bundle.local_agent.clone(),
+        embeddings: bundle.embeddings_service_grpc.clone(),
+        database: DatabaseServiceImpl::new(manager.clone()),
+    };
+    let router = build_base_router(
+        tonic::transport::Server::builder().layer(DbManagerLayer::new(manager.clone())),
+        base_services,
+    );
+    let server = tokio::spawn(async move {
+        router
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("server crashed");
+    });
+    let endpoint = format!("http://{addr}");
+    let mut node = loop {
+        match NodeServiceClient::connect(endpoint.clone()).await {
+            Ok(client) => break client,
+            Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    };
+
+    let as_client = |content: &str, client_id: &str| {
+        let mut request = with_db_header(text_node(content), other_id.as_str());
+        request.metadata_mut().insert(
+            nodespace_proto::CLIENT_ID_HEADER,
+            MetadataValue::try_from(client_id).unwrap(),
+        );
+        request
+    };
+    let refused = node
+        .create_node(as_client("never written", "writer"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
+    node.create_node(as_client("served", "window"))
+        .await
+        .unwrap();
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+    manager.shutdown_all().await;
+}

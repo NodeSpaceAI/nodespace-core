@@ -1915,4 +1915,97 @@ mod playbook_tests {
 
         assert!(!is_replicated_apply(&envelope));
     }
+
+    // -----------------------------------------------------------------------
+    // ADR-073: the write context the gate reads (`write_context_of`)
+    // -----------------------------------------------------------------------
+
+    fn envelope_from(source: Option<&str>) -> EventEnvelope {
+        EventEnvelope {
+            event: DomainEvent::NodeCreated {
+                node_id: "n1".to_string(),
+                node_type: "task".to_string(),
+            },
+            metadata: EventMetadata {
+                source_client_id: source.map(str::to_string),
+                playbook_context: None,
+            },
+        }
+    }
+
+    /// The gate reads the write context the event's write was made with,
+    /// each flag on its own, whatever client id the event carries.
+    #[test]
+    fn write_context_of_reads_the_writes_write_context() {
+        use super::super::engine::write_context_of;
+        use crate::db::events::WriteContext;
+
+        let contexts = [
+            WriteContext::default(),
+            WriteContext {
+                skip_playbook_triggers: true,
+                skip_invariant_rules: false,
+            },
+            WriteContext {
+                skip_playbook_triggers: false,
+                skip_invariant_rules: true,
+            },
+            WriteContext {
+                skip_playbook_triggers: true,
+                skip_invariant_rules: true,
+            },
+        ];
+        for context in contexts {
+            for source in [None, Some("tauri-main"), Some("apply"), Some("")] {
+                assert_eq!(
+                    write_context_of(&envelope_from(source), context),
+                    context,
+                    "{source:?}"
+                );
+            }
+        }
+    }
+
+    /// A client id never sets a write context: with the default context,
+    /// any id other than the superseded one reads as the default, so a
+    /// client cannot switch rules off by naming itself.
+    #[test]
+    fn a_client_id_alone_reads_as_the_default_write_context() {
+        use super::super::engine::write_context_of;
+        use crate::db::events::WriteContext;
+
+        for source in [
+            None,
+            Some("tauri-main"),
+            Some("mcp-client-123"),
+            Some("apply"),
+            Some("not-sync-service-either"),
+        ] {
+            assert_eq!(
+                write_context_of(&envelope_from(source), WriteContext::default()),
+                WriteContext::default(),
+                "{source:?}"
+            );
+        }
+    }
+
+    /// The superseded client id still reads as a write context with both
+    /// flags set, as before the write context existed. Removed with the
+    /// constant.
+    #[test]
+    fn the_superseded_client_id_reads_as_skipping_both() {
+        use super::super::engine::write_context_of;
+        use crate::db::events::{WriteContext, REPLICATED_APPLY_CLIENT_ID};
+
+        assert_eq!(
+            write_context_of(
+                &envelope_from(Some(REPLICATED_APPLY_CLIENT_ID)),
+                WriteContext::default()
+            ),
+            WriteContext {
+                skip_playbook_triggers: true,
+                skip_invariant_rules: true,
+            }
+        );
+    }
 }

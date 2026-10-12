@@ -91,11 +91,14 @@ impl NodeService {
     /// Dispatch invariant rules matching `node`'s creation, inside `tx`.
     ///
     /// A no-op (returns `Ok(())` immediately) in three cases, all by design:
-    /// - This write is not local — `self.client_id` is the reserved sync
-    ///   client id, so the node arrived via sync and its invariant effect (if
-    ///   any) already committed atomically on the originating device. Running
-    ///   this again here would be exactly the re-execution ADR-060 §1
-    ///   requires never happens on a receiving device.
+    /// - This service's writes skip invariant rules
+    ///   (`WriteContext::skip_invariant_rules`, see
+    ///   [`Self::skips_invariant_rules`]): the writer applies data whose rules
+    ///   already ran where it was written, so its invariant effect (if any)
+    ///   is already in it. Running this again here would be exactly the
+    ///   re-execution ADR-060 §1 requires never happens on a receiving
+    ///   device; the playbook engine repairs a violation after commit
+    ///   instead (ADR-060 §7).
     /// - No lifecycle handle has been injected (`set_playbook_lifecycle` was
     ///   never called) — a bare `NodeService` built without a play engine,
     ///   e.g. most unit tests and standalone tools. No invariant rules can
@@ -117,7 +120,7 @@ impl NodeService {
     /// can resolve it once per distinct type rather than once per row.
     ///
     /// Empty in exactly the three no-op cases
-    /// `dispatch_invariant_rules_in_tx` documents (non-local write, no
+    /// `dispatch_invariant_rules_in_tx` documents (invariants skipped, no
     /// lifecycle handle, no matching rule). Non-invariant rules are dropped
     /// here rather than left for `execute_matched_invariant_rules` to
     /// skip, so "empty" means "nothing to run" — a type carrying only
@@ -128,7 +131,7 @@ impl NodeService {
         &self,
         node_type: &str,
     ) -> Vec<crate::playbook::types::OrderedRuleRef> {
-        if self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID) {
+        if self.skips_invariant_rules() {
             return Vec::new();
         }
 
@@ -174,7 +177,7 @@ impl NodeService {
 
     /// Dispatch invariant rules matching `node`'s update, inside `tx`. The
     /// `update_node` twin of [`Self::dispatch_invariant_rules_in_tx`] — same
-    /// three no-op cases (non-local write, no lifecycle handle, no matching
+    /// three no-op cases (invariants skipped, no lifecycle handle, no matching
     /// rule), same execution core (`execute_matched_invariant_rules`),
     /// different trigger matching: a `property_changed` event, not
     /// `node_created`, and `changed_properties` genuinely drives WHICH rules
@@ -274,7 +277,7 @@ impl NodeService {
         node: &Node,
         changed_properties: &[crate::db::events::PropertyChange],
     ) -> Result<(), NodeServiceError> {
-        if self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID) {
+        if self.skips_invariant_rules() {
             return Ok(());
         }
 
@@ -332,7 +335,7 @@ impl NodeService {
         source: &Node,
         event: DomainEvent,
     ) -> Result<(), NodeServiceError> {
-        if self.client_id.as_deref() == Some(crate::db::events::REPLICATED_APPLY_CLIENT_ID) {
+        if self.skips_invariant_rules() {
             return Ok(());
         }
 

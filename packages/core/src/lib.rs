@@ -42,7 +42,7 @@ pub use behaviors::{
 };
 pub use db::{
     DatabaseError, DomainEvent, EventEnvelope, EventMetadata, PlaybookExecutionContext,
-    PropertyChange, RelationshipEvent, RelationshipRecord, SqliteStore,
+    PropertyChange, RelationshipEvent, RelationshipRecord, SqliteStore, WriteContext,
 };
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter, SchemaNode,

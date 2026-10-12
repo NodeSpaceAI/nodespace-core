@@ -59,6 +59,7 @@ async fn update_node_failure_partway_through_leaves_no_partial_state() {
             &other_id,
             NodeUpdate::new().with_title(Some("taken-title".to_string())),
             None,
+            nodespace_core::WriteContext::default(),
         )
         .await
         .unwrap();
@@ -75,7 +76,14 @@ async fn update_node_failure_partway_through_leaves_no_partial_state() {
         .with_content("new content that must NOT persist".to_string())
         .with_title(Some("taken-title".to_string()));
 
-    let result = store.update_node(&target_id, update, None).await;
+    let result = store
+        .update_node(
+            &target_id,
+            update,
+            None,
+            nodespace_core::WriteContext::default(),
+        )
+        .await;
     assert!(
         result.is_err(),
         "the update must fail outright — the requested title collides with the unique index"
@@ -117,6 +125,7 @@ async fn title_only_update_bumps_version_and_modified_at() {
             &id,
             NodeUpdate::new().with_title(Some("brand new title".to_string())),
             None,
+            nodespace_core::WriteContext::default(),
         )
         .await
         .unwrap();
@@ -150,6 +159,7 @@ async fn lifecycle_status_only_update_bumps_version_and_modified_at() {
             &id,
             NodeUpdate::new().with_lifecycle_status("archived".to_string()),
             None,
+            nodespace_core::WriteContext::default(),
         )
         .await
         .unwrap();

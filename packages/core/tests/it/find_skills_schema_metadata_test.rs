@@ -316,6 +316,7 @@ async fn find_skills_skips_a_malformed_skill_and_keeps_the_rest() -> Result<()> 
                 ..Default::default()
             },
             None,
+            nodespace_core::WriteContext::default(),
         )
         .await?;
 

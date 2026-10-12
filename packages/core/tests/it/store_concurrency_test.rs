@@ -222,6 +222,7 @@ mod store_concurrency_tests {
                                 ..Default::default()
                             },
                             None,
+                            nodespace_core::WriteContext::default(),
                         )
                         .await
                         .map(|_| ())

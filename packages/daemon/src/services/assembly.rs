@@ -464,6 +464,7 @@ pub async fn build_database_services(
         shared.scheduler.clone(),
     )
     .with_supported_extensions(shared.extensions.supported_extensions().to_vec())
+    .with_reserved_client_ids(shared.extensions.reserved_client_ids().to_vec())
     .with_database_id(database_id.to_string())
     .with_shutdown_token(shutdown_token.clone())
     .with_playbook_lifecycle(playbook_engine.lifecycle().clone());
@@ -525,9 +526,9 @@ pub async fn build_database_services(
     ));
 
     // Play (playbook) engine — event subscriber, sequential RuleProcessor,
-    // and CronRunner's 60-second poll loop, per ADR-073 hard-gated to
-    // locally-originated events until ADR-060's multi-device semantics land
-    // (see `nodespace_core::playbook::engine::is_replicated_apply`). One per
+    // and CronRunner's 60-second poll loop, per ADR-073 skipping trigger
+    // evaluation for a write whose write context says so (see
+    // `nodespace_core::db::events::WriteContext`). One per
     // database, its own watch-channel shutdown signal (mirroring the
     // conflict-journal sweep's shape above), stopped by
     // `DatabaseServices::shutdown` alongside this database's other
@@ -606,7 +607,8 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
         embedding_state.clone(),
         shared.scheduler.clone(),
     )
-    .with_supported_extensions(shared.extensions.supported_extensions().to_vec());
+    .with_supported_extensions(shared.extensions.supported_extensions().to_vec())
+    .with_reserved_client_ids(shared.extensions.reserved_client_ids().to_vec());
     let embeddings_service_grpc = shared
         .has_model
         .then(|| EmbeddingsServiceImpl::new(node_service.clone(), embedding_state.clone()));

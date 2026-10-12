@@ -271,8 +271,9 @@ impl NodeService {
         // Insert every row, then run invariant-rule dispatch (ADR-060 §1) for
         // each, all in one transaction: a rejected row rolls back the whole
         // batch, which is also what makes the all-or-nothing contract above
-        // hold. Events carry this instance's client_id/execution_context
-        // (via `emit_event`), which the ADR-073 local-origin gate depends on.
+        // hold. Events carry this instance's client_id/execution_context and
+        // reach the playbook engine with its write_context (via
+        // `emit_event_in_tx`), which the ADR-073 gate reads.
         let service = self.clone();
         let ids = self
             .with_transaction(move |tx| {
@@ -1129,7 +1130,7 @@ impl NodeService {
         // double-delete on retry. Coalesce the Deleted events: one per node.
         let _batch = self.begin_batch_emit();
         self.store
-            .bulk_delete(&ids, self.client_id.clone())
+            .bulk_delete(&ids, self.client_id.clone(), self.write_context)
             .await
             .map_err(|e| {
                 NodeServiceError::bulk_operation_failed(format!(

@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use nodespace_core::db::events::{DomainEvent, REPLICATED_APPLY_CLIENT_ID};
-use nodespace_core::db::SqliteStore;
+use nodespace_core::db::{SqliteStore, WriteContext};
 use nodespace_core::models::{Node, NodeFilter, NodeUpdate};
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
@@ -372,11 +372,42 @@ async fn bulk_create_rejects_the_whole_batch_when_one_node_violates() -> Result<
     Ok(())
 }
 
+/// Derives the service a test applies writes through from the test's
+/// service.
+type ApplyWith = fn(&NodeService) -> NodeService;
+
+/// A write context that skips invariant rules.
+fn skipping_invariants(service: &NodeService) -> NodeService {
+    service
+        .with_client("apply")
+        .with_write_context(WriteContext {
+            skip_playbook_triggers: true,
+            skip_invariant_rules: true,
+        })
+}
+
+/// The superseded client-id tag, which still reads as both flags set.
+/// Removed with `REPLICATED_APPLY_CLIENT_ID`.
+fn superseded_client_id(service: &NodeService) -> NodeService {
+    service.with_client(REPLICATED_APPLY_CLIENT_ID)
+}
+
 /// A receiving device never re-runs an invariant rule for a node that
 /// arrived via sync (ADR-060 §1) — the same no-op single-node `create_node`
 /// has, and the sync catch-up path applies pulled pages through `bulk_create`.
 #[tokio::test]
+async fn bulk_create_skipping_invariant_rules_does_not_run_them() -> Result<()> {
+    applied_bulk_create_does_not_run_invariant_rules(skipping_invariants).await
+}
+
+/// The superseded client-id tag, as before. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
 async fn sync_tagged_bulk_create_does_not_run_invariant_rules() -> Result<()> {
+    applied_bulk_create_does_not_run_invariant_rules(superseded_client_id).await
+}
+
+async fn applied_bulk_create_does_not_run_invariant_rules(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
@@ -395,10 +426,7 @@ async fn sync_tagged_bulk_create_does_not_run_invariant_rules() -> Result<()> {
         json!({ "bi-synced": { "status": "blocked" } }),
     );
     let synced_id = synced.id.clone();
-    service
-        .with_client(REPLICATED_APPLY_CLIENT_ID)
-        .bulk_create(vec![synced])
-        .await?;
+    apply_with(&service).bulk_create(vec![synced]).await?;
     assert!(service.get_node(&synced_id).await?.is_some());
     Ok(())
 }
@@ -838,7 +866,18 @@ async fn rejected_bulk_create_inside_a_batch_guard_contributes_no_events() -> Re
 }
 
 #[tokio::test]
+async fn bulk_update_skipping_invariant_rules_does_not_run_them() -> Result<()> {
+    applied_bulk_update_does_not_run_invariant_rules(skipping_invariants).await
+}
+
+/// The superseded client-id tag, as before. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
 async fn sync_tagged_bulk_update_does_not_run_invariant_rules() -> Result<()> {
+    applied_bulk_update_does_not_run_invariant_rules(superseded_client_id).await
+}
+
+async fn applied_bulk_update_does_not_run_invariant_rules(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
@@ -856,8 +895,7 @@ async fn sync_tagged_bulk_update_does_not_run_invariant_rules() -> Result<()> {
     let id = node.id.clone();
     service.create_node(node).await?;
 
-    service
-        .with_client(REPLICATED_APPLY_CLIENT_ID)
+    apply_with(&service)
         .bulk_update(vec![(id.clone(), status_update("blocked"))])
         .await?;
     let after = service.get_node(&id).await?.unwrap();

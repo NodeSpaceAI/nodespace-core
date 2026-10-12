@@ -15,14 +15,16 @@
 //!   creation — the node does not exist afterward, not merely "the action's
 //!   effect is missing."
 //! - An invariant rule does not re-execute on a device that received the
-//!   node via sync (`with_client(REPLICATED_APPLY_CLIENT_ID)`).
+//!   node via sync: a write whose write context skips invariant rules
+//!   (`NodeService::with_write_context`), or one tagged with the superseded
+//!   `REPLICATED_APPLY_CLIENT_ID` until it is removed.
 //! - A device receiving a node that violates an invariant it holds repairs
 //!   the node and logs the repair.
 //! - Reactive rules are unaffected by any of the above.
 
 use anyhow::Result;
 use nodespace_core::db::events::{
-    DomainEvent, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
+    DomainEvent, WriteContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY,
     REPLICATED_APPLY_CLIENT_ID,
 };
 use nodespace_core::db::SqliteStore;
@@ -191,6 +193,63 @@ fn stamp_approved_invariant_rule(node_type: &str) -> serde_json::Value {
             }
         }]
     }])
+}
+
+/// Derives the service a test applies writes through from the test's
+/// service.
+type ApplyWith = fn(&NodeService) -> NodeService;
+
+/// The client id the applying services below write with.
+const APPLY_CLIENT_ID: &str = "apply";
+
+fn applying(service: &NodeService, write_context: WriteContext) -> NodeService {
+    service
+        .with_client(APPLY_CLIENT_ID)
+        .with_write_context(write_context)
+}
+
+/// A writer applying data whose rules already ran elsewhere: both flags set.
+fn skipping_rules(service: &NodeService) -> NodeService {
+    applying(
+        service,
+        WriteContext {
+            skip_playbook_triggers: true,
+            skip_invariant_rules: true,
+        },
+    )
+}
+
+/// A write context that skips invariant rules and nothing else.
+fn skipping_invariants_only(service: &NodeService) -> NodeService {
+    applying(
+        service,
+        WriteContext {
+            skip_playbook_triggers: false,
+            skip_invariant_rules: true,
+        },
+    )
+}
+
+/// A write context that skips playbook triggers and nothing else.
+fn skipping_triggers_only(service: &NodeService) -> NodeService {
+    applying(
+        service,
+        WriteContext {
+            skip_playbook_triggers: true,
+            skip_invariant_rules: false,
+        },
+    )
+}
+
+/// A client id alone, with the default write context.
+fn client_id_only(service: &NodeService) -> NodeService {
+    service.with_client(APPLY_CLIENT_ID)
+}
+
+/// The superseded client-id tag, which still reads as both flags set.
+/// Removed with `REPLICATED_APPLY_CLIENT_ID`.
+fn superseded_client_id(service: &NodeService) -> NodeService {
+    service.with_client(REPLICATED_APPLY_CLIENT_ID)
 }
 
 // ---------------------------------------------------------------------------
@@ -425,10 +484,21 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
 
 /// ADR-060 §1: an invariant rule must NOT re-execute on a device that
 /// received the node via sync — the effect arrives WITH the node as ordinary
-/// synced data. Uses the `with_client(REPLICATED_APPLY_CLIENT_ID)` tagging
-/// convention that marks a replicated apply.
+/// synced data. The applying service's write context skips invariant rules.
 #[tokio::test]
 async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()> {
+    invariant_rule_does_not_re_execute_on_applied_node(skipping_rules).await
+}
+
+/// The superseded client-id tag skips invariant rules as before. Removed
+/// with `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
+async fn invariant_rule_does_not_re_execute_on_a_node_tagged_with_the_superseded_id() -> Result<()>
+{
+    invariant_rule_does_not_re_execute_on_applied_node(superseded_client_id).await
+}
+
+async fn invariant_rule_does_not_re_execute_on_applied_node(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
@@ -454,7 +524,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
             .expect("play must parse and activate");
     }
 
-    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
+    let sync_service = apply_with(&service);
     let synced = Node::new(
         "iv-sync-task".to_string(),
         "arrived via sync".to_string(),
@@ -479,6 +549,283 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
     Ok(())
 }
 
+/// Which of the three in-transaction invariant dispatch points refused a
+/// write made through `apply_with`'s service: a create, an update and a
+/// declared relationship's creation, each matching a `reject` invariant.
+#[derive(Debug, PartialEq, Eq)]
+struct Refused {
+    create: bool,
+    update: bool,
+    relationship: bool,
+}
+
+async fn invariant_refusals_for(apply_with: ApplyWith) -> Result<Refused> {
+    let (service, _tmp) = create_test_service().await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "iv-skip-target", "fields": [] }),
+    )
+    .await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "iv-skip-bug",
+            "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }],
+            "relationships": [{
+                "name": "blocks",
+                "targetType": "iv-skip-target",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "blocked_by",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let reject = |name: &str, trigger: serde_json::Value, condition: &str| {
+        json!({
+            "name": name,
+            "class": "invariant",
+            "description": "Test rule",
+            "trigger": trigger,
+            "conditions": [{ "expr": condition, "description": "Test condition" }],
+            "actions": [{
+                "description": "Test action",
+                "action_type": "reject",
+                "params": { "message": format!("{name} refused") }
+            }]
+        })
+    };
+    let play = Node::new(
+        "play".to_string(),
+        "skip-matrix-play".to_string(),
+        json!({ "play": { "rules": [
+            reject(
+                "create",
+                json!({ "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-skip-bug" } }),
+                "node.status == 'blocked'",
+            ),
+            reject(
+                "update",
+                json!({ "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv-skip-bug" }, "property_key": "iv-skip-bug.status" }),
+                "node.status == 'blocked'",
+            ),
+            reject(
+                "relationship",
+                json!({ "type": "graph_event", "on": "relationship_added", "select": { "target_type": "iv-skip-bug" } }),
+                "node.status == 'done'",
+            ),
+        ] } }),
+    );
+    engine
+        .lifecycle()
+        .write()
+        .unwrap()
+        .activate_play(&play)
+        .expect("play must parse and activate");
+
+    let bug = |status: &str| {
+        Node::new(
+            "iv-skip-bug".to_string(),
+            format!("{status} bug"),
+            json!({ "status": status }),
+        )
+    };
+    let refused = |result: Result<(), NodeServiceError>| match result {
+        Ok(()) => false,
+        Err(NodeServiceError::PlayRuleRejected { .. }) => true,
+        Err(other) => panic!("expected a rule's refusal or success, got {other:?}"),
+    };
+    let writer = apply_with(&service);
+
+    let create = refused(writer.create_node(bug("blocked")).await.map(drop));
+
+    let open = service.create_node(bug("open")).await?;
+    let version = service.get_node(&open).await?.unwrap().version;
+    let update = refused(
+        writer
+            .update_node(
+                &open,
+                version,
+                properties_update(json!({ "status": "blocked" })),
+            )
+            .await
+            .map(drop),
+    );
+
+    let target = service
+        .create_node(Node::new(
+            "iv-skip-target".to_string(),
+            "target".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let done = service.create_node(bug("done")).await?;
+    let relationship = refused(
+        writer
+            .create_relationship(&done, "blocks", &target, json!({}))
+            .await
+            .map(drop),
+    );
+
+    Ok(Refused {
+        create,
+        update,
+        relationship,
+    })
+}
+
+const ALL_REFUSED: Refused = Refused {
+    create: true,
+    update: true,
+    relationship: true,
+};
+
+const NONE_REFUSED: Refused = Refused {
+    create: false,
+    update: false,
+    relationship: false,
+};
+
+/// An ordinary write runs every invariant rule in its transaction: a
+/// create, an update and a relationship's creation are each refused by the
+/// rule they match.
+#[tokio::test]
+async fn an_ordinary_write_runs_invariant_rules_at_every_dispatch_point() -> Result<()> {
+    assert_eq!(invariant_refusals_for(|s| s.clone()).await?, ALL_REFUSED);
+    Ok(())
+}
+
+/// A client id alone changes nothing: its writes are refused exactly like an
+/// ordinary write's.
+#[tokio::test]
+async fn a_client_id_alone_does_not_skip_invariant_rules() -> Result<()> {
+    assert_eq!(invariant_refusals_for(client_id_only).await?, ALL_REFUSED);
+    Ok(())
+}
+
+/// `skip_playbook_triggers` alone leaves invariant rules running in the
+/// transaction.
+#[tokio::test]
+async fn skipping_playbook_triggers_alone_still_runs_invariant_rules() -> Result<()> {
+    assert_eq!(
+        invariant_refusals_for(skipping_triggers_only).await?,
+        ALL_REFUSED
+    );
+    Ok(())
+}
+
+/// A write context that skips invariant rules skips them at every dispatch
+/// point, with or without skipping playbook triggers.
+#[tokio::test]
+async fn skipping_invariant_rules_skips_every_dispatch_point() -> Result<()> {
+    assert_eq!(invariant_refusals_for(skipping_rules).await?, NONE_REFUSED);
+    assert_eq!(
+        invariant_refusals_for(skipping_invariants_only).await?,
+        NONE_REFUSED
+    );
+    Ok(())
+}
+
+/// The superseded client-id tag skips every dispatch point, exactly as a
+/// write context skipping invariant rules does. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
+async fn the_superseded_client_id_skips_every_dispatch_point() -> Result<()> {
+    assert_eq!(
+        invariant_refusals_for(superseded_client_id).await?,
+        NONE_REFUSED
+    );
+    Ok(())
+}
+
+/// `skip_invariant_rules` without `skip_playbook_triggers`: the write's
+/// invariant rule does not run in its transaction but is repaired after
+/// commit, and its reactive rules still fire.
+#[tokio::test]
+async fn skipping_invariants_only_repairs_and_still_fires_reactive_rules() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv-defer-task",
+        json!([
+            { "name": "status", "type": "text" },
+            { "name": "approved", "type": "boolean" },
+            { "name": "reacted", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "defer-play",
+        json!([
+            {
+                "name": "invariant-stamp",
+                "class": "invariant",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-defer-task" } },
+                "conditions": [{ "expr": "node.status == 'pending'", "description": "Test condition" }],
+                "actions": [{
+                    "description": "Test action",
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "approved": true } }
+                }]
+            },
+            {
+                "name": "reactive-mark",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-defer-task" } },
+                "conditions": [{ "expr": "node.status == 'pending'", "description": "Test condition" }],
+                "actions": [{
+                    "description": "Test action",
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "reacted": true } }
+                }]
+            }
+        ]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let node = Node::new(
+        "iv-defer-task".to_string(),
+        "deferred".to_string(),
+        json!({ "status": "pending" }),
+    );
+    let id = node.id.clone();
+    skipping_invariants_only(&service).create_node(node).await?;
+    let committed = service.get_node(&id).await?.unwrap();
+    assert_eq!(
+        user_field(&committed, "iv-defer-task", "approved"),
+        None,
+        "the invariant rule must not run in the write's transaction"
+    );
+
+    let settled = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "iv-defer-task", "approved") == Some(&json!(true))
+                    && user_field(&n, "iv-defer-task", "reacted") == Some(&json!(true))
+            )
+        }
+    })
+    .await;
+    assert!(
+        settled,
+        "the node must be repaired after commit and the reactive rule must fire"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Slice C: repair-and-log (ADR-060 §7)
 // ---------------------------------------------------------------------------
@@ -486,9 +833,26 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
 /// A device receiving an already-committed node that violates an invariant
 /// it holds repairs the node and creates a log node recording the repair.
 /// Requires a REAL running engine (unlike the write-path tests above): repair
-/// dispatch lives in `handle_event`'s post-commit sync-gate branch.
+/// dispatch lives in `handle_event`'s post-commit branch.
 #[tokio::test]
 async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Result<()> {
+    applied_node_violating_invariant_is_repaired(skipping_rules).await
+}
+
+/// `skip_invariant_rules` alone is enough for the repair.
+#[tokio::test]
+async fn a_node_written_skipping_invariants_only_is_repaired() -> Result<()> {
+    applied_node_violating_invariant_is_repaired(skipping_invariants_only).await
+}
+
+/// The superseded client-id tag is repaired as before. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
+async fn a_node_tagged_with_the_superseded_id_is_repaired() -> Result<()> {
+    applied_node_violating_invariant_is_repaired(superseded_client_id).await
+}
+
+async fn applied_node_violating_invariant_is_repaired(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
@@ -513,7 +877,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
     // Simulate a node that arrived via sync from an origin device that
     // predates (or had disabled) this invariant rule: matches the trigger
     // and its condition still passes (no `approved` stamp present).
-    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
+    let sync_service = apply_with(&service);
     let violating = Node::new(
         "iv-repair-task".to_string(),
         "violates the invariant".to_string(),
@@ -570,7 +934,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
 
     // Condition is `node.status == 'pending'`; this node has status
     // 'approved-elsewhere' so the condition is false — nothing to repair.
-    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
+    let sync_service = skipping_rules(&service);
     let already_fine = Node::new(
         "iv-ok-task".to_string(),
         "already handled by origin".to_string(),
@@ -2723,7 +3087,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
+    let sync_service = skipping_rules(&service);
 
     // A play write at the end of a chain: one more hop would pass the limit.
     let at_limit = Node::new(
@@ -2791,9 +3155,9 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
 // A received update can violate a `property_changed` invariant just as a
 // received create can violate a `node_created` one: the originating device
 // ran an older Play version, had the rule disabled, or predates it. These
-// tests drive the real sync tagging (`with_client(REPLICATED_APPLY_CLIENT_ID)`)
-// against a running engine, so the repair runs through `handle_event`'s
-// sync-originated branch exactly as it does for a real sync apply.
+// tests write through a service whose write context skips rules, against a
+// running engine, so the repair runs through `handle_event`'s repair branch
+// exactly as it does for a real apply.
 //
 // The rules are activated straight into the engine's lifecycle rather than
 // saved as Play nodes: the invariant here updates its own trigger node,
@@ -2842,13 +3206,7 @@ fn activate_rules_directly(engine: &PlaybookEngine, name: &str, rules: serde_jso
 /// Create `node` on this device as if it had arrived via sync, and return
 /// its id and version.
 async fn create_via_sync(service: &Arc<NodeService>, node: Node) -> Result<(String, i64)> {
-    let id = node.id.clone();
-    service
-        .with_client(REPLICATED_APPLY_CLIENT_ID)
-        .create_node(node)
-        .await?;
-    let version = service.get_node(&id).await?.unwrap().version;
-    Ok((id, version))
+    create_via(skipping_rules, service, node).await
 }
 
 async fn update_via_sync(
@@ -2856,9 +3214,30 @@ async fn update_via_sync(
     id: &str,
     properties: serde_json::Value,
 ) -> Result<Node> {
+    update_via(skipping_rules, service, id, properties).await
+}
+
+/// Create `node` through `apply_with`'s service, and return its id and
+/// version.
+async fn create_via(
+    apply_with: ApplyWith,
+    service: &Arc<NodeService>,
+    node: Node,
+) -> Result<(String, i64)> {
+    let id = node.id.clone();
+    apply_with(service).create_node(node).await?;
+    let version = service.get_node(&id).await?.unwrap().version;
+    Ok((id, version))
+}
+
+async fn update_via(
+    apply_with: ApplyWith,
+    service: &Arc<NodeService>,
+    id: &str,
+    properties: serde_json::Value,
+) -> Result<Node> {
     let version = service.get_node(id).await?.unwrap().version;
-    Ok(service
-        .with_client(REPLICATED_APPLY_CLIENT_ID)
+    Ok(apply_with(service)
         .update_node(id, version, properties_update(properties))
         .await?)
 }
@@ -2926,9 +3305,21 @@ async fn drain_verified_when_done(service: &Arc<NodeService>, node_type: &str) -
 /// device holds is repaired, exactly as a received create is.
 #[tokio::test]
 async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
+    applied_update_violating_invariant_is_repaired(skipping_rules).await
+}
+
+/// The superseded client-id tag's update is repaired as before. Removed with
+/// `REPLICATED_APPLY_CLIENT_ID`.
+#[tokio::test]
+async fn an_update_tagged_with_the_superseded_id_is_repaired() -> Result<()> {
+    applied_update_violating_invariant_is_repaired(superseded_client_id).await
+}
+
+async fn applied_update_violating_invariant_is_repaired(apply_with: ApplyWith) -> Result<()> {
     let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-repair").await?;
 
-    let (id, _) = create_via_sync(
+    let (id, _) = create_via(
+        apply_with,
         &service,
         Node::new(
             "iv-su-repair".to_string(),
@@ -2937,7 +3328,7 @@ async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
         ),
     )
     .await?;
-    update_via_sync(&service, &id, json!({ "status": "done" })).await?;
+    update_via(apply_with, &service, &id, json!({ "status": "done" })).await?;
 
     let repaired = wait_until(|| {
         let service = Arc::clone(&service);
@@ -3434,8 +3825,7 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
         let (to, id) = (Arc::clone(to), id.to_string());
         tokio::spawn(async move {
             while let Ok(envelope) = events.recv().await {
-                if envelope.metadata.source_client_id.as_deref() == Some(REPLICATED_APPLY_CLIENT_ID)
-                {
+                if envelope.metadata.source_client_id.as_deref() == Some(APPLY_CLIENT_ID) {
                     continue;
                 }
                 let DomainEvent::NodeUpdated { node_id, node, .. } = envelope.event else {
@@ -3675,8 +4065,7 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
         let to = Arc::clone(to);
         tokio::spawn(async move {
             while let Ok(envelope) = events.recv().await {
-                if envelope.metadata.source_client_id.as_deref() == Some(REPLICATED_APPLY_CLIENT_ID)
-                {
+                if envelope.metadata.source_client_id.as_deref() == Some(APPLY_CLIENT_ID) {
                     continue;
                 }
                 let DomainEvent::NodeUpdated {
