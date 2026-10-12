@@ -930,22 +930,19 @@ async fn shutdown_engine(
 /// A user type with two text fields: `status`, which the plays below write,
 /// and `note`, which the tests edit to raise an event.
 async fn seed_job_schema(svc: &Arc<NodeService>) {
-    let schema = Node::new_with_id(
-        "pp-job".to_string(),
-        "schema".to_string(),
-        "pp-job".to_string(),
+    handle_create_schema(
+        svc,
         json!({
-            "isCore": false,
-            "schemaVersion": 1,
+            "name": "pp-job",
             "description": "pp-job schema",
             "fields": [
                 { "name": "status", "type": "text" },
                 { "name": "note", "type": "text" }
             ],
-            "relationships": []
         }),
-    );
-    svc.create_node(schema).await.unwrap();
+    )
+    .await
+    .unwrap();
 }
 
 async fn create_job(svc: &Arc<NodeService>, content: &str) -> String {
@@ -996,19 +993,16 @@ fn close_on_create() -> serde_json::Value {
 /// run. A test that asserts something did NOT happen waits on the barrier
 /// instead of on a clock.
 async fn seed_probe(svc: &Arc<NodeService>) {
-    let schema = Node::new_with_id(
-        "pp-probe".to_string(),
-        "schema".to_string(),
-        "pp-probe".to_string(),
+    handle_create_schema(
+        svc,
         json!({
-            "isCore": false,
-            "schemaVersion": 1,
+            "name": "pp-probe",
             "description": "pp-probe schema",
             "fields": [{ "name": "seen", "type": "text" }],
-            "relationships": []
         }),
-    );
-    svc.create_node(schema).await.unwrap();
+    )
+    .await
+    .unwrap();
     create(
         svc,
         "play",
@@ -1252,22 +1246,19 @@ async fn no_action_touches_an_archived_node() {
 async fn a_condition_sees_no_archived_related_node() {
     let (svc, _tmp) = test_service().await;
     seed_job_schema(&svc).await;
-    let schema = Node::new_with_id(
-        "pp-batch".to_string(),
-        "schema".to_string(),
-        "pp-batch".to_string(),
+    handle_create_schema(
+        &svc,
         json!({
-            "isCore": false,
-            "schemaVersion": 1,
+            "name": "pp-batch",
             "description": "pp-batch schema",
             "fields": [
                 { "name": "status", "type": "text" },
                 { "name": "note", "type": "text" }
             ],
-            "relationships": []
         }),
-    );
-    svc.create_node(schema).await.unwrap();
+    )
+    .await
+    .unwrap();
     let declarations: Vec<nodespace_core::models::schema::SchemaRelationship> =
         serde_json::from_value(json!([{
             "name": "jobs",

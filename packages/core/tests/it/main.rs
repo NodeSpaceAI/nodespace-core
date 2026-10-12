@@ -66,6 +66,7 @@ mod reverse_relationship_name_test;
 mod scalar_field_type_validation_test;
 mod schema_chain_blindness_guard_test;
 mod schema_embedding_queue_test;
+mod schema_fields_write_path_test;
 mod schema_hydration_test;
 mod schema_relationship_declarations_test;
 mod schema_test;

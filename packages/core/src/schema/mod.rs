@@ -2363,7 +2363,7 @@ pub async fn create_schema(
                 // breaking (ADR-069 §2a). The outer map_err below
                 // discriminates on this.
                 let created_schema_id = node_service
-                    .create_node_with_parent_in_tx(tx, schema_node_params)
+                    .create_schema_node_in_tx(tx, schema_node_params)
                     .await?;
 
                 if !relationships.is_empty() {

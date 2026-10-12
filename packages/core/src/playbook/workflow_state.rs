@@ -865,29 +865,25 @@ mod tests {
     async fn unmet_relationship_reports_not_yet_met() {
         let (svc, _tmp) = test_service().await;
 
-        let schema = Node::new_with_id(
-            "story".to_string(),
-            "schema".to_string(),
-            "story".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "story",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "story",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(schema).await.unwrap();
+        )
+        .await
+        .unwrap();
 
-        let task_schema = Node::new_with_id(
-            "wf-task".to_string(),
-            "schema".to_string(),
-            "wf-task".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf-task",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "wf-task",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(task_schema).await.unwrap();
+        )
+        .await
+        .unwrap();
         svc.set_schema_relationships(
             "wf-task",
             &[serde_json::from_value(json!({
@@ -998,17 +994,15 @@ mod tests {
     async fn multi_hop_typo_at_second_segment_reports_unresolvable() {
         let (svc, _tmp) = test_service().await;
 
-        let story_schema = Node::new_with_id(
-            "story-mh".to_string(),
-            "schema".to_string(),
-            "story-mh".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "story-mh",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "story-mh",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(story_schema).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let task_schema = Node::new_with_id(
             "wf-task-mh".to_string(),
@@ -1073,17 +1067,15 @@ mod tests {
     async fn typo_field_reports_unresolvable() {
         let (svc, _tmp) = test_service().await;
 
-        let task_schema = Node::new_with_id(
-            "wf-task2".to_string(),
-            "schema".to_string(),
-            "wf-task2".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf-task2",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "wf-task2",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(task_schema).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
@@ -1119,17 +1111,15 @@ mod tests {
     async fn trigger_property_reference_reports_unresolvable() {
         let (svc, _tmp) = test_service().await;
 
-        let task_schema = Node::new_with_id(
-            "wf-task3".to_string(),
-            "schema".to_string(),
-            "wf-task3".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf-task3",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "wf-task3",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(task_schema).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
@@ -1204,17 +1194,15 @@ mod tests {
     async fn namespaced_property_changed_trigger_is_returned_as_candidate() {
         let (svc, _tmp) = test_service().await;
 
-        let task_schema = Node::new_with_id(
-            "wf-task4".to_string(),
-            "schema".to_string(),
-            "wf-task4".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf-task4",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "wf-task4",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(task_schema).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
@@ -1769,17 +1757,15 @@ mod tests {
         Node,
     ) {
         let (svc, tmp) = test_service().await;
-        let schema = Node::new_with_id(
-            "wf-degraded".to_string(),
-            "schema".to_string(),
-            "wf-degraded".to_string(),
+        crate::schema::handle_create_schema(
+            &svc,
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf-degraded",
-                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
-                "relationships": []
+                "name": "wf-degraded",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}]
             }),
-        );
-        svc.create_node(schema).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {

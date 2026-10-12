@@ -29,6 +29,7 @@ use nodespace_core::db::events::{
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskStatus};
 use nodespace_core::playbook::types::MAX_CHAIN_DEPTH;
+use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
@@ -94,23 +95,20 @@ async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
 }
 
 async fn create_schema(
-    service: &NodeService,
+    service: &Arc<NodeService>,
     node_type: &str,
     fields: serde_json::Value,
 ) -> Result<()> {
-    let schema = Node::new_with_id(
-        node_type.to_string(),
-        "schema".to_string(),
-        node_type.to_string(),
+    handle_create_schema(
+        service,
         json!({
-            "isCore": false,
-            "schemaVersion": 1,
+            "name": node_type,
             "description": format!("{node_type} schema"),
             "fields": fields,
-            "relationships": []
         }),
-    );
-    service.create_node(schema).await?;
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
 }
 

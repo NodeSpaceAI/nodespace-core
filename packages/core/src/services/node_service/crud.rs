@@ -179,6 +179,18 @@ impl NodeService {
                 existing.id
             )));
         }
+        // Fields are checked against their chain, the namespace rule, field
+        // protection and the Plays and nodes that use them when
+        // `update_schema` saves them, so they have the same one write path.
+        let fields = crate::models::schema_node::FIELDS_KEY;
+        if existing.properties.get(fields) != updated.properties.get(fields) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "The fields of schema '{}' can only be changed with update_schema (add_fields, \
+                 remove_fields, rename_fields, add_field_values), which checks them against the \
+                 type's chain, its protected fields and its existing nodes.",
+                existing.id
+            )));
+        }
         Ok(())
     }
 
@@ -245,7 +257,8 @@ impl NodeService {
     /// The checks every create owes a node before anything is written,
     /// whichever path creates it (single, with a parent, bulk, hierarchy
     /// import, an invariant action): its type can be instantiated, its id has
-    /// a legal form, and it is not a hand-made core schema. Its behaviours
+    /// a legal form, and it is not a hand-made core schema or a schema
+    /// carrying fields (`create_schema` writes those). Its behaviours
     /// validate it later, once its properties are in the buckets they will be
     /// stored in (see [`Self::rebucket_and_validate`]).
     pub(crate) async fn ensure_creatable(&self, node: &Node) -> Result<(), NodeServiceError> {
@@ -258,6 +271,19 @@ impl NodeService {
     /// `instantiable_types`, so a large import does not repeat the read per
     /// row.
     pub(crate) async fn ensure_creatable_in_batch(
+        &self,
+        node: &Node,
+        instantiable_types: &mut std::collections::HashSet<String>,
+    ) -> Result<(), NodeServiceError> {
+        self.ensure_creatable_schema_definition(node, instantiable_types)
+            .await?;
+        Self::ensure_schema_created_without_fields(node)
+    }
+
+    /// [`Self::ensure_creatable_in_batch`] without the refusal of a schema
+    /// that carries fields: the checks for the schema-definition writer
+    /// (`create_schema`), which has checked the fields itself.
+    pub(crate) async fn ensure_creatable_schema_definition(
         &self,
         node: &Node,
         instantiable_types: &mut std::collections::HashSet<String>,
@@ -583,13 +609,25 @@ impl NodeService {
         node: Node,
         is_root: bool,
     ) -> Result<String, NodeServiceError> {
+        self.create_node_in_tx_as(tx, node, is_root, false).await
+    }
+
+    /// [`Self::create_node_in_tx`], where `schema_definition` marks the one
+    /// caller allowed to create a schema with fields on it.
+    async fn create_node_in_tx_as(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node: Node,
+        is_root: bool,
+        schema_definition: bool,
+    ) -> Result<String, NodeServiceError> {
         // Validation/normalization/title/play-rule-gate pipeline and the
-        // actual insert all live in `insert_node_in_tx_no_invariant_dispatch`
-        // now — kept in exactly one place rather than duplicated here, since
-        // this method and the invariant action executor
+        // actual insert all live in `insert_node_in_tx` now — kept in
+        // exactly one place rather than duplicated here, since this method
+        // and the invariant action executor
         // (`playbook::actions::execute_create_node_in_tx`) both need it.
         let node = self
-            .insert_node_in_tx_no_invariant_dispatch(tx, node, is_root)
+            .insert_node_in_tx(tx, node, is_root, schema_definition)
             .await?;
 
         // ADR-060 §1: invariant-rule dispatch runs HERE — pre-commit, inside
@@ -648,6 +686,30 @@ impl NodeService {
         Ok(())
     }
 
+    /// Refuse creating a schema with fields already on it.
+    ///
+    /// `create_schema` checks fields against the chain, the namespace rule
+    /// and the schema's own rules before it writes them as the definition
+    /// (through [`Self::create_schema_node_in_tx`], which does not call
+    /// this); a generic create would skip all of that.
+    pub(crate) fn ensure_schema_created_without_fields(
+        node: &Node,
+    ) -> Result<(), NodeServiceError> {
+        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
+            && node
+                .properties
+                .get(crate::models::schema_node::FIELDS_KEY)
+                .is_some_and(|fields| fields.as_array().is_none_or(|list| !list.is_empty()))
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Schema '{}' cannot be created with fields: create it with create_schema, which \
+                 checks them.",
+                node.content
+            )));
+        }
+        Ok(())
+    }
+
     /// Insert-only half of [`Self::create_node_in_tx`]: identical
     /// validation/normalization/title pipeline and the store insert, but
     /// WITHOUT invariant-rule dispatch — returns the fully-resolved `Node`
@@ -666,14 +728,32 @@ impl NodeService {
     pub(crate) async fn insert_node_in_tx_no_invariant_dispatch(
         &self,
         tx: &NodeServiceTx<'_>,
+        node: Node,
+        is_root: bool,
+    ) -> Result<Node, NodeServiceError> {
+        self.insert_node_in_tx(tx, node, is_root, false).await
+    }
+
+    /// [`Self::insert_node_in_tx_no_invariant_dispatch`], where
+    /// `schema_definition` marks the one caller allowed to create a schema
+    /// with fields on it (see [`Self::create_schema_node_in_tx`]).
+    async fn insert_node_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
         mut node: Node,
         is_root: bool,
+        schema_definition: bool,
     ) -> Result<Node, NodeServiceError> {
         if is_date_node_id(&node.id) {
             node.node_type = crate::models::CoreNodeType::Date.as_str().to_string();
         }
 
-        self.ensure_creatable(&node).await?;
+        if schema_definition {
+            self.ensure_creatable_schema_definition(&node, &mut std::collections::HashSet::new())
+                .await?;
+        } else {
+            self.ensure_creatable(&node).await?;
+        }
         // A type that needs a parent is refused here, before the row is
         // written: the row lands before its parent edge, so no database rule
         // can see that the edge never came (ADR-089). The refusal names no
@@ -861,6 +941,20 @@ impl NodeService {
         }
 
         Ok(created_id)
+    }
+
+    /// Create a schema node with its fields on it, in the caller's
+    /// transaction. Only the schema-definition writer (`create_schema`) calls
+    /// this: it checks the fields before it does, and every other create
+    /// refuses a schema that carries any
+    /// ([`Self::ensure_schema_created_without_fields`]).
+    pub(crate) async fn create_schema_node_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        params: CreateNodeParams,
+    ) -> Result<String, NodeServiceError> {
+        let (node, _parent, _node_type) = self.prepare_create_node_with_parent(params).await?;
+        self.create_node_in_tx_as(tx, node, true, true).await
     }
 
     /// Shared validation/preparation pipeline for

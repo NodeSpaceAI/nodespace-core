@@ -2619,28 +2619,34 @@ mod tests {
         /// those target schemas to exist first (declaration edges are
         /// FK-constrained to the target schema node).
         async fn create_schema(
-            node_service: &NodeService,
+            node_service: &Arc<NodeService>,
             type_name: &str,
             schema_version: u32,
             relationships: serde_json::Value,
         ) {
-            let schema_node = Node::new_with_id(
-                type_name.to_string(),
-                "schema".to_string(),
-                type_name.to_string(),
+            crate::schema::handle_create_schema(
+                node_service,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": schema_version,
-                    "description": format!("{} schema", type_name),
-                    "fields": [
-                        {"name": "status", "type": "text"}
-                    ]
+                    "name": type_name,
+                    "fields": [{"name": "status", "type": "text"}]
                 }),
-            );
-            node_service
-                .create_node(schema_node)
-                .await
-                .unwrap_or_else(|_| panic!("Failed to create schema '{}'", type_name));
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Failed to create schema '{}': {e:?}", type_name));
+
+            if schema_version > 1 {
+                // The schema writer always starts a schema at version 1.
+                let current = node_service.get_node(type_name).await.unwrap().unwrap();
+                node_service
+                    .update_node(
+                        type_name,
+                        current.version,
+                        crate::models::NodeUpdate::default()
+                            .with_properties(json!({ "schemaVersion": schema_version })),
+                    )
+                    .await
+                    .unwrap();
+            }
 
             let declarations: Vec<crate::models::schema::SchemaRelationship> =
                 serde_json::from_value(relationships)
@@ -2676,7 +2682,7 @@ mod tests {
 
         /// `vt-list -[boxes]-> checkbox` and `vt-list -[notes]-> vt-note`,
         /// where `vt-note` is an ordinary type that derives nothing.
-        async fn create_checklist_schemas(svc: &NodeService) {
+        async fn create_checklist_schemas(svc: &Arc<NodeService>) {
             create_schema(svc, "vt-note", 1, json!([])).await;
             create_schema(
                 svc,
@@ -2800,18 +2806,15 @@ mod tests {
         #[tokio::test]
         async fn a_field_named_like_a_derived_attribute_is_still_a_field() {
             let (svc, _tmp) = create_test_service().await;
-            let schema_node = Node::new_with_id(
-                "vt-survey".to_string(),
-                "schema".to_string(),
-                "vt-survey".to_string(),
+            crate::schema::handle_create_schema(
+                &svc,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": "vt-survey schema",
+                    "name": "vt-survey",
                     "fields": [{"name": "checked", "type": "boolean"}]
                 }),
-            );
-            svc.create_node(schema_node).await.unwrap();
+            )
+            .await
+            .unwrap();
 
             let errors = condition_errors(&svc, "vt-survey", "node.checked == true").await;
             assert!(errors.is_empty(), "{errors:?}");
@@ -2846,7 +2849,7 @@ mod tests {
         // -- `.where(...)` collection filters --------------------------------
 
         /// `vt-sprint -[tasks]-> vt-item`, where `vt-item` declares `status`.
-        async fn create_sprint_schemas(svc: &NodeService) {
+        async fn create_sprint_schemas(svc: &Arc<NodeService>) {
             create_schema(svc, "vt-item", 1, json!([])).await;
             create_schema(
                 svc,
@@ -4606,25 +4609,34 @@ mod tests {
             (node_service, temp_dir)
         }
 
-        async fn create_schema(node_service: &NodeService, type_name: &str, schema_version: u32) {
-            let schema_node = Node::new_with_id(
-                type_name.to_string(),
-                "schema".to_string(),
-                type_name.to_string(),
+        async fn create_schema(
+            node_service: &Arc<NodeService>,
+            type_name: &str,
+            schema_version: u32,
+        ) {
+            crate::schema::handle_create_schema(
+                node_service,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": schema_version,
-                    "description": format!("{} schema", type_name),
-                    "fields": [
-                        {"name": "status", "type": "text"}
-                    ],
-                    "relationships": []
+                    "name": type_name,
+                    "fields": [{"name": "status", "type": "text"}]
                 }),
-            );
-            node_service
-                .create_node(schema_node)
-                .await
-                .unwrap_or_else(|_| panic!("Failed to create schema '{}'", type_name));
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Failed to create schema '{}': {e:?}", type_name));
+
+            if schema_version > 1 {
+                // The schema writer always starts a schema at version 1.
+                let current = node_service.get_node(type_name).await.unwrap().unwrap();
+                node_service
+                    .update_node(
+                        type_name,
+                        current.version,
+                        crate::models::NodeUpdate::default()
+                            .with_properties(json!({ "schemaVersion": schema_version })),
+                    )
+                    .await
+                    .unwrap();
+            }
         }
 
         #[tokio::test]
@@ -5322,20 +5334,16 @@ mod tests {
             (node_service, temp_dir)
         }
 
-        async fn create_schema(node_service: &crate::services::NodeService, type_name: &str) {
-            let schema_node = crate::models::Node::new_with_id(
-                type_name.to_string(),
-                "schema".to_string(),
-                type_name.to_string(),
+        async fn create_schema(node_service: &Arc<crate::services::NodeService>, type_name: &str) {
+            crate::schema::handle_create_schema(
+                node_service,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": format!("{} schema", type_name),
-                    "fields": [{ "name": "status", "type": "text" }],
-                    "relationships": []
+                    "name": type_name,
+                    "fields": [{ "name": "status", "type": "text" }]
                 }),
-            );
-            node_service.create_node(schema_node).await.unwrap();
+            )
+            .await
+            .unwrap();
         }
 
         #[tokio::test]
@@ -5952,20 +5960,16 @@ mod tests {
             (node_service, temp_dir)
         }
 
-        async fn create_schema(node_service: &crate::services::NodeService, type_name: &str) {
-            let schema_node = crate::models::Node::new_with_id(
-                type_name.to_string(),
-                "schema".to_string(),
-                type_name.to_string(),
+        async fn create_schema(node_service: &Arc<crate::services::NodeService>, type_name: &str) {
+            crate::schema::handle_create_schema(
+                node_service,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": format!("{} schema", type_name),
-                    "fields": [{ "name": "status", "type": "text" }],
-                    "relationships": []
+                    "name": type_name,
+                    "fields": [{ "name": "status", "type": "text" }]
                 }),
-            );
-            node_service.create_node(schema_node).await.unwrap();
+            )
+            .await
+            .unwrap();
         }
 
         #[tokio::test]

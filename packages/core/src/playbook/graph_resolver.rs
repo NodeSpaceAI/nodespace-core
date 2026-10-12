@@ -1529,20 +1529,15 @@ mod tests {
             type_name: &str,
             relationships: serde_json::Value,
         ) {
-            let schema_node = Node::new_with_id(
-                type_name.to_string(),
-                "schema".to_string(),
-                type_name.to_string(),
+            crate::schema::handle_create_schema(
+                svc,
                 json!({
-                    "isCore": false,
-                    "schemaVersion": 1,
-                    "description": format!("{} schema", type_name),
+                    "name": type_name,
                     "fields": [{"name": "status", "type": "text"}, {"name": "title", "type": "text"}]
                 }),
-            );
-            svc.create_node(schema_node)
-                .await
-                .unwrap_or_else(|_| panic!("Failed to create schema '{}'", type_name));
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Failed to create schema '{}': {e:?}", type_name));
 
             // Declarations go through the real write path (relationship-table
             // rows), matching production storage.
