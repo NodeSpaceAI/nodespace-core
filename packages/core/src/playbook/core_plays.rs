@@ -509,19 +509,20 @@ pub fn task_criteria_rules() -> serde_json::Value {
 }
 
 // A finding is a direct checkbox child whose text opens with `Finding (`
-// (ADR-092 §8). `checked` is read on a child that is a checkbox, and on no
-// other, so a child whose `checked` is true or false is a checkbox.
+// after its `- [ ] ` or `- [x] ` marker (ADR-092 §8), so a checklist item
+// that merely mentions a finding is not one. A decision is one of the three
+// tokens `Decision: fix.`, `Decision: defer.` and `Decision: reject.`.
 
-/// Whether an issue has a finding with no decision: one whose text has no
-/// `Decision: `.
+/// Whether an issue has a finding with no decision: one whose text has none
+/// of the three decision tokens.
 const HAS_UNDECIDED_FINDING: &str = "has(node.has_child) && node.has_child.exists(c, \
-     (c.checked == true || c.checked == false) && c.content.contains('Finding (') \
-     && !c.content.contains('Decision: '))";
+     (c.content.startsWith('- [ ] Finding (') || c.content.startsWith('- [x] Finding (')) \
+     && !c.content.contains('Decision: fix.') && !c.content.contains('Decision: defer.') \
+     && !c.content.contains('Decision: reject.'))";
 
 /// Whether an issue has a finding decided "fix" that is still unchecked.
 const HAS_OPEN_FIX: &str = "has(node.has_child) && node.has_child.exists(c, \
-     c.checked == false && c.content.contains('Finding (') \
-     && c.content.contains('Decision: fix'))";
+     c.content.startsWith('- [ ] Finding (') && c.content.contains('Decision: fix.'))";
 
 /// Keep the findings of a review honest as an issue moves through it.
 ///

@@ -283,7 +283,7 @@ fn reached(paths: &Value) -> Vec<(String, Vec<String>)> {
 }
 
 #[tokio::test]
-async fn the_ten_procedures_are_seeded_with_their_links() {
+async fn the_procedures_are_seeded_with_their_links() {
     let h = start().await;
     // A second open changes nothing.
     seed_agent_tables(&h.ns).await;
@@ -1614,6 +1614,18 @@ async fn an_issue_moves_through_review_by_its_findings() {
     .await;
     let refused = try_status(&h, &work.task, "done").await.unwrap_err();
     assert!(refused.contains("no decision"), "done: {refused}");
+    // A finding that quotes the word is still undecided: only the three
+    // decision tokens decide one.
+    rewrite(
+        &h,
+        &finding,
+        "- [ ] Finding (spec, high): the spec says \"Decision: \" is required.",
+    )
+    .await;
+    let refused = try_status(&h, &work.task, "ready_to_merge")
+        .await
+        .unwrap_err();
+    assert!(refused.contains("no decision"), "quoted: {refused}");
     rewrite(&h, &finding, UNDECIDED).await;
     assert_eq!(h.status(&work.task).await, "in_review");
 

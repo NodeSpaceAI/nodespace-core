@@ -1,1 +1,1 @@
-Run `nodespace query run "Awaiting review" --with-context --limit 1`. The task comes back with its checklist, the nodes that govern it, its `version`, and the procedures and standards that apply to it. No task means nothing is waiting for review: say so and stop.
+Run `nodespace query run "Awaiting review" --limit 10`: it lists each issue awaiting review with its `id`. Choose the first one this conversation did not implement, and read it with context as below. No task means nothing is waiting for review: say so and stop.
