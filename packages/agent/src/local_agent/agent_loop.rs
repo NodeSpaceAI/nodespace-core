@@ -6368,7 +6368,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
     }
 
     /// Set the options of the message a chat was opened with, for a session
-    /// whose turn answers that message.
+    /// whose turn can be picking one of them.
     pub async fn set_session_offered_options(&self, session_id: &str, options: Vec<String>) {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
@@ -16011,8 +16011,8 @@ mod tests {
         );
     }
 
-    /// A reply that is one of the options the chat's last message offered is
-    /// not put to Stage 1 in a chat that pins a skill: it is routed on its
+    /// A reply that is one of the options the chat's opening message offered
+    /// is not put to Stage 1 in a chat that pins a skill: it is routed on its
     /// own words, with the pinned skill.
     #[tokio::test]
     async fn an_offered_option_is_never_ambiguous_in_a_chat_that_pins_a_skill() {

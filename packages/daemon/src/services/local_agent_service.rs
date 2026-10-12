@@ -4800,7 +4800,7 @@ mod tests {
             }]
         );
         // The opening message's options stay on offer after the first
-        // reply: "Explain this play", then "Add a rule".
+        // reply: "Change a condition", then "Add a rule".
         send_user_message(&node_service, &chat_id, "Add a rule").await;
         let second = load_chat_messages(&node_service, &chat_id).await;
         assert_eq!(
@@ -4827,7 +4827,11 @@ mod tests {
         assert!(opening_options_on_offer(&next).is_empty());
 
         // A chat the user opened has no opening message to pick from.
-        let user_opened = [next[1].clone(), next[2].clone(), next[1].clone()];
+        let asked = next[1].clone();
+        let answered = next[2].clone();
+        assert_eq!(asked.role, AiChatMessageRole::User);
+        assert_eq!(answered.role, AiChatMessageRole::Assistant);
+        let user_opened = [asked.clone(), answered, asked];
         assert!(opening_options_on_offer(&user_opened).is_empty());
     }
 
