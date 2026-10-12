@@ -6,7 +6,7 @@ SETTLE WHAT IS OPEN BEFORE WRITING: when the request is ambiguous, or the user s
 
 LOOK AT WHAT EXISTS FIRST: when the work changes code, read how it does the thing today before deciding anything, and use the vocabulary the project already uses. Read the decisions already recorded in the area and respect them. A spec written without it repeats work that exists or contradicts a decision that was made.
 
-SETTLE WHERE THE TESTS GO WITH THE USER: a spec says which public boundaries the finished work is tested through, so that a test checks what a user or caller can see and never how it is built. Prefer a boundary that already exists, and use the highest one that can show the behaviour. Fewer is better: one is ideal. Put the choice to the user with Asking the User, and record the answer first under Testing decisions, before any task is split from the spec.
+SETTLE WHERE THE TESTS GO WITH THE USER: a spec says which public boundaries the finished work is tested through, so that a test checks what a user or caller can see and never how it is built. Prefer a boundary that already exists, and use the highest one that can show the behaviour. Fewer is better: one is ideal. Put the choice to the user with Asking the User, and keep the answer for the Testing decisions section, which records it first, before any task is split from the spec.
 
 WRITE THE SPEC IN ITS FIXED SECTIONS, with no file paths and no code: they go stale, and what a spec records is the decision, not where it sits today. The one exception is a snippet from a prototype that states a decision more precisely than prose can, such as a state machine or a type shape, trimmed to the decision-rich part and marked as from a prototype.
 

@@ -4,7 +4,7 @@ STEP 1, TAKE A READY TASK: <!-- include: task-implement-take --> A ready task is
 
 STEP 2, START IT WITH THE VERSION YOU READ: <!-- include: task-implement-start --> Starting is how a task is claimed: of two sessions that read the same task, the second start is refused.
 
-STEP 3, READ WHAT GOVERNS IT: what came back with the task is its context: its spec, its plan, the decisions linked from it and from its spec, and its project. Read the spec's `boundaries` and every decision before changing anything: they say what must hold. Skills came back too: this procedure, and any standard attached to the task's project, such as naming conventions or a test strategy. Follow each of them.
+STEP 3, READ WHAT GOVERNS IT: what came back with the task is its context: its spec, its plan, the decisions linked from it and from its spec, and its project. Read the spec's `boundaries` and its sections (implementation decisions, testing decisions and what is out of scope) and every decision before changing anything: they say what must hold. <!-- include: section-read --> Skills came back too: this procedure, and any standard attached to the task's project, such as naming conventions or a test strategy. Follow each of them.
 
 STEP 4, WORK TO THE CHECKLIST: the task's checklist is the checkboxes directly under it, and it defines done. Work through it an item at a time. Never add, reword or remove an item to fit what was built: if an item is wrong or cannot be met, stop and tell the user.
 

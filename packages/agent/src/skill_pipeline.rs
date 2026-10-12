@@ -773,8 +773,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `route_clarify` is how the skill asks before an approval.
         tools: &["create_node", "update_node", "search_nodes", "get_node", "route_clarify"],
         // A find, the spec, a header and its items for each section, a
-        // criterion each, and the question.
-        max_iterations: 24,
+        // criterion each, and the question. A call is an iteration.
+        max_iterations: 40,
         not_for: Some("Plan out how to build something."),
         applies_to: &[
             CoreNodeType::Spec.as_str(),
@@ -796,10 +796,11 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0e",
         title: "Reviewing a Plan",
         use_for: "Write the implementation plan for an approved spec: the approach that meets the spec's criteria and the risks of that approach, reviewed before any work is split. Use when the user wants an implementation plan drafted, reviewed, approved, or superseded.",
-        tools: &["create_node", "update_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
-        // The plan, its link, its two sections, and the questions put to the
+        tools: &["create_node", "update_node", "create_relationship", "get_related_nodes", "get_node_context", "get_node", "search_nodes", "route_clarify"],
+        // Two reads, the plan, its link, its two sections with their items,
+        // and a decision each with its link, and the questions put to the
         // user.
-        max_iterations: 20,
+        max_iterations: 30,
         not_for: None,
         applies_to: &[
             CoreNodeType::Plan.as_str(),
@@ -822,10 +823,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0f",
         title: "Splitting a Plan into Tasks",
         use_for: "Split an implementation plan into tasks, issues for a code change, each with an acceptance checklist, a brief and blocking links. Use when the user wants an approved plan broken down into tasks.",
-        tools: &["create_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
+        tools: &["create_node", "create_relationship", "get_related_nodes", "get_node_context", "get_node", "search_nodes", "route_clarify"],
         // An issue, its brief's sections, its checklist and its links, for
-        // several.
-        max_iterations: 40,
+        // several. A call is an iteration.
+        max_iterations: 80,
         not_for: None,
         applies_to: &[
             CoreNodeType::Issue.as_str(),

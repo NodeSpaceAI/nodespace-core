@@ -808,6 +808,7 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     // Writing a Spec, Reviewing a Plan and Splitting a Plan into Tasks: a
     // section beneath the record is a header with text nodes under it
     procedure_rule!("section-create"),
+    procedure_rule!("section-read"),
     // Writing a Spec
     procedure_rule!("spec-find-first"),
     procedure_rule!("spec-create"),

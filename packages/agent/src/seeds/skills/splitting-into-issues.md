@@ -4,7 +4,7 @@ A SMALL CHANGE NEEDS NO SPEC AND NO PLAN: an issue or task with a checklist of i
 
 THE KIND OF WORK DECIDES THE TYPE: a change to code is an `issue`. Anything else, such as a document to write, a decision to reach or a discussion to hold, is a plain `task`. Slice both the same way. A plain task has no pull request or commits and needs none.
 
-READ THE PLAN AND ITS SPEC FIRST: <!-- include: task-breakdown-read --> Read the plan's `approach`, the spec's `boundaries` and every criterion, and every decision linked from the spec: what was decided there holds for every slice. If the plan is not approved, say so: the issues can be written now, and none can start until the user approves the plan.
+READ THE PLAN AND ITS SPEC FIRST: <!-- include: task-breakdown-read --> Read the plan's `approach` and its sections, the spec's `boundaries` and its sections, every criterion, and every decision linked from the spec: what was decided there holds for every slice. <!-- include: section-read --> Read the plan and the spec both. If the plan is not approved, say so: the issues can be written now, and none can start until the user approves the plan.
 
 MAKE THE CHANGE EASY FIRST: if the work would be simpler after a preparatory change, such as a refactor that makes room for it, that is the first slice and the others wait on it.
 

@@ -1,6 +1,6 @@
 A plan says how one approved spec will be met: the approach, tied to the spec's criteria, and the risks of that approach. This is also where the plan is checked, before any work is split from it, for its architecture, its tests and its performance, and for what it leaves out. Review it the way an engineering lead would before committing a team to it: the smallest clear change, explicit over clever, every behaviour tested, every edge case handled, and no abstraction the work does not need.
 
-READ THE SPEC FIRST: a plan written from a spec's title is a guess. <!-- include: plan-read-spec --> Read its `objective`, its `boundaries`, including where the tests go, and every criterion before drafting anything. If the spec is still a draft, say that it needs the user's approval first: the plan can be drafted and reviewed now, and cannot be approved until the spec is.
+READ THE SPEC FIRST: a plan written from a spec's title is a guess. <!-- include: plan-read-spec --> Read its `objective`, its `boundaries` and every criterion, then its sections, which hold the decisions made, where the tests go and what is out of scope. <!-- include: section-read --> Read all of it before drafting anything. If the spec is still a draft, say that it needs the user's approval first: the plan can be drafted and reviewed now, and cannot be approved until the spec is.
 
 ONE LIVE PLAN PER SPEC: <!-- include: plan-existing-plans --> A draft plan that is already there is edited, not written again. An approved one is replaced: ask the user whether the old plan is superseded before leaving two live plans against one spec.
 
@@ -14,7 +14,7 @@ LIST THE FAILURE MODES: for each new path, name one realistic way it fails, whet
 
 CREATE THE PLAN AND LINK IT TO ITS SPEC: <!-- include: plan-create-and-link --> The link is what makes it this spec's plan; naming the spec in the text does not. A plan has one spec, and a plan with none can never be approved.
 
-WRITE THE REVIEW AS ORDINARY NODES beneath the plan, a header for each section and a text node under it for each item: Not in scope, one deferral to a node, and Failure modes, one to a node. Write each gap as an unticked checkbox in the Failure modes section, and tick it when its test or handling is in the approach; no gap is left unticked when the plan is shown for approval. <!-- include: section-create -->
+WRITE THE REVIEW AS ORDINARY NODES beneath the plan, a header for each section and a text node under it for each item: Not in scope, one deferral to a node, and Failure modes, one to a node. Write each gap as an unticked checkbox in the Failure modes section, and tick it when its test or handling is in the approach; no gap is left unticked when the plan is shown for approval, so the ticked gaps are the record of what the review found and closed. <!-- include: section-create -->
 
 PUT EACH POINT TO THE USER AS A DECISION, AND RECORD IT: every finding that changes the plan is a decision, put to the user one at a time with the skill Asking the User, with your recommendation and its reason. Write the answer down with the skill Recording a Decision and link it to the spec, so that the work split from the plan carries it. A correction of fact that changes nothing is fixed and reported, not asked.
 

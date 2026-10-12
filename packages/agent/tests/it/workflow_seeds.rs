@@ -972,6 +972,84 @@ async fn a_spec_is_written_as_a_draft_with_checkbox_criteria() {
     .await;
 }
 
+/// Only direct checkbox children are a checklist. A checkbox beneath a
+/// section header is content: it is no criterion for readiness, and an
+/// unticked one does not stop the direct checklist closing the task.
+#[tokio::test]
+async fn a_checkbox_beneath_a_section_is_not_a_checklist_item() {
+    let h = start().await;
+
+    // An issue whose only checkbox sits under a header has no checklist, so
+    // it is not ready.
+    let hidden = h.create("issue", "Hidden checklist", json!({})).await;
+    let section = h.section(&hidden, "Acceptance", &[]).await;
+    h.child(&section, "checkbox", "- [ ] Not a criterion").await;
+    let run = h
+        .ok(
+            "run_query",
+            json!({ "query": "Ready tasks", "with_context": true }),
+        )
+        .await;
+    assert_eq!(run["count"], 0, "{run}");
+
+    // With a direct checklist it is ready, and the nested gap does not stop
+    // it being closed once the direct item is ticked.
+    h.child(&hidden, "checkbox", "- [x] The change landed")
+        .await;
+    let run = h
+        .ok(
+            "run_query",
+            json!({ "query": "Ready tasks", "with_context": true }),
+        )
+        .await;
+    assert_eq!(run["items"][0]["id"], uri(&hidden), "{run}");
+    for status in ["in_progress", "in_review", "done"] {
+        h.ok(
+            "update_task_status",
+            json!({ "id": uri(&hidden), "status": status }),
+        )
+        .await;
+    }
+    assert_eq!(h.status(&hidden).await, "done");
+}
+
+/// The sections a procedure writes are read back whole by the rule the
+/// reading procedures include, in order, which a context read does not do.
+#[tokio::test]
+async fn a_specs_sections_are_read_back_with_the_markdown_read() {
+    let h = start().await;
+    let spec = h.create("spec", "Export", json!({})).await;
+    h.child(&spec, "checkbox", "- [ ] Exports finish in a second")
+        .await;
+    h.section(
+        &spec,
+        "Testing decisions",
+        &["Tested at: the export command"],
+    )
+    .await;
+    h.section(&spec, "Out of scope", &["Other formats"]).await;
+
+    let read = h
+        .ok(
+            "get_node",
+            json!({ "id": uri(&spec), "format": "markdown" }),
+        )
+        .await;
+    let text = read.to_string();
+    for needle in [
+        "## Testing decisions",
+        "Tested at: the export command",
+        "## Out of scope",
+        "Other formats",
+    ] {
+        assert!(text.contains(needle), "{needle} missing from {text}");
+    }
+    assert!(
+        text.find("## Testing decisions") < text.find("## Out of scope"),
+        "{text}"
+    );
+}
+
 /// A plan's review is ordinary nodes beneath it: a Not in scope and a Failure
 /// modes section, with a gap as a checkbox until it is closed. None of it is
 /// a criterion, so the plan is approved on its spec alone.
