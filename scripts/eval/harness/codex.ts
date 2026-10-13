@@ -47,6 +47,7 @@ export async function codex(
   // The caller may itself be inside a harness that names a write journal: the
   // CLI takes that name before the Codex thread's, so it would take this
   // session's writes for its own.
+  const nodespaceHome = process.env.NODESPACE_HOME ?? "";
   const session = sessionEnv(env);
 
   delete session.NODESPACE_WRITE_JOURNAL;
@@ -64,7 +65,7 @@ export async function codex(
         ? [
             // The scenario commits locally, and Codex keeps `.git` read-only.
             // The sandbox matches real paths: `/tmp` is a link on macOS.
-            "-c", `sandbox_workspace_write.writable_roots=[${JSON.stringify(realpathSync(process.env.NODESPACE_HOME ?? ""))}, ${JSON.stringify(realpathSync(join(cwd, ".git")))}]`,
+            "-c", `sandbox_workspace_write.writable_roots=[${JSON.stringify(realpathSync(nodespaceHome))}, ${JSON.stringify(realpathSync(join(cwd, ".git")))}]`,
             "-c", "sandbox_workspace_write.network_access=true",
           ]
         : [];

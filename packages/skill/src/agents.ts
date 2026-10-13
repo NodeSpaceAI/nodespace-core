@@ -144,7 +144,6 @@ export const CODEX_PLUGIN = {
       { event: 'UserPromptSubmit', timeoutSeconds: 30 },
       { event: 'PreToolUse', timeoutSeconds: 15 },
       { event: 'PostToolUse', timeoutSeconds: 15 },
-      { event: 'SessionEnd', timeoutSeconds: 3 },
     ],
   },
 };

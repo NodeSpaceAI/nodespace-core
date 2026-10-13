@@ -755,15 +755,21 @@ function removeIfEmpty(dir: string, pruneRoot: string): void {
 /**
  * The command that runs `script` for a hook event: with `bun` when it is on
  * the path, and otherwise with `node`, which strips the types itself. The
- * script's path is quoted into the command, which is how its handlers are
- * told from every other handler in the file.
+ * script's path is single-quoted into the command, so nothing in it is read by
+ * the shell, and it is how its handlers are told from every other handler in
+ * the file.
  */
 function hookCommand(script: string): string {
-  const quoted = `"${script}"`;
+  const quoted = quotedPath(script);
   return (
     `if command -v bun >/dev/null 2>&1; then exec bun ${quoted}; ` +
     `else exec node --experimental-strip-types --disable-warning=ExperimentalWarning ${quoted}; fi`
   );
+}
+
+/** `path` as one single-quoted shell word. */
+function quotedPath(path: string): string {
+  return "'" + path.split("'").join("'\\''") + "'";
 }
 
 type HookHandler = { command?: unknown };
@@ -794,7 +800,7 @@ function withoutOurs(groups: unknown, script: string): unknown[] {
       continue;
     }
     const rest = handlers.filter(
-      (handler: HookHandler) => !(typeof handler?.command === 'string' && handler.command.includes(`"${script}"`)),
+      (handler: HookHandler) => !(typeof handler?.command === 'string' && handler.command.includes(quotedPath(script))),
     );
     if (rest.length === handlers.length) kept.push(group);
     else if (rest.length > 0) kept.push({ ...(group as object), hooks: rest });

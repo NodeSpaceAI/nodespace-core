@@ -187,7 +187,10 @@ to the same `plugins/shared/nodespace-session.ts` the Pi extension and the
 OpenCode plugin use (`createSession(host, interval, state)` and
 `session.snapshot()` carry the state across processes), writes the state back
 and answers on stdout. The command runs with `bun` when it is on the path and
-otherwise with `node --experimental-strip-types`.
+otherwise with `node --experimental-strip-types`. Nothing is registered for
+the end of a session: `codex resume` continues a thread in a new process, so
+its state file stays (one that no event has touched for a week is pruned), and
+the CLI removes a journal idle for an hour.
 
 | | Codex hook |
 |---|---|
@@ -195,7 +198,6 @@ otherwise with `node --experimental-strip-types`.
 | A changed skill list, and the launched task | `UserPromptSubmit`: `additionalContext` (with the new list) |
 | Refusing a tool call | `PreToolUse`: `permissionDecision: "deny"` with the reason |
 | A note on a tool result | `PostToolUse`: `additionalContext`, held in the state file from the `PreToolUse` that found it |
-| Session end | `SessionEnd`: the state file and the write journal are removed |
 
 The installer puts `hook.ts` and the module beside it in `~/.codex/nodespace/`
 and registers one handler per event in `~/.codex/hooks.json`, leaving every
@@ -220,7 +222,9 @@ started from a shell that already has `NODESPACE_WRITE_JOURNAL` set (inside
 another harness's session) inherits it, and the CLI journals under that name:
 the hook then finds no journal for its own thread and reads the session's own
 writes as foreign. Unset the variable for such a Codex, as the scenario driver
-does.
+does. The reverse nesting has the mirror problem: a harness started from a
+Codex command with no variable of its own inherits `CODEX_THREAD_ID`, and its
+writes are journaled under the Codex thread.
 
 ## The Pi extension and the OpenCode plugin
 

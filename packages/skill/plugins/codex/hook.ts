@@ -98,14 +98,43 @@ const host: Host = {
   },
 }
 
-async function load(path: string): Promise<Saved | null> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'))
+/** Whether a parsed file has the fields, of the types, a session reads. A stale shape starts the session again. */
+function isState(value: unknown): value is SessionState {
+  if (!isRecord(value)) {
+    return false
+  }
 
-    if (isRecord(parsed) && isRecord(parsed.session)) {
+  const isNullable = (field: unknown, kind: string) => field === null || typeof field === kind
+
+  return (
+    isNullable(value.database, 'string') &&
+    typeof value.isReached === 'boolean' &&
+    (value.project === null || isRecord(value.project)) &&
+    isNullable(value.section, 'string') &&
+    Array.isArray(value.skills) &&
+    typeof value.listVersion === 'string' &&
+    Array.isArray(value.fetched) &&
+    (value.item === null || isRecord(value.item)) &&
+    typeof value.lastCheckedAt === 'number' &&
+    isNullable(value.blocked, 'string') &&
+    isNullable(value.opening, 'string') &&
+    isNullable(value.journalName, 'string')
+  )
+}
+
+/** The saved state and the text it was read from, which a write that changes nothing is skipped by. */
+async function load(path: string): Promise<{ saved: Saved; raw: string } | null> {
+  try {
+    const raw = await readFile(path, 'utf8')
+    const parsed: unknown = JSON.parse(raw)
+
+    if (isRecord(parsed) && isState(parsed.session)) {
       return {
-        session: parsed.session as unknown as SessionState,
-        pendingNote: typeof parsed.pendingNote === 'string' ? parsed.pendingNote : null,
+        saved: {
+          session: parsed.session,
+          pendingNote: typeof parsed.pendingNote === 'string' ? parsed.pendingNote : null,
+        },
+        raw,
       }
     }
   } catch {
@@ -115,13 +144,24 @@ async function load(path: string): Promise<Saved | null> {
   return null
 }
 
-/** Written whole and renamed into place, so a reader never sees half a file. */
-async function save(path: string, saved: Saved): Promise<void> {
+/**
+ * Written whole and renamed into place, so a reader never sees half a file.
+ * Skipped when nothing changed: tool calls dispatched together each rewrite
+ * the file, and the last writer wins, so a write that changes nothing must
+ * not undo one that did.
+ */
+async function save(path: string, saved: Saved, before: string | null): Promise<void> {
+  const text = JSON.stringify(saved)
+
+  if (text === before) {
+    return
+  }
+
   await mkdir(stateDir(), { recursive: true })
 
   const temporary = `${path}.${process.pid}.tmp`
 
-  await writeFile(temporary, JSON.stringify(saved))
+  await writeFile(temporary, text)
   await rename(temporary, path)
 }
 
@@ -191,13 +231,20 @@ async function handle(payload: Payload): Promise<void> {
 
   const path = join(stateDir(), `${sessionId}.json`)
   const cwd = text(payload.cwd) || process.cwd()
-  const saved = await load(path)
+  const loaded = await load(path)
+  const saved = loaded?.saved ?? null
+  const before = loaded?.raw ?? null
   const session: NodespaceSession = createSession(host, watchIntervalMs(), saved?.session)
   let pendingNote = saved?.pendingNote ?? null
 
-  /** A session no earlier event started: hooks trusted after the session began, or a state file lost. */
-  async function ensureStarted(): Promise<void> {
-    if (!saved) {
+  /**
+   * A session no earlier event started: hooks trusted after the session
+   * began, or a state file lost. A prompt also starts one that could not
+   * reach NodeSpace, so a daemon started since is found; a tool call does
+   * not, which would cost every call a timeout while it stays down.
+   */
+  async function ensureStarted(isPrompt = false): Promise<void> {
+    if (!saved || (isPrompt && !saved.session.isReached)) {
       await session.start(cwd, { sessionId, opens: false })
     }
   }
@@ -215,20 +262,20 @@ async function handle(payload: Payload): Promise<void> {
 
     pendingNote = isContinued ? pendingNote : null
 
-    await save(path, { session: session.snapshot(), pendingNote })
+    await save(path, { session: session.snapshot(), pendingNote }, before)
 
     emit({
       ...context(event, session.section()),
       ...(reach ? { systemMessage: reach.text } : {}),
     })
   } else if (event === 'UserPromptSubmit') {
-    await ensureStarted()
+    await ensureStarted(true)
 
     const note = await session.prompt()
     const section = session.section()
 
     pendingNote = null
-    await save(path, { session: session.snapshot(), pendingNote })
+    await save(path, { session: session.snapshot(), pendingNote }, before)
 
     // The section is not in a system prompt here: a changed skill list is
     // followed by the list itself, so the note and what it names agree.
@@ -242,7 +289,7 @@ async function handle(payload: Payload): Promise<void> {
       pendingNote = pendingNote ? `${pendingNote}\n\n${verdict.note}` : verdict.note
     }
 
-    await save(path, { session: session.snapshot(), pendingNote })
+    await save(path, { session: session.snapshot(), pendingNote }, before)
 
     if (verdict && 'deny' in verdict) {
       emit({
@@ -260,14 +307,8 @@ async function handle(payload: Payload): Promise<void> {
     const note = pendingNote
 
     pendingNote = null
-    await save(path, { session: session.snapshot(), pendingNote })
+    await save(path, { session: session.snapshot(), pendingNote }, before)
     emit(context(event, note))
-  } else if (event === 'SessionEnd') {
-    if (saved) {
-      await session.end()
-    }
-
-    await rm(path, { force: true })
   }
 }
 
@@ -278,8 +319,12 @@ async function main(): Promise<void> {
     if (isRecord(parsed)) {
       await handle(parsed)
     }
-  } catch {
-    // A hook must neither stop Codex nor fail its event: it says nothing.
+  } catch (err) {
+    // A hook must neither stop Codex nor fail its event: it says nothing,
+    // unless asked to.
+    if (process.env.NODESPACE_HOOK_DEBUG) {
+      process.stderr.write(`nodespace hook: ${String(err)}\n`)
+    }
   }
 }
 
