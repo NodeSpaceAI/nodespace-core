@@ -68,7 +68,7 @@ pub async fn find_field_references(
 ) -> Result<FieldReferences, NodeServiceError> {
     let searched = vec![
         "saved queries over this type or a type that extends it: filters, sorting and board grouping (a condition on a node reached through a relationship is not followed)".to_string(),
-        "plays with a rule that triggers on this type or a type that extends it: the trigger, conditions and actions".to_string(),
+        "plays with a rule that triggers on this type or a type that extends it: the trigger, conditions and actions (a rule that selects by saved query is not matched, and a mention of the name inside a message is counted)".to_string(),
         "title templates of this type and the types that extend it".to_string(),
     ];
 

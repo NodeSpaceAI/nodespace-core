@@ -64,8 +64,10 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
     for field in *fields {
         message.push('\n');
         let owner = owners.get(&field.name);
+        // A field a user added to a built-in type, under a prefix, is theirs
+        // and can be changed or removed, though the built-in type owns it.
         let fixed = field.protection != SchemaProtectionLevel::User
-            || owner.is_some_and(|owner| built_in.contains(owner));
+            || (!is_prefixed(&field.name) && owner.is_some_and(|owner| built_in.contains(owner)));
         message.push_str(&field_line(field, owner, &schema.envelope.id, fixed));
     }
 
@@ -165,6 +167,16 @@ fn field_line(field: &SchemaField, owner: Option<&String>, schema_id: &str, fixe
         line.push_str(&notes.join(" "));
     }
     line
+}
+
+/// Whether a field name carries a namespace prefix (`custom:effort`): the
+/// shape a user's own field on a built-in type must have.
+fn is_prefixed(name: &str) -> bool {
+    let mut parts = name.split(':');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(namespace), Some(bare), None) if !namespace.is_empty() && !bare.is_empty()
+    )
 }
 
 /// A stored value as text: a string without its quotes.
@@ -282,6 +294,31 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_users_prefixed_field_on_a_built_in_type_is_not_called_built_in() {
+        let mut schema = SchemaNode::new("task", "Task");
+        schema.is_core = true;
+        let own = SchemaField {
+            name: "custom:effort".to_string(),
+            ..Default::default()
+        };
+        let declared = SchemaField {
+            name: "priority".to_string(),
+            ..Default::default()
+        };
+
+        let text = describe(&schema, &[declared, own]);
+        assert!(
+            text.contains("- **priority** (text): Built in: it cannot be changed or removed."),
+            "{text}"
+        );
+        let effort = text
+            .lines()
+            .find(|line| line.starts_with("- **custom:effort**"))
+            .expect("the field is listed");
+        assert!(!effort.contains("Built in"), "{effort}");
     }
 
     #[test]
