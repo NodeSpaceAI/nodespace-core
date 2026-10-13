@@ -13,10 +13,11 @@
  *
  *   nodespace skill install codex     then, in Codex, /hooks to trust them
  *
- * `CODEX_SANDBOX` (default `workspace-write`) is passed as `--sandbox`.
+ * `CODEX_SANDBOX` (default `workspace-write`) is passed as `sandbox_mode`, as
+ * a `-c` override: `codex exec resume` takes no `--sandbox` flag.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type ScenarioEnv, type Turn, PROMPTS, sessionEnv } from "./scenario.ts";
@@ -43,14 +44,34 @@ export async function codex(
     throw new Error(`${join(home, "hooks.json")} registers no NodeSpace hook: run \`nodespace skill install codex\`.`);
   }
 
+  // The caller may itself be inside a harness that names a write journal: the
+  // CLI takes that name before the Codex thread's, so it would take this
+  // session's writes for its own.
   const session = sessionEnv(env);
+
+  delete session.NODESPACE_WRITE_JOURNAL;
   const sandbox = process.env.CODEX_SANDBOX?.trim() || "workspace-write";
   let threadId = "";
 
   const turn: Turn = async name => {
     log.raw(`${JSON.stringify({ type: "scenario.prompt", name })}\n`);
 
-    const common = ["--json", "--skip-git-repo-check", "--sandbox", sandbox, ...(env.model ? ["--model", env.model] : [])];
+    // The daemon's socket and the write journal live under the scenario's
+    // NodeSpace home, outside the checkout: the sandbox is widened to that
+    // folder, the checkout's `.git` and the network, and no further.
+    const reach =
+      sandbox === "workspace-write"
+        ? [
+            // The scenario commits locally, and Codex keeps `.git` read-only.
+            // The sandbox matches real paths: `/tmp` is a link on macOS.
+            "-c", `sandbox_workspace_write.writable_roots=[${JSON.stringify(realpathSync(process.env.NODESPACE_HOME ?? ""))}, ${JSON.stringify(realpathSync(join(cwd, ".git")))}]`,
+            "-c", "sandbox_workspace_write.network_access=true",
+          ]
+        : [];
+    const common = [
+      "--json", "--skip-git-repo-check", "-c", `sandbox_mode="${sandbox}"`, ...reach,
+      ...(env.model ? ["--model", env.model] : []),
+    ];
     const argv = threadId
       ? ["codex", "exec", "resume", ...common, threadId, PROMPTS[name]]
       : ["codex", "exec", ...common, PROMPTS[name]];

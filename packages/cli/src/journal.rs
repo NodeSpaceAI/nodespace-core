@@ -25,6 +25,12 @@ use serde_json::json;
 /// The variable that names the session whose journal a write is appended to.
 pub const SESSION_ENV: &str = "NODESPACE_WRITE_JOURNAL";
 
+/// The conversation id a harness puts in the environment of every command it
+/// runs. A harness whose hooks cannot set [`SESSION_ENV`] for the commands that
+/// follow them names its session this way, and its hooks use the same id.
+/// [`SESSION_ENV`] wins when both are set.
+const HARNESS_SESSION_ENV: &str = "CODEX_THREAD_ID";
+
 /// A journal not appended to for this long belongs to a session that is gone.
 /// An entry is only read until the plugin next compares the item, so a live
 /// session that loses an old file loses nothing it still needs.
@@ -52,6 +58,16 @@ pub fn run(action: JournalAction) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The session a write is journaled under: the variable the plugin set, and
+/// failing that the id the harness itself puts in a command's environment.
+fn session_name(var: impl Fn(&str) -> Option<String>) -> String {
+    [SESSION_ENV, HARNESS_SESSION_ENV]
+        .into_iter()
+        .filter_map(var)
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
 }
 
 fn journals_dir() -> Option<PathBuf> {
@@ -105,7 +121,7 @@ pub struct WriteJournal {
 impl WriteJournal {
     /// The journal of the session `SESSION_ENV` names, for writes to `database`.
     pub fn from_env(database: &str) -> Self {
-        let session = std::env::var(SESSION_ENV).unwrap_or_default();
+        let session = session_name(|name| std::env::var(name).ok());
         let path = journals_dir().and_then(|dir| journal_path(&dir, &session));
         Self::at(path, database)
     }
@@ -166,6 +182,26 @@ mod tests {
                 json!({ "node_id": "n-1", "database": "db-1", "version": 5 }),
             ]
         );
+    }
+
+    #[test]
+    fn the_plugins_variable_names_the_session_and_the_harnesss_id_is_the_fallback() {
+        let both = |name: &str| match name {
+            SESSION_ENV => Some("plugin".to_string()),
+            HARNESS_SESSION_ENV => Some("thread".to_string()),
+            _ => None,
+        };
+        let harness_only = |name: &str| (name == HARNESS_SESSION_ENV).then(|| "thread".to_string());
+        let empty_plugin = |name: &str| match name {
+            SESSION_ENV => Some(String::new()),
+            HARNESS_SESSION_ENV => Some("thread".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(session_name(both), "plugin");
+        assert_eq!(session_name(harness_only), "thread");
+        assert_eq!(session_name(empty_plugin), "thread");
+        assert_eq!(session_name(|_| None), "");
     }
 
     #[test]

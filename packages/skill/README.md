@@ -209,10 +209,18 @@ and the instructions block is what a session without trusted hooks has.
 Trust is tied to the hook's hash, so a reinstall that changes a handler asks
 again.
 
-Open questions, to settle in a live session: Codex has no status line, so the
-reach text is only a `systemMessage`; and the write journal needs
-`NODESPACE_WRITE_JOURNAL` in the environment of the agent's shell commands,
-which a Codex hook cannot set for the commands that follow.
+Codex has no status line, so the reach text is only a `systemMessage`.
+
+A Codex hook cannot set `NODESPACE_WRITE_JOURNAL` for the commands that follow
+it, but Codex puts `CODEX_THREAD_ID` (the same id its hooks receive as
+`session_id`) in the environment of every command. The CLI names a write's
+journal after `NODESPACE_WRITE_JOURNAL` and, where that is unset or empty,
+after `CODEX_THREAD_ID`, so the hook's journal and the CLI's agree. A Codex
+started from a shell that already has `NODESPACE_WRITE_JOURNAL` set (inside
+another harness's session) inherits it, and the CLI journals under that name:
+the hook then finds no journal for its own thread and reads the session's own
+writes as foreign. Unset the variable for such a Codex, as the scenario driver
+does.
 
 ## The Pi extension and the OpenCode plugin
 
