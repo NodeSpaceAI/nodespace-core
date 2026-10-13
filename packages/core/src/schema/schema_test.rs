@@ -7597,3 +7597,143 @@ async fn a_doubly_prefixed_field_is_not_shadowed_by_a_singly_prefixed_one() {
         .to_string();
     assert!(error.contains("'custom:x' cannot be declared"), "{error}");
 }
+
+/// A saved query that filters on a field is named by the schema write itself,
+/// so a caller that is not the agent's tool is held the same way: a removal
+/// or rename of that field is refused with the list and changes nothing until
+/// `force` is given. A relabel keeps the key, and a field nothing names is not
+/// held.
+#[tokio::test]
+async fn test_update_schema_holds_a_change_a_saved_query_names() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "state", "type": "text" },
+                { "name": "note", "type": "text" },
+                { "name": "owner", "type": "text" }
+            ]
+        }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+    svc.create_node(Node::new(
+        "query".to_string(),
+        "Open tickets".to_string(),
+        json!({
+            "target_type": "ticket",
+            "filters": [{
+                "type": "property", "operator": "equals",
+                "property": "state", "value": "open"
+            }]
+        }),
+    ))
+    .await
+    .unwrap();
+    let field_names = |svc: Arc<NodeService>| async move {
+        svc.get_schema_node("ticket")
+            .await
+            .unwrap()
+            .unwrap()
+            .fields
+            .into_iter()
+            .map(|f| f.name)
+            .collect::<Vec<_>>()
+    };
+
+    // A rename: refused with the list, the first sentence carrying it.
+    let rename = json!({
+        "schema_id": "ticket",
+        "rename_fields": [{ "from": "state", "to": "stage" }]
+    });
+    let refused = handle_update_schema(&svc, rename.clone())
+        .await
+        .expect_err("a rename a saved query names is held");
+    let msg = refused.to_string();
+    let first_sentence = msg.split(". ").next().unwrap();
+    assert!(
+        first_sentence.contains("saved query \"Open tickets\" (filter on state, field `state`)"),
+        "{msg}"
+    );
+    assert!(msg.contains("force=true"), "{msg}");
+    assert_eq!(
+        field_names(svc.clone()).await,
+        ["state", "note", "owner"],
+        "a refusal changes nothing"
+    );
+
+    // A removal is held the same way.
+    let removal = json!({ "schema_id": "ticket", "remove_fields": ["state"] });
+    let refused = handle_update_schema(&svc, removal)
+        .await
+        .expect_err("a removal a saved query names is held");
+    assert!(refused.to_string().contains("Open tickets"), "{refused}");
+
+    // A relabel keeps the key, and a field nothing names goes freely.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "rename_fields": [{ "from": "state", "to": "state", "friendlyName": "Where it is" }]
+        }),
+    )
+    .await
+    .expect("a relabel is not held");
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["note"] }),
+    )
+    .await
+    .expect("a field nothing names is not held");
+
+    // Agreed, the rename goes through.
+    let mut forced = rename;
+    forced["force"] = json!(true);
+    handle_update_schema(&svc, forced)
+        .await
+        .expect("an agreed rename is applied");
+    assert_eq!(field_names(svc.clone()).await, ["stage", "owner"]);
+}
+
+/// A seeded `User`-protected field of a built-in type is the user's to
+/// change, so it is held for what names it rather than refused outright, and
+/// a `Core`-protected one is refused whatever is agreed.
+#[tokio::test]
+async fn test_update_schema_holds_a_user_field_of_a_built_in_type_for_what_names_it() {
+    let (svc, _tmp) = create_test_service().await;
+    svc.create_node(Node::new(
+        "query".to_string(),
+        "Urgent tasks".to_string(),
+        json!({
+            "target_type": "task",
+            "filters": [{
+                "type": "property", "operator": "equals",
+                "property": "priority", "value": "high"
+            }]
+        }),
+    ))
+    .await
+    .unwrap();
+
+    let removal = json!({ "schema_id": "task", "remove_fields": ["priority"] });
+    let held = handle_update_schema(&svc, removal.clone())
+        .await
+        .expect_err("a field a saved query names is held");
+    assert!(held.to_string().contains("Urgent tasks"), "{held}");
+
+    let mut forced = removal;
+    forced["force"] = json!(true);
+    handle_update_schema(&svc, forced)
+        .await
+        .expect("an agreed removal of a user-protected field is applied");
+
+    let core = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["status"], "force": true }),
+    )
+    .await
+    .expect_err("a core-protected field is refused whatever is agreed");
+    assert!(core.to_string().contains("protected"), "{core}");
+}

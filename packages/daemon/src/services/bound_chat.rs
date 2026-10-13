@@ -334,19 +334,6 @@ fn describe_schema_node<'a>(
         let Ok((fields, owners, _chain)) = node_service.resolve_field_owners(&node.id).await else {
             return unreadable();
         };
-        // A field a built-in schema declares is fixed, here or on a type that
-        // extends it.
-        let mut built_in = std::collections::HashSet::new();
-        for owner in owners.values() {
-            if built_in.contains(owner) {
-                continue;
-            }
-            if let Ok(Some(declaring)) = node_service.get_schema_node(owner).await {
-                if declaring.is_core {
-                    built_in.insert(owner.clone());
-                }
-            }
-        }
         // What the type is for is its description: the schema node's children.
         let purpose = node_service
             .get_children(&node.id)
@@ -364,7 +351,6 @@ fn describe_schema_node<'a>(
                 purpose: Some(purpose.as_str()),
                 fields: &fields,
                 owners: &owners,
-                built_in: &built_in,
             },
         )
     })
@@ -1202,10 +1188,8 @@ mod tests {
         .unwrap()
         .remove(0);
         assert!(
-            task.content.contains(
-                "It is a built-in type, so the fields it declares are fixed and cannot be \
-                 changed or removed."
-            ),
+            task.content
+                .contains("It is a built-in type, so a field marked built in cannot be changed"),
             "{}",
             task.content
         );
@@ -1214,15 +1198,23 @@ mod tests {
             "{}",
             task.content
         );
-        // Every field the type declares is fixed, not only the ones marked so.
-        let priority = task
-            .content
-            .lines()
-            .find(|line| line.starts_with("- **priority**"))
-            .expect("priority is listed");
+        // A core-protected field is marked built in; a user-protected one is
+        // the user's to change.
+        let line = |name: &str| {
+            task.content
+                .lines()
+                .find(|line| line.starts_with(&format!("- **{name}**")))
+                .unwrap_or_else(|| panic!("{name} is listed"))
+                .to_string()
+        };
         assert!(
-            priority.contains("More values can be added.")
-                && priority.ends_with("Built in: it cannot be changed or removed."),
+            line("status").ends_with("Built in: it cannot be changed or removed."),
+            "{}",
+            line("status")
+        );
+        let priority = line("priority");
+        assert!(
+            priority.contains("More values can be added.") && !priority.contains("Built in"),
             "{priority}"
         );
 

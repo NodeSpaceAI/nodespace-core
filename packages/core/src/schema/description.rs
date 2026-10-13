@@ -14,7 +14,7 @@
 use crate::models::schema::{RelationshipCardinality, RelationshipDirection, SchemaField};
 use crate::models::{SchemaNode, SchemaProtectionLevel};
 use nodespace_types::SchemaFieldType;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// What a description is rendered from.
 pub struct SchemaDescription<'a> {
@@ -25,10 +25,6 @@ pub struct SchemaDescription<'a> {
     pub fields: &'a [SchemaField],
     /// The schema that declares each field, by field name.
     pub owners: &'a HashMap<String, String>,
-    /// The ids of the built-in schemas among those that declare a field. A
-    /// field one of them declares is fixed, whatever its own protection says:
-    /// a built-in type is closed (ADR-086).
-    pub built_in: &'a HashSet<String>,
 }
 
 /// The type in a paragraph and a list of its fields. `link` is the markdown
@@ -39,7 +35,6 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
         purpose,
         fields,
         owners,
-        built_in,
     } = input;
     let mut message = format!("Here is what {link} is.");
     if let Some(purpose) = purpose.map(one_line).filter(|p| !p.is_empty()) {
@@ -64,11 +59,9 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
     for field in *fields {
         message.push('\n');
         let owner = owners.get(&field.name);
-        // A field a user added to a built-in type, under a prefix, is theirs
-        // and can be changed or removed, though the built-in type owns it.
-        let fixed = field.protection != SchemaProtectionLevel::User
-            || (!super::has_namespace_prefix(&field.name)
-                && owner.is_some_and(|owner| built_in.contains(owner)));
+        // What core refuses to change: a field it protects. A `User` field,
+        // seeded or added under a prefix, is the user's to change.
+        let fixed = field.protection != SchemaProtectionLevel::User;
         message.push_str(&field_line(field, owner, &schema.envelope.id, fixed));
     }
 
@@ -112,9 +105,10 @@ fn standing(schema: &SchemaNode) -> String {
         .unwrap_or_default();
     if schema.is_core {
         format!(
-            "It is a built-in type, so the fields it declares are fixed and cannot be changed or \
-             removed. You can add a field of your own under a prefix such as `custom:`, and add \
-             your own values to a list that accepts them.{extends}"
+            "It is a built-in type, so a field marked built in cannot be changed or removed; a \
+             field not so marked can be, once what names it is dealt with. You can add a field \
+             of your own under a prefix such as `custom:`, and add your own values to a list \
+             that accepts them.{extends}"
         )
     } else {
         format!("It is your own type, so its fields can be added, changed and removed.{extends}")
@@ -214,11 +208,6 @@ mod tests {
             .iter()
             .map(|f| (f.name.clone(), schema.envelope.id.clone()))
             .collect();
-        let built_in: HashSet<String> = schema
-            .is_core
-            .then(|| schema.envelope.id.clone())
-            .into_iter()
-            .collect();
         describe_schema(
             "[Ticket](nodespace://ticket)",
             &SchemaDescription {
@@ -226,7 +215,6 @@ mod tests {
                 purpose: Some("A support request.\nOne per customer issue."),
                 fields,
                 owners: &owners,
-                built_in: &built_in,
             },
         )
     }
@@ -274,7 +262,7 @@ mod tests {
 
         let text = describe(&schema, &[status]);
         assert!(
-            text.contains("built-in type, so the fields it declares are fixed"),
+            text.contains("built-in type, so a field marked built in cannot be changed"),
             "{text}"
         );
         assert!(text.contains("under a prefix such as `custom:`"), "{text}");
@@ -288,28 +276,34 @@ mod tests {
     }
 
     #[test]
-    fn a_users_prefixed_field_on_a_built_in_type_is_not_called_built_in() {
+    fn only_a_protected_field_of_a_built_in_type_is_called_built_in() {
         let mut schema = SchemaNode::new("task", "Task");
         schema.is_core = true;
-        let own = SchemaField {
-            name: "custom:effort".to_string(),
+        let status = SchemaField {
+            name: "status".to_string(),
+            protection: SchemaProtectionLevel::Core,
             ..Default::default()
         };
-        let declared = SchemaField {
+        let priority = SchemaField {
             name: "priority".to_string(),
+            protection: SchemaProtectionLevel::User,
+            ..Default::default()
+        };
+        let own = SchemaField {
+            name: "custom:effort".to_string(),
+            protection: SchemaProtectionLevel::User,
             ..Default::default()
         };
 
-        let text = describe(&schema, &[declared, own]);
-        assert!(
-            text.contains("- **priority** (text): Built in: it cannot be changed or removed."),
-            "{text}"
-        );
-        let effort = text
-            .lines()
-            .find(|line| line.starts_with("- **custom:effort**"))
-            .expect("the field is listed");
-        assert!(!effort.contains("Built in"), "{effort}");
+        let text = describe(&schema, &[status, priority, own]);
+        let line = |name: &str| {
+            text.lines()
+                .find(|line| line.starts_with(&format!("- **{name}**")))
+                .expect("the field is listed")
+        };
+        assert!(line("status").contains("Built in"), "{text}");
+        assert!(!line("priority").contains("Built in"), "{text}");
+        assert!(!line("custom:effort").contains("Built in"), "{text}");
     }
 
     #[test]
@@ -318,10 +312,10 @@ mod tests {
         schema.extends = Some("task".to_string());
         let inherited = SchemaField {
             name: "status".to_string(),
+            protection: SchemaProtectionLevel::Core,
             ..Default::default()
         };
         let owners = HashMap::from([("status".to_string(), "task".to_string())]);
-        let built_in = HashSet::from(["task".to_string()]);
 
         let text = describe_schema(
             "[Bug](nodespace://bug)",
@@ -330,14 +324,13 @@ mod tests {
                 purpose: None,
                 fields: &[inherited],
                 owners: &owners,
-                built_in: &built_in,
             },
         );
         assert!(
             text.contains("It extends `task`, so it has that type's fields as well."),
             "{text}"
         );
-        // Its owner is built in, so the field is fixed here too.
+        // The field is core-protected, so it is fixed here too.
         assert!(
             text.contains(
                 "- **status** (text): Built in: it cannot be changed or removed. From `task`."
