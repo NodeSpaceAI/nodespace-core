@@ -1048,6 +1048,31 @@ pub(crate) fn cli_warning(cli_on_path: bool) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A `PATH` for a test that runs the real installer in an isolated home:
+    /// one folder holding `bun` and nothing else, so the machine's own
+    /// agents (found on `PATH` by their command) are not the test's.
+    fn path_with_only_bun(root: &Path) -> std::ffi::OsString {
+        let folder = root.join("only-bun");
+        std::fs::create_dir_all(&folder).expect("create the command folder");
+
+        let found = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|dir| dir.join("bun"))
+            .find(|candidate| candidate.is_file());
+
+        #[cfg(unix)]
+        {
+            if let Some(bun) = found {
+                let _ = std::os::unix::fs::symlink(bun, folder.join("bun"));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = found;
+        }
+
+        folder.into_os_string()
+    }
+
     /// The CLI-missing warning must point at the actual current install
     /// path (`install.sh`), not just the stale `cargo install`/DMG-only
     /// guidance — this is the message a user sees in the GUI when the CLI
@@ -1600,6 +1625,7 @@ mod tests {
         // other test that resolves the real $HOME).
         let output = installer_command(&installer_path, "bun", "install")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .output()
             .expect("bun must be on $PATH to run this test");
 
@@ -1678,6 +1704,7 @@ mod tests {
 
         let output = installer_command(&installer_path, "bun", "install")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .output()
             .expect("bun must be on $PATH to run this test");
         let outcome = parse_installer_output(output)
@@ -1786,6 +1813,7 @@ mod tests {
 
         let install_output = installer_command(&installer_path, "bun", "install")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .output()
             .expect("bun must be on $PATH to run this test");
         let install_outcome =
@@ -1803,6 +1831,7 @@ mod tests {
 
         let status_output = installer_command(&installer_path, "bun", "status")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .output()
             .expect("bun must be on $PATH to run this test");
         let status_outcome = parse_installer_output(status_output).expect("status succeeds");
@@ -1837,6 +1866,7 @@ mod tests {
 
         let detect_output = installer_command(&installer_path, "bun", "detect")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             // claude-code detection honors $CLAUDE_CONFIG_DIR, so an inherited
             // value would point at a real directory outside the fake $HOME.
             .env("CLAUDE_CONFIG_DIR", fake_home.path().join(".claude"))
@@ -1854,6 +1884,7 @@ mod tests {
         // `status` reports nothing at all.
         let status_output = installer_command(&installer_path, "bun", "status")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .env("CLAUDE_CONFIG_DIR", fake_home.path().join(".claude"))
             .output()
             .expect("bun must be on $PATH to run this test");
@@ -1871,6 +1902,7 @@ mod tests {
         let scoped_output = installer_command(&installer_path, "bun", "detect")
             .arg("antigravity")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .env("CLAUDE_CONFIG_DIR", fake_home.path().join(".claude"))
             .output()
             .expect("bun must be on $PATH to run this test");
@@ -1904,6 +1936,7 @@ mod tests {
 
         let install_output = installer_command(&installer_path, "bun", "install")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .output()
             .expect("bun must be on $PATH to run this test");
         parse_installer_output(install_output).expect("install succeeds for both agents");
@@ -1920,6 +1953,7 @@ mod tests {
 
         let uninstall_output = installer_command(&installer_path, "bun", "uninstall")
             .env("HOME", fake_home.path())
+            .env("PATH", path_with_only_bun(fake_home.path()))
             .output()
             .expect("bun must be on $PATH to run this test");
         assert!(
