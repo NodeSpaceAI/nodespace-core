@@ -18,6 +18,13 @@
 
 import type { EvalEnv } from "../env.ts";
 import type { EvalFixture, Scenario, TurnRecord, Verdict } from "../types.ts";
+import {
+  DATABASE_SETTINGS_ID,
+  bareId,
+  listType,
+  runNs,
+  type ListedNode,
+} from "./seed-helpers.ts";
 
 const PERSON_TYPE = "person";
 const TASK_TYPE = "task";
@@ -48,9 +55,6 @@ const PEOPLE: SeededPerson[] = [
  * seeded with, given a name here. Holds one task of their own.
  */
 const OWNER = { first: "Mara", last: "Quint", email: "mara.quint@example.com" };
-
-/** The id of the database settings node, which the owner holds a role on. */
-const DATABASE_SETTINGS_ID = "database-settings-singleton";
 
 const TASKS: SeededTask[] = [
   {
@@ -130,39 +134,6 @@ const FIXTURES: GroundingScenario[] = [
     expected: { kind: "assigned" },
   },
 ];
-
-function runNs(env: EvalEnv, args: string[]): unknown {
-  const r = Bun.spawnSync([env.nsBin, "--socket", env.socket, "--json", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (r.exitCode !== 0) {
-    throw new Error(
-      `nodespace ${args.join(" ")} failed (exit ${r.exitCode}): ` +
-        r.stderr.toString().trim(),
-    );
-  }
-  const out = r.stdout.toString().trim();
-  return out ? JSON.parse(out) : null;
-}
-
-interface ListedNode {
-  id?: string;
-  title?: string;
-  content?: string;
-}
-
-function listType(env: EvalEnv, type: string): ListedNode[] {
-  const out = runNs(env, ["node", "query", "--type", type, "--limit", "200"]) as
-    | { nodes?: ListedNode[] }
-    | ListedNode[]
-    | null;
-  return Array.isArray(out) ? out : (out?.nodes ?? []);
-}
-
-function bareId(id: string): string {
-  return id.replace(/^nodespace:\/\//, "");
-}
 
 /**
  * Create the people and tasks and the `tasks` edges between them.

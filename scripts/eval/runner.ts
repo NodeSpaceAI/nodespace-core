@@ -12,7 +12,12 @@
  */
 
 import { readEnv, ENV_USAGE, REPO_ROOT, type EvalEnv } from "./env.ts";
-import { captureSnapshot, diffSnapshots } from "./graph.ts";
+import {
+  captureSnapshot,
+  diffSnapshots,
+  snapshotBlindness,
+  type SnapshotNode,
+} from "./graph.ts";
 import {
   abortOnEnvironment,
   awaitSkillIndex,
@@ -1054,6 +1059,22 @@ function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
 function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
   const results: ScenarioResult[] = [];
 
+  // Prove the graph capture sees the database before any turn is scored on it:
+  // a run of a blind one looks like a result (see `snapshotBlindness`).
+  if (fixture.graph) {
+    const blind = snapshotBlindness(
+      captureSnapshot(env, fixture.graph.types, { edgesFor: () => false }),
+    );
+    if (blind) {
+      throw new EnvironmentError(
+        `The graph snapshot is blind: ${blind}.`,
+        `Every end-state verdict of this run would be vacuous. Check that ` +
+          `'nodespace schema list' and 'nodespace node query' return what the ` +
+          `snapshot reads (graph.ts).`,
+      );
+    }
+  }
+
   /**
    * Consecutive failed sends tolerated before the run is declared void.
    *
@@ -1193,11 +1214,22 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // verified against the daemon, same version and same modified_at — so
       // that rule would find no edges at all and score 11c, the one scenario
       // that measures linking, as a false pass.
-      const before = fixture.graph
-        ? captureSnapshot(env, fixture.graph.types, {
-            edgesFor: (n) => groupNodeIds.has(n.id),
-          })
-        : undefined;
+      //
+      // `capture` retries once. A CLI call that fails once and then succeeds is
+      // a hiccup that would otherwise void a run of many reps; a defect in the
+      // capture fails the same way twice and still voids it. It returns
+      // nothing for a fixture that does not grade on the graph.
+      const capture = (edgesFor: (n: SnapshotNode) => boolean) => {
+        const graph = fixture.graph;
+        if (!graph) return undefined;
+        const options = { edgesFor, relations: graph.relations };
+        const first = captureSnapshot(env, graph.types, options);
+        return first.captureError
+          ? captureSnapshot(env, graph.types, options)
+          : first;
+      };
+
+      const before = capture((n) => groupNodeIds.has(n.id));
 
       const scored = turn(chatId, scenario.prompt);
 
@@ -1217,17 +1249,29 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // turn that merely created a node. Restricting the diff instead would
       // be the alternative, but it would lose the create-and-link-in-one-turn
       // case above, which is a legitimate shape.
-      const after = fixture.graph
-        ? captureSnapshot(env, fixture.graph.types, {
-            edgesFor: (n) =>
-              groupNodeIds.has(n.id) ||
-              !before?.nodes.some((p) => p.id === n.id),
-          })
-        : undefined;
+      const after = capture(
+        (n) =>
+          groupNodeIds.has(n.id) || !before?.nodes.some((p) => p.id === n.id),
+      );
       for (const n of after?.nodes ?? []) {
         if (!before?.nodes.some((p) => p.id === n.id)) groupNodeIds.add(n.id);
       }
       const diff = before && after ? diffSnapshots(before, after) : undefined;
+
+      // A snapshot that could not be captured voids the run rather than
+      // scoring the scenario. Scored as a failure, it reads as the model's, and
+      // a defect in the capture itself would then fail every scenario that
+      // trips it for the length of the run, with the cause visible only in the
+      // per-scenario failure text.
+      if (diff?.captureError) {
+        throw new EnvironmentError(
+          `The graph end-state could not be captured after '${scenario.id}': ` +
+            `${diff.captureError}`,
+          `Scenarios are graded on the graph, so a turn that cannot be read back ` +
+            `cannot be scored. Check the daemon, then the relations the fixture ` +
+            `walks (graph.relations) and the types it queries.`,
+        );
+      }
 
       // The degenerate-empty-generation failure mode (agent_loop.rs: the
       // model opens a turn and emits neither text nor a tool call) is an

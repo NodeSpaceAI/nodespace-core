@@ -121,8 +121,20 @@ export function snapshotQueryTypes(types: string[], schemas: string[]): string[]
   );
 }
 
-/** Max nodes pulled per type. Far above any scenario's footprint. */
-const QUERY_LIMIT = "200";
+/**
+ * Nodes pulled per `node query` page.
+ *
+ * The daemon clamps a query to 500 rows without saying so, so asking for more
+ * returns 500 and looks like the whole list. A fresh database already holds a
+ * few hundred `text` nodes (the bodies of the seeded skills and guidance), and
+ * rows come back oldest first, so a read cut short drops the node a turn just
+ * wrote and a scenario asserting nothing was written passes over a write. A
+ * type is therefore read a page at a time until a page comes back short.
+ */
+export const QUERY_PAGE = 500;
+
+/** Pages read for one type before the capture gives up rather than loop. */
+const MAX_PAGES = 100;
 
 function runCli(env: EvalEnv, args: string[]): unknown {
   const r = Bun.spawnSync(
@@ -242,6 +254,22 @@ export function readNodeList(payload: unknown): SnapshotNode[] {
   return nodes.map(toSnapshotNode).filter((n): n is SnapshotNode => n !== null);
 }
 
+/**
+ * The schema ids in `schema list --json` output, which carries them under
+ * `schemas`, not `nodes`. Pure, so the shape is pinned by a test: a reader of
+ * a shape the CLI does not emit finds no schema at all, and a snapshot that
+ * queries no type is empty, so every "nothing was written" clause passes
+ * vacuously and every "was created" clause fails.
+ */
+export function listedSchemaIds(output: unknown): string[] {
+  const schemas = (output as { schemas?: unknown } | null)?.schemas;
+  if (!Array.isArray(schemas)) return [];
+  return schemas.flatMap((s) => {
+    const id = (s as { id?: unknown } | null)?.id;
+    return typeof id === "string" && id !== "" ? [id] : [];
+  });
+}
+
 /** Pull target ids out of a `relationship get` payload. */
 export function readRelatedIds(payload: unknown): string[] {
   if (typeof payload !== "object" || payload === null) return [];
@@ -281,13 +309,20 @@ export function readRelatedIds(payload: unknown): string[] {
 export function captureSnapshot(
   env: EvalEnv,
   types: string[],
-  options: { edgesFor?: (n: SnapshotNode) => boolean } = {},
+  options: {
+    edgesFor?: (n: SnapshotNode) => boolean;
+    /**
+     * Relations walked beside the universal ones: names a fixture's scenarios
+     * assert that a type declares (`blocks`, or the derived `assignee` and
+     * `project` of a task). Each adds one CLI round-trip per walked node.
+     */
+    relations?: string[];
+  } = {},
 ): GraphSnapshot {
   try {
-    const schemaNodes = readNodeList(runCli(env, ["schema", "list"]));
     // A schema node's id IS the type identifier it defines (`schema get` takes
     // the same value), so the ids double as the list of queryable types.
-    const schemas = schemaNodes.map((s) => s.id).sort();
+    const schemas = listedSchemaIds(runCli(env, ["schema", "list"])).sort();
 
     const queryTypes = snapshotQueryTypes(types, schemas);
 
@@ -298,31 +333,56 @@ export function captureSnapshot(
       // an empty list. A type that does not exist at all can error instead —
       // tolerated for the same reason, since the caller's predicted type set
       // intentionally names types a given run may never create.
-      let payload: unknown;
-      try {
-        payload = runCli(env, [
+      const queryPage = (offset: number): unknown =>
+        runCli(env, [
           "node",
           "query",
           "--type",
           t,
           "--limit",
-          QUERY_LIMIT,
+          String(QUERY_PAGE),
+          "--offset",
+          String(offset),
         ]);
-      } catch {
+      let payload: unknown;
+      try {
+        payload = queryPage(0);
+      } catch (e) {
+        // Only a type the schema list does not name may be absent. One it
+        // does name exists, so a failure reading it is a transport fault, and
+        // dropping the type silently would leave its writes unseen.
+        if (schemas.includes(t)) throw e;
         continue;
       }
-      for (const n of readNodeList(payload)) {
-        if (seen.has(n.id)) continue;
-        seen.add(n.id);
-        nodes.push(n);
+      for (let page = 0; ; page++) {
+        const listed = readNodeList(payload);
+        for (const n of listed) {
+          if (seen.has(n.id)) continue;
+          seen.add(n.id);
+          nodes.push(n);
+        }
+        if (listed.length < QUERY_PAGE) break;
+        // Not tolerated like the first page: a later page that fails, or a
+        // type too large to read, would leave the list short without a sign,
+        // which is how a write goes unseen.
+        if (page + 1 >= MAX_PAGES) {
+          throw new Error(
+            `type '${t}' has more than ${MAX_PAGES * QUERY_PAGE} nodes; the ` +
+              `snapshot would miss the ones past them`,
+          );
+        }
+        payload = queryPage((page + 1) * QUERY_PAGE);
       }
     }
 
     const edges: SnapshotEdge[] = [];
     const walk = options.edgesFor ?? (() => true);
+    const walked = [
+      ...new Set([...UNIVERSAL_RELATIONS, ...(options.relations ?? [])]),
+    ];
     for (const n of nodes) {
       if (!walk(n)) continue;
-      for (const rel of UNIVERSAL_RELATIONS) {
+      for (const rel of walked) {
         // Deliberately NOT caught, unlike the node query above.
         //
         // That asymmetry is the point. A node query can fail for an expected
@@ -338,7 +398,20 @@ export function captureSnapshot(
         // edge list — scoring 11c as "no 'mentions' edge was recorded", a dead
         // daemon filed as a model failure. Letting it reach the outer catch
         // sets `captureError`, and every assertion then declines to score.
-        const payload = runCli(env, ["relationship", "get", n.id, "--type", rel]);
+        //
+        // The one exception is a relation the fixture named (`relations`): it
+        // is declared on some types and not others, and the daemon refuses it
+        // on a node whose type does not declare it. That refusal, and only
+        // that one, means "this node has no such edge"; any other failure is
+        // still the dead daemon above and still fails the capture.
+        let payload: unknown;
+        try {
+          payload = runCli(env, ["relationship", "get", n.id, "--type", rel]);
+        } catch (e) {
+          const declared = UNIVERSAL_RELATIONS.includes(rel);
+          if (!declared && /not declared for node type/i.test(String(e))) continue;
+          throw e;
+        }
         for (const target of readRelatedIds(payload)) {
           edges.push({ from: n.id, relation: rel, to: target });
         }
@@ -354,6 +427,23 @@ export function captureSnapshot(
       captureError: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+/**
+ * Why a snapshot of a freshly seeded database cannot be trusted, or null.
+ *
+ * A capture that queries no type returns an empty snapshot without erroring,
+ * and every "nothing was written" clause then passes over a write while every
+ * "was created" clause fails. A database the daemon has just seeded always
+ * holds schemas and nodes, so a snapshot with none is blind, not empty.
+ */
+export function snapshotBlindness(snap: GraphSnapshot): string | null {
+  if (snap.captureError) return `it failed: ${snap.captureError}`;
+  if (snap.schemas.length === 0) return "it found no schemas";
+  if (snap.nodes.length === 0) {
+    return "it found no nodes in a database that is seeded with some";
+  }
+  return null;
 }
 
 /**

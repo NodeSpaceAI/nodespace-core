@@ -30,6 +30,7 @@
  */
 
 import type { EvalEnv } from "../env.ts";
+import { listedSchemaIds } from "../graph.ts";
 import { awaitSkillIndex } from "../preflight.ts";
 import type {
   EvalFixture,
@@ -333,21 +334,6 @@ function runNs(env: EvalEnv, args: string[]): unknown {
   }
   const out = r.stdout.toString().trim();
   return out ? JSON.parse(out) : null;
-}
-
-/**
- * The schema ids in `schema list --json` output. Pure, so the shape this
- * fixture depends on is pinned by a test rather than discovered on a warm
- * database: a reader of a shape the CLI no longer emits finds no schema at
- * all, which looks like an empty workspace and re-creates every type.
- */
-export function listedSchemaIds(output: unknown): string[] {
-  const schemas = (output as { schemas?: unknown } | null)?.schemas;
-  if (!Array.isArray(schemas)) return [];
-  return schemas.flatMap((s) => {
-    const id = (s as { id?: unknown } | null)?.id;
-    return typeof id === "string" && id !== "" ? [id] : [];
-  });
 }
 
 /** The id of every schema in the workspace. */

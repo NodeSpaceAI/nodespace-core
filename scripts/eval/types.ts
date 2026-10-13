@@ -444,6 +444,13 @@ export interface EvalFixture {
      */
     types: string[];
     /**
+     * Relations to walk beside the universal ones when discovering edges, for
+     * a fixture whose scenarios assert a type-declared link (`blocks`, or a
+     * task's derived `assignee` and `project`). Absent walks only the
+     * universal four, which is what every other fixture pays for.
+     */
+    relations?: string[];
+    /**
      * Score one scenario from what the graph actually did. Must be pure over
      * the diff, so it is unit-testable without a daemon.
      */
