@@ -26,7 +26,19 @@ export interface AgentConfig {
    * (`listReferenceFiles`), so adding or dropping a reference is a change to
    * that directory alone.
    */
-  plugin?: { dir: string; files: string[]; shared?: Array<[string, string]>; installDir?: string };
+  plugin?: {
+    dir: string;
+    files: string[];
+    shared?: Array<[string, string]>;
+    installDir?: string;
+    /**
+     * For a harness that reads hook commands from a JSON file of its own: the
+     * file, and the events to register `hookFile` (a path relative to the
+     * folder the plugin installs into) for. The installer owns those handlers
+     * alone, found by the command's path, and leaves every other entry as it is.
+     */
+    hooks?: { file: string; command: string; events: Array<{ event: string; timeoutSeconds: number }> };
+  };
   /**
    * The harness's user-level instructions file, for a harness with no plugin
    * (ADR-093 §6). The installer writes one marked block into it, creating the
@@ -70,6 +82,12 @@ export interface InstallResult {
    * overwrite it, since the marketplace owns its own update cadence.
    */
   skipReason?: 'plugin-managed';
+  /**
+   * Set when the harness runs the hooks this install registered only after
+   * the user has trusted them: the install cannot do that step, so the caller
+   * says what the user has to do.
+   */
+  needsHookTrust?: boolean;
 }
 
 export interface UninstallResult {

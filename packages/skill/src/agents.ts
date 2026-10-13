@@ -125,6 +125,29 @@ export const OPENCODE_PLUGIN = {
   installDir: join(opencodeConfigDir, 'plugins'),
 };
 
+/**
+ * The Codex hooks: Codex runs each event as a command, so what installs is one
+ * script and the module it imports, in a folder of NodeSpace's own, plus one
+ * handler per event in the hooks file Codex reads. Codex does not run a hook
+ * until the user has trusted it in `/hooks`.
+ */
+export const CODEX_PLUGIN = {
+  dir: 'plugins/codex',
+  files: ['hook.ts'],
+  shared: [[SESSION_MODULE, SESSION_MODULE]] as Array<[string, string]>,
+  installDir: join(codexHome, 'nodespace'),
+  hooks: {
+    file: join(codexHome, 'hooks.json'),
+    command: 'hook.ts',
+    events: [
+      { event: 'SessionStart', timeoutSeconds: 30 },
+      { event: 'UserPromptSubmit', timeoutSeconds: 30 },
+      { event: 'PreToolUse', timeoutSeconds: 15 },
+      { event: 'PostToolUse', timeoutSeconds: 15 },
+    ],
+  },
+};
+
 export const AGENTS: AgentConfig[] = [
   {
     name: 'claude-code',
@@ -137,6 +160,7 @@ export const AGENTS: AgentConfig[] = [
     name: 'codex',
     detectionDir: codexHome,
     installDir: join(codexHome, 'skills', 'nodespace'),
+    plugin: CODEX_PLUGIN,
     // Codex reads `AGENTS.md` in its home into every session. An
     // `AGENTS.override.md` beside it, when the user keeps one, is read instead.
     instructionsFile: join(codexHome, 'AGENTS.md'),

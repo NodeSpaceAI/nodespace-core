@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * Prints a run's log as one line per thing that happened: each prompt, each
- * tool call with the start of its result, and what the agent said. Reads both
- * the Claude Code and the OpenCode event shapes.
+ * tool call with the start of its result, and what the agent said. Reads the
+ * Claude Code, OpenCode and Codex event shapes.
  *
  *   bun scripts/eval/harness/trace.ts <log.jsonl> [--full]
  */
@@ -69,5 +69,16 @@ for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
     console.log(`  -> ${cut(state.output ?? state.error, resultChars)}`);
   } else if (event.type === "text") {
     console.log(`SAYS ${cut(part.text, 1400)}`);
+  } else if (event.type === "item.started" || event.type === "item.completed") {
+    // Codex: a shell command is an item, and so is each thing the agent says.
+    const item = (event.item ?? {}) as Json;
+
+    if (item.type === "agent_message" && event.type === "item.completed") {
+      console.log(`SAYS ${cut(item.text, 1400)}`);
+    } else if (item.type === "command_execution" && event.type === "item.started") {
+      console.log(`TOOL shell ${cut(item.command, 500)}`);
+    } else if (item.type === "command_execution") {
+      console.log(`  -> exit ${String(item.exit_code)} ${cut(item.aggregated_output, resultChars)}`);
+    }
   }
 }
