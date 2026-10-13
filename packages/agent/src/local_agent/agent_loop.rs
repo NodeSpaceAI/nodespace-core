@@ -1025,6 +1025,101 @@ fn duplicate_write_result(prior: &crate::agent_types::PriorWrite) -> serde_json:
     })
 }
 
+/// Error code carried by a `create_node` held back while a recorded decision
+/// may already settle the work.
+const DECLINED_WORK_ERROR: &str = "decision_may_settle_this";
+
+/// How many decisions a held-back create lists.
+const DECLINED_WORK_DECISIONS: usize = 3;
+
+/// How many results the search is asked for before the list is cut. The type
+/// filter applies to a bounded pool of the nearest nodes, so a limit of the
+/// list's own size misses a decision that sits behind a few skills and notes:
+/// measured, the same search found nothing at 3 and found the decision at 50.
+const DECLINED_WORK_POOL: usize = 50;
+
+/// The decisions that may already settle the work a `create_node` would
+/// record, found by the system when the Creating a Task procedure leads the
+/// turn.
+///
+/// The procedure's second step is "was it declined before", and the locked
+/// model skips it: the decision is in no prompt, so it is found only by a
+/// search the model has to choose to make, and given the chance to read first
+/// it searched open tasks instead. Where the model's choice stays wrong, the
+/// system makes the call it holds the facts for.
+///
+/// Only a create with no parent, so the brief and checklist the procedure
+/// writes under a task are not checked, and only the first create of a title
+/// per turn: `checked` holds the titles already held back, so the model's retry
+/// after reading the decisions goes through. That retry is its judgement of
+/// what it was shown; the guard decides nothing.
+async fn decisions_that_may_settle<T: AgentToolExecutor + ?Sized>(
+    executor: &T,
+    candidates: &[crate::agent_types::SkillCandidate],
+    checked: &mut HashSet<String>,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Option<Vec<serde_json::Value>> {
+    if tool != "create_node"
+        || !candidates
+            .iter()
+            .any(|c| c.id == crate::skill_pipeline::CREATING_A_TASK_SKILL_ID)
+        || args
+            .get("parent_id")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| !p.trim().is_empty())
+    {
+        return None;
+    }
+    let content = args.get("content")?.as_str()?;
+    let title = comparable_title(content);
+    if title.is_empty() || !checked.insert(title) {
+        return None;
+    }
+    let found = executor
+        .execute(
+            "search_semantic",
+            serde_json::json!({
+                "query": content,
+                "node_types": ["decision"],
+                "limit": DECLINED_WORK_POOL,
+                "include_markdown": 0,
+            }),
+        )
+        .await
+        .ok()?;
+    if found.is_error {
+        return None;
+    }
+    let rows: Vec<_> = found
+        .result
+        .get("results")?
+        .as_array()?
+        .iter()
+        .take(DECLINED_WORK_DECISIONS)
+        .cloned()
+        .collect();
+    (!rows.is_empty()).then_some(rows)
+}
+
+/// The tool result returned in place of a create held back for
+/// [`decisions_that_may_settle`].
+///
+/// Flagged as an error: nothing was created, and a non-error result would be
+/// replayed into later turns as a completed write. The decision is the user's
+/// to reopen, so the way out names `route_clarify`.
+fn declined_work_refused_result(decisions: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::json!({
+        "error": DECLINED_WORK_ERROR,
+        "decisions": decisions,
+        "message": "Not executed: these recorded decisions may already settle this work. \
+            If one of them says it will not be done, do not create it: tell the user what the \
+            decision says, and call route_clarify to ask whether to reopen it, offering \
+            that decision's id as an option. If none of them applies to this request, call \
+            create_node again with the same arguments."
+    })
+}
+
 /// Error code carried by a `create_node` refused for duplicating a mentioned
 /// entity. The turn-end backstop finds the refusal by it, so both sides share
 /// this one constant.
@@ -1246,6 +1341,77 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
         session_id = %session.id,
         existing_id = %id,
         "Duplicate create refused and left unresolved by the model — asking the user"
+    );
+
+    replace_turn_reply(session, &clarification);
+    result.response = clarification;
+    result.clarify = Some(crate::agent_types::ClarifyPrompt {
+        question,
+        options,
+        pending_deletions: Vec::new(),
+    });
+}
+
+/// Ask the user about a decision the model was shown and did not act on.
+///
+/// Applied to every completed turn, beside [`duplicate_entity_backstop`] and
+/// for the same reason: when a `create_node` was held back for a decision that
+/// may settle it (see [`decisions_that_may_settle`]) and the turn ended with no
+/// question put to the user and no write after it, the user has been told
+/// nothing — the locked model repeats the refusal's error code as its reply.
+/// The question is composed here, naming the decision, with the choice that is
+/// the user's: leave it as decided, or reopen it and create the work.
+///
+/// Left alone when the model asked (its question stands), when a write landed
+/// after the hold (the model read the decisions and went on, which is its
+/// judgement of what it was shown), and when its reply already names the
+/// decision (the user was told).
+fn declined_work_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
+    let Some(held_at) = result.tool_calls_made.iter().rposition(|r| {
+        r.name == "create_node"
+            && r.is_error
+            && r.result.get("error").and_then(|v| v.as_str()) == Some(DECLINED_WORK_ERROR)
+    }) else {
+        return;
+    };
+    if result.clarify.is_some()
+        || result.tool_calls_made[held_at + 1..]
+            .iter()
+            .any(super::deletion_confirmation::landed_write)
+    {
+        return;
+    }
+    let Some(decision) = result.tool_calls_made[held_at].result["decisions"]
+        .as_array()
+        .and_then(|rows| rows.first())
+    else {
+        return;
+    };
+    let field = |k: &str| decision.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+    let (id, title) = (field("id"), field("title"));
+    if !title.is_empty()
+        && result
+            .response
+            .to_lowercase()
+            .contains(&title.to_lowercase())
+    {
+        return;
+    }
+
+    let done_note = done_this_turn_note(&result.tool_calls_made);
+    let question = format!(
+        "A recorded decision may already settle this: \"{title}\" ({id}). \
+         Should it stay as decided, or do you want to reopen it and go ahead?{done_note}"
+    );
+    let options = vec![
+        format!("Leave \"{title}\" as decided"),
+        format!("Reopen \"{title}\" ({id}) and create the work"),
+    ];
+    let clarification = format_clarification(&question, &options);
+    tracing::warn!(
+        session_id = %session.id,
+        decision_id = %id,
+        "Create held back for a decision and left unresolved by the model — asking the user"
     );
 
     replace_turn_reply(session, &clarification);
@@ -3280,6 +3446,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // reach the user whichever one the turn took.
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
+            declined_work_backstop(session, &mut result);
             cut_off_turn_backstop(session, &mut result, end, intent_clarified);
             type_listing_backstop(session, &mut result);
         }
@@ -3652,6 +3819,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // real work, a fabricated final summary is a different (harder) problem
         // than a pure hallucination with zero tool calls.
         let mut any_real_tool_calls = false;
+        // Titles whose create was held back for a decision that may settle it
+        // (see `decisions_that_may_settle`); a retry of one goes through.
+        let mut declined_work_checked: HashSet<String> = HashSet::new();
         // Duplicate tool-call detector: (tool_name, canonical_args_json) pairs
         // seen so far this turn. When the model issues an identical call again
         // (same tool + identical args after round-tripping through serde to
@@ -4919,6 +5089,31 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                     offered,
                                     tools.iter().any(|t| t.name == routing::ROUTE_CLARIFY_TOOL),
                                 );
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: refused,
+                                        is_error: true,
+                                    }),
+                                )
+                            } else if let Some(decisions) = decisions_that_may_settle(
+                                self.tool_executor.as_ref(),
+                                &routed.candidates,
+                                &mut declined_work_checked,
+                                &tc.function_name,
+                                &args,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    iteration = iteration,
+                                    decisions = decisions.len(),
+                                    "create_node held back — a recorded decision may settle this work"
+                                );
+                                let refused = declined_work_refused_result(&decisions);
                                 (
                                     args,
                                     Ok(crate::agent_types::ToolResult {
@@ -13334,6 +13529,142 @@ mod tests {
 
         assert!(!calls.iter().any(|c| c == "create_node"));
         assert!(result.clarify.is_some(), "got {:?}", result.response);
+    }
+
+    fn creating_a_task_candidate() -> crate::agent_types::SkillCandidate {
+        crate::agent_types::SkillCandidate {
+            id: crate::skill_pipeline::CREATING_A_TASK_SKILL_ID.to_string(),
+            name: "Creating a Task".to_string(),
+            use_for: String::new(),
+            score: 0.9,
+            tools: vec!["create_node".to_string()],
+            instructions: String::new(),
+            schema_metadata: json!([]),
+            schemas_linked: false,
+            role: nodespace_core::models::SkillRole::Procedure,
+            pinned: false,
+        }
+    }
+
+    fn decision_search_executor() -> MockToolExecutor {
+        MockToolExecutor::new().with_tool(
+            "search_semantic",
+            json!({"type": "object", "properties": {}}),
+            json!({"count": 1, "results": [
+                {"id": "nodespace://d1", "title": "A GraphQL API will not be built", "type": "decision"}
+            ]}),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_top_level_create_under_creating_a_task_is_held_for_its_decisions_once() {
+        let executor = decision_search_executor();
+        let candidates = [creating_a_task_candidate()];
+        let mut checked = HashSet::new();
+        let args = json!({"node_type": "task", "content": "Build a GraphQL API"});
+
+        let held =
+            decisions_that_may_settle(&executor, &candidates, &mut checked, "create_node", &args)
+                .await;
+        assert_eq!(held.map(|d| d.len()), Some(1));
+
+        // The model's retry after reading them goes through.
+        let again =
+            decisions_that_may_settle(&executor, &candidates, &mut checked, "create_node", &args)
+                .await;
+        assert!(again.is_none(), "the retry is the model's judgement");
+    }
+
+    #[tokio::test]
+    async fn a_create_is_not_held_without_the_procedure_or_for_a_child() {
+        let executor = decision_search_executor();
+        let args = json!({"node_type": "task", "content": "Build a GraphQL API"});
+
+        let mut checked = HashSet::new();
+        assert!(
+            decisions_that_may_settle(&executor, &[], &mut checked, "create_node", &args)
+                .await
+                .is_none(),
+            "no procedure leading the turn, no check"
+        );
+
+        let candidates = [creating_a_task_candidate()];
+        let child = json!({"node_type": "text", "content": "Brief", "parent_id": "t1"});
+        assert!(
+            decisions_that_may_settle(&executor, &candidates, &mut checked, "create_node", &child)
+                .await
+                .is_none(),
+            "the brief and checklist under a task are not checked"
+        );
+        assert!(decisions_that_may_settle(
+            &executor,
+            &candidates,
+            &mut checked,
+            "update_node",
+            &args
+        )
+        .await
+        .is_none());
+    }
+
+    fn held_create_result(response: &str, after: Vec<ToolExecutionRecord>) -> AgentTurnResult {
+        let mut calls = vec![ToolExecutionRecord {
+            tool_call_id: "tc_1".into(),
+            name: "create_node".into(),
+            args: json!({"node_type": "task", "content": "Build a GraphQL API"}),
+            result: declined_work_refused_result(&[json!({
+                "id": "nodespace://d1",
+                "title": "A GraphQL API will not be built",
+            })]),
+            is_error: true,
+            duration_ms: 0,
+        }];
+        calls.extend(after);
+        AgentTurnResult {
+            response: response.to_string(),
+            reasoning: None,
+            tool_calls_made: calls,
+            usage: Default::default(),
+            clarify: None,
+        }
+    }
+
+    #[test]
+    fn a_held_create_the_model_left_unresolved_asks_the_user_naming_the_decision() {
+        let mut session = new_session();
+        let mut result = held_create_result("I couldn't complete the node creation.", Vec::new());
+        declined_work_backstop(&mut session, &mut result);
+
+        let clarify = result.clarify.expect("the user must be asked");
+        assert!(clarify.question.contains("A GraphQL API will not be built"));
+        assert!(clarify.options.iter().any(|o| o.contains("nodespace://d1")));
+    }
+
+    #[test]
+    fn a_held_create_whose_reply_names_the_decision_is_left_alone() {
+        let mut session = new_session();
+        let mut result = held_create_result(
+            "A decision says a GraphQL API will not be built: \"A GraphQL API will not be built\".",
+            Vec::new(),
+        );
+        declined_work_backstop(&mut session, &mut result);
+        assert!(result.clarify.is_none());
+    }
+
+    #[test]
+    fn a_write_after_the_hold_releases_the_backstop() {
+        let mut session = new_session();
+        let landed = ToolExecutionRecord {
+            tool_call_id: "tc_2".into(),
+            name: "create_node".into(),
+            args: json!({"node_type": "task", "content": "Build a GraphQL API"}),
+            result: json!({"id": "nodespace://t1"}),
+            is_error: false,
+            duration_ms: 0,
+        };
+        let mut result = held_create_result("Created.", vec![landed]);
+        declined_work_backstop(&mut session, &mut result);
+        assert!(result.clarify.is_none());
     }
 
     #[test]
