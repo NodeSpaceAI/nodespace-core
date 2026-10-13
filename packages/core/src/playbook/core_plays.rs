@@ -44,6 +44,9 @@ pub const SUPERSEDED_LOCK_PLAY_ID: &str = "54159daf-f37d-47f9-a337-bf644d1f0db2"
 /// Node id of the task spec Play (ADR-097 §2, §6).
 pub const TASK_SPEC_PLAY_ID: &str = "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4";
 
+/// Node id of the issue findings Play (ADR-092 §6, §8).
+pub const ISSUE_FINDINGS_PLAY_ID: &str = "b2f6a0d4-7c19-4e8a-95d3-1a4c8e6f7b20";
+
 /// The id of every Play that ships with the product: the core play table, in
 /// the order the plays are seeded.
 pub const CORE_PLAY_IDS: &[&str] = &[
@@ -55,6 +58,7 @@ pub const CORE_PLAY_IDS: &[&str] = &[
     TASK_CRITERIA_PLAY_ID,
     SUPERSEDED_LOCK_PLAY_ID,
     TASK_SPEC_PLAY_ID,
+    ISSUE_FINDINGS_PLAY_ID,
 ];
 
 /// When a task's parent is finished by its sub-tasks (ADR-079 §8). Two
@@ -504,6 +508,86 @@ pub fn task_criteria_rules() -> serde_json::Value {
     ])
 }
 
+// A finding is a direct checkbox child whose text opens with `Finding (`
+// after its `- [ ] ` or `- [x] ` marker (ADR-092 §8), so a checklist item
+// that merely mentions a finding is not one. A decision is one of the three
+// tokens `Decision: fix.`, `Decision: defer.` and `Decision: reject.`.
+
+/// Whether an issue has a finding with no decision: one whose text has none
+/// of the three decision tokens.
+const HAS_UNDECIDED_FINDING: &str = "has(node.has_child) && node.has_child.exists(c, \
+     (c.content.startsWith('- [ ] Finding (') || c.content.startsWith('- [x] Finding (')) \
+     && !c.content.contains('Decision: fix.') && !c.content.contains('Decision: defer.') \
+     && !c.content.contains('Decision: reject.'))";
+
+/// Whether an issue has a finding decided "fix" that is still unchecked.
+const HAS_OPEN_FIX: &str = "has(node.has_child) && node.has_child.exists(c, \
+     c.content.startsWith('- [ ] Finding (') && c.content.contains('Decision: fix.'))";
+
+/// Keep the findings of a review honest as an issue moves through it.
+///
+/// Written against `issue`: `changes_requested` and `ready_to_merge` are its
+/// own statuses (ADR-098 §6), which a rule against `task` reads as
+/// `in_progress` and `in_review`. A plain task is therefore never checked.
+///
+/// - **No finding without a decision leaves review.** The moves out of
+///   `in_review` (to `changes_requested` or `ready_to_merge`), and the move to
+///   `done`, are refused while a finding has no decision.
+/// - **No open fix goes back to review or on to merge.** The moves to
+///   `in_review` and to `ready_to_merge` are refused while a finding decided
+///   "fix" is unchecked. The move to `changes_requested` is what carries open
+///   fixes, so it is not refused. An unfixed finding cannot reach `done`
+///   either, by the task criteria rule: a finding is a checkbox.
+pub fn issue_findings_rules() -> serde_json::Value {
+    json!([
+        reject_change(
+            "reject-leaving-review-with-an-undecided-finding",
+            "Refuse to send an issue back, pass it or finish it while a finding of its review \
+             has no decision",
+            "issue",
+            "status",
+            json!([
+                {
+                    "expr":
+                        "node.status == 'changes_requested' || node.status == 'ready_to_merge' \
+                         || node.status == 'done'",
+                    "description": "The issue is leaving review: sent back, passed, or finished",
+                },
+                {
+                    "expr": HAS_UNDECIDED_FINDING,
+                    "description": "A checkbox child records a finding with no decision",
+                },
+            ]),
+            "Refuse the change and say each finding needs a decision and a reason",
+            "This issue has a finding with no decision, so it cannot leave review. Add \
+             `Decision: fix.`, `Decision: defer.` or `Decision: reject.` and a `Reason:` to the \
+             text of each finding that has none, then move the issue again. Follow the \
+             Reviewing a Task skill.",
+        ),
+        reject_change(
+            "reject-resubmitting-an-issue-with-an-open-fix",
+            "Refuse to put an issue back in review or pass it while a finding decided fix is \
+             unchecked",
+            "issue",
+            "status",
+            json!([
+                {
+                    "expr": "node.status == 'in_review' || node.status == 'ready_to_merge'",
+                    "description": "The issue is going back to review or on to merge",
+                },
+                {
+                    "expr": HAS_OPEN_FIX,
+                    "description": "A finding decided fix is still unchecked",
+                },
+            ]),
+            "Refuse the change and say the finding must be fixed and checked first",
+            "This issue has a finding decided fix that is not checked, so it cannot go back to \
+             review or on to merge. Fix it, check it with what shows it fixed written under \
+             it, then move the issue again. Follow the Addressing Review Findings skill.",
+        ),
+    ])
+}
+
 /// The fields a superseded node may no longer change, per type, beside its
 /// status field. A decision's status is its only field.
 const LOCKED_FIELDS: [(&str, &str, &[&str]); 3] = [
@@ -629,6 +713,16 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
              without a plan.",
             task_spec_rules(),
         ),
+        seeded_play(
+            ISSUE_FINDINGS_PLAY_ID,
+            "Require every finding to be decided and fixed before an issue moves on",
+            "Rejects moving an issue to changes_requested, ready_to_merge or done while a \
+             finding of its review has no decision, and rejects moving it to in_review or \
+             ready_to_merge while a finding decided fix is unchecked. A finding is a checkbox \
+             directly under the issue whose text opens with Finding. A plain task is never \
+             checked.",
+            issue_findings_rules(),
+        ),
     ]
 }
 
@@ -670,6 +764,7 @@ mod tests {
             // status for a decision.
             (superseded_lock_rules(), 7),
             (task_spec_rules(), 1),
+            (issue_findings_rules(), 2),
         ] {
             let props = json!({ "play": { "rules": rules } });
             let rules = parse_rules_from_properties(&props).expect("shipped rules must parse");
@@ -851,6 +946,7 @@ mod tests {
                 "95796b4d-f078-44f8-807b-8a2e92167a2d",
                 "54159daf-f37d-47f9-a337-bf644d1f0db2",
                 "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4",
+                "b2f6a0d4-7c19-4e8a-95d3-1a4c8e6f7b20",
             ]
         );
         let unique: std::collections::HashSet<_> = CORE_PLAY_IDS.iter().collect();

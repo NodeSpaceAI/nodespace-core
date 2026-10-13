@@ -29,9 +29,9 @@ use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::{CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID,
-    PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID, SPECS_BY_STATUS_QUERY_ID,
-    WAITING_ON_YOU_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, IN_PROGRESS_QUERY_ID,
+    NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
+    SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 
@@ -46,6 +46,10 @@ pub const IMPLEMENTING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b
 /// The Reviewing a Task skill's fixed id: the procedure of the "Awaiting
 /// review" queue.
 pub const REVIEWING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c11";
+
+/// The Addressing Review Findings skill's fixed id: the procedure of the
+/// "Changes requested" queue.
+pub const ADDRESSING_REVIEW_FINDINGS_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1a";
 
 /// The Asking the User skill's fixed id: the procedures that write a spec, a
 /// plan and issues name it.
@@ -918,15 +922,19 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         //
         // One procedure start to finish, attached to the two queues a task
         // is in while it is being done, so a task carries it from the moment
-        // it is ready until it is handed over (ADR-094 §3 and §4).
+        // it is ready until it is handed over (ADR-094 §3 and §4). Adapted
+        // from `implement`, `implement-spec` and `tdd` (mattpocock/skills,
+        // MIT). Replaces the earlier Implementing a Task in place.
         id: IMPLEMENTING_A_TASK_SKILL_ID,
         title: "Implementing a Task",
         use_for: "Implement a task from the ready queue: take the next ready task, start it, work through its checklist with evidence, record the pull request, and hand it over for review. Use when the user says to pick up the next task, do the ready work, or continue or resume the task in progress.",
-        tools: &["run_query", "get_node_context", "update_task_status", "update_node", "create_node", "get_node"],
-        max_iterations: 20,
+        tools: &["run_query", "get_node_context", "update_task_status", "update_node", "create_node", "get_node", "route_clarify"],
+        // A list, a read, a start, and per item a tick and its evidence.
+        max_iterations: 40,
         not_for: None,
         applies_to: &[
             CoreNodeType::Task.as_str(),
+            CoreNodeType::Issue.as_str(),
             CoreNodeType::Checkbox.as_str(),
             CoreNodeType::Text.as_str(),
         ],
@@ -938,24 +946,53 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Reviewing a Task
         //
         // The procedure of the "Awaiting review" queue, for whoever works
-        // it. It and Implementing a Task each say the other's work is not
-        // theirs.
+        // it, and never the session that implemented the task. Adapted from
+        // `code-review` (mattpocock/skills, MIT), the review triage of
+        // OneRedOak/claude-code-workflows (MIT) and the plan-completion
+        // audit of garrytan/gstack (MIT). Replaces the earlier Reviewing a
+        // Task in place.
         id: REVIEWING_A_TASK_SKILL_ID,
         title: "Reviewing a Task",
-        use_for: "Review finished work that is awaiting review: check the pull request and the evidence against the task's checklist, record the review's outcome, and approve it or send it back. Use when the user asks for a review of finished work, or to work the review queue.",
-        tools: &["run_query", "get_node_context", "get_node", "update_task_status", "update_node", "create_node"],
-        max_iterations: 16,
+        use_for: "Review finished work that is awaiting review: check the pull request and the evidence against the task's checklist and the project's standards, record each finding and the review's outcome, and approve it or send it back. Use when the user asks for a review of finished work, or to work the review queue.",
+        tools: &["run_query", "get_node_context", "get_node", "update_task_status", "update_node", "create_node", "route_clarify"],
+        // The reads, a note, a section and its items, and per finding a
+        // write and a decision.
+        max_iterations: 40,
         // Separates it from Recording a Decision in the procedure lane on a
         // request to point a task at a decision; the matrix holds it.
         not_for: Some("Link or point one record at another."),
         applies_to: &[
             CoreNodeType::Task.as_str(),
+            CoreNodeType::Issue.as_str(),
             CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Header.as_str(),
             CoreNodeType::Text.as_str(),
         ],
         attached_to: &[AWAITING_REVIEW_QUERY_ID],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/reviewing-a-task.md"),
+    },
+    SkillSeed {
+        // Addressing Review Findings
+        //
+        // The procedure of the "Changes requested" queue, for the session
+        // that implemented the issue. Adapted from the address step of
+        // `review-triage` (OneRedOak/claude-code-workflows, MIT).
+        id: ADDRESSING_REVIEW_FINDINGS_SKILL_ID,
+        title: "Addressing Review Findings",
+        use_for: "Fix what a code review found: work through each finding it left on the pull request, check each fix with evidence, and send the change back to be reviewed again. Use when the user says the review came back with changes requested, or to work the changes requested queue.",
+        tools: &["run_query", "get_node_context", "get_node", "update_node", "create_node", "update_task_status", "route_clarify"],
+        // The reads, and per finding a test, its tick and its evidence.
+        max_iterations: 40,
+        not_for: None,
+        applies_to: &[
+            CoreNodeType::Issue.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[CHANGES_REQUESTED_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/addressing-review-findings.md"),
     },
     SkillSeed {
         // Creating a Task
@@ -1568,7 +1605,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 25, "Should have 25 seed skills");
+        assert_eq!(seeds.len(), 26, "Should have 26 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());

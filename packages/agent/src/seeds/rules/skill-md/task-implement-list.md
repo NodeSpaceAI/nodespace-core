@@ -1,0 +1,1 @@
+Run `nodespace query run "Ready tasks" --limit 10`: it lists each ready task with its priority and `id`. To list one project's work, add `--filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<the checkout's project-id>"}]'`. No task means nothing is ready: say so and stop.

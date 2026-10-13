@@ -168,6 +168,14 @@ pub struct QueryFilter {
     /// node matching the nested filter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub negate: Option<bool>,
+    /// Compare each row's stored value, not the value it reads as at the
+    /// query's type (ADR-078). A query for `task` reads an `issue`'s own
+    /// status as the task status it maps to, so `changes_requested` compares
+    /// as `in_progress`; with `stored` set it compares as `changes_requested`.
+    /// A row of the queried type has no mapping and reads the same either
+    /// way. Only a [`FilterType::Property`] filter takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored: Option<bool>,
     /// The node a [`FilterType::Relationship`] filter's path must reach.
     pub node_id: Option<String>,
     /// The node a [`FilterType::Relationship`] filter's path must reach,

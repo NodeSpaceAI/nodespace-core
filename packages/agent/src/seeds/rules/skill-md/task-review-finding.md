@@ -1,0 +1,1 @@
+Run `nodespace node create --type checkbox --parent <task-id> --content "- [ ] Finding (<source>, <confidence>): <what is wrong, quoting the spec or the standard it breaks>"` once per finding. `<source>` is `spec` or `standards`, and `<confidence>` is `high`, `medium` or `low`. Write every finding before any is decided.

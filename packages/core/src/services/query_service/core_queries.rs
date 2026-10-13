@@ -1,8 +1,10 @@
 //! Saved queries that ship with the product (ADR-092 §8, ADR-094).
 //!
-//! Three list specs, plans and decisions by status, and five are queues of
-//! work: "Ready tasks", "In progress", "Awaiting review", "Needs shaping" and
-//! "Waiting on you". A queue is not a type: it is an ordinary saved query, and
+//! Three list specs, plans and decisions by status, and seven are queues of
+//! work: "Ready tasks", "In progress", "Awaiting review", "Changes requested",
+//! "Ready to merge", "Needs shaping" and "Waiting on you". The three that
+//! follow an issue through review are written against `issue`, which is the
+//! only scope that sees its own statuses (ADR-098 §6). A queue is not a type: it is an ordinary saved query, and
 //! the procedure for working it is a skill attached to the query node
 //! (ADR-094 §1 and §3).
 //!
@@ -32,6 +34,10 @@ pub const READY_TASKS_QUERY_ID: &str = "138b68c6-9a67-4fed-8fa5-993953158f59";
 pub const IN_PROGRESS_QUERY_ID: &str = "d1e5c9a8-d19c-401b-9277-40fd873fb205";
 /// Node id of the "Awaiting review" queue.
 pub const AWAITING_REVIEW_QUERY_ID: &str = "3eff80e8-9672-4896-ac0b-76a169062511";
+/// Node id of the "Changes requested" queue.
+pub const CHANGES_REQUESTED_QUERY_ID: &str = "6a1f0c52-8b47-4d3e-9a15-c2e07d4b8f13";
+/// Node id of the "Ready to merge" queue.
+pub const READY_TO_MERGE_QUERY_ID: &str = "e47b9d20-35a6-4c81-b0f2-91d8a65c3e74";
 
 /// Node id of the "Needs shaping" queue.
 pub const NEEDS_SHAPING_QUERY_ID: &str = "bb611c45-2b82-47dd-ad53-560ec9b5447f";
@@ -47,6 +53,8 @@ pub const CORE_QUERY_IDS: &[&str] = &[
     READY_TASKS_QUERY_ID,
     IN_PROGRESS_QUERY_ID,
     AWAITING_REVIEW_QUERY_ID,
+    CHANGES_REQUESTED_QUERY_ID,
+    READY_TO_MERGE_QUERY_ID,
     NEEDS_SHAPING_QUERY_ID,
     WAITING_ON_YOU_QUERY_ID,
 ];
@@ -95,19 +103,51 @@ fn by_status(id: &str, title: &str, target_type: CoreNodeType, status_field: &st
     )
 }
 
-/// The tasks whose `status` is `status`, most urgent first, then oldest first.
-fn tasks_in_status(id: &str, title: &str, status: &str) -> NodeTemplate {
+/// The `target_type` nodes whose `status` is `status`, most urgent first, then
+/// oldest first. Written against `issue`, `status` is the value the issue
+/// stores, so `ready_to_merge` is not `in_review` there; written against
+/// `task`, an issue's own statuses read as the core status they map to.
+fn in_status(id: &str, title: &str, target_type: CoreNodeType, status: &str) -> NodeTemplate {
     seeded_query(
         id,
         title,
         json!({
-            "target_type": CoreNodeType::Task.as_str(),
+            "target_type": target_type.as_str(),
             "filters": [{
                 "type": "property", "operator": "equals", "property": "status", "value": status
             }],
             "sorting": by_priority_then_age(),
         }),
     )
+}
+
+/// "In progress": the tasks that are being worked, and not the issues that
+/// were sent back from review.
+///
+/// Written against `task`, so a plain task and an issue are both listed, and
+/// the status reads as the core status it maps to. That reads an issue's
+/// `changes_requested` as `in_progress`, and the issue belongs to "Changes
+/// requested" alone. The second filter compares the stored value (`stored`),
+/// the one condition that tells the two apart at this scope, and a negated
+/// filter keeps every row it does not hold for, plain tasks included.
+fn in_progress_query() -> NodeTemplate {
+    let mut template = in_status(
+        IN_PROGRESS_QUERY_ID,
+        "In progress",
+        CoreNodeType::Task,
+        "in_progress",
+    );
+    if let Some(filters) = template
+        .root_properties
+        .get_mut("filters")
+        .and_then(Value::as_array_mut)
+    {
+        filters.push(json!({
+            "type": "property", "operator": "equals", "property": "status",
+            "value": "changes_requested", "stored": true, "negate": true
+        }));
+    }
+    template
 }
 
 /// Most urgent first, then oldest first. `priority` ascending is urgency
@@ -239,8 +279,25 @@ pub fn core_query_templates() -> Vec<NodeTemplate> {
                 "sorting": by_priority_then_age(),
             }),
         ),
-        tasks_in_status(IN_PROGRESS_QUERY_ID, "In progress", "in_progress"),
-        tasks_in_status(AWAITING_REVIEW_QUERY_ID, "Awaiting review", "in_review"),
+        in_progress_query(),
+        in_status(
+            AWAITING_REVIEW_QUERY_ID,
+            "Awaiting review",
+            CoreNodeType::Issue,
+            "in_review",
+        ),
+        in_status(
+            CHANGES_REQUESTED_QUERY_ID,
+            "Changes requested",
+            CoreNodeType::Issue,
+            "changes_requested",
+        ),
+        in_status(
+            READY_TO_MERGE_QUERY_ID,
+            "Ready to merge",
+            CoreNodeType::Issue,
+            "ready_to_merge",
+        ),
         seeded_query(
             NEEDS_SHAPING_QUERY_ID,
             "Needs shaping",

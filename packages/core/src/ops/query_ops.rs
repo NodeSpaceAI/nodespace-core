@@ -65,6 +65,11 @@ pub struct AgentFilterItem {
     /// matching the nested `filter`.
     #[serde(default)]
     pub negate: Option<bool>,
+    /// Compare the stored value of each row, not the value it reads as at the
+    /// queried type: a property filter's opt-out of the mapping of a
+    /// subtype's extended enum value (ADR-078).
+    #[serde(default)]
+    pub stored: Option<bool>,
     /// The node a relationship filter's `path` must reach.
     #[serde(default)]
     pub node_id: Option<String>,
@@ -284,6 +289,7 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
         relative_date: item.relative_date,
         case_sensitive: item.case_sensitive,
         negate: item.negate,
+        stored: item.stored,
         node_id: item.node_id,
         anchor: item.anchor,
         path: item.path.filter(|_| walks),
@@ -880,6 +886,14 @@ fn resolve_filter<'a>(
                     "filter property",
                 )
                 .await?;
+                // A stored comparison reads each row's own value: the
+                // mapping of an extended value to the queried type's is
+                // what it opts out of.
+                if filter.stored == Some(true) {
+                    for subtype in &mut filter.property_scope.subtypes {
+                        subtype.values.clear();
+                    }
+                }
             }
         }
         if filter.is_permitted() && target_type != "*" {
@@ -1774,6 +1788,7 @@ mod tests {
                 relative_date: None,
                 case_sensitive: None,
                 negate: Some(true),
+                stored: None,
                 node_id: None,
                 anchor: None,
                 path: Some(
@@ -1790,6 +1805,7 @@ mod tests {
                     relative_date: None,
                     case_sensitive: Some(false),
                     negate: Some(true),
+                    stored: Some(true),
                     node_id: None,
                     anchor: None,
                     path: None,
@@ -1808,6 +1824,7 @@ mod tests {
                 relative_date: None,
                 case_sensitive: None,
                 negate: None,
+                stored: None,
                 node_id: Some("n1".to_string()),
                 anchor: None,
                 path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),

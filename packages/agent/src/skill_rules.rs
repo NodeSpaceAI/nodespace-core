@@ -826,7 +826,7 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("task-breakdown-project"),
     procedure_rule!("task-breakdown-blocks"),
     // Implementing a Task
-    procedure_rule!("task-implement-take"),
+    procedure_rule!("task-implement-list"),
     procedure_rule!("task-implement-start"),
     procedure_rule!("task-implement-tick"),
     procedure_rule!("task-implement-links"),
@@ -835,10 +835,15 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     // Reviewing a Task
     procedure_rule!("task-review-take"),
     procedure_rule!("task-review-read"),
+    procedure_rule!("task-review-finding"),
+    procedure_rule!("task-review-decide"),
     procedure_rule!("task-review-note"),
     procedure_rule!("task-review-pass"),
     procedure_rule!("task-review-return"),
     procedure_rule!("task-review-wait"),
+    // Addressing Review Findings
+    procedure_rule!("task-fix-take"),
+    procedure_rule!("task-fix-resubmit"),
     // Creating a Task
     procedure_rule!("task-create-find-built"),
     procedure_rule!("task-create-node"),

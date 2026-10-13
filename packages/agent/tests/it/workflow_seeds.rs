@@ -20,9 +20,9 @@ use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::{Node, NodeUpdate, SkillFields, SKILL_APPLIES_TO, SKILL_ATTACHED_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID,
-    PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID, SPECS_BY_STATUS_QUERY_ID,
-    WAITING_ON_YOU_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, IN_PROGRESS_QUERY_ID,
+    NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
+    SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use nodespace_core::PlaybookEngine;
@@ -32,6 +32,7 @@ use tokio::sync::{watch, RwLock};
 
 const IMPLEMENTING: &str = "Implementing a Task";
 const REVIEWING: &str = "Reviewing a Task";
+const ADDRESSING: &str = "Addressing Review Findings";
 const CREATING: &str = "Creating a Task";
 const ANSWERING: &str = "Answering a Question";
 
@@ -282,7 +283,7 @@ fn reached(paths: &Value) -> Vec<(String, Vec<String>)> {
 }
 
 #[tokio::test]
-async fn the_ten_procedures_are_seeded_with_their_links() {
+async fn the_procedures_are_seeded_with_their_links() {
     let h = start().await;
     // A second open changes nothing.
     seed_agent_tables(&h.ns).await;
@@ -295,6 +296,7 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
         "Explaining",
         IMPLEMENTING,
         REVIEWING,
+        ADDRESSING,
         "Completing a Task",
         "Recording a Decision",
         "Authoring a Skill",
@@ -349,6 +351,7 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
         [READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID]
     );
     assert_eq!(attached(REVIEWING), [AWAITING_REVIEW_QUERY_ID]);
+    assert_eq!(attached(ADDRESSING), [CHANGES_REQUESTED_QUERY_ID]);
     assert_eq!(attached("Writing a Spec"), [SPECS_BY_STATUS_QUERY_ID]);
     assert_eq!(attached("Reviewing a Plan"), [PLANS_BY_STATUS_QUERY_ID]);
     assert_eq!(
@@ -365,6 +368,7 @@ async fn the_ten_procedures_are_seeded_with_their_links() {
     let attached_titles = [
         IMPLEMENTING,
         REVIEWING,
+        ADDRESSING,
         CREATING,
         ANSWERING,
         "Writing a Spec",
@@ -410,6 +414,16 @@ fn every_planning_skill_arrives_with_the_work() {
             "{title} does not name Asking the User"
         );
     }
+    // The delivery procedures reach an agent with the work: each is attached
+    // to the queue of its stage, and the implementing one names the one that
+    // takes over when a review sends findings back.
+    for title in [IMPLEMENTING, REVIEWING, ADDRESSING] {
+        assert!(attached(title), "{title} is attached to no queue");
+    }
+    assert!(
+        body(IMPLEMENTING).contains(ADDRESSING),
+        "Implementing a Task does not name {ADDRESSING}"
+    );
     // Asking the User is attached, and names Explaining.
     assert!(attached("Asking the User"));
     assert!(
@@ -428,6 +442,9 @@ fn the_planning_skills_name_no_harness_tracker_or_link() {
         "Splitting a Plan into Tasks",
         "Asking the User",
         "Explaining",
+        IMPLEMENTING,
+        REVIEWING,
+        ADDRESSING,
     ];
     // Built from fragments so this list is not itself a hit for a checker.
     let forbidden = [
@@ -671,7 +688,7 @@ async fn a_task_carries_the_procedure_of_the_stage_it_is_in() {
         run["skills"][0]["instructions"]
             .as_str()
             .unwrap()
-            .contains("STEP 1, TAKE A READY TASK"),
+            .contains("STEP 1, THE USER CHOOSES THE WORK"),
         "{run}"
     );
 
@@ -688,13 +705,14 @@ async fn a_task_carries_the_procedure_of_the_stage_it_is_in() {
         "In progress"
     );
 
-    // In review: the reviewing procedure, and not the implementing one.
+    // In review, a plain task is in no queue: Awaiting review lists issues,
+    // so it carries no procedure and is reviewed when the user names it.
     h.ok(
         "update_task_status",
         json!({ "id": uri(&work.task), "status": "in_review" }),
     )
     .await;
-    assert_eq!(skill_names(&h.context(&work.task).await), [REVIEWING]);
+    assert!(skill_names(&h.context(&work.task).await).is_empty());
 }
 
 /// A team's standard is a skill the user attaches to a project. Every task
@@ -741,7 +759,13 @@ async fn the_two_procedures_can_be_followed_step_by_step_through_the_tools() {
     let task = uri(&work.task);
 
     // -- Implementing --
-    // Step 1: take a ready task.
+    // Step 1: list what is ready, take nothing; the user chooses, and the
+    // chosen task is read with what governs it.
+    let listed = h
+        .ok("run_query", json!({ "query": "Ready tasks", "limit": 10 }))
+        .await;
+    assert_eq!(listed["nodes"][0]["id"], task, "{listed}");
+    assert_eq!(h.status(&work.task).await, "open", "listing starts nothing");
     let run = h
         .ok(
             "run_query",
@@ -835,12 +859,26 @@ async fn the_two_procedures_can_be_followed_step_by_step_through_the_tools() {
     )
     .await;
 
-    // Step 5: pass it, with the version this read returned.
+    // Step 9: an issue that passed is ready to merge, not done, with the
+    // version this read returned. It is listed to be landed, and is no
+    // longer awaiting review.
     h.ok(
         "update_task_status",
-        json!({ "id": task, "status": "done", "version": item["node_version"] }),
+        json!({ "id": task, "status": "ready_to_merge", "version": item["node_version"] }),
     )
     .await;
+    assert_eq!(h.status(&work.task).await, "ready_to_merge");
+    let awaiting = h
+        .ok("run_query", json!({ "query": "Awaiting review" }))
+        .await;
+    assert_eq!(awaiting["count"], 0, "{awaiting}");
+    let landing = h
+        .ok("run_query", json!({ "query": "Ready to merge" }))
+        .await;
+    assert_eq!(landing["nodes"][0]["id"], task, "{landing}");
+
+    // The change landed: done is set then.
+    h.set(&work.task, json!({ "status": "done" })).await;
     assert_eq!(h.status(&work.task).await, "done");
 }
 
@@ -1499,4 +1537,272 @@ async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_to
         .ok("run_query", json!({ "query": "Waiting on you" }))
         .await;
     assert_eq!(waiting["count"], 0, "{waiting}");
+}
+
+/// The text of a finding, as a reviewer writes it and then decides it.
+const UNDECIDED: &str = "- [ ] Finding (spec, high): rows are not streamed.";
+const TO_FIX: &str =
+    "- [ ] Finding (spec, high): rows are not streamed. Decision: fix. Reason: spec item one.";
+const FIXED: &str =
+    "- [x] Finding (spec, high): rows are not streamed. Decision: fix. Reason: spec item one.";
+
+/// Tick both checklist items of a planned work item and move it into review.
+async fn into_review(h: &Harness, work: &Work) {
+    for checkbox in h.ns.get_children(&work.task).await.unwrap() {
+        let ticked = checkbox.content.replacen("- [ ] ", "- [x] ", 1);
+        h.ns.update_node(
+            &checkbox.id,
+            checkbox.version,
+            NodeUpdate::new().with_content(ticked),
+        )
+        .await
+        .unwrap();
+    }
+    h.set(&work.task, json!({ "status": "in_progress" })).await;
+    h.set(&work.task, json!({ "status": "in_review" })).await;
+}
+
+/// Move `id` to `status`, and return the refusal when a rule stops it.
+async fn try_status(h: &Harness, id: &str, status: &str) -> Result<(), String> {
+    let version = h.ns.get_node(id).await.unwrap().unwrap().version;
+    h.ns.update_node(
+        id,
+        version,
+        NodeUpdate::new().with_properties(json!({ "status": status })),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+async fn rewrite(h: &Harness, id: &str, content: &str) {
+    let version = h.ns.get_node(id).await.unwrap().unwrap().version;
+    h.ns.update_node(
+        id,
+        version,
+        NodeUpdate::new().with_content(content.to_string()),
+    )
+    .await
+    .unwrap();
+}
+
+/// The review flow of an issue, through the rules and the queues: a finding
+/// with no decision keeps it in review, a finding decided fix sends it back
+/// and keeps it out of review and out of ready to merge until it is fixed,
+/// and each stage's queue lists it alone with its own procedure.
+#[tokio::test]
+async fn an_issue_moves_through_review_by_its_findings() {
+    let h = start().await;
+    let work = planned_issue(&h).await;
+    let issue = uri(&work.task);
+    into_review(&h, &work).await;
+
+    // A finding that has no decision stops the issue leaving review, in
+    // either direction.
+    let finding = h.child(&work.task, "checkbox", UNDECIDED).await;
+    for status in ["changes_requested", "ready_to_merge"] {
+        let refused = try_status(&h, &work.task, status).await.unwrap_err();
+        assert!(refused.contains("no decision"), "{status}: {refused}");
+    }
+    // Done is held by the findings rule too, and not only by the unchecked
+    // box: a ticked finding with no decision is refused for that alone.
+    rewrite(
+        &h,
+        &finding,
+        "- [x] Finding (spec, high): rows are not streamed.",
+    )
+    .await;
+    let refused = try_status(&h, &work.task, "done").await.unwrap_err();
+    assert!(refused.contains("no decision"), "done: {refused}");
+    // A finding that quotes the word is still undecided: only the three
+    // decision tokens decide one.
+    rewrite(
+        &h,
+        &finding,
+        "- [ ] Finding (spec, high): the spec says \"Decision: \" is required.",
+    )
+    .await;
+    let refused = try_status(&h, &work.task, "ready_to_merge")
+        .await
+        .unwrap_err();
+    assert!(refused.contains("no decision"), "quoted: {refused}");
+    rewrite(&h, &finding, UNDECIDED).await;
+    assert_eq!(h.status(&work.task).await, "in_review");
+
+    // Decided fix, it can be sent back, and is then in Changes requested
+    // alone, with the procedure for addressing the findings.
+    rewrite(&h, &finding, TO_FIX).await;
+    try_status(&h, &work.task, "changes_requested")
+        .await
+        .unwrap();
+    let back = h
+        .ok(
+            "run_query",
+            json!({ "query": "Changes requested", "with_context": true, "limit": 1 }),
+        )
+        .await;
+    assert_eq!(back["items"][0]["id"], issue, "{back}");
+    // It carries the addressing procedure alone: "In progress" compares the
+    // stored status, so a sent-back issue is not in it.
+    assert_eq!(skill_names(&back), [ADDRESSING], "{back}");
+    let in_progress = h.ok("run_query", json!({ "query": "In progress" })).await;
+    assert_eq!(in_progress["count"], 0, "{in_progress}");
+    for queue in ["Awaiting review", "Ready to merge"] {
+        let run = h.ok("run_query", json!({ "query": queue })).await;
+        assert_eq!(run["count"], 0, "{queue}: {run}");
+    }
+
+    // Neither review nor merge while the fix is open.
+    for status in ["in_review", "ready_to_merge"] {
+        let refused = try_status(&h, &work.task, status).await.unwrap_err();
+        assert!(refused.contains("decided fix"), "{status}: {refused}");
+    }
+    assert_eq!(h.status(&work.task).await, "changes_requested");
+
+    // Fixed, it goes back to review, and is awaiting review alone.
+    rewrite(&h, &finding, FIXED).await;
+    try_status(&h, &work.task, "in_review").await.unwrap();
+    let awaiting = h
+        .ok("run_query", json!({ "query": "Awaiting review" }))
+        .await;
+    assert_eq!(awaiting["nodes"][0]["id"], issue, "{awaiting}");
+    let changes = h
+        .ok("run_query", json!({ "query": "Changes requested" }))
+        .await;
+    assert_eq!(changes["count"], 0, "{changes}");
+
+    // A deferred finding is settled, so it holds nothing back, and the
+    // issue is ready to merge, listed to be landed and no longer awaiting.
+    h.child(
+        &work.task,
+        "checkbox",
+        "- [x] Finding (standards, low): a name. Decision: defer. Reason: renamed later.",
+    )
+    .await;
+    try_status(&h, &work.task, "ready_to_merge").await.unwrap();
+    let landing = h
+        .ok("run_query", json!({ "query": "Ready to merge" }))
+        .await;
+    assert_eq!(landing["nodes"][0]["id"], issue, "{landing}");
+    let awaiting = h
+        .ok("run_query", json!({ "query": "Awaiting review" }))
+        .await;
+    assert_eq!(awaiting["count"], 0, "{awaiting}");
+
+    // The landing is the team's: done is set when the change lands, and an
+    // unfixed finding could not have got here, since it is an unchecked
+    // checkbox.
+    try_status(&h, &work.task, "done").await.unwrap();
+}
+
+/// A finding decided fix cannot be skipped on the way to done either: it is
+/// an unchecked checkbox, so the criteria rule that already stands refuses.
+#[tokio::test]
+async fn an_unfixed_finding_cannot_reach_done() {
+    let h = start().await;
+    let work = planned_issue(&h).await;
+    into_review(&h, &work).await;
+    h.child(&work.task, "checkbox", TO_FIX).await;
+    try_status(&h, &work.task, "changes_requested")
+        .await
+        .unwrap();
+    let refused = try_status(&h, &work.task, "done").await.unwrap_err();
+    assert!(refused.contains("unchecked item"), "{refused}");
+}
+
+/// The review rules are written against `issue`: a plain task is touched by
+/// none of them, whatever its checkboxes say, and goes from review to done.
+#[tokio::test]
+async fn a_plain_task_is_touched_by_none_of_the_review_rules() {
+    let h = start().await;
+    let work = planned_task(&h).await;
+    into_review(&h, &work).await;
+
+    h.child(&work.task, "checkbox", TO_FIX).await;
+    h.child(&work.task, "checkbox", UNDECIDED).await;
+    // A task with a checklist item still unchecked is held by the criteria
+    // rule, as before; that is its checklist and not a finding.
+    let refused = try_status(&h, &work.task, "done").await.unwrap_err();
+    assert!(
+        refused.contains("unchecked item") && !refused.contains("finding"),
+        "{refused}"
+    );
+
+    // Moves the findings rules guard on an issue are free on a task.
+    try_status(&h, &work.task, "in_progress").await.unwrap();
+    try_status(&h, &work.task, "in_review").await.unwrap();
+    let awaiting = h
+        .ok("run_query", json!({ "query": "Awaiting review" }))
+        .await;
+    assert_eq!(awaiting["count"], 0, "the queue lists issues: {awaiting}");
+}
+
+/// What each delivery procedure must say, read from the body an agent gets
+/// (agent and external form alike).
+#[test]
+fn the_delivery_procedures_state_what_they_are_held_to() {
+    let rendered = |title: &str| {
+        let seed = SKILL_SEEDS.iter().find(|s| s.title == title).unwrap();
+        [seed.template().markdown_content, seed.external_body()]
+    };
+
+    for text in rendered(IMPLEMENTING) {
+        // The user chooses; nothing is started on the agent's own.
+        assert!(
+            text.contains("you do not take a task on your own"),
+            "{text}"
+        );
+        assert!(text.contains("stop until the user chooses"), "{text}");
+        // Test-first, one item at a time, and bulk test writing named as not
+        // this; the evidence shows both runs.
+        assert!(text.contains("write one failing test"), "{text}");
+        assert!(text.contains("see it fail"), "{text}");
+        assert!(
+            text.contains("Writing all the tests first and the code afterwards is not this"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the failing run, then the passing run"),
+            "{text}"
+        );
+        // The full suite once, and bounded fix attempts.
+        assert!(
+            text.contains("run the project's whole test suite once"),
+            "{text}"
+        );
+        assert!(text.contains("three at most"), "{text}");
+        assert!(text.contains("a single rerun"), "{text}");
+    }
+
+    for text in rendered(REVIEWING) {
+        // A different session: how the reviewer tells is written down.
+        assert!(text.contains("you implemented it: stop"), "{text}");
+        assert!(text.contains("ticked an item"), "{text}");
+        // Two separate passes, with the audit's five marks.
+        assert!(text.contains("PASS ONE, AGAINST THE SPEC"), "{text}");
+        assert!(text.contains("PASS TWO, AGAINST THE STANDARDS"), "{text}");
+        assert!(text.contains("never merged"), "{text}");
+        for mark in ["done", "partial", "not done", "changed", "unverifiable"] {
+            assert!(text.contains(mark), "the audit has no mark {mark:?}");
+        }
+        assert!(text.contains("did not ask for"), "{text}");
+        // A weakened check is the user's, as restore or keep.
+        assert!(text.contains("restore or keep"), "{text}");
+        assert!(text.contains("never decided by you"), "{text}");
+        // A decision per finding, before any fix.
+        assert!(text.contains("fix, defer or reject"), "{text}");
+        // A task with no spec has what it is reviewed against.
+        assert!(text.contains("A task with no spec"), "{text}");
+        // An issue that passed is not done.
+        assert!(text.contains("ready to merge and not done"), "{text}");
+    }
+
+    for text in rendered(ADDRESSING) {
+        assert!(text.contains("before any fix"), "{text}");
+        assert!(
+            text.contains("do not review the issue again yourself"),
+            "{text}"
+        );
+        assert!(text.contains("`in_review`"), "{text}");
+    }
 }

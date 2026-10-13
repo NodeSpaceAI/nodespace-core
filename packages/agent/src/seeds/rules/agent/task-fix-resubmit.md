@@ -1,0 +1,1 @@
+Call get_node_context with the issue's id for its node_version now, then call update_task_status with the issue's id, status "in_review" and that version.

@@ -1,0 +1,1 @@
+Call run_query with query "Ready tasks" and limit 10, without with_context: each node is a ready task with its title and id. To list one project's work, add filters [{"type": "relationship", "operator": "equals", "path": ["project"], "node_id": "<the checkout's project id>"}]. No item means nothing is ready: say so and stop.
