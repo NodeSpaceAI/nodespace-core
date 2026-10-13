@@ -3220,7 +3220,14 @@ pub async fn update_schema(
             .as_deref()
             .or(schema_before.title_template.as_deref());
         if let Some(template) = template {
-            for name in remove_names {
+            // A name this call also supplies again, by an addition or a
+            // rename, is still declared afterwards: that is how a templated
+            // field's type is changed.
+            let supplied = |name: &String| {
+                params.add_fields.iter().flatten().any(|f| &f.name == name)
+                    || params.rename_fields.iter().flatten().any(|r| &r.to == name)
+            };
+            for name in remove_names.iter().filter(|name| !supplied(name)) {
                 if template.contains(&format!("{{{name}}}")) {
                     return Err(MarkdownError::invalid_params(format!(
                         "Field '{name}' is named by the title template \"{template}\" and \

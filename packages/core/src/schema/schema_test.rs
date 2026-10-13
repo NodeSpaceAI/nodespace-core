@@ -7864,3 +7864,31 @@ async fn test_update_schema_hold_lists_a_capped_number_of_references() {
         "{held}"
     );
 }
+
+/// Removing a templated field and declaring it again in the same call is how
+/// its type is changed, and leaves the template naming a field that exists.
+#[tokio::test]
+async fn test_update_schema_removal_with_the_field_added_again_is_not_refused() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{ "name": "state", "type": "text" }],
+            "title_template": "{state}"
+        }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["state"],
+            "add_fields": [{ "name": "state", "type": "number" }]
+        }),
+    )
+    .await
+    .expect("a field removed and added again keeps the template valid");
+}
