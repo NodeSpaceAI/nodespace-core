@@ -504,8 +504,25 @@ impl DatabaseManager {
         }
     }
 
+    /// The directory managed databases are created in: `database/` beside this
+    /// manager's registry file.
+    ///
+    /// Derived from where the registry lives, not from the ambient home. In the
+    /// daemon the registry is `<nodespace dir>/databases.toml` (see
+    /// [`Self::default_registry_path`]), so this is `<nodespace dir>/database`;
+    /// a manager loaded from a registry elsewhere (an in-process one in a test)
+    /// keeps its databases beside that registry instead of writing into the
+    /// user's real home.
+    fn managed_database_dir(&self) -> PathBuf {
+        self.registry_path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join("database")
+    }
+
     /// Create a brand-new database under `name`. When `path` is `None` the
-    /// daemon derives a path under its managed database directory.
+    /// daemon derives a path under its managed database directory
+    /// ([`Self::managed_database_dir`]).
     ///
     /// The database file is created and opened BEFORE the registry entry is
     /// persisted, so the registry never advertises a database whose file does
@@ -518,9 +535,7 @@ impl DatabaseManager {
         let id = DatabaseId::generate();
         let path = match path {
             Some(path) => path,
-            None => crate::nodespace_dir()?
-                .join("database")
-                .join(format!("{id}.db")),
+            None => self.managed_database_dir().join(format!("{id}.db")),
         };
         // Creating on top of an existing file would silently adopt (and share)
         // foreign data; `register` is the path for existing database files.
@@ -1354,6 +1369,22 @@ mod tests {
             dir,
             registry_path,
         )
+    }
+
+    /// With no path, a database is created beside the manager's own registry,
+    /// not under the ambient home: a manager loaded from a temp dir must never
+    /// write into the user's real `~/.nodespace/database/`.
+    #[tokio::test]
+    async fn create_without_a_path_stays_beside_the_registry() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+
+        let created = mgr.create("Work".into(), None).await.unwrap();
+
+        assert_eq!(
+            created.path.parent(),
+            Some(dir.path().join("database").as_path())
+        );
+        assert!(created.path.exists());
     }
 
     #[tokio::test]
