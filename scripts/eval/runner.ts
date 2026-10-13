@@ -1196,6 +1196,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       const before = fixture.graph
         ? captureSnapshot(env, fixture.graph.types, {
             edgesFor: (n) => groupNodeIds.has(n.id),
+            relations: fixture.graph.relations,
           })
         : undefined;
 
@@ -1222,6 +1223,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
             edgesFor: (n) =>
               groupNodeIds.has(n.id) ||
               !before?.nodes.some((p) => p.id === n.id),
+            relations: fixture.graph.relations,
           })
         : undefined;
       for (const n of after?.nodes ?? []) {

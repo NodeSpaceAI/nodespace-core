@@ -281,7 +281,15 @@ export function readRelatedIds(payload: unknown): string[] {
 export function captureSnapshot(
   env: EvalEnv,
   types: string[],
-  options: { edgesFor?: (n: SnapshotNode) => boolean } = {},
+  options: {
+    edgesFor?: (n: SnapshotNode) => boolean;
+    /**
+     * Relations walked beside the universal ones: names a fixture's scenarios
+     * assert that a type declares (`blocks`, or the derived `assignee` and
+     * `project` of a task). Each adds one CLI round-trip per walked node.
+     */
+    relations?: string[];
+  } = {},
 ): GraphSnapshot {
   try {
     const schemaNodes = readNodeList(runCli(env, ["schema", "list"]));
@@ -320,9 +328,12 @@ export function captureSnapshot(
 
     const edges: SnapshotEdge[] = [];
     const walk = options.edgesFor ?? (() => true);
+    const walked = [
+      ...new Set([...UNIVERSAL_RELATIONS, ...(options.relations ?? [])]),
+    ];
     for (const n of nodes) {
       if (!walk(n)) continue;
-      for (const rel of UNIVERSAL_RELATIONS) {
+      for (const rel of walked) {
         // Deliberately NOT caught, unlike the node query above.
         //
         // That asymmetry is the point. A node query can fail for an expected
