@@ -523,8 +523,8 @@ export interface Provenance {
   /**
    * Which seeded guidance this run actually measured.
    *
-   * Seeding is content-versioned (`_seed.version`/`_seed.key` on each seeded
-   * prompt/skill node) and only replaces stale content on daemon startup — a
+   * Seeding is content-versioned (`_seed.key` and `_seed.config_version`/`_seed.guidance_version` on each seeded
+   * guidance/skill node) and only replaces stale content on daemon startup — a
    * long-running daemon started before a guidance edit landed keeps serving
    * the old content indefinitely, silently. This is read back from the served
    * database right before the run (see `readGuidanceProvenance` in
@@ -538,10 +538,20 @@ export interface Provenance {
  * Seed keys and versions for one seeded node type, as actually served.
  *
  * A map rather than a fixed shape because the set of seeded types (currently
- * prompt, skill) is a property of the schema, not of this eval.
+ * agent-guidance, skill) is a property of the schema, not of this eval.
  */
 export interface GuidanceProvenance {
-  [nodeType: string]: Array<{ key: string; version: string }>;
+  [nodeType: string]: SeedEntry[];
+}
+
+/**
+ * One seeded node's `_seed` stamp. The two versions are separate hashes: config
+ * covers the root's own fields, guidance its markdown children.
+ */
+export interface SeedEntry {
+  key: string;
+  configVersion: string;
+  guidanceVersion: string;
 }
 
 /** One repetition's scored scenarios and the conditions that produced them. */

@@ -11,7 +11,13 @@
  * separately-implemented, separately-broken versions of the same five concerns.
  */
 
-import { readEnv, ENV_USAGE, REPO_ROOT, type EvalEnv } from "./env.ts";
+import {
+  readEnv,
+  ENV_USAGE,
+  providerOf,
+  REPO_ROOT,
+  type EvalEnv,
+} from "./env.ts";
 import {
   captureSnapshot,
   diffSnapshots,
@@ -20,7 +26,9 @@ import {
 } from "./graph.ts";
 import {
   abortOnEnvironment,
+  assertNoModelContention,
   awaitSkillIndex,
+  formatSeedEntry,
   preflight,
   readDaemonStatus,
   readGuidanceProvenance,
@@ -815,7 +823,7 @@ export function checkGuidanceDrift(
         .map(([type, entries]) => [
           type,
           [...entries]
-            .map((e) => `${e.key}@${e.version}`)
+            .map(formatSeedEntry)
             .sort((a, b) => a.localeCompare(b)),
         ])
         .sort((a, b) => (a[0] as string).localeCompare(b[0] as string)),
@@ -1026,11 +1034,31 @@ function takeFlag(
   return value;
 }
 
+/**
+ * Read which guidance the served database holds, aborting the run when it
+ * cannot be read or a seeded type is empty — a run that cannot say what it
+ * measured is not recorded.
+ */
+function readGuidanceOrAbort(
+  evalName: string,
+  databasePath: string,
+): GuidanceProvenance {
+  try {
+    return readGuidanceProvenance(databasePath);
+  } catch (e) {
+    if (e instanceof EnvironmentError) abortOnEnvironment(evalName, e);
+    throw e;
+  }
+}
+
 /** Read the daemon status and run preflight, aborting on an environment failure. */
 function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
   try {
     const s = readDaemonStatus(env);
     preflight(env, s);
+    // After the model checks, so a wrong or missing model is reported first.
+    // A remote model runs on the provider's hardware, not this GPU.
+    if (providerOf(env.model) !== "openai-compat") assertNoModelContention(env);
     // Runs after the checks above and before any scenario: embeddings are
     // generated on a ~30s debounce, so a daemon freshly started against a
     // purged database — which is exactly what the documented `--between-runs`
@@ -1510,7 +1538,7 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
       ...(s.modelMatchedByPath ? { modelMatchedByPath: true } : {}),
       evalCommit: commit,
       dirty,
-      guidance: readGuidanceProvenance(env),
+      guidance: readGuidanceOrAbort(fixture.name, s.databasePath),
     };
   };
 
@@ -1534,7 +1562,7 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
       `[${fixture.name}] guidance seeded (${nodeType}): ${
         entries.length === 0
           ? "none found — cannot confirm what this run measured"
-          : entries.map((e) => `${e.key}@${e.version}`).join(", ")
+          : entries.map(formatSeedEntry).join(", ")
       }`,
     );
   }

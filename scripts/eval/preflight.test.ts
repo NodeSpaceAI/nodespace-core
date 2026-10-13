@@ -13,62 +13,197 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { providerOf } from "./env.ts";
 import {
+  assertNoModelContention,
   awaitSkillIndex,
   embeddedSkillCount,
-  extractSeedEntries,
+  EnvironmentError,
+  findModelHolders,
+  parseSeedEntries,
   providerIdsIn,
+  readGuidanceProvenance,
   remoteConfigId,
   seededSkillCount,
 } from "./preflight.ts";
 
-describe("extractSeedEntries", () => {
-  test("extracts key and version from seeded nodes", () => {
-    const json = JSON.stringify({
-      nodes: [
-        {
-          properties: { _seed: { key: "node-creation", version: "3" } },
-        },
-        {
-          properties: { _seed: { key: "graph-editing", version: "1" } },
-        },
+describe("parseSeedEntries", () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    type: "skill",
+    key: "Node Creation",
+    config_version: "c1",
+    guidance_version: "g1",
+    ...over,
+  });
+
+  test("groups rows by node type with both versions", () => {
+    const json = JSON.stringify([
+      row(),
+      row({ type: "agent-guidance", key: "Core" }),
+    ]);
+    expect(parseSeedEntries(json)).toEqual({
+      skill: [
+        { key: "Node Creation", configVersion: "c1", guidanceVersion: "g1" },
+      ],
+      "agent-guidance": [
+        { key: "Core", configVersion: "c1", guidanceVersion: "g1" },
       ],
     });
-    expect(extractSeedEntries(json)).toEqual([
-      { key: "node-creation", version: "3" },
-      { key: "graph-editing", version: "1" },
+  });
+
+  test("drops a row missing its key or either version", () => {
+    const json = JSON.stringify([
+      row({ key: null }),
+      row({ config_version: null }),
+      row({ guidance_version: undefined }),
+    ]);
+    expect(parseSeedEntries(json)).toEqual({});
+  });
+
+  test("returns nothing for empty or unparseable output", () => {
+    expect(parseSeedEntries("")).toEqual({});
+    expect(parseSeedEntries("not json")).toEqual({});
+    expect(parseSeedEntries(JSON.stringify({ not: "rows" }))).toEqual({});
+  });
+});
+
+describe("readGuidanceProvenance", () => {
+  const rows = JSON.stringify([
+    { type: "skill", key: "A", config_version: "c", guidance_version: "g" },
+    { type: "agent-guidance", key: "B", config_version: "c", guidance_version: "g" },
+  ]);
+
+  test("returns every seeded type's entries", () => {
+    const g = readGuidanceProvenance("/db", () => ({ exitCode: 0, stdout: rows }));
+    expect(Object.keys(g).sort()).toEqual(["agent-guidance", "skill"]);
+  });
+
+  test("queries the seed stamp, not node properties through the CLI", () => {
+    let sql = "";
+    readGuidanceProvenance("/db", (_db, q) => {
+      sql = q;
+      return { exitCode: 0, stdout: rows };
+    });
+    expect(sql).toContain("$._seed.config_version");
+    expect(sql).toContain("$._seed.guidance_version");
+  });
+
+  test("an empty readback fails the run rather than recording nothing", () => {
+    expect(() =>
+      readGuidanceProvenance("/db", () => ({ exitCode: 0, stdout: "" })),
+    ).toThrow(EnvironmentError);
+  });
+
+  test("a seeded type with no entries fails the run", () => {
+    const onlySkill = JSON.stringify([
+      { type: "skill", key: "A", config_version: "c", guidance_version: "g" },
+    ]);
+    expect(() =>
+      readGuidanceProvenance("/db", () => ({ exitCode: 0, stdout: onlySkill })),
+    ).toThrow(/agent-guidance/);
+  });
+
+  test("an unreadable database fails the run", () => {
+    expect(() =>
+      readGuidanceProvenance("/db", () => ({ exitCode: 1, stdout: "" })),
+    ).toThrow(EnvironmentError);
+    expect(() =>
+      readGuidanceProvenance("/db", () => {
+        throw new Error("Executable not found");
+      }),
+    ).toThrow(EnvironmentError);
+    expect(() => readGuidanceProvenance("")).toThrow(EnvironmentError);
+  });
+});
+
+describe("findModelHolders", () => {
+  const SOCKET = "/tmp/eval.sock";
+  const lsof = (...procs: string[][]) =>
+    procs.map((lines) => lines.join("\n")).join("\n");
+  const proc = (pid: number, cmd: string, cwd: string, ...names: string[]) => [
+    `p${pid}`,
+    `c${cmd}`,
+    "fcwd",
+    `n${cwd}`,
+    ...names.flatMap((n) => ["f9", `n${n}`]),
+  ];
+
+  test("the daemon under test is expected, whatever it holds", () => {
+    const out = lsof(
+      proc(10, "nodespaced", "/w", SOCKET, "/m/gemma-4-e4b.gguf"),
+    );
+    expect(findModelHolders(out, SOCKET)).toEqual([]);
+  });
+
+  test("another process holding a chat model is named with its cwd", () => {
+    const out = lsof(
+      proc(10, "nodespaced", "/w", SOCKET, "/m/gemma-4-e4b.gguf"),
+      proc(20, "nodespace-app", "/Users/x/wt/pr-9", "/m/gemma-4-e4b.gguf"),
+    );
+    expect(findModelHolders(out, SOCKET)).toEqual([
+      {
+        pid: 20,
+        command: "nodespace-app",
+        cwd: "/Users/x/wt/pr-9",
+        models: ["/m/gemma-4-e4b.gguf"],
+      },
     ]);
   });
 
-  test("skips nodes with no _seed metadata", () => {
-    const json = JSON.stringify({
-      nodes: [
-        { properties: { _seed: { key: "a", version: "1" } } },
-        { properties: {} },
-        { properties: { _seed: {} } },
-      ],
-    });
-    expect(extractSeedEntries(json)).toEqual([{ key: "a", version: "1" }]);
+  test("the embedding model is not contention", () => {
+    const out = lsof(
+      proc(20, "nodespaced", "/w", "/m/nomic-embed-text-v1.5.Q8_0.gguf"),
+    );
+    expect(findModelHolders(out, SOCKET)).toEqual([]);
   });
 
-  test("falls back to a placeholder when version is missing", () => {
-    const json = JSON.stringify({
-      nodes: [{ properties: { _seed: { key: "a" } } }],
-    });
-    expect(extractSeedEntries(json)).toEqual([
-      { key: "a", version: "(no version)" },
+  test("an Ollama blob counts, a manifest does not", () => {
+    const blob = "/Users/x/.ollama/models/blobs/sha256-0a1b2c";
+    const out = lsof(
+      proc(30, "ollama", "/", blob, "/Users/x/.ollama/models/manifests/m"),
+    );
+    expect(findModelHolders(out, SOCKET).map((h) => h.models)).toEqual([
+      [blob],
     ]);
   });
 
-  test("returns an empty list for no nodes", () => {
-    expect(extractSeedEntries(JSON.stringify({ nodes: [] }))).toEqual([]);
+  test("a process listed once per file reports each model once", () => {
+    const out = lsof(
+      proc(20, "llama", "/w", "/m/a.gguf", "/m/a.gguf", "/m/b.gguf"),
+    );
+    expect(findModelHolders(out, SOCKET)[0]?.models).toEqual([
+      "/m/a.gguf",
+      "/m/b.gguf",
+    ]);
+  });
+});
+
+describe("assertNoModelContention", () => {
+  const env = { socket: "/tmp/eval.sock" };
+
+  test("passes when nothing else holds a model", () => {
+    expect(() => assertNoModelContention(env, () => "p1\ncinit\n")).not.toThrow();
   });
 
-  test("returns an empty list rather than throwing on unparseable JSON", () => {
-    expect(extractSeedEntries("not json")).toEqual([]);
+  test("names the holder and its working directory", () => {
+    const out = "p20\ncnodespace-app\nfcwd\nn/Users/x/wt/pr-9\nf9\nn/m/chat.gguf\n";
+    let message = "";
+    try {
+      assertNoModelContention(env, () => out);
+    } catch (e) {
+      expect(e).toBeInstanceOf(EnvironmentError);
+      message = (e as Error).message;
+    }
+    expect(message).toContain("pid 20");
+    expect(message).toContain("nodespace-app");
+    expect(message).toContain("/Users/x/wt/pr-9");
+    expect(message).toContain("/m/chat.gguf");
   });
 
-  test("returns an empty list when the nodes key is absent", () => {
-    expect(extractSeedEntries(JSON.stringify({}))).toEqual([]);
+  test("fails closed when open files cannot be listed", () => {
+    expect(() =>
+      assertNoModelContention(env, () => {
+        throw new Error("lsof: not found");
+      }),
+    ).toThrow(EnvironmentError);
   });
 });
 

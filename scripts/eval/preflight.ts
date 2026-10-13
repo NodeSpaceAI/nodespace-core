@@ -24,7 +24,7 @@
  */
 
 import { providerOf, REMOTE_MODEL_PREFIX, type EvalEnv } from "./env.ts";
-import type { GuidanceProvenance } from "./types.ts";
+import type { GuidanceProvenance, SeedEntry } from "./types.ts";
 
 /** Scenario assertions failed. */
 export const EXIT_FAILED = 1;
@@ -501,79 +501,263 @@ const SEEDED_GUIDANCE_TYPES = ["agent-guidance", "skill"];
 /** The id of a database's settings node, where its provider configs live. */
 const DATABASE_SETTINGS_ID = "database-settings-singleton";
 
+/** A whole-system `lsof` takes a few seconds; this only catches a hang. */
+const LSOF_TIMEOUT_MS = 60_000;
+
 /**
- * Read back which seeded prompt/skill content the daemon is actually serving.
+ * Read back which seeded guidance and skill content the daemon is serving.
  *
- * Seeding is content-versioned (`_seed.key`/`_seed.version` on each seeded
- * node) and only replaces stale content when `seed_nodes_from_templates` runs
- * again, which happens on daemon startup — a long-running daemon started
- * before a guidance edit landed keeps serving the old content indefinitely,
- * and nothing about the daemon being reachable or the right model being
- * loaded would reveal that. This is the eval's own check for exactly that:
- * read every seeded prompt/skill node's version back through the same `node
- * query --json` path an operator would use to check by hand, and record it in
- * provenance so a stale-guidance run cannot be mistaken for a fresh one
- * without re-querying the database.
+ * Seeding is content-versioned (`_seed.key`, `_seed.config_version` and
+ * `_seed.guidance_version` on each seeded root node) and only replaces stale
+ * content when seeding runs again, which happens on daemon startup — a
+ * long-running daemon started before a guidance edit landed keeps serving the
+ * old content indefinitely, and nothing about the daemon being reachable or the
+ * right model being loaded would reveal that. This records every seeded node's
+ * versions so a stale-guidance run cannot be mistaken for a fresh one.
  *
- * Best-effort: a query failure or a CLI predating `node query` degrades to an
- * empty entry for that type (recorded, not thrown) rather than aborting the
- * run — this check exists to make staleness visible, not to gate the run the
- * way database-isolation or model-match do, since older builds legitimately
- * lack it.
+ * Read from the served database, not through the CLI: `_seed` is internal
+ * bookkeeping that the CLI's node output deliberately never exposes, so a
+ * `node query` readback sees no seed marker on any node.
+ *
+ * Fails the run when a seeded type comes back with no entries. An empty
+ * readback is not "nothing to record": the run cannot say what it measured, and
+ * the drift check across reps would compare two empty fingerprints and pass.
  */
-export function readGuidanceProvenance(env: EvalEnv): GuidanceProvenance {
-  const guidance: GuidanceProvenance = {};
-  for (const nodeType of SEEDED_GUIDANCE_TYPES) {
-    const r = Bun.spawnSync(
-      [
-        env.nsBin,
-        "--socket",
-        env.socket,
-        "--json",
-        "node",
-        "query",
-        "--type",
-        nodeType,
-        "--limit",
-        "200",
-      ],
-      { stdout: "pipe", stderr: "pipe" },
+export function readGuidanceProvenance(
+  databasePath: string,
+  run: (db: string, sql: string) => { exitCode: number | null; stdout: string } = (
+    db,
+    sql,
+  ) => {
+    const r = Bun.spawnSync(["sqlite3", "-json", db, sql], {
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: SKILL_PROBE_TIMEOUT_MS,
+    });
+    return { exitCode: r.exitCode, stdout: r.stdout.toString() };
+  },
+): GuidanceProvenance {
+  const unreadable = (detail: string) =>
+    new EnvironmentError(
+      `Could not read which guidance the daemon is serving (${detail}), so this ` +
+        `run cannot say what it measured.`,
+      `Confirm \`sqlite3\` is installed and ${databasePath || "the served database"} ` +
+        `is readable, and that the daemon booted against a seeded database.`,
     );
-    guidance[nodeType] =
-      r.exitCode === 0 ? extractSeedEntries(r.stdout.toString()) : [];
+  if (!databasePath) throw unreadable("no database path");
+
+  const types = SEEDED_GUIDANCE_TYPES.map((t) => `'${t}'`).join(", ");
+  let r: { exitCode: number | null; stdout: string };
+  try {
+    r = run(
+      databasePath,
+      "SELECT node_type AS type, " +
+        "json_extract(properties, '$._seed.key') AS key, " +
+        "json_extract(properties, '$._seed.config_version') AS config_version, " +
+        "json_extract(properties, '$._seed.guidance_version') AS guidance_version " +
+        `FROM node WHERE node_type IN (${types}) ` +
+        "AND json_extract(properties, '$._seed.key') IS NOT NULL",
+    );
+  } catch (e) {
+    throw unreadable(`${e}`);
+  }
+  if (r.exitCode !== 0) throw unreadable(`sqlite3 exited ${r.exitCode}`);
+
+  const guidance = parseSeedEntries(r.stdout);
+  for (const nodeType of SEEDED_GUIDANCE_TYPES) {
+    if ((guidance[nodeType] ?? []).length === 0) {
+      throw new EnvironmentError(
+        `The served database holds no seeded \`${nodeType}\` node with a seed ` +
+          `key and versions, so this run cannot confirm what guidance it measured.`,
+        `Seeding runs at daemon startup. Confirm the daemon booted against this ` +
+          `database (${databasePath}) and was started after the last guidance change.`,
+      );
+    }
   }
   return guidance;
 }
 
 /**
- * Pull `{key, version}` out of `node query --json` output for one node type.
+ * Group `sqlite3 -json` rows from the seed query by node type.
  *
- * Separated from `readGuidanceProvenance` so the parsing — the part that can
- * actually have a bug — is unit-testable against a fixed JSON string, without
- * spawning the CLI or a daemon. Returns `[]` (never throws) on unparseable
- * input or a node missing `_seed.key`, matching the caller's best-effort
- * contract: a node with no seed metadata is not "this type's guidance is
- * unseeded," it just is not counted.
+ * Separated from `readGuidanceProvenance` so the parsing is unit-testable
+ * against a fixed JSON string, without a database. Returns `{}` on unparseable
+ * or empty output; a row missing its key or either version is dropped, so the
+ * caller's empty-type check fails the run on it rather than recording a
+ * version no reader could compare.
  */
-export function extractSeedEntries(
-  queryJson: string,
-): Array<{ key: string; version: string }> {
-  let parsed: { nodes?: Array<{ properties?: Record<string, unknown> }> };
+export function parseSeedEntries(rowsJson: string): GuidanceProvenance {
+  let rows: unknown;
   try {
-    parsed = JSON.parse(queryJson);
+    rows = rowsJson.trim() === "" ? [] : JSON.parse(rowsJson);
   } catch {
-    return [];
+    return {};
   }
-  return (parsed.nodes ?? [])
-    .map((n) => {
-      const seed = n.properties?._seed as
-        | { key?: string; version?: string }
-        | undefined;
-      return seed?.key
-        ? { key: seed.key, version: seed.version ?? "(no version)" }
-        : null;
-    })
-    .filter((x): x is { key: string; version: string } => x !== null);
+  if (!Array.isArray(rows)) return {};
+  const out: GuidanceProvenance = {};
+  for (const row of rows as Array<Record<string, unknown>>) {
+    const { type, key, config_version, guidance_version } = row;
+    if (
+      typeof type !== "string" ||
+      typeof key !== "string" ||
+      typeof config_version !== "string" ||
+      typeof guidance_version !== "string"
+    ) {
+      continue;
+    }
+    (out[type] ??= []).push({
+      key,
+      configVersion: config_version,
+      guidanceVersion: guidance_version,
+    });
+  }
+  return out;
+}
+
+/** One seeded node as `key@config/guidance`, for logs and the drift fingerprint. */
+export function formatSeedEntry(e: SeedEntry): string {
+  return `${e.key}@${e.configVersion}/${e.guidanceVersion}`;
+}
+
+/** A process holding a generative model open. */
+export interface ModelHolder {
+  pid: number;
+  command: string;
+  /** The process's working directory, or "" when it could not be read. */
+  cwd: string;
+  /** Paths of the generative model files it holds open. */
+  models: string[];
+}
+
+/**
+ * Whether an open file is a generative model's weights.
+ *
+ * Weights are memory-mapped, so a loaded model shows up as an open regular file
+ * in `lsof` for as long as its owner lives. A GGUF whose name says "embed" is
+ * the embedding model, which every daemon holds and which is small enough to
+ * share the GPU with a chat model; it is not contention.
+ */
+function isGenerativeModelFile(path: string): boolean {
+  const name = path.split("/").pop() ?? "";
+  if (/\.gguf$/i.test(name)) return !/embed/i.test(name);
+  // A model served by Ollama is a content-addressed blob, not a `.gguf`.
+  return /\/\.ollama\/models\/blobs\/sha256-[0-9a-f]+$/.test(path);
+}
+
+/**
+ * Find the processes, other than the daemon under test, that hold a generative
+ * model open.
+ *
+ * Parses `lsof -F pcfn` output (one field per line: `p` pid, `c` command, `f`
+ * descriptor, `n` name). The daemon being evaluated is identified by the unix
+ * socket it listens on, which appears as a file name of its own — so the model
+ * it serves is expected and every other holder is not. Pure, so the parsing is
+ * testable against fixed output.
+ */
+export function findModelHolders(lsofOutput: string, socket: string): ModelHolder[] {
+  const holders: ModelHolder[] = [];
+  let cur: (ModelHolder & { servesSocket: boolean }) | undefined;
+  let fd = "";
+  const flush = () => {
+    if (cur && !cur.servesSocket && cur.models.length > 0) {
+      holders.push({
+        pid: cur.pid,
+        command: cur.command,
+        cwd: cur.cwd,
+        models: cur.models,
+      });
+    }
+  };
+  for (const line of lsofOutput.split("\n")) {
+    const field = line[0];
+    const value = line.slice(1);
+    if (field === "p") {
+      flush();
+      cur = {
+        pid: Number.parseInt(value, 10),
+        command: "",
+        cwd: "",
+        models: [],
+        servesSocket: false,
+      };
+      fd = "";
+    } else if (!cur) {
+      continue;
+    } else if (field === "c") {
+      cur.command = value;
+    } else if (field === "f") {
+      fd = value;
+    } else if (field === "n") {
+      if (fd === "cwd") cur.cwd = value;
+      if (value === socket) cur.servesSocket = true;
+      if (isGenerativeModelFile(value) && !cur.models.includes(value)) {
+        cur.models.push(value);
+      }
+    }
+  }
+  flush();
+  return holders;
+}
+
+/**
+ * Refuse to score while another process holds a generative model open.
+ *
+ * A second model on a 16 GB machine can exhaust Metal memory. The turns that
+ * run out of it call no tools, so a negative-assertion scenario scores them as
+ * a pass — a result from an environment where nothing worked. The merge gate's
+ * Tauri-seam tests load a chat model, so any queued merge can create exactly
+ * this beside an eval, and nothing in the run itself would show it.
+ *
+ * Fails CLOSED when `lsof` cannot be run: "could not tell" must not read as
+ * "nothing else is running".
+ */
+export function assertNoModelContention(
+  env: Pick<EvalEnv, "socket">,
+  listOpenFiles: () => string = defaultListOpenFiles,
+): void {
+  let output: string;
+  try {
+    output = listOpenFiles();
+  } catch (e) {
+    throw new EnvironmentError(
+      `Could not list open files to check for another model on the GPU: ${e}`,
+      `Install \`lsof\`, or confirm by hand that no other process has a chat model ` +
+        `loaded before running.`,
+    );
+  }
+  const holders = findModelHolders(output, env.socket);
+  if (holders.length === 0) return;
+
+  const lines = holders.map(
+    (h) =>
+      `    pid ${h.pid}  ${h.command}\n` +
+      `      cwd:   ${h.cwd || "(unknown)"}\n` +
+      `      model: ${h.models.join(", ")}`,
+  );
+  throw new EnvironmentError(
+    `Another process has a generative model loaded:\n${lines.join("\n")}\n` +
+      `  Two models on one GPU can run Metal out of memory; the turns that then call ` +
+      `no tools score a "no tools called" scenario as PASSING.`,
+    `Wait for it to finish (a queued \`bun run merge\` loads a chat model in its ` +
+      `Tauri-seam tests) or stop it, then re-run. Poll about every 20 minutes ` +
+      `rather than starting beside it.`,
+  );
+}
+
+/** `lsof` output for every process the user can see, in `-F pcfn` form. */
+function defaultListOpenFiles(): string {
+  const r = Bun.spawnSync(["lsof", "-nP", "-F", "pcfn"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: LSOF_TIMEOUT_MS,
+  });
+  const stdout = r.stdout.toString();
+  // lsof exits 1 when it could not read some process's files, which on a
+  // multi-user machine is always — a listing that came back is usable.
+  if (stdout === "") {
+    throw new Error(`lsof exited ${r.exitCode} with no output`);
+  }
+  return stdout;
 }
 
 /**
