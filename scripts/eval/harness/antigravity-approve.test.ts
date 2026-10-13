@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { describe, expect, it } from "bun:test";
 import { decide } from "./antigravity-approve.ts";
 
@@ -20,6 +21,58 @@ describe("the Antigravity scenario approver", () => {
     ]) {
       expect(run(line), line).toBe("auto_approve");
     }
+  });
+
+  // The writes the skill asks for: a checklist tick and an evidence node, with
+  // code in backticks and a prompt's `$` inside double quotes.
+  it("approves the double-quoted content a task's evidence is recorded with", () => {
+    for (const line of [
+      String.raw`nodespace node update abc --content "- [x] \`slugify(\"a -- b\")\` collapses repeated dashes"`,
+      String.raw`nodespace node create evidence --content "Failing run:\n$ node test.js\n\`assert\` failed: a----b"`,
+      String.raw`nodespace node update abc --content "costs \$5 and passes: $ ok"`,
+      'nodespace --json node context abc',
+    ]) {
+      expect(run(line), line).toBe("auto_approve");
+    }
+  });
+
+  it("asks about an expansion inside double quotes", () => {
+    for (const line of ['echo "$HOME"', 'echo "${HOME}"', 'echo "$(id)"', 'echo "`id`"', 'echo "$1"', 'echo "$$"']) {
+      expect(run(line), line).toBe("ask");
+    }
+  });
+
+  it("asks about a nodespace command the scenario does not use", () => {
+    for (const line of [
+      "nodespace session launch claude-code",
+      "nodespace skill install codex",
+      "nodespace database remove x",
+      "nodespace mcp install",
+      "nodespace uninstall",
+      "nodespace",
+    ]) {
+      expect(run(line), line).toBe("ask");
+    }
+  });
+
+  it("asks about a git option that reads or writes a file or runs a program", () => {
+    for (const line of [
+      "git commit -F /etc/passwd",
+      "git commit --template=/etc/passwd",
+      "git commit --amend",
+      "git diff --no-index /etc/passwd x",
+      "git --git-dir=/x status",
+      "git diff --ext-diff",
+      "git show HEAD",
+      "git branch -D main",
+    ]) {
+      expect(run(line), line).toBe("ask");
+    }
+  });
+
+  it("approves creating a path, as its doc comment says it does", () => {
+    // `touch` and `mkdir` can create paths outside the checkout: the rule is a fixture rule, not a boundary.
+    expect(run("mkdir -p notes && touch notes/a")).toBe("auto_approve");
   });
 
   it("asks about a second command hidden behind a quote or an operator", () => {
@@ -79,6 +132,19 @@ describe("the Antigravity scenario approver", () => {
     expect(run("")).toBe("ask");
     expect(run(42)).toBe("ask");
     expect(run("echo 'unterminated")).toBe("ask");
+  });
+
+  it("answers ask on a hook input that is not JSON, as the script it is run as", async () => {
+    for (const input of ["", "not json", "{"]) {
+      const child = Bun.spawn(["bun", `${import.meta.dir}/antigravity-approve.ts`], {
+        stdin: Buffer.from(input),
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const out = JSON.parse(await Bun.readableStreamToText(child.stdout)) as { decision: string };
+
+      expect(out.decision, JSON.stringify(input)).toBe("ask");
+    }
   });
 
   it("leaves a tool that is not a shell command to the session's mode", () => {

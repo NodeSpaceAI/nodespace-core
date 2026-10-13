@@ -13,10 +13,12 @@
  *
  * It is NOT a sandbox. `sh <file>` and `node <file>` run whatever the file
  * holds, and the agent can write files, so an approved line can run arbitrary
- * code. What the rule does is keep an agent from reaching for a program the
- * scenario does not need, in a fixture checkout and an isolated daemon. It is
- * not `--dangerously-skip-permissions`, and it is not to be pointed at a
- * checkout that matters.
+ * code; `touch` and `mkdir` can create paths outside the checkout, and `cat`,
+ * `head` and `grep` can read any path the user can. What the rule does is keep
+ * an agent from reaching for a program the scenario does not need, in a
+ * fixture checkout and an isolated daemon. It is not
+ * `--dangerously-skip-permissions`, and it is not to be pointed at a checkout
+ * that matters.
  *
  * A `PreToolUse` hook must answer with a `decision`, so it prints one and
  * nothing else.
@@ -25,13 +27,25 @@
 export type Decision = { decision: "allow" | "auto_approve" | "ask"; reason?: string };
 
 /** Commands that run as they are, whatever their arguments. */
-const PLAIN = new Set(["nodespace", "cat", "ls", "head", "tail", "grep", "wc", "echo", "printf", "pwd", "true", "test", "mkdir", "touch"]);
+const PLAIN = new Set(["cat", "ls", "head", "tail", "grep", "wc", "echo", "printf", "pwd", "true", "test", "mkdir", "touch"]);
+
+/**
+ * What `nodespace` may be asked, by its first word after `--json`: the
+ * commands that read the graph and work a task. Not `session launch` (it
+ * starts an agent that runs outside this rule), `skill install`, `database`
+ * or `mcp`.
+ */
+const NODESPACE_SUBCOMMANDS = new Set(["node", "query", "skill", "diagnostics"]);
+
+/** `nodespace skill <word>`: reading a skill, not installing one. */
+const NODESPACE_SKILL_WORDS = new Set(["guidance", "get"]);
 
 /** What `git` may be asked, by its first word: no `-c`, no `--exec-path`, nothing that runs a program named on the line. */
-const GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "add", "commit", "rev-parse", "branch", "ls-files"]);
+const GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "add", "commit"]);
 
-/** Arguments of an allowed git command that write a file or run a program. */
-const GIT_REFUSED = /^--(output|exec|open-files-in-pager|upload-pack|receive-pack)/;
+/** Arguments of an allowed git command that read a file named on the line, write one or run a program. */
+const GIT_REFUSED =
+  /^(-F|--file|--template|--git-dir|--work-tree|--no-index|--ext-diff|--textconv|--amend|--output|--exec|--open-files-in-pager|--upload-pack|--receive-pack)/;
 
 /** Redirections that only discard or merge output, removed before the line is read. */
 const HARMLESS_REDIRECTION = /(^|\s)(?:2>&1|&?>\s*\/dev\/null|2>\s*\/dev\/null)(?=\s|;|&|\||$)/g;
@@ -83,11 +97,22 @@ export function words(line: string): string[][] | null {
       i = end;
     } else if (char === '"') {
       let end = i + 1;
+      let quoted = "";
 
-      // Inside double quotes the shell still reads `$`, a backtick and `\`.
+      // Inside double quotes the shell still reads `$` and a backtick, and `\`
+      // before one of `$` `` ` `` `"` `\`. Those are followed here: an escaped
+      // character is a literal, and a `$` that cannot start an expansion is one.
+      // An unescaped backtick, or a `$` that could start one, is not understood.
       for (; end < text.length && text[end] !== '"'; end += 1) {
-        if ("$`\\".includes(text[end] ?? "")) {
+        const inside = text[end] ?? "";
+
+        if (inside === "\\" && "$`\"\\".includes(text[end + 1] ?? "\u0000")) {
+          end += 1;
+          quoted += text[end] ?? "";
+        } else if (inside === "`" || (inside === "$" && /[A-Za-z0-9_{(@*#?!$-]/.test(text[end + 1] ?? ""))) {
           return null;
+        } else {
+          quoted += inside;
         }
       }
 
@@ -95,7 +120,7 @@ export function words(line: string): string[][] | null {
         return null;
       }
 
-      word += text.slice(i + 1, end);
+      word += quoted;
       isWord = true;
       i = end;
     } else if (char === " " || char === "\t") {
@@ -136,6 +161,13 @@ function isAllowed(command: readonly string[]): boolean {
   // The name is looked up as written: a path, or `VAR=value` before it, is not on the list.
   if (PLAIN.has(name)) {
     return true;
+  }
+
+  if (name === "nodespace") {
+    // `--json` is a global flag, and may come first.
+    const [subcommand = "", next = ""] = command.slice(1).filter((word, index) => !(index === 0 && word === "--json"));
+
+    return NODESPACE_SUBCOMMANDS.has(subcommand) && (subcommand !== "skill" || NODESPACE_SKILL_WORDS.has(next));
   }
 
   if (name === "git") {
