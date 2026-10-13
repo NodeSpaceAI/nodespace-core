@@ -133,7 +133,12 @@ fn signal_ui_to_quit(_pid_file: Option<&Path>, ui_binary: Option<&Path>) {
     };
     #[cfg(not(test))]
     {
+        use std::os::windows::process::CommandExt;
+        // The daemon is spawned `DETACHED_PROCESS`, so it has no console and
+        // Windows would open (and flash) one for `taskkill`.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = Command::new("taskkill")
+            .creation_flags(CREATE_NO_WINDOW)
             .args(["/F", "/IM"])
             .arg(image_name)
             .output();

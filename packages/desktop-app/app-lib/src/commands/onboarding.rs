@@ -479,11 +479,11 @@ pub async fn get_identity_prefill() -> IdentityPrefill {
 }
 
 async fn run_git_config(key: &str) -> Option<String> {
-    let output = tokio::process::Command::new("git")
-        .args(["config", "--get", key])
-        .output()
-        .await
-        .ok()?;
+    let mut command = tokio::process::Command::new("git");
+    // A GUI process has no console, so Windows would flash one for `git`.
+    #[cfg(windows)]
+    command.creation_flags(crate::daemon_setup::CREATE_NO_WINDOW);
+    let output = command.args(["config", "--get", key]).output().await.ok()?;
     if !output.status.success() {
         return None;
     }

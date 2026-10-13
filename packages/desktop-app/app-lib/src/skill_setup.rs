@@ -193,7 +193,7 @@ async fn write_setup_state(state: &SetupState) -> Result<()> {
 /// check reports "not found" even when the CLI is genuinely correctly
 /// installed and would resolve fine from a terminal.
 pub fn check_cli_on_path() -> bool {
-    Command::new("nodespace")
+    crate::daemon_setup::hide_console_window(&mut Command::new("nodespace"))
         .args(["--version"])
         .env("PATH", augmented_cli_path())
         .stdout(std::process::Stdio::null())
@@ -856,6 +856,7 @@ const INSTALLER_RUNTIMES: [&str; 2] = ["bun", "node"];
 /// `uninstall`, or `status`.
 fn installer_command(installer_path: &Path, runtime: &str, subcommand: &str) -> Command {
     let mut cmd = Command::new(runtime);
+    crate::daemon_setup::hide_console_window(&mut cmd);
     cmd.arg(installer_path).arg(subcommand);
     cmd
 }
@@ -866,6 +867,7 @@ fn installer_command(installer_path: &Path, runtime: &str, subcommand: &str) -> 
 /// execution so both are independently testable.
 fn compiled_installer_command(binary: &Path, resource_root: &Path, subcommand: &str) -> Command {
     let mut cmd = Command::new(binary);
+    crate::daemon_setup::hide_console_window(&mut cmd);
     cmd.arg(subcommand)
         .arg("--resource-root")
         .arg(resource_root);
