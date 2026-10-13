@@ -5,7 +5,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import nodespacePi from '../../plugins/pi/index';
 import { NodeSpace as nodespaceOpenCode } from '../../plugins/opencode/nodespace';
-import { createSession, httpsRemote } from '../../plugins/shared/nodespace-session';
+import { createSession, httpsRemote, nodespaceInvocations } from '../../plugins/shared/nodespace-session';
 import type { Host } from '../../plugins/shared/nodespace-session';
 import { CONSENT_RULES, ORIENTATION } from '../shipped-text.js';
 
@@ -401,6 +401,39 @@ describe('a session, whichever harness it runs in', () => {
 
     await session.beforeTool();
     expect(w.calls).toHaveLength(before + 1);
+  });
+
+  it('watches an item the context read names through a variable set earlier in the line', async () => {
+    const w = world();
+    const session = createSession(hostOf(w), 60_000);
+    await session.start('/work/widgets', { sessionId: 'ses_1' });
+    await session.afterTool('id=t1; nodespace node context $id | head -40', '');
+    expect(commands(w).slice(-1)).toEqual(['node context t1']);
+
+    await session.afterTool('ID=t1 && nodespace node context "${ID}"', '');
+    expect(commands(w).slice(-1)).toEqual(['node context t1']);
+
+    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } };
+    w.contextVersion = 'c2';
+    w.now += 61_000;
+    expect(await session.beforeTool()).toMatchObject({ deny: expect.stringContaining('changed under it') });
+  });
+
+  it('reads a variable set earlier in the line as what it was set to, and no further', () => {
+    expect(nodespaceInvocations('id=t1; nodespace node context $id | head')).toEqual([['node', 'context', 't1']])
+    expect(nodespaceInvocations('ID=t1 && nodespace node context "${ID}"')).toEqual([['node', 'context', 't1']])
+    // The last assignment wins, and one variable can be set from another.
+    expect(nodespaceInvocations('id=t1; id=t2; nodespace node context $id')).toEqual([['node', 'context', 't2']])
+    expect(nodespaceInvocations('a=t1; b=$a; nodespace node context $b')).toEqual([['node', 'context', 't1']])
+    // What cannot be known stays as written: a prefix assignment is scoped to its own command,
+    // a command's output and `export` are not read, and a name never set here is not guessed.
+    expect(nodespaceInvocations('id=t1 nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('export id=t1; nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('id=$(nodespace node create x); nodespace node context $id')).toEqual([
+      ['node', 'create', 'x'],
+      ['node', 'context', '$id'],
+    ])
   });
 
   // A harness whose hooks are one process per event (Codex) keeps the state in
