@@ -1695,6 +1695,45 @@ async fn an_issue_moves_through_review_by_its_findings() {
     try_status(&h, &work.task, "done").await.unwrap();
 }
 
+/// A suggestion is a text node, not a checkbox, so it is not a finding: it
+/// needs no decision and holds neither the move out of review nor the one to
+/// done. A finding that also states its severity is still read as a finding.
+#[tokio::test]
+async fn a_suggestion_does_not_hold_the_issue_in_review() {
+    let h = start().await;
+    let work = planned_issue(&h).await;
+    into_review(&h, &work).await;
+
+    h.child(
+        &work.task,
+        "text",
+        "Suggestion (change): rename `rows` to `streamed_rows`. Principle: names say intent.",
+    )
+    .await;
+    // A reviewer's finding with its severity opens the same way and still
+    // needs its decision.
+    let finding = h
+        .child(
+            &work.task,
+            "checkbox",
+            "- [ ] Finding (change, high, important): rows are not streamed. Principle: bound memory.",
+        )
+        .await;
+    let refused = try_status(&h, &work.task, "ready_to_merge")
+        .await
+        .unwrap_err();
+    assert!(refused.contains("no decision"), "{refused}");
+
+    rewrite(
+        &h,
+        &finding,
+        "- [x] Finding (change, high, important): rows are not streamed. Principle: bound memory. Decision: defer. Reason: size medium, needs its own investigation.",
+    )
+    .await;
+    try_status(&h, &work.task, "ready_to_merge").await.unwrap();
+    try_status(&h, &work.task, "done").await.unwrap();
+}
+
 /// A finding decided fix cannot be skipped on the way to done either: it is
 /// an unchecked checkbox, so the criteria rule that already stands refuses.
 #[tokio::test]
