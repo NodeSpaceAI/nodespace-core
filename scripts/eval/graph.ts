@@ -121,8 +121,16 @@ export function snapshotQueryTypes(types: string[], schemas: string[]): string[]
   );
 }
 
-/** Max nodes pulled per type. Far above any scenario's footprint. */
-const QUERY_LIMIT = "200";
+/**
+ * Max nodes pulled per type.
+ *
+ * Not "far above any scenario's footprint": a fresh database already holds a
+ * few hundred `text` nodes, the bodies of the seeded skills and guidance, and
+ * at 200 a node a turn wrote fell off the end of the list unseen, so a scenario
+ * that asserts nothing was written passed over a write. A type that fills the
+ * limit now fails the capture rather than being read short.
+ */
+const QUERY_LIMIT = 5000;
 
 function runCli(env: EvalEnv, args: string[]): unknown {
   const r = Bun.spawnSync(
@@ -242,6 +250,22 @@ export function readNodeList(payload: unknown): SnapshotNode[] {
   return nodes.map(toSnapshotNode).filter((n): n is SnapshotNode => n !== null);
 }
 
+/**
+ * The schema ids in `schema list --json` output, which carries them under
+ * `schemas`, not `nodes`. Pure, so the shape is pinned by a test: a reader of
+ * a shape the CLI does not emit finds no schema at all, and a snapshot that
+ * queries no type is empty, so every "nothing was written" clause passes
+ * vacuously and every "was created" clause fails.
+ */
+export function listedSchemaIds(output: unknown): string[] {
+  const schemas = (output as { schemas?: unknown } | null)?.schemas;
+  if (!Array.isArray(schemas)) return [];
+  return schemas.flatMap((s) => {
+    const id = (s as { id?: unknown } | null)?.id;
+    return typeof id === "string" && id !== "" ? [id] : [];
+  });
+}
+
 /** Pull target ids out of a `relationship get` payload. */
 export function readRelatedIds(payload: unknown): string[] {
   if (typeof payload !== "object" || payload === null) return [];
@@ -292,10 +316,9 @@ export function captureSnapshot(
   } = {},
 ): GraphSnapshot {
   try {
-    const schemaNodes = readNodeList(runCli(env, ["schema", "list"]));
     // A schema node's id IS the type identifier it defines (`schema get` takes
     // the same value), so the ids double as the list of queryable types.
-    const schemas = schemaNodes.map((s) => s.id).sort();
+    const schemas = listedSchemaIds(runCli(env, ["schema", "list"])).sort();
 
     const queryTypes = snapshotQueryTypes(types, schemas);
 
@@ -314,12 +337,21 @@ export function captureSnapshot(
           "--type",
           t,
           "--limit",
-          QUERY_LIMIT,
+          String(QUERY_LIMIT),
         ]);
       } catch {
         continue;
       }
-      for (const n of readNodeList(payload)) {
+      const listed = readNodeList(payload);
+      // Outside the try above on purpose: a short read is not an expected
+      // failure, and tolerating it is how a write goes unseen.
+      if (listed.length >= QUERY_LIMIT) {
+        throw new Error(
+          `type '${t}' returned ${listed.length} nodes, the query limit; the ` +
+            `snapshot would miss nodes past it`,
+        );
+      }
+      for (const n of listed) {
         if (seen.has(n.id)) continue;
         seen.add(n.id);
         nodes.push(n);

@@ -17,7 +17,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolCallRecord, TurnRecord } from "../types.ts";
-import fixture, { groupSeeds, listedSchemaIds } from "./decisions.ts";
+import { listedSchemaIds } from "../graph.ts";
+import fixture, { groupSeeds } from "./decisions.ts";
 
 describe("decision fixture assembly", () => {
   test("every scenario gets its own chat, with no turn ahead of it but its own", () => {

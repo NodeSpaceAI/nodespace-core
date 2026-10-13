@@ -49,6 +49,8 @@ const DONE_TASK = "Send the launch invite";
 const DONE_TASK_BOX = "- [ ] The invite list is signed off";
 const DECLINED_TITLE = "Offline mode for the mobile app will not be built";
 const WAITING_QUESTION = "Which pricing tier should the page lead with?";
+/** What a reply that found the waiting question names, however it words it. */
+const WAITING_QUESTION_SUBJECT = /pricing\s+tier|lead\s+with/i;
 
 /** Relations the scenarios assert beyond the universal four. */
 const RELATIONS = ["assignee", "project", "blocks", "blocked_by"];
@@ -326,6 +328,11 @@ function scoreAsksUser(diff: GraphDiff, turns: TurnRecord[] | undefined): Verdic
   const seen = turns ?? [];
   const called = seen.flatMap((t) => t.toolsCalled);
   const reply = seen.length ? seen[seen.length - 1].reply : "";
+  // Asking for more context is not putting the question: the agent has to have
+  // found the waiting question, which its reply shows by naming its subject.
+  if (!WAITING_QUESTION_SUBJECT.test(reply)) {
+    return fail("the waiting question was never found, so it was not put to the user");
+  }
   if (called.includes("route_clarify") || reply.includes("?")) return { passed: true };
   return fail("nothing was written, but the question was never put to the user");
 }

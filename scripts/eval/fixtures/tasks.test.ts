@@ -188,8 +188,16 @@ describe("answer-asks-user", () => {
   const s = scenario("answer-asks-user");
 
   test("a question to the user and no writes passes", () => {
-    expect(scoreOutcome(s, empty(), [turn("Which tier?", ["route_clarify"])]).passed).toBe(true);
-    expect(scoreOutcome(s, empty(), [turn("Should it lead with the monthly or the yearly tier?")]).passed).toBe(true);
+    const named = "Which pricing tier should the page lead with?";
+    expect(scoreOutcome(s, empty(), [turn(named, ["route_clarify"])]).passed).toBe(true);
+    expect(scoreOutcome(s, empty(), [turn(named)]).passed).toBe(true);
+  });
+
+  test("asking for more context without finding the question fails", () => {
+    const reply = "I couldn't find a question. Could you tell me more about it?";
+    expect(scoreOutcome(s, empty(), [turn(reply, ["search_semantic"])]).failure).toContain(
+      "never found",
+    );
   });
 
   test("an answer recorded for the user fails, however the reply reads", () => {
