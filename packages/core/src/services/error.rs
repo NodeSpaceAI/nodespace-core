@@ -71,6 +71,13 @@ pub enum NodeServiceError {
     #[error("Query failed: {0}")]
     QueryFailed(String),
 
+    /// The embedding model is not loaded, failed to load, or failed its
+    /// integrity check, so a query cannot be embedded. Structured so callers
+    /// tell "the search backend is not ready" from a failed embedding of one
+    /// particular query without matching on message text.
+    #[error("Embedding service unavailable: {0}")]
+    EmbeddingUnavailable(String),
+
     /// Version conflict (optimistic concurrency control)
     #[error("Version conflict for node {node_id}: expected version {expected_version}, found {actual_version}")]
     VersionConflict {
