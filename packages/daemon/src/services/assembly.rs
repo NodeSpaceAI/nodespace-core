@@ -710,7 +710,8 @@ async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
 /// model unless one is placed under its own home or named explicitly. Reading
 /// the real home instead made every isolated run load the user's model and
 /// start GPU work nobody asked it for. A run that wants the user's model (an
-/// agent eval, say) points `NODESPACED_MODEL_PATH` at it.
+/// agent eval, say) points `NODESPACED_MODEL_PATH` at it, or names the user's
+/// models directory with `NODESPACE_MODELS_DIR`.
 fn resolve_model_path() -> Option<std::path::PathBuf> {
     let p = if let Ok(custom) = std::env::var("NODESPACED_MODEL_PATH") {
         std::path::PathBuf::from(custom)
