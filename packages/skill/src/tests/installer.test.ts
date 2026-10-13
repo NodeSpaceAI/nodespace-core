@@ -93,6 +93,7 @@ function seededInstallCount(agent: typeof AGENTS[number]): number {
     agentFiles(agent).length +
     SEEDED_REFERENCES.length +
     loadedPluginFiles(agent).length +
+    (agent.plugin?.hooks === undefined ? 0 : 1) +
     (agent.instructionsFile === undefined ? 0 : 1)
   );
 }
@@ -190,21 +191,25 @@ describe('AGENTS config', () => {
     }
   });
 
-  // Claude Code, Pi and OpenCode each load a plugin (ADR-093 §5). A harness
-  // with none gets the instructions block (§6), and no harness gets both.
+  // Claude Code, Codex, Pi and OpenCode each load a plugin (ADR-093 §5). A
+  // harness with none gets the instructions block (§6). Codex gets both: it
+  // runs a hook only once the user has trusted it, and the block is what a
+  // session whose hooks are not trusted still has.
   it('gives each harness a plugin or the instructions block, and every plugin file it lists exists', () => {
     const delivery = Object.fromEntries(
       AGENTS.map(agent => [agent.name, agent.plugin ? 'plugin' : agent.instructionsFile ? 'block' : 'none'])
     );
     expect(delivery).toEqual({
       'claude-code': 'plugin',
-      codex: 'block',
+      codex: 'plugin',
       antigravity: 'block',
       opencode: 'plugin',
       pi: 'plugin',
     });
     for (const agent of AGENTS) {
-      expect(agent.plugin && agent.instructionsFile, `${agent.name} has both`).toBeFalsy();
+      if (agent.name !== 'codex') {
+        expect(agent.plugin && agent.instructionsFile, `${agent.name} has both`).toBeFalsy();
+      }
       for (const [src] of pluginFiles(agent)) {
         expect(
           existsSync(join(import.meta.dirname, '../..', src)),
@@ -253,7 +258,7 @@ describe('AGENTS config', () => {
         const source = readFileSync(join(pkg, src), 'utf8');
         expect(source, `${src} imports from outside its install folder`).not.toMatch(/from '\.\.\//);
         for (const [, specifier] of source.matchAll(/from '(\.\/[^']+)'/g)) {
-          const target = join(dirname(rel), `${specifier}.ts`);
+          const target = join(dirname(rel), specifier.endsWith('.ts') ? specifier : `${specifier}.ts`);
           expect([...installed.keys()], `${agent.name}: ${rel} imports ${specifier}`).toContain(target);
         }
       }

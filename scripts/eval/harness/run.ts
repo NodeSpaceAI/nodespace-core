@@ -6,6 +6,7 @@
  *   bun scripts/eval/harness/run.ts claude-code        Claude Code with the plugin
  *   bun scripts/eval/harness/run.ts claude-code-block  Claude Code with the instructions block only
  *   bun scripts/eval/harness/run.ts opencode           OpenCode with the plugin
+ *   bun scripts/eval/harness/run.ts codex              Codex with the hooks installed in its home
  *
  * It needs an isolated daemon already running, and the `nodespace` CLI built
  * from this checkout:
@@ -19,6 +20,7 @@
 
 import { EXIT_FAILED, EXIT_USAGE, EnvironmentError, abortOnEnvironment } from "../preflight.ts";
 import { claudeCode } from "./claude-code.ts";
+import { codex } from "./codex.ts";
 import { opencode } from "./opencode.ts";
 import {
   type RunTasks,
@@ -34,7 +36,7 @@ import {
   seedRun,
 } from "./scenario.ts";
 
-const HARNESSES = ["claude-code", "claude-code-block", "opencode"] as const;
+const HARNESSES = ["claude-code", "claude-code-block", "opencode", "codex"] as const;
 const harness = process.argv[2] as (typeof HARNESSES)[number] | undefined;
 
 if (!harness || !HARNESSES.includes(harness)) {
@@ -69,6 +71,8 @@ try {
 
   if (harness === "opencode") {
     await opencode(env, cwd, log, scenario);
+  } else if (harness === "codex") {
+    await codex(env, cwd, log, scenario);
   } else {
     await claudeCode(env, harness === "claude-code" ? "plugin" : "block", cwd, log, scenario);
   }

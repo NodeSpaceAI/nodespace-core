@@ -403,6 +403,37 @@ describe('a session, whichever harness it runs in', () => {
     expect(w.calls).toHaveLength(before + 1);
   });
 
+  // A harness whose hooks are one process per event (Codex) keeps the state in
+  // a file: a session rebuilt from its snapshot is the session it was.
+  it('behaves the same when each call runs on a session rebuilt from the last one\'s snapshot', async () => {
+    const w = world()
+    const through = (state: ReturnType<ReturnType<typeof createSession>['snapshot']> | undefined) =>
+      createSession(hostOf(w), 60_000, state !== undefined ? JSON.parse(JSON.stringify(state)) : undefined)
+
+    let session = through(undefined)
+    await session.start('/work/widgets', { sessionId: 'ses_1' })
+    expect(session.section()).toContain('Implementing a task')
+
+    session = through(session.snapshot())
+    await session.afterTool(CONTEXT_READ, '')
+
+    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'cancelled' } }
+    w.contextVersion = 'c2'
+    w.now += 61_000
+
+    session = through(session.snapshot())
+    const verdict = await session.beforeTool()
+
+    expect(verdict).toMatchObject({ deny: expect.stringContaining('status: "in_progress" -> "cancelled"') })
+
+    // The refusal outlives the process that made it, until the user speaks.
+    session = through(session.snapshot())
+    expect(await session.beforeTool()).toMatchObject({ deny: expect.stringContaining('changed under it') })
+    await session.prompt()
+    session = through(session.snapshot())
+    expect(await session.beforeTool()).toBeNull()
+  })
+
   it('refuses tool calls when the item changed under the session, until the user replies', async () => {
     const w = world();
     const session = createSession(hostOf(w), 60_000);

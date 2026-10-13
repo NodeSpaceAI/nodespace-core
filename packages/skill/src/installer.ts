@@ -249,6 +249,9 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       : foreign.length > 0
         ? { installed: [], recorded: recordedPlugin, changed: false }
         : syncFiles(pluginRoot, plugin, recordedPlugin);
+    const hooks = plugin.length > 0 && foreign.length === 0 && pluginRoot !== undefined
+      ? syncHooksFile(config, pluginRoot)
+      : { file: undefined, changed: false };
     const block = syncInstructionsBlock(config.instructionsFile, previous?.instructionsFile);
 
     writeInstallRecord(root, {
@@ -259,8 +262,14 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
 
     results.push({
       agent: agentName,
-      installed: [...skill.installed, ...(loaded?.installed ?? []), ...(block.file ? [block.file] : [])],
-      changed: skill.changed || (loaded?.changed ?? false) || block.changed,
+      installed: [
+        ...skill.installed,
+        ...(loaded?.installed ?? []),
+        ...(hooks.file ? [hooks.file] : []),
+        ...(block.file ? [block.file] : []),
+      ],
+      changed: skill.changed || (loaded?.changed ?? false) || hooks.changed || block.changed,
+      ...(hooks.file ? { needsHookTrust: true } : {}),
     });
   }
 
@@ -612,7 +621,8 @@ export function integrationStatus(agentName: AgentName, packageRoot = PACKAGE_RO
   if (config?.plugin) {
     const root = pluginRootOf(config) ?? resolve(config.installDir);
     const files = pluginEntriesOf(config, packageRoot).map(([, rel]) => join(root, rel));
-    return { kind: 'plugin', installed: files.every(file => existsSync(file)) };
+    const hooked = pluginRootOf(config) === undefined || hooksInPlace(config, pluginRootOf(config)!);
+    return { kind: 'plugin', installed: files.every(file => existsSync(file)) && hooked };
   }
   if (config?.instructionsFile !== undefined) {
     return { kind: 'instructions-block', installed: fileHasBlock(config.instructionsFile) };
@@ -687,6 +697,12 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
       removeIfEmpty(pluginRoot, config.pruneRoot ?? config.detectionDir);
     }
 
+    // The handlers this installer registered in the harness's hooks file: they
+    // name a script that is now gone, and Codex would warn about each.
+    if (pluginRoot !== undefined && removeHooksFile(config, pluginRoot) && config.plugin?.hooks) {
+      removed.push(config.plugin.hooks.file);
+    }
+
     // The block, in the file the record names and the one the harness reads
     // now: they differ when the harness's home was moved since the install.
     const instructionsFiles = new Set(
@@ -732,4 +748,138 @@ function removeIfEmpty(dir: string, pruneRoot: string): void {
     // Leaving the empty directory is the smaller failure than aborting the
     // agents after this one.
   }
+}
+
+// --- Hook commands in a harness's hooks file ---------------------------------
+
+/**
+ * The command that runs `script` for a hook event: with `bun` when it is on
+ * the path, and otherwise with `node`, which strips the types itself. The
+ * script's path is quoted into the command, which is how its handlers are
+ * told from every other handler in the file.
+ */
+function hookCommand(script: string): string {
+  const quoted = `"${script}"`;
+  return (
+    `if command -v bun >/dev/null 2>&1; then exec bun ${quoted}; ` +
+    `else exec node --experimental-strip-types --disable-warning=ExperimentalWarning ${quoted}; fi`
+  );
+}
+
+type HookHandler = { command?: unknown };
+type HookGroup = { hooks?: unknown };
+
+function readHooksFile(file: string): { hooks: Record<string, unknown> } & Record<string, unknown> | null {
+  if (!existsSync(file)) return { hooks: {} };
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const root = parsed as Record<string, unknown>;
+    const hooks = root.hooks;
+    if (hooks !== undefined && (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks))) return null;
+    return { ...root, hooks: (hooks as Record<string, unknown> | undefined) ?? {} };
+  } catch {
+    return null;
+  }
+}
+
+/** `groups` without the handlers whose command names `script`, and without a group that leaves empty. */
+function withoutOurs(groups: unknown, script: string): unknown[] {
+  if (!Array.isArray(groups)) return [];
+  const kept: unknown[] = [];
+  for (const group of groups) {
+    const handlers = (group as HookGroup | null)?.hooks;
+    if (!Array.isArray(handlers)) {
+      kept.push(group);
+      continue;
+    }
+    const rest = handlers.filter(
+      (handler: HookHandler) => !(typeof handler?.command === 'string' && handler.command.includes(`"${script}"`)),
+    );
+    if (rest.length === handlers.length) kept.push(group);
+    else if (rest.length > 0) kept.push({ ...(group as object), hooks: rest });
+  }
+  return kept;
+}
+
+function scriptOf(config: AgentConfig, pluginRoot: string): string | undefined {
+  const hooks = config.plugin?.hooks;
+  return hooks ? join(pluginRoot, hooks.command) : undefined;
+}
+
+/**
+ * Registers one handler per event in the harness's hooks file, replacing the
+ * ones an earlier install registered and leaving every other entry as it is.
+ * A file that is not a hooks file is left alone, with a warning.
+ */
+function syncHooksFile(config: AgentConfig, pluginRoot: string): { file: string | undefined; changed: boolean } {
+  const hooks = config.plugin?.hooks;
+  const script = scriptOf(config, pluginRoot);
+  if (!hooks || script === undefined) return { file: undefined, changed: false };
+
+  const root = readHooksFile(hooks.file);
+  if (root === null) {
+    process.stderr.write(
+      `WARNING: ${hooks.file} is not a hooks file this installer can read; the ${config.name} hooks were not registered. ` +
+      'Fix or move the file and install again.\n',
+    );
+    return { file: undefined, changed: false };
+  }
+
+  const events: Record<string, unknown> = { ...root.hooks };
+  for (const name of Object.keys(events)) {
+    const rest = withoutOurs(events[name], script);
+    if (rest.length > 0) events[name] = rest;
+    else delete events[name];
+  }
+  for (const { event, timeoutSeconds } of hooks.events) {
+    const existing = Array.isArray(events[event]) ? (events[event] as unknown[]) : [];
+    events[event] = [
+      ...existing,
+      { hooks: [{ type: 'command', command: hookCommand(script), timeout: timeoutSeconds }] },
+    ];
+  }
+
+  const changed = writeIfDifferent(
+    hooks.file,
+    Buffer.from(JSON.stringify({ ...root, hooks: events }, null, 2) + '\n', 'utf8'),
+  );
+  return { file: hooks.file, changed };
+}
+
+/** Whether every event the plugin registers has its handler in the hooks file. */
+function hooksInPlace(config: AgentConfig, pluginRoot: string): boolean {
+  const hooks = config.plugin?.hooks;
+  const script = scriptOf(config, pluginRoot);
+  if (!hooks || script === undefined) return true;
+  const root = readHooksFile(hooks.file);
+  if (root === null) return false;
+  return hooks.events.every(({ event }) => {
+    const groups = root.hooks[event];
+    return Array.isArray(groups) && withoutOurs(groups, script).length < groups.length;
+  });
+}
+
+/** Removes the handlers `syncHooksFile` registered; true when it changed the file. */
+function removeHooksFile(config: AgentConfig, pluginRoot: string): boolean {
+  const hooks = config.plugin?.hooks;
+  const script = scriptOf(config, pluginRoot);
+  if (!hooks || script === undefined || !existsSync(hooks.file)) return false;
+  const root = readHooksFile(hooks.file);
+  if (root === null) return false;
+
+  const events: Record<string, unknown> = { ...root.hooks };
+  for (const name of Object.keys(events)) {
+    const rest = withoutOurs(events[name], script);
+    if (rest.length > 0) events[name] = rest;
+    else delete events[name];
+  }
+  // A file holding nothing but the handlers this installer wrote is removed
+  // with them: it did not exist before.
+  const { hooks: _hooks, ...others } = root;
+  if (Object.keys(events).length === 0 && Object.keys(others).length === 0) {
+    rmSync(hooks.file);
+    return true;
+  }
+  return writeIfDifferent(hooks.file, Buffer.from(JSON.stringify({ ...root, hooks: events }, null, 2) + '\n', 'utf8'));
 }

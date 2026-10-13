@@ -74,7 +74,29 @@ export type Reach =
 /** What stands before a tool call: a refusal, a note for its result, or nothing. */
 export type Verdict = { deny: string } | { note: string } | null
 
+/**
+ * Everything a session holds between calls, as plain JSON. A harness whose
+ * hooks are one command per event (no process outlives an event) keeps it in a
+ * file and hands it back to `createSession`.
+ */
+export type SessionState = {
+  database: string | null
+  isReached: boolean
+  project: { id: string; title: string } | null
+  section: string | null
+  skills: Skill[]
+  listVersion: string
+  fetched: string[]
+  item: Item | null
+  lastCheckedAt: number
+  blocked: string | null
+  opening: string | null
+  journalName: string | null
+}
+
 export type NodespaceSession = {
+  /** The session's state, for a harness that runs each event as a process of its own. */
+  snapshot(): SessionState
   /**
    * Session start: checks the CLI and the daemon and resolves the project.
    * In a session NodeSpace launched it also reports the harness's session id
@@ -631,24 +653,25 @@ function deletedReason(held: Item): string {
 export function createSession(
   host: Host,
   watchIntervalMs = DEFAULT_WATCH_INTERVAL_SECONDS * 1000,
+  restored?: SessionState,
 ): NodespaceSession {
-  let database: string | null = null
+  let database = restored?.database ?? null
   /** Whether the CLI and the daemon answered at start. */
-  let isReached = false
-  let project: { id: string; title: string } | null = null
-  let section: string | null = null
-  let skills: Skill[] = []
-  let listVersion = ''
+  let isReached = restored?.isReached ?? false
+  let project = restored?.project ?? null
+  let section = restored?.section ?? null
+  let skills: Skill[] = restored?.skills ?? []
+  let listVersion = restored?.listVersion ?? ''
   /** Ids of the skills this conversation has been handed in full. */
-  let fetched: string[] = []
-  let item: Item | null = null
-  let lastCheckedAt = 0
+  let fetched: string[] = restored?.fetched ?? []
+  let item = restored?.item ?? null
+  let lastCheckedAt = restored?.lastCheckedAt ?? 0
   /** Why tool calls are refused; cleared when the user next speaks. */
-  let blocked: string | null = null
+  let blocked = restored?.blocked ?? null
   /** The launched item's context, handed over once: with the first prompt. */
-  let opening: string | null = null
+  let opening = restored?.opening ?? null
   /** The harness's id for this conversation, when the CLI can name a journal after it. */
-  let journalName: string | null = null
+  let journalName = restored?.journalName ?? null
 
   async function run(argv: readonly string[], cwd?: string): Promise<CliResult> {
     try {
@@ -974,6 +997,21 @@ export function createSession(
   }
 
   return {
+    snapshot: () => ({
+      database,
+      isReached,
+      project,
+      section,
+      skills,
+      listVersion,
+      fetched,
+      item,
+      lastCheckedAt,
+      blocked,
+      opening,
+      journalName,
+    }),
+
     start: (cwd, options) =>
       quietly<Reach>({ kind: 'unreachable', text: 'NodeSpace: unreachable' }, async () => {
         database = host.env('NODESPACE_DATABASE') || null

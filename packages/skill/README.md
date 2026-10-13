@@ -64,7 +64,7 @@ directory — it has no source-relative sibling directory to find
 | Agent | Detection | Skill | Beyond the skill |
 |-------|-----------|-------|------------------|
 | Claude Code | `~/.claude/` exists (`CLAUDE_CONFIG_DIR` moves it) | `~/.claude/skills/nodespace/SKILL.md` | Plugin, in the skill folder |
-| Codex | `~/.codex/` exists (`CODEX_HOME` moves it) | `~/.codex/skills/nodespace/SKILL.md` | Instructions block in `~/.codex/AGENTS.md` |
+| Codex | `~/.codex/` exists (`CODEX_HOME` moves it) | `~/.codex/skills/nodespace/SKILL.md` | Hooks, in `~/.codex/nodespace/` and `~/.codex/hooks.json`, and the instructions block in `~/.codex/AGENTS.md` |
 | Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/config/skills/nodespace/SKILL.md` | Instructions block in `~/.gemini/config/AGENTS.md` |
 | OpenCode | `~/.config/opencode/` exists (`XDG_CONFIG_HOME` moves it) | `~/.config/opencode/skills/nodespace/SKILL.md` | Plugin, in `~/.config/opencode/plugins/` |
 | Pi | `~/.pi/agent/` exists (`PI_CODING_AGENT_DIR` moves it) | `~/.pi/agent/skills/nodespace/SKILL.md` | Extension, in `~/.pi/agent/extensions/nodespace/` |
@@ -94,8 +94,10 @@ whether the plugin or the instructions block is installed with it.
 
 ## The instructions block
 
-Codex and Antigravity get no plugin. The installer writes one block into the
-harness's own user-level instructions file, between two HTML comment markers,
+Antigravity gets no plugin, and Codex gets the block beside its hooks, because
+Codex runs a hook only once the user has trusted it (see below): a session
+whose hooks are not trusted still has the block. The installer writes one block
+into the harness's own user-level instructions file, between two HTML comment markers,
 creating the file when it is absent. The block holds the same orientation and
 confirmation rules the plugins add, and tells the agent to list the graph's
 skills (`nodespace skill guidance`) before starting work.
@@ -174,6 +176,43 @@ bun run --cwd packages/skill test:plugin
 That runs `claude plugin validate` and then `claude plugin test` on the
 folder, and needs the `claude` CLI on `$PATH`. The plugin API is early access
 and changes between Claude Code releases: run it again after an upgrade.
+
+## The Codex hooks
+
+Codex runs each hook event as a command of its own, so nothing stays in memory
+between events. `plugins/codex/hook.ts` is that command: it reads the event
+from stdin, restores the session's state from
+`<NodeSpace home>/.nodespace/codex-sessions/<session id>.json`, hands the event
+to the same `plugins/shared/nodespace-session.ts` the Pi extension and the
+OpenCode plugin use (`createSession(host, interval, state)` and
+`session.snapshot()` carry the state across processes), writes the state back
+and answers on stdout. The command runs with `bun` when it is on the path and
+otherwise with `node --experimental-strip-types`.
+
+| | Codex hook |
+|---|---|
+| Session start, project, orientation, consent rules, skill list | `SessionStart`: `additionalContext`; the reach text is a `systemMessage` |
+| A changed skill list, and the launched task | `UserPromptSubmit`: `additionalContext` (with the new list) |
+| Refusing a tool call | `PreToolUse`: `permissionDecision: "deny"` with the reason |
+| A note on a tool result | `PostToolUse`: `additionalContext`, held in the state file from the `PreToolUse` that found it |
+| Session end | `SessionEnd`: the state file and the write journal are removed |
+
+The installer puts `hook.ts` and the module beside it in `~/.codex/nodespace/`
+and registers one handler per event in `~/.codex/hooks.json`, leaving every
+other entry of that file as it is. Its handlers are found by the path of
+`hook.ts` in their command, so an uninstall removes those and nothing else; a
+file that is not valid JSON is left alone with a warning.
+
+**Codex does not run a hook until the user has trusted it**, and installing
+does not do that: the installer prints the step (start Codex and run `/hooks`),
+and the instructions block is what a session without trusted hooks has.
+Trust is tied to the hook's hash, so a reinstall that changes a handler asks
+again.
+
+Open questions, to settle in a live session: Codex has no status line, so the
+reach text is only a `systemMessage`; and the write journal needs
+`NODESPACE_WRITE_JOURNAL` in the environment of the agent's shell commands,
+which a Codex hook cannot set for the commands that follow.
 
 ## The Pi extension and the OpenCode plugin
 

@@ -3,11 +3,12 @@
   "compilerOptions": {
     "rootDir": ".",
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["plugins/pi/**/*", "plugins/opencode/**/*", "plugins/shared/**/*"],
+  "include": ["plugins/pi/**/*", "plugins/opencode/**/*", "plugins/shared/**/*", "plugins/codex/**/*"],
   "exclude": ["node_modules", "dist"]
 }

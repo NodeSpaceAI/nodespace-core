@@ -215,6 +215,14 @@ Examples:
         // to report the skipped-with-reason state, and only reads stdout.
         console.log(`⚠ ${result.agent}: ${skipReasonText(result)}`);
       }
+      if (result.needsHookTrust) {
+        // A plain line, with neither marker: callers that parse the ✓ and ⚠
+        // lines read past it.
+        console.log(
+          `  ${result.agent} runs these hooks only once you trust them: start ${result.agent} and run /hooks to review and trust them. ` +
+            'Until then a session still has the NodeSpace instructions block, and none of the hooks\' checks.',
+        );
+      }
     }
 
     // Only when auto-detecting (no explicit agent): report every configured

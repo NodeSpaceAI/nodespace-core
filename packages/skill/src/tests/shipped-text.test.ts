@@ -19,10 +19,11 @@ function constantIn(source: string, name: string): string | undefined {
 
 /**
  * The file each plugin keeps its copy in: the Claude Code plugin's hooks
- * module, and the module the Pi extension and the OpenCode plugin both install.
+ * module, and the module the Codex hooks, the Pi extension and the OpenCode plugin all install.
  */
 const COPIES: Record<string, string> = {
   'claude-code': 'plugins/claude-code/hooks/register.ts',
+  codex: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
   pi: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
   opencode: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
 };

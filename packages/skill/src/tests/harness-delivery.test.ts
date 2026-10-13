@@ -192,37 +192,30 @@ describe('a plugin in a folder of its own', () => {
 });
 
 describe('the instructions block in a harness with no plugin', () => {
-  const codex = agent('codex');
-  const file = join(TMP, '.codex', 'AGENTS.md');
+  const codex = agent('antigravity');
+  const file = join(TMP, '.gemini', 'config', 'AGENTS.md');
 
   beforeEach(() => {
     mkdirSync(codex.detectionDir, { recursive: true });
+    mkdirSync(join(TMP, '.gemini', 'config'), { recursive: true });
   });
 
   it('creates the instructions file when it is absent, and records it', () => {
-    const [result] = install(['codex']);
+    const [result] = install(['antigravity']);
 
     expect(readFileSync(file, 'utf8')).toBe(`${renderBlock()}\n`);
     expect(result.installed).toContain(file);
     expect(record(codex).instructions_file).toBe(file);
-    expect(integrationStatus('codex')).toEqual({ kind: 'instructions-block', installed: true });
-  });
-
-  it('writes it for Antigravity into the rules file it reads for every project', () => {
-    mkdirSync(agent('antigravity').detectionDir, { recursive: true });
-
-    install(['antigravity']);
-
-    expect(readFileSync(join(TMP, '.gemini', 'config', 'AGENTS.md'), 'utf8')).toContain(BLOCK_BEGIN);
+    expect(integrationStatus('antigravity')).toEqual({ kind: 'instructions-block', installed: true });
   });
 
   it('appends to a file the user already keeps, and a second install changes nothing', () => {
     const mine = '# My rules\n\nBe terse.\n';
     writeFileSync(file, mine, 'utf8');
 
-    expect(install(['codex'])[0].changed).toBe(true);
+    expect(install(['antigravity'])[0].changed).toBe(true);
     expect(readFileSync(file, 'utf8')).toBe(`${mine}${renderBlock()}\n`);
-    expect(install(['codex'])[0].changed).toBe(false);
+    expect(install(['antigravity'])[0].changed).toBe(false);
   });
 
   it('replaces the block in place on a reinstall, leaving the content around it', () => {
@@ -230,7 +223,7 @@ describe('the instructions block in a harness with no plugin', () => {
     const after = '\n## Added after the install\n\nNo emoji.\n';
     writeFileSync(file, `${before}${BLOCK_BEGIN}\nfrom an older version\n${BLOCK_END}\n${after}`, 'utf8');
 
-    const [result] = install(['codex']);
+    const [result] = install(['antigravity']);
 
     expect(result.changed).toBe(true);
     expect(readFileSync(file, 'utf8')).toBe(`${before}${renderBlock()}\n${after}`);
@@ -240,20 +233,20 @@ describe('the instructions block in a harness with no plugin', () => {
     const before = '# My rules\n\nBe terse.';
     const after = '\n## Added after the install\r\n\r\nNo emoji.\n\n';
     writeFileSync(file, before, 'utf8');
-    install(['codex']);
+    install(['antigravity']);
     writeFileSync(file, readFileSync(file, 'utf8') + after, 'utf8');
 
-    const [result] = uninstall(['codex']);
+    const [result] = uninstall(['antigravity']);
 
     expect(readFileSync(file, 'utf8')).toBe(before + after);
     expect(result.removed).toContain(file);
-    expect(integrationStatus('codex')).toEqual({ kind: 'instructions-block', installed: false });
+    expect(integrationStatus('antigravity')).toEqual({ kind: 'instructions-block', installed: false });
   });
 
   it('deletes the file on uninstall when the block was all it held', () => {
-    install(['codex']);
+    install(['antigravity']);
 
-    uninstall(['codex']);
+    uninstall(['antigravity']);
 
     expect(existsSync(file)).toBe(false);
     expect(existsSync(codex.detectionDir)).toBe(true);
@@ -261,10 +254,10 @@ describe('the instructions block in a harness with no plugin', () => {
 
   it('removes the block even when the skill folder was deleted by hand', () => {
     writeFileSync(file, '# Mine\n', 'utf8');
-    install(['codex']);
+    install(['antigravity']);
     rmSync(codex.installDir, { recursive: true });
 
-    uninstall(['codex']);
+    uninstall(['antigravity']);
 
     expect(readFileSync(file, 'utf8')).toBe('# Mine\n');
   });
@@ -275,14 +268,14 @@ describe('the instructions block in a harness with no plugin', () => {
     const old = join(TMP, 'old-home', 'AGENTS.md');
     mkdirSync(join(TMP, 'old-home'), { recursive: true });
     writeFileSync(old, `# Mine\n${renderBlock()}\n`, 'utf8');
-    install(['codex']);
+    install(['antigravity']);
     writeFileSync(
       join(codex.installDir, INSTALL_RECORD),
       JSON.stringify({ ...record(codex), instructions_file: old }),
       'utf8'
     );
 
-    install(['codex']);
+    install(['antigravity']);
 
     expect(readFileSync(old, 'utf8')).toBe('# Mine\n');
     expect(readFileSync(file, 'utf8')).toContain(BLOCK_BEGIN);
@@ -295,7 +288,7 @@ describe('the instructions block in a harness with no plugin', () => {
     const latin1 = Buffer.from([0x23, 0x20, 0x52, 0xe8, 0x67, 0x6c, 0x65, 0x73, 0x0a]);
     writeFileSync(file, latin1);
 
-    const [result] = install(['codex']);
+    const [result] = install(['antigravity']);
 
     expect(readFileSync(file).equals(latin1)).toBe(true);
     expect(result.installed).not.toContain(file);
@@ -304,10 +297,10 @@ describe('the instructions block in a harness with no plugin', () => {
   });
 
   it('leaves a file with no block untouched on uninstall', () => {
-    install(['codex']);
+    install(['antigravity']);
     writeFileSync(file, '# Rewritten by the user\n', 'utf8');
 
-    uninstall(['codex']);
+    uninstall(['antigravity']);
 
     expect(readFileSync(file, 'utf8')).toBe('# Rewritten by the user\n');
   });
