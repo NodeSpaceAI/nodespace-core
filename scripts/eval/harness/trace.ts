@@ -2,7 +2,7 @@
 /**
  * Prints a run's log as one line per thing that happened: each prompt, each
  * tool call with the start of its result, and what the agent said. Reads the
- * Claude Code, OpenCode and Codex event shapes.
+ * Claude Code, OpenCode, Codex and Antigravity event shapes.
  *
  *   bun scripts/eval/harness/trace.ts <log.jsonl> [--full]
  */
@@ -69,6 +69,15 @@ for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
     console.log(`  -> ${cut(state.output ?? state.error, resultChars)}`);
   } else if (event.type === "text") {
     console.log(`SAYS ${cut(part.text, 1400)}`);
+  } else if (event.event === "step_update") {
+    // Antigravity: a step is the user input, the agent's text, or a tool call.
+    const step = (event.step_update ?? {}) as Json;
+
+    if (step.state === "DONE" && step.step_type === "agent_response" && step.text_delta) {
+      console.log(`SAYS ${cut(step.text_delta, 1400)}`);
+    } else if (step.state === "DONE" && step.step_type !== "user_input" && step.step_type !== "agent_response") {
+      console.log(`STEP ${String(step.step_type)} ${cut(JSON.stringify(step.tool_call ?? step.command ?? ""), 500)}`);
+    }
   } else if (event.type === "item.started" || event.type === "item.completed") {
     // Codex: a shell command is an item, and so is each thing the agent says.
     const item = (event.item ?? {}) as Json;
