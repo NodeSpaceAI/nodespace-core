@@ -46,20 +46,16 @@ pub fn nodespace_home() -> Result<PathBuf> {
 /// NodeSpace home alone: another install's log, the user's service
 /// registration.
 pub fn nodespace_home_override() -> Option<PathBuf> {
-    home_override_from(std::env::var_os("NODESPACE_HOME"))
+    path_override_from(std::env::var_os("NODESPACE_HOME"))
 }
 
-/// [`nodespace_home_override`] for a given value of the variable.
+/// A path taken from an environment variable's value, or `None` when it is
+/// unset or empty. Shared by every override here so they agree on what unset
+/// means.
 ///
 /// A path that is not valid UTF-8 is still a redirect: dropping it would send
 /// a run that asked for isolation to the user's own home. An empty value is
 /// unset, since as a path it would mean the working directory.
-fn home_override_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    path_override_from(value)
-}
-
-/// A path taken from an environment variable, or `None` when it is unset or
-/// empty. Shared by every override here so they agree on what unset means.
 fn path_override_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
@@ -80,6 +76,11 @@ pub fn nodespace_dir() -> Result<PathBuf> {
 /// run that isolates the home (an agent eval, a test harness) and still wants
 /// the models already downloaded sets it to the real directory, instead of
 /// downloading a second copy into the throwaway home.
+///
+/// Name an absolute path that exists. A relative one resolves against the
+/// daemon's working directory, as `NODESPACE_HOME` does, which for a daemon
+/// started by a service manager is not where the caller meant, and a directory
+/// that does not exist is created empty, so the models are downloaded into it.
 pub fn models_dir() -> Result<PathBuf> {
     models_dir_from(
         path_override_from(std::env::var_os("NODESPACE_MODELS_DIR")),
@@ -243,15 +244,15 @@ mod tests {
     #[test]
     fn a_set_value_is_the_override() {
         assert_eq!(
-            home_override_from(Some(OsString::from("/isolated"))),
+            path_override_from(Some(OsString::from("/isolated"))),
             Some(PathBuf::from("/isolated"))
         );
     }
 
     #[test]
     fn an_unset_or_empty_value_is_no_override() {
-        assert_eq!(home_override_from(None), None);
-        assert_eq!(home_override_from(Some(OsString::new())), None);
+        assert_eq!(path_override_from(None), None);
+        assert_eq!(path_override_from(Some(OsString::new())), None);
     }
 
     /// A home whose path is not UTF-8 is still honoured, byte for byte.
@@ -263,7 +264,7 @@ mod tests {
         let value = OsString::from_vec(b"/iso\xFFlated".to_vec());
         assert!(value.to_str().is_none(), "the fixture must not be UTF-8");
         assert_eq!(
-            home_override_from(Some(value.clone())),
+            path_override_from(Some(value.clone())),
             Some(PathBuf::from(value))
         );
     }

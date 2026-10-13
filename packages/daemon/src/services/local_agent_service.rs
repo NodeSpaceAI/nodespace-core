@@ -8244,9 +8244,15 @@ mod tests {
         .expect("create .nodespace dir");
         std::fs::write(&models_path, b"not a directory").expect("occupy the models path");
 
-        let shared = with_env(&[("NODESPACE_HOME", Some(fake_home.path()))], || {
-            SharedLocalAgent::new()
-        });
+        let shared = with_env(
+            &[
+                ("NODESPACE_HOME", Some(fake_home.path())),
+                // A shell that exports it would otherwise move the models away
+                // from the occupied path this test depends on.
+                ("NODESPACE_MODELS_DIR", None),
+            ],
+            SharedLocalAgent::new,
+        );
 
         // The construction above must not have panicked (if it had, this test
         // would already be reported as a failure) and must have landed in
@@ -8270,6 +8276,7 @@ mod tests {
             &[
                 ("NODESPACE_HOME", Some(nodespace_home.path())),
                 ("HOME", None),
+                ("NODESPACE_MODELS_DIR", None),
             ],
             SharedLocalAgent::new,
         );
