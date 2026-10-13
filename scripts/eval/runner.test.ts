@@ -514,8 +514,8 @@ describe("aggregateReps", () => {
 describe("checkGuidanceDrift", () => {
   const guidance = {
     skill: [
-      { key: "Research & Search", version: "d64c01a0" },
-      { key: "Node Creation", version: "7d5db44b" },
+      { key: "Research & Search", configVersion: "d64c01a0", guidanceVersion: "g" },
+      { key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" },
     ],
   };
 
@@ -528,8 +528,8 @@ describe("checkGuidanceDrift", () => {
   test("the same entries in a different order do not drift", () => {
     const reordered = {
       skill: [
-        { key: "Node Creation", version: "7d5db44b" },
-        { key: "Research & Search", version: "d64c01a0" },
+        { key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" },
+        { key: "Research & Search", configVersion: "d64c01a0", guidanceVersion: "g" },
       ],
     };
     expect(checkGuidanceDrift(guidance, reordered, 2)).toBeNull();
@@ -538,8 +538,8 @@ describe("checkGuidanceDrift", () => {
   test("a changed content version is drift", () => {
     const changed = {
       skill: [
-        { key: "Research & Search", version: "CHANGED" },
-        { key: "Node Creation", version: "7d5db44b" },
+        { key: "Research & Search", configVersion: "CHANGED", guidanceVersion: "g" },
+        { key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" },
       ],
     };
     const err = checkGuidanceDrift(guidance, changed, 3);
@@ -547,8 +547,22 @@ describe("checkGuidanceDrift", () => {
     expect(err?.message).toContain("rep 3");
   });
 
+  // The two hashes move independently: editing a skill's body changes only its
+  // guidance version, which a config-only comparison would call identical.
+  test("a changed guidance version alone is drift", () => {
+    const changed = {
+      skill: [
+        { key: "Research & Search", configVersion: "d64c01a0", guidanceVersion: "CHANGED" },
+        { key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" },
+      ],
+    };
+    expect(checkGuidanceDrift(guidance, changed, 2)).toBeInstanceOf(
+      EnvironmentError,
+    );
+  });
+
   test("an added or removed seeded node is drift", () => {
-    const fewer = { skill: [{ key: "Node Creation", version: "7d5db44b" }] };
+    const fewer = { skill: [{ key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" }] };
     expect(checkGuidanceDrift(guidance, fewer, 2)).toBeInstanceOf(
       EnvironmentError,
     );
