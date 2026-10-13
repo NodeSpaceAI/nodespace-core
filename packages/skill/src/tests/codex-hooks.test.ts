@@ -3,7 +3,7 @@
 // the real package, then run as Codex runs it: the registered command through
 // a shell, one process per event, over a fake `nodespace` and `git`.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync, symlinkSync, utimesSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -271,6 +271,46 @@ describe('the registered hook command', () => {
     const other = fire({ hook_event_name: 'SessionStart', session_id: 'def-456', source: 'resume' })!;
 
     expect(other.systemMessage).toBe('NodeSpace: Widgets');
+  });
+
+  it('does not prune the thread it is continuing, however long it was idle', () => {
+    fire({ hook_event_name: 'SessionStart', source: 'startup' });
+    fire({ hook_event_name: 'PostToolUse', ...shell('nodespace node context t1') });
+    set('item', item(4, 'c2'));
+    set('context', 'c2');
+    expect(fire({ hook_event_name: 'PreToolUse', ...shell('echo hi') })!.hookSpecificOutput.permissionDecision).toBe(
+      'deny'
+    );
+
+    const state = join(TMP, '.nodespace', 'codex-sessions', 'abc-123.json');
+    const old = join(TMP, '.nodespace', 'codex-sessions', 'old-thread.json');
+    const eightDays = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+
+    writeFileSync(old, readFileSync(state, 'utf8'));
+    utimesSync(state, eightDays, eightDays);
+    utimesSync(old, eightDays, eightDays);
+
+    // A resume after a long idle: this thread's file is read, kept and touched;
+    // another thread's file of the same age is pruned.
+    fire({ hook_event_name: 'SessionStart', source: 'resume' });
+
+    expect(existsSync(state)).toBe(true);
+    expect(existsSync(old)).toBe(false);
+    expect(fire({ hook_event_name: 'PreToolUse', ...shell('echo hi') })!.hookSpecificOutput.permissionDecision).toBe(
+      'deny'
+    );
+  });
+
+  it('starts again from a state file whose item lacks what a restored session reads', () => {
+    fire({ hook_event_name: 'SessionStart', source: 'startup' });
+    const state = join(TMP, '.nodespace', 'codex-sessions', 'abc-123.json');
+    const saved = JSON.parse(readFileSync(state, 'utf8'));
+
+    saved.session.item = { id: 't1' };
+    writeFileSync(state, JSON.stringify(saved));
+
+    expect(fire({ hook_event_name: 'UserPromptSubmit', prompt: 'hi' })).toEqual({});
+    expect(JSON.parse(readFileSync(state, 'utf8')).session.item).toBeNull();
   });
 
   it('starts again from a state file it cannot use', () => {

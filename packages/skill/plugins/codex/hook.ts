@@ -11,7 +11,7 @@
 // extension.
 
 import { execFile } from 'node:child_process'
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -109,12 +109,18 @@ function isState(value: unknown): value is SessionState {
   return (
     isNullable(value.database, 'string') &&
     typeof value.isReached === 'boolean' &&
-    (value.project === null || isRecord(value.project)) &&
+    (value.project === null || (isRecord(value.project) && typeof value.project.id === 'string')) &&
     isNullable(value.section, 'string') &&
     Array.isArray(value.skills) &&
+    value.skills.every(skill => isRecord(skill) && typeof skill.id === 'string') &&
     typeof value.listVersion === 'string' &&
     Array.isArray(value.fetched) &&
-    (value.item === null || isRecord(value.item)) &&
+    (value.item === null ||
+      (isRecord(value.item) &&
+        typeof value.item.id === 'string' &&
+        Array.isArray(value.item.paths) &&
+        Array.isArray(value.item.parts) &&
+        isRecord(value.item.fields))) &&
     typeof value.lastCheckedAt === 'number' &&
     isNullable(value.blocked, 'string') &&
     isNullable(value.opening, 'string') &&
@@ -154,6 +160,16 @@ async function save(path: string, saved: Saved, before: string | null): Promise<
   const text = JSON.stringify(saved)
 
   if (text === before) {
+    // Nothing to write, but the event happened: the file's age is how long the
+    // thread has been idle, which is what decides when it is pruned.
+    try {
+      const now = new Date()
+
+      await utimes(path, now, now)
+    } catch {
+      // The file is gone: the next event starts the session again.
+    }
+
     return
   }
 
@@ -165,13 +181,16 @@ async function save(path: string, saved: Saved, before: string | null): Promise<
   await rename(temporary, path)
 }
 
-/** Removes the state of sessions no event has touched for a week. */
-async function pruneStale(): Promise<void> {
+/**
+ * Removes the state of sessions no event has touched for a week, except the
+ * one this event is for: it was read before this runs, and is touched after.
+ */
+async function pruneStale(keep: string): Promise<void> {
   try {
     for (const name of await readdir(stateDir())) {
       const path = join(stateDir(), name)
 
-      if (Date.now() - (await stat(path)).mtimeMs > STALE_AFTER_MS) {
+      if (path !== keep && Date.now() - (await stat(path)).mtimeMs > STALE_AFTER_MS) {
         await rm(path, { force: true })
       }
     }
@@ -254,7 +273,7 @@ async function handle(payload: Payload): Promise<void> {
     // A resumed or compacted conversation is the one the state describes.
     const isContinued = saved !== null && (source === 'resume' || source === 'compact')
 
-    await pruneStale()
+    await pruneStale(path)
 
     const reach = isContinued
       ? null
