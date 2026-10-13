@@ -44,8 +44,8 @@ describe("snapshotQueryTypes", () => {
 
   test("a predicted type is queried once, and scaffolding is dropped from it too", () => {
     expect(
-      snapshotQueryTypes(["invoice", "task", "ai-chat-native"], ["task"]),
-    ).toEqual(["invoice", "task"]);
+      snapshotQueryTypes(["spec", "task", "ai-chat-native"], ["task"]),
+    ).toEqual(["spec", "task"]);
   });
 
   test("the type the harness creates its chat as is excluded", () => {
@@ -134,6 +134,7 @@ for a in "$@"; do
 done
 case "$*" in
   *"schema list"*) echo '{"count":1,"schemas":[{"id":"text"}]}';;
+  *"node query --type adr"*) echo "Error: no such type" >&2; exit 1;;
   *"node query --type text"*)
     ${failFrom === undefined ? "" : `[ "$off" -ge ${failFrom} ] && { echo "Error: transport closed" >&2; exit 1; }`}
     n=$(( ${total} - off ))
@@ -182,8 +183,10 @@ esac
     expect(snap.captureError).toContain("transport closed");
   });
 
-  test("a predicted type the schema list does not name adds no nodes", () => {
-    const snap = captureSnapshot(pagedCli(3), ["invoice"], { edgesFor: () => false });
+  test("a predicted type the schema list does not name may be absent", () => {
+    // The fake CLI refuses `adr` outright, as the daemon does a type that does
+    // not exist, so this reaches the branch that tolerates it.
+    const snap = captureSnapshot(pagedCli(3), ["adr"], { edgesFor: () => false });
     expect(snap.captureError).toBeUndefined();
     expect(snap.nodes.length).toBe(3);
   });

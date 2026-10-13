@@ -41,7 +41,7 @@ function readyDiff(): GraphDiff {
   return {
     ...empty(),
     addedNodes: [
-      node("n1", "task", "Send the launch invite shows done with an open box", { status: "open" }),
+      node("n1", "task", "Cut the release branch shows done with an open box", { status: "open" }),
       node("n2", "text", "The task reads done while its checklist is not."),
       node("n3", "checkbox", "- [ ] A done task has no unticked box"),
     ],
@@ -115,8 +115,8 @@ describe("bug-created-ready", () => {
   test("editing the reported task instead of tracking it fails", () => {
     const d = readyDiff();
     d.changedNodes.push({
-      before: node(IDS.done, "task", "Send the launch invite", { status: "done" }),
-      after: node(IDS.done, "task", "Send the launch invite", { status: "open" }),
+      before: node(IDS.done, "task", "Cut the release branch", { status: "done" }),
+      after: node(IDS.done, "task", "Cut the release branch", { status: "open" }),
     });
     expect(score(d).passed).toBe(false);
   });
@@ -151,7 +151,7 @@ describe("question-blocks-task", () => {
   const s = scenario("question-blocks-task");
   const good = (): GraphDiff => ({
     ...empty(),
-    addedNodes: [node("q1", "task", "Does the contract run one year or three?")],
+    addedNodes: [node("q1", "task", "Does the guide cover the v1 export format?")],
     addedEdges: [
       { from: "q1", relation: "assignee", to: IDS.anoop },
       { from: "q1", relation: "blocks", to: IDS.stopped },
@@ -177,8 +177,8 @@ describe("question-blocks-task", () => {
   test("changing the stopped task fails", () => {
     const d = good();
     d.changedNodes.push({
-      before: node(IDS.stopped, "task", "Draft the vendor contract", { status: "open" }),
-      after: node(IDS.stopped, "task", "Draft the vendor contract", { status: "blocked" }),
+      before: node(IDS.stopped, "task", "Write the migration guide", { status: "open" }),
+      after: node(IDS.stopped, "task", "Write the migration guide", { status: "blocked" }),
     });
     expect(scoreOutcome(s, d).failure).toContain("stopped task");
   });
@@ -188,7 +188,7 @@ describe("answer-asks-user", () => {
   const s = scenario("answer-asks-user");
 
   test("a question to the user and no writes passes", () => {
-    const named = "Which pricing tier should the page lead with?";
+    const named = "Which index format should the design lead with?";
     expect(scoreOutcome(s, empty(), [turn(named, ["route_clarify"])]).passed).toBe(true);
     expect(scoreOutcome(s, empty(), [turn(named)]).passed).toBe(true);
   });

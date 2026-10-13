@@ -39,19 +39,19 @@ import {
   runNs,
 } from "./seed-helpers.ts";
 
-const PROJECT_TITLE = "Harbor relaunch";
+const PROJECT_TITLE = "Query engine rewrite";
 const OWNER = { first: "Mara", last: "Quint", email: "mara.quint@example.com" };
 const ANOOP = { first: "Anoop", last: "Nair" };
 const INGRID = { first: "Ingrid", last: "Solberg" };
 
-const STOPPED_TASK = "Draft the vendor contract";
-const REVIEW_TASK = "Review the pricing page";
-const DONE_TASK = "Send the launch invite";
-const DONE_TASK_BOX = "- [ ] The invite list is signed off";
-const DECLINED_TITLE = "Offline mode for the mobile app will not be built";
-const WAITING_QUESTION = "Which pricing tier should the page lead with?";
+const STOPPED_TASK = "Write the migration guide";
+const REVIEW_TASK = "Review the index design";
+const DONE_TASK = "Cut the release branch";
+const DONE_TASK_BOX = "- [ ] The changelog is signed off";
+const DECLINED_TITLE = "A GraphQL API will not be built";
+const WAITING_QUESTION = "Which index format should the design lead with?";
 /** What a reply that found the waiting question names, however it words it. */
-const WAITING_QUESTION_SUBJECT = /pricing\s+tier|lead\s+with/i;
+const WAITING_QUESTION_SUBJECT = /index\s+format|lead\s+with/i;
 
 /** Relations the scenarios assert beyond the universal four. */
 const RELATIONS = ["assignee", "project", "blocks", "blocked_by"];
@@ -71,31 +71,31 @@ const FIXTURES: TaskScenario[] = [
     id: "bug-created-ready",
     scenario: "A bug the agent can see becomes a ready task, with its project",
     prompt:
-      "Something is off in Harbor relaunch: Send the launch invite is marked done " +
-      "but one box on its checklist is still unticked. Get that tracked as work.",
+      "Something is off in Query engine rewrite: Cut the release branch is marked " +
+      "done but one box on its checklist is still unticked. Get that tracked as work.",
     expected: { kind: "ready-task" },
   },
   {
     id: "bug-not-reproducible",
     scenario: "A bug the agent cannot see is reported, and nothing is written",
     prompt:
-      "Bug in Harbor relaunch: Review the pricing page has no assignee, so nobody " +
-      "ever sees it. Log it.",
+      "Bug in Query engine rewrite: Review the index design has no assignee, so " +
+      "nobody ever sees it. Log it.",
     expected: { kind: "no-writes" },
   },
   {
     id: "declined-request",
     scenario: "A request an accepted decision declines creates no task",
-    prompt: "Add a task to build offline mode for the mobile app.",
+    prompt: "Add a task to build a GraphQL API.",
     expected: { kind: "no-writes" },
   },
   {
     id: "question-blocks-task",
     scenario: "A question that stops work is a task for its owner, blocking the stopped task",
     prompt:
-      "I can't carry on with Draft the vendor contract until Anoop says whether " +
-      "the contract runs one year or three. Put his question down so it waits for " +
-      "him, not for me.",
+      "I can't carry on with Write the migration guide until Anoop says whether " +
+      "it covers the v1 export format or only v2. Put his question down so it " +
+      "waits for him, not for me.",
     expected: { kind: "question-task" },
   },
   {
