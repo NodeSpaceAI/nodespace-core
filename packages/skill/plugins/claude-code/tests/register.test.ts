@@ -1168,6 +1168,23 @@ describe('reading the shell line and the remote', () => {
     expect(nodespaceInvocations('git status')).toEqual([])
   })
 
+  test('reads a variable set earlier in the line as what it was set to, and no further', () => {
+    expect(nodespaceInvocations('id=t1; nodespace node context $id | head')).toEqual([['node', 'context', 't1']])
+    expect(nodespaceInvocations('ID=t1 && nodespace node context "${ID}"')).toEqual([['node', 'context', 't1']])
+    // The last assignment wins, and one variable can be set from another.
+    expect(nodespaceInvocations('id=t1; id=t2; nodespace node context $id')).toEqual([['node', 'context', 't2']])
+    expect(nodespaceInvocations('a=t1; b=$a; nodespace node context $b')).toEqual([['node', 'context', 't1']])
+    // What cannot be known stays as written: a prefix assignment is scoped to its own command,
+    // a command's output and `export` are not read, and a name never set here is not guessed.
+    expect(nodespaceInvocations('id=t1 nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('export id=t1; nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('id=$(nodespace node create x); nodespace node context $id')).toEqual([
+      ['node', 'create', 'x'],
+      ['node', 'context', '$id'],
+    ])
+  })
+
   test("the lookup names the checkout's own remote when it is none of the common spellings", () => {
     const remote = 'ssh://git@gitlab.example.com:2222/group/repo.git\n'
     const spellings = remoteSpellings(httpsRemote(remote) ?? '', remote)

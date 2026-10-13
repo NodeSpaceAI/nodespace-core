@@ -441,12 +441,19 @@ export function nodespaceInvocations(command: string): string[][] {
     const head = segment[start] ?? ''
 
     // A segment of assignments alone sets variables for what follows; one in
-    // front of a command is scoped to that command.
+    // front of a command is scoped to that command. A value that is still
+    // an expansion (`$(...)`, a backtick, a name not set here) is unknown:
+    // the name is forgotten rather than kept as that text.
     if (start < 0) {
       for (const token of segment) {
         const split = token.indexOf('=')
+        const value = expand(token.slice(split + 1))
 
-        assigned.set(token.slice(0, split), expand(token.slice(split + 1)))
+        if (/[$`]/.test(value)) {
+          assigned.delete(token.slice(0, split))
+        } else {
+          assigned.set(token.slice(0, split), value)
+        }
       }
 
       continue

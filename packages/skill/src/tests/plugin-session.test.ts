@@ -5,7 +5,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import nodespacePi from '../../plugins/pi/index';
 import { NodeSpace as nodespaceOpenCode } from '../../plugins/opencode/nodespace';
-import { createSession, httpsRemote } from '../../plugins/shared/nodespace-session';
+import { createSession, httpsRemote, nodespaceInvocations } from '../../plugins/shared/nodespace-session';
 import type { Host } from '../../plugins/shared/nodespace-session';
 import { CONSENT_RULES, ORIENTATION } from '../shipped-text.js';
 
@@ -419,17 +419,21 @@ describe('a session, whichever harness it runs in', () => {
     expect(await session.beforeTool()).toMatchObject({ deny: expect.stringContaining('changed under it') });
   });
 
-  it('leaves a variable it was not told the value of as it is', async () => {
-    const w = world();
-    const session = createSession(hostOf(w), 60_000);
-    await session.start('/work/widgets', { sessionId: 'ses_1' });
-    const before = commands(w).length;
-
-    // The value comes from elsewhere, and a prefix assignment is scoped to its own command.
-    await session.afterTool('nodespace node context $id', '');
-    await session.afterTool('id=t1 nodespace node context $id', '');
-
-    expect(commands(w).slice(before).every(command => !command.startsWith('node context t1'))).toBe(true);
+  it('reads a variable set earlier in the line as what it was set to, and no further', () => {
+    expect(nodespaceInvocations('id=t1; nodespace node context $id | head')).toEqual([['node', 'context', 't1']])
+    expect(nodespaceInvocations('ID=t1 && nodespace node context "${ID}"')).toEqual([['node', 'context', 't1']])
+    // The last assignment wins, and one variable can be set from another.
+    expect(nodespaceInvocations('id=t1; id=t2; nodespace node context $id')).toEqual([['node', 'context', 't2']])
+    expect(nodespaceInvocations('a=t1; b=$a; nodespace node context $b')).toEqual([['node', 'context', 't1']])
+    // What cannot be known stays as written: a prefix assignment is scoped to its own command,
+    // a command's output and `export` are not read, and a name never set here is not guessed.
+    expect(nodespaceInvocations('id=t1 nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('export id=t1; nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('nodespace node context $id')).toEqual([['node', 'context', '$id']])
+    expect(nodespaceInvocations('id=$(nodespace node create x); nodespace node context $id')).toEqual([
+      ['node', 'create', 'x'],
+      ['node', 'context', '$id'],
+    ])
   });
 
   // A harness whose hooks are one process per event (Codex) keeps the state in

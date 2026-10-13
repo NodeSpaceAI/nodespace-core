@@ -18,11 +18,12 @@ import { type ScenarioEnv, type Turn, PROMPTS, installSkill, sessionEnv } from "
 
 const TURN_TIMEOUT_MS = 12 * 60 * 1000;
 const START_TIMEOUT_MS = 60 * 1000;
+const SHUTDOWN_MS = 10 * 1000;
 
 type Json = Record<string, unknown>;
 
 /** Records from the child's stdout, split on LF only, as Pi's framing requires. */
-async function* records(stream: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
+export async function* records(stream: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let pending = "";
 
@@ -64,11 +65,13 @@ export async function pi(
   const session = sessionEnv(env);
 
   delete session.NODESPACE_WRITE_JOURNAL;
-  delete session.PI_CODING_AGENT_DIR;
 
   const child = Bun.spawn(
     [
       "pi", "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills",
+      // What the fixture is given is the extension and the skill: the agent
+      // directory's own instruction files, templates and themes are not.
+      "--no-context-files", "--no-prompt-templates", "--no-themes",
       "-e", join(agentDir, "extensions", "nodespace", "index.ts"),
       "--skill", join(agentDir, "skills", "nodespace"),
       "--provider", env.model.slice(0, slash), "--model", env.model.slice(slash + 1),
@@ -81,36 +84,45 @@ export async function pi(
   /** Reads records into the log until `done` accepts one, or the deadline passes. */
   const until = async (done: (record: Json) => boolean, ms: number, what: string): Promise<Json[]> => {
     const seen: Json[] = [];
-    const deadline = Date.now() + ms;
+    // One timer for the whole wait, cleared on the way out: a pending timer
+    // keeps this process alive after the run.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<"timeout">(resolve => {
+      timer = setTimeout(() => resolve("timeout"), ms);
+    });
 
-    for (;;) {
-      const left = deadline - Date.now();
-      const next = await Promise.race([
-        lines.next(),
-        Bun.sleep(Math.max(left, 0)).then(() => "timeout" as const),
-      ]);
+    try {
+      for (;;) {
+        const next = await Promise.race([lines.next(), expired]);
 
-      if (next === "timeout") {
-        throw new Error(`Pi did not ${what} within ${Math.round(ms / 1000)}s`);
-      }
-
-      if (next.done) {
-        throw new Error(`pi exited (${String(child.exitCode)}) before it ${what}`);
-      }
-
-      log.raw(`${next.value}\n`);
-
-      try {
-        const record = JSON.parse(next.value) as Json;
-
-        seen.push(record);
-
-        if (done(record)) {
-          return seen;
+        if (next === "timeout") {
+          throw new Error(`Pi did not ${what} within ${Math.round(ms / 1000)}s`);
         }
-      } catch {
-        // Not JSON: kept in the log as it came.
+
+        if (next.done) {
+          throw new Error(`pi exited (${String(child.exitCode)}) before it ${what}`);
+        }
+
+        log.raw(`${next.value}\n`);
+
+        let record: Json | null = null;
+
+        try {
+          record = JSON.parse(next.value) as Json;
+        } catch {
+          // Not JSON: kept in the log as it came.
+        }
+
+        if (record) {
+          seen.push(record);
+
+          if (done(record)) {
+            return seen;
+          }
+        }
       }
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -145,6 +157,12 @@ export async function pi(
     for (const record of [...accepted, ...events]) {
       const message = (record.message ?? {}) as Json;
 
+      // A provider or sign-in failure still settles the run: it is a failed
+      // turn, not an empty answer.
+      if (record.type === "message_end" && message.role === "assistant" && message.stopReason === "error") {
+        throw new Error(`Pi's ${name} turn failed: ${String(message.errorMessage ?? "no reason given")}`);
+      }
+
       if (record.type === "message_end" && message.role === "assistant" && Array.isArray(message.content)) {
         for (const part of message.content as Json[]) {
           if (part.type === "text") {
@@ -162,7 +180,20 @@ export async function pi(
   } finally {
     // Closing stdin is Pi's orderly shutdown: the extension's session ends.
     child.stdin.end();
-    await Promise.race([child.exited, Bun.sleep(10_000)]);
-    child.kill();
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const graceful = await Promise.race([
+      child.exited.then(() => true),
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(false), SHUTDOWN_MS);
+      }),
+    ]);
+
+    clearTimeout(timer);
+
+    if (!graceful) {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
   }
 }
