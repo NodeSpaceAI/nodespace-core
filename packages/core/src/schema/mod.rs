@@ -3231,6 +3231,30 @@ pub async fn update_schema(
         }
     }
 
+    // --- Phase 0: Reject a rename the title template would be left naming ---
+    //
+    // A rename rekeys the field and its data, and the schema is validated
+    // against the template it has stored, not the one this call sets. A
+    // template that still names the old key is refused then, after the
+    // rekey has begun. Checked here, so the call changes nothing, and says
+    // what does work: a template that does not name the field, then the
+    // rename, then the template with the new name.
+    if let Some(ref renames) = params.rename_fields {
+        if let Some(template) = schema_before.title_template.as_deref() {
+            for rename in renames.iter().filter(|r| r.from != r.to) {
+                if template.contains(&format!("{{{}}}", rename.from)) {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Field '{}' is named by the title template \"{template}\" and cannot \
+                         be renamed to '{}' while it is. Set 'title_template' to one that does \
+                         not name it, rename the field, then set 'title_template' with the new \
+                         name.",
+                        rename.from, rename.to
+                    )));
+                }
+            }
+        }
+    }
+
     // --- Phase 1: Process renames (identity renames migrate data; display-only renames do not) ---
     let mut fields_renamed = 0;
     if let Some(ref renames) = params.rename_fields {

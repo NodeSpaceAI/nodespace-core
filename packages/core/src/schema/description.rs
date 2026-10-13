@@ -67,7 +67,8 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
         // A field a user added to a built-in type, under a prefix, is theirs
         // and can be changed or removed, though the built-in type owns it.
         let fixed = field.protection != SchemaProtectionLevel::User
-            || (!is_prefixed(&field.name) && owner.is_some_and(|owner| built_in.contains(owner)));
+            || (!super::has_namespace_prefix(&field.name)
+                && owner.is_some_and(|owner| built_in.contains(owner)));
         message.push_str(&field_line(field, owner, &schema.envelope.id, fixed));
     }
 
@@ -167,16 +168,6 @@ fn field_line(field: &SchemaField, owner: Option<&String>, schema_id: &str, fixe
         line.push_str(&notes.join(" "));
     }
     line
-}
-
-/// Whether a field name carries a namespace prefix (`custom:effort`): the
-/// shape a user's own field on a built-in type must have.
-fn is_prefixed(name: &str) -> bool {
-    let mut parts = name.split(':');
-    matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(namespace), Some(bare), None) if !namespace.is_empty() && !bare.is_empty()
-    )
 }
 
 /// A stored value as text: a string without its quotes.
