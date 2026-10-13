@@ -62,6 +62,10 @@ pub fn normalize_enumerate_query(query: &str) -> Option<String> {
 /// An empty list names no type. It is treated as no list at all: read as a
 /// filter it would drop the default scope and put nothing in its place, and
 /// the search would return system types.
+fn should_skip_scope_filter(node_types: Option<&[String]>, scope_is_default: bool) -> bool {
+    node_types.is_some_and(|types| !types.is_empty()) && scope_is_default
+}
+
 /// Classify a failed semantic search by the structured service error, never by
 /// its message text.
 fn semantic_search_error(e: NodeServiceError) -> OpsError {
@@ -71,18 +75,11 @@ fn semantic_search_error(e: NodeServiceError) -> OpsError {
         }
         // An empty or over-long query is the caller's input, not a fault.
         NodeServiceError::InvalidUpdate(msg) => OpsError::InvalidParams(msg),
-        NodeServiceError::NodeNotFound { .. } => OpsError::InvalidParams(
-            "No content available for semantic search. Try adding content first.".to_string(),
-        ),
         e @ (NodeServiceError::DatabaseError(_) | NodeServiceError::QueryFailed(_)) => {
             OpsError::Internal(format!("Database error during search: {}", e))
         }
         e => OpsError::Internal(format!("Search failed: {}", e)),
     }
-}
-
-fn should_skip_scope_filter(node_types: Option<&[String]>, scope_is_default: bool) -> bool {
-    node_types.is_some_and(|types| !types.is_empty()) && scope_is_default
 }
 
 /// Maximum depth for markdown tree traversal
@@ -1075,10 +1072,6 @@ mod tests {
         assert!(matches!(
             semantic_search_error(NodeServiceError::invalid_update("Search query is too long")),
             OpsError::InvalidParams(m) if m == "Search query is too long"
-        ));
-        assert!(matches!(
-            semantic_search_error(NodeServiceError::node_not_found("n1")),
-            OpsError::InvalidParams(m) if m.starts_with("No content available")
         ));
         assert!(matches!(
             semantic_search_error(NodeServiceError::query_failed("KNN search failed")),
