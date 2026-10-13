@@ -49,8 +49,8 @@
         "@eslint/js": "^9.32.0",
         "@grpc/grpc-js": "1.14.4",
         "@grpc/proto-loader": "^0.7.0",
-        "@hypothesi/tauri-mcp-cli": "0.13.1",
-        "@hypothesi/tauri-mcp-server": "0.13.1",
+        "@hypothesi/tauri-mcp-cli": "0.13.0",
+        "@hypothesi/tauri-mcp-server": "0.13.0",
         "@internationalized/date": "^3.8.1",
         "@lucide/svelte": "^0.515.0",
         "@sveltejs/adapter-static": "^3.0.6",
@@ -346,9 +346,9 @@
 
     "@humanwhocodes/retry": ["@humanwhocodes/retry@0.4.3", "", {}, "sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ=="],
 
-    "@hypothesi/tauri-mcp-cli": ["@hypothesi/tauri-mcp-cli@0.13.1", "", { "dependencies": { "@hypothesi/tauri-mcp-server": "0.13.1", "commander": "14.0.2", "mcporter": "0.7.3" }, "bin": { "intent": "bin/intent.js", "tauri-mcp": "dist/index.js" } }, "sha512-0RSb+WIt0fYIjSg3+qo3WsEFkZJT0BCMySksFDjEECVOjLI9Avh6Ro4sj9pVNGKRF4sttW3O1YHRfWBMGzdlug=="],
+    "@hypothesi/tauri-mcp-cli": ["@hypothesi/tauri-mcp-cli@0.13.0", "", { "dependencies": { "@hypothesi/tauri-mcp-server": "0.13.0", "commander": "14.0.2", "mcporter": "0.7.3" }, "bin": { "intent": "bin/intent.js", "tauri-mcp": "dist/index.js" } }, "sha512-o8/r3KuHd6JcALg/Hmg/vmLkCLEquPWWWeV2zswDb2MNpwqsCnzfOxlp34M12UJaXjXmJGzWC+J7JWlmUcsCDg=="],
 
-    "@hypothesi/tauri-mcp-server": ["@hypothesi/tauri-mcp-server@0.13.1", "", { "dependencies": { "@modelcontextprotocol/sdk": "0.6.1", "aria-api": "0.8.0", "execa": "9.6.0", "html2canvas-pro": "1.6.6", "ws": "8.18.3", "zod": "3.25.76", "zod-to-json-schema": "3.25.0" }, "bin": { "mcp-server-tauri": "dist/index.js" } }, "sha512-2WjSqGXrhB1t+Z6YY7CLyLHwJM/RvVBGbPQuXOSGSaFRGKlN/sV6q/Gw9c0pKJa3ZjlzOl6IF1pvbQUMsrZ+DQ=="],
+    "@hypothesi/tauri-mcp-server": ["@hypothesi/tauri-mcp-server@0.13.0", "", { "dependencies": { "@modelcontextprotocol/sdk": "0.6.1", "aria-api": "0.8.0", "execa": "9.6.0", "html2canvas-pro": "1.6.6", "ws": "8.18.3", "zod": "3.25.76", "zod-to-json-schema": "3.25.0" }, "bin": { "mcp-server-tauri": "dist/index.js" } }, "sha512-TFgmS96nxiVwCajwOwtIVrthSlHlGNDhcsodiJRJ2PWZ9cEj+N1OgYKZBhDt0EclPAMBf2RhZtZWw1wyAHh0HA=="],
 
     "@iarna/toml": ["@iarna/toml@2.2.5", "", {}, "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="],
 
