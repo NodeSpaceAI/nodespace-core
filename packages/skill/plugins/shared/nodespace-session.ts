@@ -428,12 +428,31 @@ export function nodespaceInvocations(command: string): string[][] {
   endWord()
 
   const invocations: string[][] = []
+  /** What earlier plain assignments in the line set: `id=<uuid>; nodespace node context $id`. */
+  const assigned = new Map<string, string>()
+  const expand = (token: string): string => {
+    const name = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/.exec(token)
+
+    return assigned.get(name?.[1] ?? name?.[2] ?? '') ?? token
+  }
 
   for (const segment of segments) {
     const start = segment.findIndex(token => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
     const head = segment[start] ?? ''
 
-    if (start < 0 || (head !== 'nodespace' && !head.endsWith('/nodespace'))) {
+    // A segment of assignments alone sets variables for what follows; one in
+    // front of a command is scoped to that command.
+    if (start < 0) {
+      for (const token of segment) {
+        const split = token.indexOf('=')
+
+        assigned.set(token.slice(0, split), expand(token.slice(split + 1)))
+      }
+
+      continue
+    }
+
+    if (head !== 'nodespace' && !head.endsWith('/nodespace')) {
       continue
     }
 
@@ -445,7 +464,7 @@ export function nodespaceInvocations(command: string): string[][] {
       if (token === '--database' || token === '--socket') {
         i += 1
       } else if (token !== '--json' && !/^--(database|socket)=/.test(token)) {
-        words.push(token)
+        words.push(expand(token))
       }
     }
 

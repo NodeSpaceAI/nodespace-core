@@ -2,7 +2,7 @@
 /**
  * Prints a run's log as one line per thing that happened: each prompt, each
  * tool call with the start of its result, and what the agent said. Reads the
- * Claude Code, OpenCode, Codex and Antigravity event shapes.
+ * Claude Code, OpenCode, Codex, Antigravity and Pi (RPC) event shapes.
  *
  *   bun scripts/eval/harness/trace.ts <log.jsonl> [--full]
  */
@@ -92,6 +92,25 @@ for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
 
       console.log(`  -> ${step.state === "ERROR" ? "ERROR " : ""}${cut(error.message ?? info.output, resultChars)}`);
     }
+  } else if (event.type === "tool_execution_start") {
+    // Pi (RPC): a tool call is a start and an end, correlated by id.
+    const args = (event.args ?? {}) as Json;
+
+    console.log(`TOOL ${String(event.toolName)} ${cut(args.command ?? args.path ?? JSON.stringify(args), 500)}`);
+  } else if (event.type === "tool_execution_end") {
+    const result = (event.result ?? {}) as Json;
+
+    console.log(`  -> ${event.isError ? "ERROR " : ""}${cut(parts(result.content).map(c => String(c.text ?? "")).join(" "), resultChars)}`);
+  } else if (event.type === "message_end" && (message.role === "assistant" || message.role === "custom")) {
+    const text = typeof message.content === "string" ? message.content : parts(message.content).map(c => (c.type === "text" ? String(c.text ?? "") : "")).join("");
+
+    if (text.trim() !== "") {
+      console.log(`${message.role === "assistant" ? "SAYS" : `GIVEN (${String(message.customType)})`} ${cut(text, 1400)}`);
+    }
+  } else if (event.type === "extension_ui_request") {
+    console.log(`UI ${String(event.method)} ${cut(event.statusText ?? event.message ?? event.title, 300)}`);
+  } else if (event.type === "extension_error") {
+    console.log(`EXTENSION ERROR ${String(event.event)} ${cut(event.error, 500)}`);
   } else if (event.type === "item.started" || event.type === "item.completed") {
     // Codex: a shell command is an item, and so is each thing the agent says.
     const item = (event.item ?? {}) as Json;

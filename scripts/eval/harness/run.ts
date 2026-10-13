@@ -8,6 +8,7 @@
  *   bun scripts/eval/harness/run.ts opencode           OpenCode with the plugin
  *   bun scripts/eval/harness/run.ts codex              Codex with the hooks installed in its home
  *   bun scripts/eval/harness/run.ts antigravity        Antigravity with the skill and the instructions block
+ *   bun scripts/eval/harness/run.ts pi                 Pi with the extension (HARNESS_MODEL=<provider>/<model> required)
  *
  * It needs an isolated daemon already running, and the `nodespace` CLI built
  * from this checkout:
@@ -24,6 +25,7 @@ import { antigravity } from "./antigravity.ts";
 import { claudeCode } from "./claude-code.ts";
 import { codex } from "./codex.ts";
 import { opencode } from "./opencode.ts";
+import { pi } from "./pi.ts";
 import {
   type RunTasks,
   type ScenarioEnv,
@@ -38,7 +40,7 @@ import {
   seedRun,
 } from "./scenario.ts";
 
-const HARNESSES = ["claude-code", "claude-code-block", "opencode", "codex", "antigravity"] as const;
+const HARNESSES = ["claude-code", "claude-code-block", "opencode", "codex", "antigravity", "pi"] as const;
 const harness = process.argv[2] as (typeof HARNESSES)[number] | undefined;
 
 if (!harness || !HARNESSES.includes(harness)) {
@@ -77,6 +79,8 @@ try {
     await codex(env, cwd, log, scenario);
   } else if (harness === "antigravity") {
     await antigravity(env, cwd, log, scenario);
+  } else if (harness === "pi") {
+    await pi(env, cwd, log, scenario);
   } else {
     await claudeCode(env, harness === "claude-code" ? "plugin" : "block", cwd, log, scenario);
   }

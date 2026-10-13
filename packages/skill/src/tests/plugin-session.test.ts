@@ -403,6 +403,35 @@ describe('a session, whichever harness it runs in', () => {
     expect(w.calls).toHaveLength(before + 1);
   });
 
+  it('watches an item the context read names through a variable set earlier in the line', async () => {
+    const w = world();
+    const session = createSession(hostOf(w), 60_000);
+    await session.start('/work/widgets', { sessionId: 'ses_1' });
+    await session.afterTool('id=t1; nodespace node context $id | head -40', '');
+    expect(commands(w).slice(-1)).toEqual(['node context t1']);
+
+    await session.afterTool('ID=t1 && nodespace node context "${ID}"', '');
+    expect(commands(w).slice(-1)).toEqual(['node context t1']);
+
+    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } };
+    w.contextVersion = 'c2';
+    w.now += 61_000;
+    expect(await session.beforeTool()).toMatchObject({ deny: expect.stringContaining('changed under it') });
+  });
+
+  it('leaves a variable it was not told the value of as it is', async () => {
+    const w = world();
+    const session = createSession(hostOf(w), 60_000);
+    await session.start('/work/widgets', { sessionId: 'ses_1' });
+    const before = commands(w).length;
+
+    // The value comes from elsewhere, and a prefix assignment is scoped to its own command.
+    await session.afterTool('nodespace node context $id', '');
+    await session.afterTool('id=t1 nodespace node context $id', '');
+
+    expect(commands(w).slice(before).every(command => !command.startsWith('node context t1'))).toBe(true);
+  });
+
   // A harness whose hooks are one process per event (Codex) keeps the state in
   // a file: a session rebuilt from its snapshot is the session it was.
   it('behaves the same when each call runs on a session rebuilt from the last one\'s snapshot', async () => {
