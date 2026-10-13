@@ -124,7 +124,8 @@
   /** Error message shown to user when creating a new instance fails */
   let createError = $state<string | null>(null);
   // Why the last Ask opened no chat. View state, not query state: the chat is
-  // bound to this query and opens beside it (ADR-100 §1).
+  // bound to this query, or to the type on a type's own page, and opens beside
+  // it (ADR-100 §1).
   let askError = $state('');
   /** True while a new-instance create is in flight (disables the button) */
   let isCreating = $state(false);
@@ -663,6 +664,9 @@
     </nav>
     {#if mode === 'saved'}
       <BoundChatButton class="query-ask" {nodeId} label="Ask" bind:error={askError} />
+    {:else if schemaNode}
+      <!-- The type's own page: its chat is bound to the schema (ADR-100 §5). -->
+      <BoundChatButton class="query-ask" nodeId={schemaNode.id} label="Ask" bind:error={askError} />
     {/if}
     {#if schemaNode && queryState === 'success'}
       <button
@@ -674,7 +678,9 @@
   </header>
 
   {#if askError}
-    <p class="create-error" role="alert">Couldn't open a chat about this view: {askError}</p>
+    <p class="create-error" role="alert">
+      Couldn't open a chat about this {mode === 'saved' ? 'view' : 'type'}: {askError}
+    </p>
   {/if}
 
   {#if createError}

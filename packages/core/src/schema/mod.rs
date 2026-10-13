@@ -3,7 +3,9 @@
 //! Provides the `create_schema` tool for creating custom schemas with explicit
 //! field and relationship definitions.
 
+pub mod description;
 pub mod extends_chain;
+pub mod field_references;
 
 use crate::behaviors::SchemaNodeBehavior;
 use crate::markdown::MarkdownError;

@@ -1,7 +1,7 @@
 /**
  * QueryNodeViewer "Ask": a saved query offers a chat bound to it (ADR-100 §1),
- * beside the controls the view already has. A view of a type, which is not a
- * saved query, offers none.
+ * beside the controls the view already has. A type's own page offers one bound
+ * to the type (ADR-100 §5), once the type's schema is there to bind to.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/svelte';
@@ -73,6 +73,40 @@ describe('QueryNodeViewer — Ask', () => {
 
     await waitFor(() => expect(navigateToNodeInOtherPane).toHaveBeenCalledWith('chat-1'));
     expect(open).toHaveBeenCalledWith(QUERY_ID);
+  });
+
+  it("offers the type's own page a chat bound to the type", async () => {
+    const schema = {
+      id: 'task',
+      nodeType: 'schema',
+      content: 'Task',
+      isCore: true,
+      schemaVersion: 1,
+      fields: [],
+      relationships: [],
+      version: 1,
+      properties: {}
+    };
+    vi.spyOn(backendAdapter, 'getSchema').mockResolvedValue(schema as never);
+    const chat = { id: 'chat-2' } as Node;
+    const open = vi.spyOn(aiChatsData, 'openBoundChat').mockResolvedValue(chat);
+    const { getByRole } = render(QueryNodeViewer, {
+      props: { nodeId: 'task', onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: 'Ask' })).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => expect(navigateToNodeInOtherPane).toHaveBeenCalledWith('chat-2'));
+    expect(open).toHaveBeenCalledWith('task');
+  });
+
+  it('offers a type that has no schema yet no chat', async () => {
+    const { queryByRole, getByRole } = render(QueryNodeViewer, {
+      props: { nodeId: 'not-yet-a-type', onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: 'List' })).toBeTruthy());
+    expect(queryByRole('button', { name: 'Ask' })).toBeNull();
   });
 
   it('keeps the view controls beside it', async () => {

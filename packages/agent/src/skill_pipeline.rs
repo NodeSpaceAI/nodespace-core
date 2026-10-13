@@ -70,6 +70,10 @@ pub const ANSWERING_A_QUESTION_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4
 /// query pins it (ADR-100 §6).
 pub const QUERY_BUILDING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c19";
 
+/// The Understanding and Changing a Type skill's fixed id. A chat opened on a
+/// schema pins it (ADR-100 §5).
+pub const SCHEMA_CHANGING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1b";
+
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
 pub struct SkillSeed {
@@ -731,6 +735,30 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // window cost other skills theirs on requests that name no view.
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/building-a-view.md"),
+    },
+    SkillSeed {
+        // Understanding and Changing a Type (ADR-100 §5)
+        //
+        // The skill a chat bound to a schema pins. It says which case the type
+        // is in (built in and closed, or the user's own and open) before it
+        // offers a change, guides a well-formed field, and looks up what names
+        // a field before a rename or a removal. Schema Creation makes a new
+        // type; this one explains and changes one that exists, and is reached
+        // only by being pinned, so its description names no request that a
+        // request to define a type would match.
+        id: SCHEMA_CHANGING_SKILL_ID,
+        title: "Understanding and Changing a Type",
+        use_for: "Explain a type: what its fields mean, which values a field takes, what the type extends and what may be changed on it. Change a type: add a field, change a field, add a value to a list, or remove a field, after checking which saved queries, plays and title templates name it.",
+        tools: &["get_node", "update_schema", "search_nodes", "route_clarify"],
+        // Read the type, a write, and two repairs of a rejected write.
+        max_iterations: 5,
+        not_for: None,
+        applies_to: &[],
+        attached_to: &[],
+        // The procedure lane: a chat bound to a type pins it, so retrieval is
+        // not how it is reached.
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/understanding-a-type.md"),
     },
     SkillSeed {
         // Bulk Import
@@ -1605,7 +1633,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 26, "Should have 26 seed skills");
+        assert_eq!(seeds.len(), 27, "Should have 27 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());

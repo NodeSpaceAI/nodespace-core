@@ -7,7 +7,8 @@ use std::sync::Arc;
 use nodespace_agent::local_agent::routing;
 use nodespace_agent::local_agent::tools::pinned_skill_candidates;
 use nodespace_agent::skill_pipeline::{
-    link_seeded_skills, seed_skill_nodes, seed_tool_nodes, PLAY_AUTHORING_SKILL_ID, SKILL_SEEDS,
+    link_seeded_skills, seed_skill_nodes, seed_tool_nodes, PLAY_AUTHORING_SKILL_ID,
+    SCHEMA_CHANGING_SKILL_ID, SKILL_SEEDS,
 };
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
@@ -113,6 +114,39 @@ async fn only_the_skills_among_the_pinned_ids_are_candidates() {
     // guess a relevant type from.
     assert!(!candidates[0].schemas_linked);
     assert_eq!(candidates[0].schema_metadata, json!([]));
+}
+
+/// The type skill, pinned, reaches the turn as a candidate with its
+/// procedure and the tool that changes a type, and clears the gate with no
+/// score. Nothing it lists removes user data, so a pin is enough: a write
+/// that would is the product's to confirm, not the skill's.
+#[tokio::test]
+async fn the_pinned_type_skill_is_a_candidate_that_clears_the_gate() {
+    let (service, _dir) = seeded_service().await;
+
+    let candidates = pinned_skill_candidates(&service, &[SCHEMA_CHANGING_SKILL_ID.to_string()])
+        .await
+        .expect("the pinned skill must load");
+
+    assert_eq!(candidates.len(), 1);
+    let skill = &candidates[0];
+    assert_eq!(skill.name, "Understanding and Changing a Type");
+    assert!(skill.pinned);
+    assert!(skill.tools.contains(&"get_node".to_string()));
+    assert!(skill.tools.contains(&"update_schema".to_string()));
+    assert!(!routing::skill_is_destructive(skill));
+    assert!(routing::clears_score_gate(skill));
+
+    // What the model reads: the procedure, with the shared rules it includes
+    // resolved, and the field lookup the issue asks for.
+    let block = routing::render_candidates_for_prompt(&candidates).expect("a candidate block");
+    assert!(block.contains("SAY WHICH CASE THE TYPE IS IN"), "{block}");
+    assert!(block.contains("field_references"), "{block}");
+    assert!(
+        !block.contains("<!-- include"),
+        "an include marker was left unresolved: {block}"
+    );
+    assert!(block.contains("add_field_values"), "{block}");
 }
 
 /// A chat that pins nothing reads nothing.

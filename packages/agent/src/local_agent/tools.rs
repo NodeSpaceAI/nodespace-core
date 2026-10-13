@@ -335,6 +335,11 @@ const BODY_TRUNCATE_FULL: usize = 2000;
 /// limit, which would drop the last sections and the criteria.
 const NODE_MARKDOWN_TRUNCATE: usize = 16_000;
 
+/// How many of the definitions that name a schema's fields a schema read
+/// lists. The rest are counted, so a type used everywhere does not fill the
+/// window with its references.
+const FIELD_REFERENCES_SHOWN: usize = 30;
+
 /// Maximum characters for node body in list/summary results.
 const BODY_TRUNCATE_SUMMARY: usize = 500;
 
@@ -1054,6 +1059,94 @@ fn resolved_payload(row: &Value) -> Value {
         }
     }
     payload
+}
+
+/// What an `update_schema` call that renames or removes a field would leave
+/// pointing at nothing, as a refusal to return to the model, or `None` when it
+/// changes no field that anything names.
+///
+/// The fields are the call's `remove_fields` and each `rename_fields` entry
+/// whose name changes (a relabel keeps the key). What names them is
+/// [`find_field_references`](nodespace_core::schema::field_references::find_field_references).
+async fn field_change_refusal(ns: &NodeService, args: &Value) -> Option<String> {
+    let schema_id = args.get("schema_id").and_then(Value::as_str)?;
+    let mut fields: Vec<&str> = args
+        .get("remove_fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    for rename in args
+        .get("rename_fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let from = rename.get("from").and_then(Value::as_str);
+        if let (Some(from), Some(to)) = (from, rename.get("to").and_then(Value::as_str)) {
+            if from != to {
+                fields.push(from);
+            }
+        }
+    }
+    if fields.is_empty() {
+        return None;
+    }
+
+    let found = nodespace_core::schema::field_references::find_field_references(ns, schema_id)
+        .await
+        .ok()?;
+    let named: Vec<_> = found
+        .references
+        .iter()
+        .filter(|r| fields.contains(&r.field.as_str()))
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+
+    // The what-names-it list is the first sentence, whole: the failure notice
+    // a user sees when the model says nothing keeps only that sentence.
+    let names: Vec<String> = named
+        .iter()
+        .map(|reference| {
+            let kind = match reference.kind {
+                nodespace_core::schema::field_references::ReferenceKind::SavedQuery => {
+                    "saved query"
+                }
+                nodespace_core::schema::field_references::ReferenceKind::Play => "play",
+                nodespace_core::schema::field_references::ReferenceKind::TitleTemplate => {
+                    "title template of"
+                }
+            };
+            format!(
+                "{kind} \"{}\" ({}, field `{}`)",
+                reference.title, reference.place, reference.field
+            )
+        })
+        .collect();
+    Some(format!(
+        "Not applied: changing {} would leave {} naming a field that is gone.\n\
+         Searched: {}.\n\
+         Tell the user which of these names it, and ask whether to go ahead. Once they agree, \
+         call update_schema again with the same arguments and force=true.",
+        fields
+            .iter()
+            .map(|f| format!("`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        names.join("; "),
+        found.searched.join("; ")
+    ))
+}
+
+/// Whether a read node is a schema.
+fn is_schema_read(node_data: &Value) -> bool {
+    node_data
+        .get("nodeType")
+        .and_then(Value::as_str)
+        .is_some_and(|node_type| nodespace_core::models::CoreNodeType::Schema.is_exactly(node_type))
 }
 
 /// Put a node's set fields on a result row, under `properties`: the flat,
@@ -2320,6 +2413,10 @@ fn def_update_schema() -> ToolDefinition {
                     "type": "array",
                     "description": "Context paths to remove, written as they were added (e.g. \"spec.decisions\").",
                     "items": { "type": "string" }
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Set true only to repeat a call that was refused because the change would leave saved queries, plays or title templates naming a field that is gone, and only after the user has agreed to it."
                 }
             },
             "required": ["schema_id"]
@@ -5013,6 +5110,36 @@ impl GraphToolExecutor {
                 }
             }
         }
+        // A schema read says what names its fields: the saved
+        // queries, plays and title templates a rename or a removal
+        // would leave pointing at nothing (ADR-100 §5). It rides on
+        // the read so the model finds it where it reads the type,
+        // with what was searched beside it.
+        if is_schema_read(&node_data) {
+            match nodespace_core::schema::field_references::find_field_references(&ns, &id).await {
+                Ok(found) => {
+                    let total = found.references.len();
+                    let shown: Vec<_> = found
+                        .references
+                        .into_iter()
+                        .take(FIELD_REFERENCES_SHOWN)
+                        .collect();
+                    if let Some(obj) = node_data.as_object_mut() {
+                        obj.insert(
+                            "field_references".to_string(),
+                            json!({
+                                "searched": found.searched,
+                                "references": shown,
+                                "not_shown": total.saturating_sub(FIELD_REFERENCES_SHOWN),
+                            }),
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(schema_id = %id, error = %e, "could not look up what names a schema's fields");
+                }
+            }
+        }
         // Normalise `id` to the `nodespace://` URI form every
         // other entity-resolving tool's result already uses
         // (`search_nodes`/`search_semantic`/`get_related_nodes`/
@@ -5653,6 +5780,15 @@ impl GraphToolExecutor {
 
         let mut args = args;
         let as_text = enum_fields_without_values_as_text(&mut args, "add_fields");
+
+        // A rename or a removal leaves whatever names the field naming
+        // nothing. Said before it is written, so the user can agree to it
+        // (ADR-100 §4, §5); `force` is the agreement.
+        if args.get("force").and_then(Value::as_bool) != Some(true) {
+            if let Some(refusal) = field_change_refusal(&ns, &args).await {
+                return Ok(error_result(tool_call_id, "update_schema", &refusal));
+            }
+        }
 
         let result = handle_update_schema(&ns, args).await;
 
@@ -10587,6 +10723,153 @@ mod tests {
                 "get_node's id must be prefixed like every other entity-resolving \
                  tool's result, not left as the bare UUID: {returned_id:?}"
             );
+        }
+
+        /// A schema read says what names its fields, with what was searched,
+        /// so a rename or a removal is preceded by what it would break
+        /// (ADR-100 §5). A node that is not a schema carries no such key.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_schema_read_lists_what_names_its_fields() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let id = create_task(&executor, "Buy milk").await;
+            ns.create_node(nodespace_core::models::Node::new(
+                "query".to_string(),
+                "Open tasks by priority".to_string(),
+                json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "property", "operator": "equals",
+                        "property": "status", "value": "open"
+                    }],
+                    "sorting": [{ "field": "priority", "direction": "asc" }]
+                }),
+            ))
+            .await
+            .unwrap();
+
+            let schema = executor
+                .execute("get_node", json!({ "id": "task" }))
+                .await
+                .unwrap();
+
+            let references = &schema.result["field_references"];
+            assert_eq!(
+                references["searched"].as_array().map(Vec::len),
+                Some(3),
+                "{}",
+                schema.result
+            );
+            let named: Vec<(&str, &str, &str)> = references["references"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["kind"] == "saved_query")
+                .map(|r| {
+                    (
+                        r["field"].as_str().unwrap(),
+                        r["title"].as_str().unwrap(),
+                        r["place"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            assert!(
+                named.contains(&("status", "Open tasks by priority", "filter on status")),
+                "{named:?}"
+            );
+            assert!(
+                named.contains(&("priority", "Open tasks by priority", "sorting by priority")),
+                "{named:?}"
+            );
+
+            let task = executor
+                .execute("get_node", json!({ "id": id }))
+                .await
+                .unwrap();
+            assert!(task.result.get("field_references").is_none());
+        }
+
+        /// A rename or a removal that would leave a saved query naming a
+        /// field that is gone is refused with what names it, and goes through
+        /// once repeated with `force`. A relabel and an addition are not held.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn renaming_a_named_field_is_refused_until_forced() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let created = executor
+                .execute(
+                    "create_schema",
+                    json!({
+                        "name": "Ticket",
+                        "fields": [
+                            { "name": "summary", "type": "text" },
+                            { "name": "state", "type": "text" }
+                        ]
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!created.is_error, "{}", created.result);
+            ns.create_node(nodespace_core::models::Node::new(
+                "query".to_string(),
+                "Open tickets".to_string(),
+                json!({
+                    "target_type": "ticket",
+                    "filters": [{
+                        "type": "property", "operator": "equals",
+                        "property": "state", "value": "open"
+                    }]
+                }),
+            ))
+            .await
+            .unwrap();
+
+            let rename = json!({
+                "schema_id": "ticket",
+                "rename_fields": [{ "from": "state", "to": "status_text" }]
+            });
+            let refused = executor
+                .execute("update_schema", rename.clone())
+                .await
+                .unwrap();
+            assert!(refused.is_error);
+            let text = refused.result.to_string();
+            assert!(
+                text.contains("Not applied")
+                    && text.contains(
+                        "saved query \\\"Open tickets\\\" (filter on state, field `state`)"
+                    )
+                    && text.contains("force=true"),
+                "{text}"
+            );
+            let names: Vec<String> = ns
+                .get_schema_node("ticket")
+                .await
+                .unwrap()
+                .unwrap()
+                .fields
+                .into_iter()
+                .map(|f| f.name)
+                .collect();
+            assert_eq!(names, ["summary", "state"], "a refusal changes nothing");
+
+            // Relabelling the display name keeps the key, so nothing is held.
+            let relabel = executor
+                .execute(
+                    "update_schema",
+                    json!({
+                        "schema_id": "ticket",
+                        "rename_fields": [{ "from": "state", "to": "state", "friendlyName": "Where it is" }]
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!relabel.is_error, "{}", relabel.result);
+
+            let mut forced = rename;
+            forced["force"] = json!(true);
+            let done = executor.execute("update_schema", forced).await.unwrap();
+            assert!(!done.is_error, "{}", done.result);
         }
 
         /// The write the reproducing turn was supposed to make. Asserts the
