@@ -62,8 +62,15 @@ pub use nodespace_nlp_engine::EMBEDDING_DIMENSION;
 ///
 /// A query longer than the embedding context window is the caller's input
 /// problem, so it surfaces as a validation error rather than an internal one.
+/// A model that is not loaded is the service's problem, not the query's, and
+/// is its own variant.
 fn query_embedding_error(e: EmbeddingError) -> NodeServiceError {
     match e {
+        e @ (EmbeddingError::ModelNotInitialized
+        | EmbeddingError::ModelLoadError(_)
+        | EmbeddingError::IntegrityError(_)) => {
+            NodeServiceError::EmbeddingUnavailable(e.to_string())
+        }
         EmbeddingError::ContextOverflow(msg) => {
             NodeServiceError::invalid_update(format!("Search query is too long: {}", msg))
         }
@@ -1130,6 +1137,21 @@ mod tests {
             matches!(err, NodeServiceError::InvalidUpdate(ref msg) if msg.contains("too long")),
             "expected InvalidUpdate, got {err:?}"
         );
+    }
+
+    #[test]
+    fn query_embedding_error_reports_unloaded_model_as_unavailable() {
+        for e in [
+            EmbeddingError::ModelNotInitialized,
+            EmbeddingError::ModelLoadError("missing".to_string()),
+            EmbeddingError::IntegrityError("bad hash".to_string()),
+        ] {
+            let err = query_embedding_error(e);
+            assert!(
+                matches!(err, NodeServiceError::EmbeddingUnavailable(_)),
+                "expected EmbeddingUnavailable, got {err:?}"
+            );
+        }
     }
 
     #[test]

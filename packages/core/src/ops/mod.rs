@@ -163,6 +163,7 @@ impl From<NodeServiceError> for OpsError {
             NodeServiceError::TransactionFailed { context } => OpsError::Internal(context),
             NodeServiceError::SerializationError(msg) => OpsError::Internal(msg),
             NodeServiceError::QueryFailed(msg) => OpsError::Internal(msg),
+            err @ NodeServiceError::EmbeddingUnavailable(_) => OpsError::Internal(err.to_string()),
             NodeServiceError::BulkOperationFailed { context } => OpsError::Internal(context),
             NodeServiceError::InitializationError(msg) => OpsError::Internal(msg),
         }
