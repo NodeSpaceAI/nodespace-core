@@ -11,11 +11,11 @@ STEP 4, WORK TEST-FIRST, ONE ITEM AT A TIME: the task's checklist is the checkbo
 - run it and see it fail, for the reason the item names, and keep that output;
 - write only enough code to make it pass, run it and keep that output;
 - tick the item (STEP 5), then go to the next item.
-Writing all the tests first and the code afterwards is not this: a test written with no code to fail against proves nothing about the code it was meant to drive, and tests written in bulk pin the behaviour you imagine rather than the behaviour you build. An item with no behaviour to test, such as a rename or a document, is ticked with what shows it met, and says why no test was written. Never weaken a test, a threshold or a lint rule to make an item pass: if one has to change, stop and put it to the user.
+Writing all the tests first and the code afterwards is not this: a test written with no code to fail against proves nothing about the code it was meant to drive, and tests written in bulk pin the behaviour you imagine rather than the behaviour you build. An item with no behaviour to test, such as a rename or a document, is ticked with what shows it met, and says why no test was written.
 
 STEP 5, TICK EACH ITEM AS IT IS MET, WITH EVIDENCE UNDER IT: tick an item when it is met and not before, and write what shows it directly beneath the item: the test and the failing run, then the passing run, with the commands that were run and what they printed, and the file and line. "Done" is not evidence, and a passing run with no failing run before it is not test-first. <!-- include: task-implement-tick --> Tick as you go and not all at the end, so a task that moved on under you is noticed at the next tick.
 
-STEP 6, RUN THE FULL SUITE ONCE: when every item is ticked, run the project's whole test suite once, the command being in the standards attached to the project (ask the user when none says). Do not run it after each item: the focused tests are the loop, and the full run is the check. A real failure gets a bounded number of fix attempts, three at most, and then you stop and tell the user. A failure that is flaky gets a single rerun. A failure of the environment, or one that was already there before your change, is not yours to fix: stop and report it. Never skip, loosen or delete a check to get a pass.
+STEP 6, RUN THE FULL SUITE ONCE: when every item is ticked, run the project's whole test suite once, the command being in the standards attached to the project (ask the user when none says). Do not run it after each item: the focused tests are the loop, and the full run is the check. A real failure gets a bounded number of fix attempts, three at most, and then you stop and tell the user. A failure that is flaky gets a single rerun. A failure of the environment, or one that was already there before your change, is not yours to fix: stop and report it. The gates below apply to a rerun as to the first run.
 
 STEP 7, RECORD THE PULL REQUEST AND THE COMMITS: when the task is an `issue`, the type for a code change, record its pull request in `pull_request` and its commits in `commits`. <!-- include: task-implement-links --> A plain `task` has neither field and needs neither: skip this step for one.
 
@@ -25,8 +25,10 @@ STEP 9, HAND IT OVER: the review is another session's work and its outcome is th
 
 SEVERAL TASKS OF ONE SPEC IN PARALLEL: each is a session of its own. The frontier is the Ready tasks list, and the claim is the start in STEP 2: a session that is refused takes another from the list. Nothing else is tracked.
 
+<!-- include: delivery-gates -->
+
 <!-- include: version-conflict -->
 
 <!-- include: rejected-write -->
 
-ADAPTED FROM: implement, implement-spec and tdd in mattpocock/skills, MIT licence, copyright 2026 Matt Pocock.
+ADAPTED FROM: implement, implement-spec and tdd in mattpocock/skills, MIT licence, copyright 2026 Matt Pocock. The rationalizations, red flags and verification of the gates above: addyosmani/agent-skills, MIT licence, copyright 2025 Addy Osmani.

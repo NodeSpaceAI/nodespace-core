@@ -738,6 +738,17 @@ pub const TASK_CONTEXT_READ: InteractionRule = InteractionRule {
     prose: skill_md_form!("task-context-read"),
 };
 
+/// What counts as evidence at a delivery gate, and the excuses and signs of a
+/// skipped one. Both forms are the same words: the rule names no tool and no
+/// command, so the local agent and an agent outside the app read one text.
+/// Shared by the four delivery procedures, which point to it instead of each
+/// stating the weakened-check rule in their own words.
+pub const DELIVERY_GATES: InteractionRule = InteractionRule {
+    id: "delivery-gates",
+    imperative: agent_form!("delivery-gates"),
+    prose: skill_md_form!("delivery-gates"),
+};
+
 /// All generic interaction-pattern rules, in no particular required order —
 /// each is consumed independently by whichever skill needs it.
 pub const INTERACTION_RULES: &[InteractionRule] = &[
@@ -747,6 +758,7 @@ pub const INTERACTION_RULES: &[InteractionRule] = &[
     APPROVAL_ASK_FIRST,
     ASK_DECISION_BRIEF,
     TASK_CONTEXT_READ,
+    DELIVERY_GATES,
     FIND_THEN_ACT,
     NAMED_RECORD_RESOLUTION,
     AMBIGUITY_CLARIFY,
@@ -1150,6 +1162,13 @@ mod tests {
                 .contains(nodespace_core::ops::context_ops::ENTITIES_NOT_SHOWN_MARKER),
             "ALREADY IN THE GRAPH must quote the entity tier's truncation marker"
         );
+    }
+
+    /// The delivery gates name no tool and no command, so the local agent and
+    /// an agent outside the app must read the same words.
+    #[test]
+    fn the_delivery_gates_read_the_same_for_both_audiences() {
+        assert_eq!(DELIVERY_GATES.imperative, DELIVERY_GATES.prose);
     }
 
     /// An include marker names a rule by id alone, whatever its kind, so an
