@@ -62,13 +62,14 @@ pub mod window_capability;
 // executes arbitrary JavaScript in the webview over an unauthenticated local
 // socket, so a build that ships must never contain it: the feature is not in
 // `default`, no release or bundle script passes it, and the check below turns a
-// release-profile build with it into a compile error.
+// build without debug assertions (a release profile) into a compile error.
 #[cfg(feature = "debug-bridge")]
-pub mod debug_bridge;
+pub mod webview_bridge;
 #[cfg(all(feature = "debug-bridge", not(debug_assertions)))]
 compile_error!(
     "the `debug-bridge` feature is for development builds only: it runs arbitrary JavaScript in \
-     the webview over an unauthenticated socket, so a release build must not enable it"
+     the webview over an unauthenticated socket, so a build without debug assertions must not \
+     enable it"
 );
 
 // Window <-> database routing: window label/pin tracking and the
@@ -534,7 +535,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             // before the frontend's first call.
             window_capability::add(app)?;
             #[cfg(feature = "debug-bridge")]
-            debug_bridge::grant(app)?;
+            webview_bridge::grant(app)?;
 
             // Create menu items
             let toggle_sidebar = MenuItemBuilder::new("Toggle Sidebar")

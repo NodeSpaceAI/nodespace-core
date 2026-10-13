@@ -508,6 +508,15 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_null_over_a_set_key_is_kept_to_delete_it_from_the_file() {
+        let mut patch = json!({ "bundle": { "externalBin": ["binaries/daemon"] } });
+
+        merge_patch(&mut patch, &json!({ "bundle": { "externalBin": null } }));
+
+        assert_eq!(patch, json!({ "bundle": { "externalBin": null } }));
+    }
+
+    #[test]
     fn an_explicit_bundle_list_replaces_ours_and_a_null_is_kept() {
         let mut patch =
             json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });

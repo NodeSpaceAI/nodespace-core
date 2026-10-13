@@ -46,7 +46,7 @@ semver = "1"
 sha2 = "0.10"
 # Debug bridge: evaluates JavaScript in the webview and reports IPC traffic over
 # a local socket so an agent can drive the running app. Optional and pinned
-# exactly; only `debug-bridge` compiles it (see `debug_bridge`).
+# exactly; only `debug-bridge` compiles it (see `webview_bridge`).
 tauri-plugin-mcp-bridge = { version = "=0.13.0", optional = true }
 
 [features]
