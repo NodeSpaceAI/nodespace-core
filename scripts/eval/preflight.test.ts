@@ -112,6 +112,38 @@ describe("readGuidanceProvenance", () => {
     ).toThrow(EnvironmentError);
     expect(() => readGuidanceProvenance("")).toThrow(EnvironmentError);
   });
+
+  test("reads the stamp as the daemon stores it, through a real sqlite3", () => {
+    // `_seed` sits at the top level of `node.properties`, beside the type's own
+    // namespace, and is written by seeding (`prepare_nodes_from_template`). A
+    // user-made skill carries no stamp and is not a seeded node.
+    const dir = mkdtempSync(join(tmpdir(), "provenance-"));
+    const db = join(dir, "test.db");
+    const props = (key: string, c: string, g: string) =>
+      JSON.stringify({
+        skill: { use_for: "x" },
+        _seed: { key, config_version: c, guidance_version: g, tier: "system" },
+      });
+    try {
+      const sql =
+        "CREATE TABLE node (id TEXT, node_type TEXT, properties TEXT);" +
+        `INSERT INTO node VALUES ('1','skill','${props("Graph Editing", "c1", "g1")}');` +
+        `INSERT INTO node VALUES ('2','agent-guidance','${props("Core", "c2", "g2")}');` +
+        `INSERT INTO node VALUES ('3','skill','{"skill":{"use_for":"mine"}}');` +
+        `INSERT INTO node VALUES ('4','text','${props("Not Guidance", "c3", "g3")}');`;
+      expect(Bun.spawnSync(["sqlite3", db, sql]).exitCode).toBe(0);
+      expect(readGuidanceProvenance(db)).toEqual({
+        skill: [
+          { key: "Graph Editing", configVersion: "c1", guidanceVersion: "g1" },
+        ],
+        "agent-guidance": [
+          { key: "Core", configVersion: "c2", guidanceVersion: "g2" },
+        ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("findModelHolders", () => {
