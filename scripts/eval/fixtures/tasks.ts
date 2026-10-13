@@ -22,8 +22,9 @@
  * adds instance data only.
  *
  * Several repetitions share one database unless the run purges between them
- * (`--between-runs`); the seed is idempotent and puts every seeded status back,
- * but a task one repetition created stays, so run `--runs N` with a purge.
+ * (`--between-runs`); the seed is idempotent and puts back what the daemon lets
+ * it (see `seedWorkspace`), but a task one repetition created stays, so run
+ * `--runs N` with a purge.
  */
 
 import type { EvalEnv } from "../env.ts";
@@ -124,6 +125,36 @@ export function useSeededIds(ids: SeededIds): void {
   seeded = ids;
 }
 
+/** The `- [ ]` / `- [x]` marker a checkbox's content starts with. */
+const CHECKBOX_MARKER = /^\s*-\s*\[[ xX]\]\s*/;
+
+/** The ids in a `relationship get` payload, as bare ids. */
+function relatedIds(payload: unknown): string[] {
+  const nodes = (payload as { nodes?: unknown } | null)?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  return nodes.flatMap((n) => {
+    const id = typeof n === "string" ? n : (n as { id?: unknown } | null)?.id;
+    return typeof id === "string" ? [bareId(id)] : [];
+  });
+}
+
+/**
+ * Put the task another task blocks back in progress.
+ *
+ * A play rule refuses a move to `in_progress` while a blocker is neither done
+ * nor cancelled, so a reset after an agent moved the task fails the seed. The
+ * blocking edge is dropped around the reset; the caller records it again.
+ */
+function resetBlockedTask(env: EvalEnv, blocker: string, task: string): void {
+  try {
+    runNs(env, ["relationship", "delete", "--from", blocker, "--type", "blocks", "--to", task]);
+  } catch (e) {
+    // An edge that is not there is the first seed of a database, not a fault.
+    if (!/not found|no such|does not exist|no relationship/i.test(String(e))) throw e;
+  }
+  runNs(env, ["node", "update", task, "--properties", JSON.stringify({ status: "in_progress" })]);
+}
+
 /**
  * Put the reported task back as a done task with one unticked box.
  *
@@ -135,9 +166,16 @@ export function useSeededIds(ids: SeededIds): void {
  * the task's own status.
  */
 function ensureDoneTaskWithOpenBox(env: EvalEnv, task: string): void {
-  const text = DONE_TASK_BOX.replace(/^\s*-\s*\[[ xX]\]\s*/, "");
-  const present = listType(env, "checkbox").find((n) =>
-    (n.content ?? n.title ?? "").replace(/^\s*-\s*\[[ xX]\]\s*/, "") === text,
+  const text = DONE_TASK_BOX.replace(CHECKBOX_MARKER, "");
+  // Only the task's own children: a box of the same wording that an agent made
+  // under another task is not this one, and ticking it would leave the task
+  // with no box to report.
+  const own = new Set(relatedIds(runNs(env, ["relationship", "get", task, "--type", "has_child"])));
+  const present = listType(env, "checkbox").find(
+    (n) =>
+      n.id !== undefined &&
+      own.has(bareId(n.id)) &&
+      (n.content ?? n.title ?? "").replace(CHECKBOX_MARKER, "") === text,
   );
   let box = present?.id ? bareId(present.id) : undefined;
   if (!box) {
@@ -178,16 +216,22 @@ function personId(env: EvalEnv, p: { first: string; last: string }): string {
   return bareId(created.id);
 }
 
-/** A node of `type` with this title, created when absent, its properties reset. */
+/**
+ * A node of `type` with this title, created when absent. Its properties are put
+ * back when it is present, unless `reset` is false and they apply only on
+ * creation: the daemon refuses to move some of them back (a superseded decision
+ * cannot become accepted again).
+ */
 function ensureNode(
   env: EvalEnv,
   type: string,
   title: string,
   properties: Record<string, unknown>,
+  reset = true,
 ): string {
   const present = findByTitle(env, type, title);
   if (present) {
-    if (Object.keys(properties).length > 0) {
+    if (reset && Object.keys(properties).length > 0) {
       runNs(env, ["node", "update", present, "--properties", JSON.stringify(properties)]);
     }
     return present;
@@ -206,9 +250,11 @@ function ensureNode(
  * done task with an unticked box, an accepted decision, and a question task
  * waiting on the owner.
  *
- * Idempotent: a node present by title is reused and its seeded status put
- * back, and an edge that exists already is not an error. It runs before every
- * chat, so a database a run left behind and a freshly purged one end up alike.
+ * Idempotent: a node present by title is reused, and an edge that exists
+ * already is not an error. It runs before every chat. The status of the
+ * stopped, review, done and question tasks is put back; the decision keeps
+ * whatever an agent left (see `ensureNode`), which no later group reads, and a
+ * purge between repetitions starts it accepted again.
  */
 export function seedWorkspace(env: EvalEnv): SeededIds {
   const owner = ownerId(env);
@@ -225,16 +271,24 @@ export function seedWorkspace(env: EvalEnv): SeededIds {
   const project = ensureNode(env, "project", PROJECT_TITLE, {});
 
   const stopped = ensureNode(env, "task", STOPPED_TASK, { status: "open" });
-  const review = ensureNode(env, "task", REVIEW_TASK, { status: "in_progress" });
-  // No status here: it is set below, around its checklist.
+  // No status on these two: each is set below, around a rule that refuses a
+  // plain reset (a blocker, a checklist).
+  const review = ensureNode(env, "task", REVIEW_TASK, {});
   const done = ensureNode(env, "task", DONE_TASK, {});
   const question = ensureNode(env, "task", WAITING_QUESTION, { status: "open" });
 
   ensureDoneTaskWithOpenBox(env, done);
+  resetBlockedTask(env, question, review);
 
-  const decision = ensureNode(env, "decision", DECLINED_TITLE, {
-    decision_status: "accepted",
-  });
+  // Applied on creation only: an agent may have superseded it, and the daemon
+  // does not move a superseded decision back to accepted.
+  const decision = ensureNode(
+    env,
+    "decision",
+    DECLINED_TITLE,
+    { decision_status: "accepted" },
+    false,
+  );
 
   for (const t of [stopped, review, done, question]) {
     ensureEdge(env, project, "tasks", t);
