@@ -204,6 +204,13 @@ mod tests {
         assert_eq!(session_name(both), "plugin");
         assert_eq!(session_name(harness_only), "thread");
         assert_eq!(session_name(antigravity_only), "conversation");
+        // A command one harness started inside another's keeps the id the list names first.
+        let nested = |name: &str| match name {
+            "CODEX_THREAD_ID" => Some("thread".to_string()),
+            "ANTIGRAVITY_CONVERSATION_ID" => Some("conversation".to_string()),
+            _ => None,
+        };
+        assert_eq!(session_name(nested), "thread");
         assert_eq!(session_name(empty_plugin), "thread");
         assert_eq!(session_name(|_| None), "");
     }

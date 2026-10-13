@@ -104,6 +104,35 @@ describe('the Antigravity hooks registration', () => {
     expect(integrationStatus('antigravity')?.installed).toBe(false);
   });
 
+  it('does not replace or remove a hook of the user\'s that has the same key', () => {
+    const theirs = { SessionStart: [{ type: 'command', command: 'echo theirs' }] };
+    writeFileSync(hooksFile, JSON.stringify({ nodespace: theirs }));
+
+    const [result] = install(['antigravity']);
+
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({ nodespace: theirs });
+    expect(result.installed).not.toContain(hooksFile);
+    expect(integrationStatus('antigravity')?.installed).toBe(false);
+
+    uninstall(['antigravity']);
+
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({ nodespace: theirs });
+  });
+
+  it('reports a handler registered under another event as not in place', () => {
+    install(['antigravity']);
+    const file = JSON.parse(readFileSync(hooksFile, 'utf8'));
+
+    // The PreInvocation handler's command now names another event.
+    file.nodespace.PreInvocation[0].command = file.nodespace.PreInvocation[0].command.replaceAll(
+      'PreInvocation',
+      'SessionStart'
+    );
+    writeFileSync(hooksFile, JSON.stringify(file));
+
+    expect(integrationStatus('antigravity')?.installed).toBe(false);
+  });
+
   it('removes a hooks file that held nothing but its hook', () => {
     install(['antigravity']);
 
@@ -173,6 +202,7 @@ describe('the registered hook command', () => {
         '  *"--version"*) echo "nodespace 0.2.0" ;;',
         `  *diagnostics*) echo '{"errors":[]}' ;;`,
         `  *"query --type"*) echo '{"nodes":[{"id":"p1","title":"Widgets"}],"count":1}' ;;`,
+        `  *"report-harness-session"*) echo '{"node_id":"chat1"}' ;;`,
         `  *"skill guidance"*) cat ${world}/skills ;;`,
         `  *"node context"*) cat ${world}/item ;;`,
         '  *) exit 1 ;;',
@@ -245,8 +275,14 @@ describe('the registered hook command', () => {
     expect(existsSync(state())).toBe(true);
   });
 
-  it('says nothing for an event with no usable conversation id', () => {
-    expect(fire('PreToolUse', { conversationId: '../x', ...shell('ls') })).toBeNull();
+  it('answers every event even when it cannot work: a call is not denied for its silence', () => {
+    // No usable conversation id: nothing to restore, and a call goes on.
+    expect(fire('PreToolUse', { conversationId: '../x', ...shell('ls') })).toEqual({ decision: 'allow' });
+    expect(fire('PostToolUse', { conversationId: '../x', ...shell('ls') })).toEqual({});
+    // A state it cannot write (a folder where its file belongs).
+    mkdirSync(state(), { recursive: true });
+    expect(fire('PreToolUse', shell('ls'))).toEqual({ decision: 'allow' });
+    expect(fire('PostToolUse', shell('ls'))).toEqual({});
   });
 
   it('allows a call the session has no reason to refuse, and refuses once the task changed under it, until the user speaks', () => {
@@ -344,6 +380,71 @@ describe('the registered hook command', () => {
 
     // A conversation this machine has no state for is started, not failed.
     expect(messageOf(fire('SessionStart', { conversationId: 'def-456' }))).toContain('Widgets');
+  });
+
+  it('does not tell a launched conversation the section twice, but tells it a changed list', () => {
+    // A session NodeSpace launched for an item: its context is handed over once, with the first prompt.
+    const launched = { NODESPACE_SESSION: 'launch-1', NODESPACE_LAUNCHED_FOR: 't1' };
+
+    const run = (event: string, payload: Record<string, unknown>) => {
+      const entry = registered()[event]![0]!;
+      const command = 'hooks' in entry ? entry.hooks[0]!.command : entry.command;
+
+      return JSON.parse(
+        execFileSync('sh', ['-c', command], {
+          input: JSON.stringify({ conversationId: 'abc-123', workspacePaths: [TMP], transcriptPath: transcript, ...payload }),
+          env: {
+            PATH: `${bin}:${runtime}:/usr/bin:/bin`,
+            HOME: TMP,
+            NODESPACE_HOME: TMP,
+            NODESPACE_WATCH_INTERVAL_SECONDS: '0.001',
+            ...launched,
+          },
+          encoding: 'utf8',
+        }).trim() || '{}'
+      ) as Record<string, any>;
+    };
+
+    expect(messageOf(run('SessionStart', {}))).toContain('Implementing a task');
+
+    const first = messageOf(run('PreInvocation', { invocationNum: 0 }));
+
+    // The opening, once; the section it was told at start is not told again.
+    expect(first).toContain('launched to work on the item');
+    expect(first).not.toContain('## Skills in the graph');
+
+    set('skills', skills('v2', 'Implementing a task, revised'));
+
+    expect(messageOf(run('PreInvocation', { invocationNum: 0 }))).toContain('## Skills in the graph');
+  });
+
+  it('does not take a call with no invocation number for a user message', () => {
+    fire('SessionStart');
+    writeTranscript(4, 'ok');
+    fire('PostToolUse', shell('nodespace node context t1'));
+    set('item', item(4, 'c2'));
+    set('context', 'c2');
+    expect(fire('PreToolUse', shell('echo hi'))!.decision).toBe('deny');
+
+    fire('PreInvocation', {});
+    fire('PreInvocation', { invocationNum: '0' });
+
+    expect(fire('PreToolUse', shell('echo hi'))!.decision).toBe('deny');
+  });
+
+  it('reads the output of a step among lines it cannot parse', () => {
+    fire('SessionStart');
+    const listing = JSON.stringify({ guidance: [{ node_id: 's1', title: 'Implementing a task', use_for: 'x', modified_at: 'y' }] });
+    writeFileSync(
+      transcript,
+      [
+        '{"step_index":3,"type":"PLANNER_RESPONSE"',
+        JSON.stringify({ step_index: 4, type: 'GENERIC', content: `Output:\n${listing}\n` }),
+        'not json at all',
+      ].join('\n') + '\n'
+    );
+
+    expect(fire('PostToolUse', shell('nodespace skill get "Implementing a task"'))).toEqual({});
   });
 
   it('starts a conversation it first meets on a model call, and tells it the section once', () => {

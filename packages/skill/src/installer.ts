@@ -814,6 +814,11 @@ function keyedHooks(hooks: NonNullable<NonNullable<AgentConfig['plugin']>['hooks
   return entry;
 }
 
+/** Whether a hook under a keyed hooks file's key is one this installer wrote: its handlers name `script`. */
+function isOurKeyedHook(entry: unknown, script: string): boolean {
+  return JSON.stringify(entry).includes(quotedPath(script));
+}
+
 /** A hooks file whose top-level keys are hooks; `null` when the file is not one. */
 function readKeyedFile(file: string): Record<string, unknown> | null {
   if (!existsSync(file)) return {};
@@ -892,6 +897,15 @@ function syncHooksFile(config: AgentConfig, pluginRoot: string): { file: string 
       );
       return { file: undefined, changed: false };
     }
+    // A hook of the user's that happens to share the key is theirs: it is not
+    // replaced, and not removed later.
+    if (hooks.keyed in keyedRoot && !isOurKeyedHook(keyedRoot[hooks.keyed], script)) {
+      process.stderr.write(
+        `WARNING: ${hooks.file} already holds a hook named "${hooks.keyed}" that this installer did not write; ` +
+        `the ${config.name} hooks were not registered. Rename that hook and install again.\n`,
+      );
+      return { file: undefined, changed: false };
+    }
     const changed = writeIfDifferent(
       hooks.file,
       Buffer.from(JSON.stringify({ ...keyedRoot, [hooks.keyed]: keyedHooks(hooks, script) }, null, 2) + '\n', 'utf8'),
@@ -936,17 +950,19 @@ function hooksInPlace(config: AgentConfig, pluginRoot: string): boolean {
   if (!hooks || script === undefined) return true;
   if (hooks.keyed !== undefined) {
     const entry = readKeyedFile(hooks.file)?.[hooks.keyed];
-    const named = (handlers: unknown): boolean =>
+    // The handler for the event, naming the event: one registered under the
+    // wrong event is not in place.
+    const named = (handlers: unknown, event: string): boolean =>
       Array.isArray(handlers) &&
       handlers.some(handler => typeof (handler as HookHandler | null)?.command === 'string' &&
-        ((handler as HookHandler).command as string).includes(quotedPath(script)));
+        ((handler as HookHandler).command as string).includes(`${quotedPath(script)} ${event}`));
     return (
       typeof entry === 'object' && entry !== null &&
       hooks.events.every(({ event, grouped }) => {
         const listed = (entry as Record<string, unknown>)[event];
         return grouped
-          ? Array.isArray(listed) && listed.some(group => named((group as HookGroup | null)?.hooks))
-          : named(listed);
+          ? Array.isArray(listed) && listed.some(group => named((group as HookGroup | null)?.hooks, event))
+          : named(listed, event);
       })
     );
   }
@@ -966,6 +982,8 @@ function removeHooksFile(config: AgentConfig, pluginRoot: string): boolean {
   if (hooks.keyed !== undefined) {
     const keyedRoot = readKeyedFile(hooks.file);
     if (keyedRoot === null || !(hooks.keyed in keyedRoot)) return false;
+    // Only a hook this installer wrote: one of the user's under the same key stays.
+    if (!isOurKeyedHook(keyedRoot[hooks.keyed], script)) return false;
     const { [hooks.keyed]: _ours, ...others } = keyedRoot;
     // A file holding nothing but the hook this installer wrote is removed with it.
     if (Object.keys(others).length === 0) {

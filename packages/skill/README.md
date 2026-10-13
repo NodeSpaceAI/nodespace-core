@@ -271,7 +271,14 @@ step, so the installer says nothing more than where it wrote.
 
 Antigravity has no status line and no place for the reach text, so the status
 duty is not available: a daemon that is not running means the section is not
-told, and nothing else is said.
+told at start, and the first prompt after it is running tells it.
+
+A hook always answers: a `PreToolUse` hook that fails answers `allow`, because
+Antigravity reads an empty answer as a denial, and a hook that fails to read
+or write its state does not stop the call. The registered command is the same
+POSIX shell form the Codex hooks use; Antigravity's hook shell on Windows has
+not been checked. Events that overlap each rewrite the state file and the last
+writer wins, so a note held for the agent can be lost when two overlap.
 
 A hook cannot set `NODESPACE_WRITE_JOURNAL` for the commands that follow it,
 but Antigravity puts `ANTIGRAVITY_CONVERSATION_ID` (the id its hooks receive as
