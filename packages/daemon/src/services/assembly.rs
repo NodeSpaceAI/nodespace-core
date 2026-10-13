@@ -710,7 +710,8 @@ async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
 /// model unless one is placed under its own home or named explicitly. Reading
 /// the real home instead made every isolated run load the user's model and
 /// start GPU work nobody asked it for. A run that wants the user's model (an
-/// agent eval, say) points `NODESPACED_MODEL_PATH` at it.
+/// agent eval, say) points `NODESPACED_MODEL_PATH` at it, or names the user's
+/// models directory with `NODESPACE_MODELS_DIR`.
 fn resolve_model_path() -> Option<std::path::PathBuf> {
     let p = if let Ok(custom) = std::env::var("NODESPACED_MODEL_PATH") {
         std::path::PathBuf::from(custom)
@@ -910,11 +911,30 @@ mod tests {
     /// afterwards. The environment is process-global: nextest runs each test in
     /// its own process, and the window is the one synchronous call regardless.
     fn resolve_with(nodespace_home: &Path, user_home: &Path) -> Option<PathBuf> {
-        const VARS: [&str; 3] = ["NODESPACE_HOME", "HOME", "NODESPACED_MODEL_PATH"];
+        resolve_with_models_dir(nodespace_home, user_home, None)
+    }
+
+    /// [`resolve_with`] with `NODESPACE_MODELS_DIR` set to `models_dir`, or
+    /// removed when `None` so a shell that exports it cannot decide the result.
+    fn resolve_with_models_dir(
+        nodespace_home: &Path,
+        user_home: &Path,
+        models_dir: Option<&Path>,
+    ) -> Option<PathBuf> {
+        const VARS: [&str; 4] = [
+            "NODESPACE_HOME",
+            "HOME",
+            "NODESPACED_MODEL_PATH",
+            "NODESPACE_MODELS_DIR",
+        ];
         let saved: Vec<_> = VARS.iter().map(std::env::var_os).collect();
         std::env::set_var("NODESPACE_HOME", nodespace_home);
         std::env::set_var("HOME", user_home);
         std::env::remove_var("NODESPACED_MODEL_PATH");
+        match models_dir {
+            Some(dir) => std::env::set_var("NODESPACE_MODELS_DIR", dir),
+            None => std::env::remove_var("NODESPACE_MODELS_DIR"),
+        }
         let resolved = resolve_model_path();
         for (var, value) in VARS.iter().zip(saved) {
             match value {
@@ -960,6 +980,34 @@ mod tests {
         assert_eq!(
             resolve_with(isolated.path(), user_home.path()),
             Some(expected)
+        );
+    }
+
+    /// An isolated home with no model of its own still finds the model in the
+    /// directory `NODESPACE_MODELS_DIR` names, which is how a run that
+    /// redirects the home keeps the models already on the machine.
+    #[test]
+    fn a_named_models_dir_is_searched_under_an_isolated_home() {
+        let real = home_with_model();
+        let real_models = real.path().join(".nodespace").join("models");
+        let isolated = tempfile::tempdir().expect("isolated home");
+
+        assert_eq!(
+            resolve_with_models_dir(isolated.path(), isolated.path(), Some(&real_models)),
+            Some(real_models.join(MODEL_FILE))
+        );
+    }
+
+    /// A named directory replaces the home's, rather than adding to it: a model
+    /// under the isolated home is not found when the variable names another.
+    #[test]
+    fn a_named_models_dir_replaces_the_home_models_dir() {
+        let isolated = home_with_model();
+        let elsewhere = tempfile::tempdir().expect("empty models dir");
+
+        assert_eq!(
+            resolve_with_models_dir(isolated.path(), isolated.path(), Some(elsewhere.path())),
+            None
         );
     }
 }

@@ -140,9 +140,10 @@ impl GgufModelManager {
     /// Create a model manager over `models_dir`, creating it if it does not
     /// exist.
     ///
-    /// The caller decides where models live: the daemon passes the `models/`
-    /// directory under its NodeSpace home, so the models follow
-    /// `NODESPACE_HOME` exactly as the database does.
+    /// The caller decides where models live: the daemon passes its models
+    /// directory, which is `NODESPACE_MODELS_DIR` when that is set and the
+    /// `models/` directory under its NodeSpace home otherwise, so the models
+    /// follow `NODESPACE_HOME` exactly as the database does.
     pub fn with_dir(models_dir: PathBuf) -> Result<Self, ModelError> {
         std::fs::create_dir_all(&models_dir).map_err(|e| {
             ModelError::Other(anyhow::anyhow!(
