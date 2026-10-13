@@ -166,9 +166,11 @@ WKWebView the app ships with, not Chrome. Drive it with `tauri-mcp`.
 It installs the sidecars into `~/.nodespace/bin`, kills a daemon on the default
 socket, and registers the debug launchd label (`app.nodespace.daemon.dev`). That
 label is per user, so neither `HOME` nor `NODESPACE_HOME` scopes it, and the app
-registers it again whenever it rebuilds or finds a changed sidecar. A scratch
+re-registers it whenever it rebuilds or finds a changed sidecar. A scratch
 `HOME` keeps the files and database out of the real home; it does **not** stop
 the app replacing the user's loaded job with one pointing at the scratch install.
+Pre-seeding the sidecars only avoids re-registration while they stay unchanged
+and validly signed, and `dev:tauri` rebuilds them first, so do not rely on it.
 Get the user's go-ahead before launching it, and restore afterwards.
 
 1. Note the user's job: `launchctl print gui/$(id -u)/app.nodespace.daemon.dev`
@@ -185,12 +187,12 @@ Get the user's go-ahead before launching it, and restore afterwards.
    home socket, so the two must agree.
 5. Afterwards restore the registration: `launchctl bootout
    gui/$(id -u)/app.nodespace.daemon.dev`, then `launchctl bootstrap
-   gui/$(id -u) ~/Library/LaunchAgents/app.nodespace.daemon.dev.plist`, and
-   confirm `path` and `program` match step 1. Stop the scratch daemon and remove
-   `/tmp/nsh`.
+   gui/$(id -u) <the plist path noted in step 1>`, and confirm `path` and
+   `program` match step 1 (the `pid` will differ: the job restarts). Stop the
+   scratch daemon and remove `/tmp/nsh`.
 
-A session that cannot set `HOME` (a worktree-isolated agent) cannot do step 2
-or 3; have the user run them in their own terminal.
+A session that cannot set `HOME` (a worktree-isolated agent) cannot do step 3
+or 4; have the user run them in their own terminal.
 
 ```bash
 bunx tauri-mcp driver-session start      # 127.0.0.1:9223; --port N for another app
