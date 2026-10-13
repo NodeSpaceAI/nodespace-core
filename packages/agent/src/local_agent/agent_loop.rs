@@ -1087,6 +1087,9 @@ async fn decisions_that_may_settle<T: AgentToolExecutor + ?Sized>(
             }),
         )
         .await
+        .inspect_err(|e| {
+            tracing::debug!(error = %e, "decision check failed; the create goes ahead");
+        })
         .ok()?;
     if found.is_error {
         return None;
@@ -1352,6 +1355,13 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     });
 }
 
+/// Whether `record` is a `create_node` held back for [`decisions_that_may_settle`].
+fn is_declined_work_hold(record: &ToolExecutionRecord) -> bool {
+    record.name == "create_node"
+        && record.is_error
+        && record.result.get("error").and_then(|v| v.as_str()) == Some(DECLINED_WORK_ERROR)
+}
+
 /// Ask the user about a decision the model was shown and did not act on.
 ///
 /// Applied to every completed turn, beside [`duplicate_entity_backstop`] and
@@ -1367,11 +1377,11 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
 /// judgement of what it was shown), and when its reply already names the
 /// decision (the user was told).
 fn declined_work_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
-    let Some(held_at) = result.tool_calls_made.iter().rposition(|r| {
-        r.name == "create_node"
-            && r.is_error
-            && r.result.get("error").and_then(|v| v.as_str()) == Some(DECLINED_WORK_ERROR)
-    }) else {
+    let Some(held_at) = result
+        .tool_calls_made
+        .iter()
+        .rposition(is_declined_work_hold)
+    else {
         return;
     };
     if result.clarify.is_some()
@@ -1381,22 +1391,30 @@ fn declined_work_backstop(session: &mut AgentSession, result: &mut AgentTurnResu
     {
         return;
     }
-    let Some(decision) = result.tool_calls_made[held_at].result["decisions"]
-        .as_array()
-        .and_then(|rows| rows.first())
-    else {
+    let Some(decisions) = result.tool_calls_made[held_at].result["decisions"].as_array() else {
         return;
     };
-    let field = |k: &str| decision.get(k).and_then(|v| v.as_str()).unwrap_or_default();
-    let (id, title) = (field("id"), field("title"));
-    if !title.is_empty()
-        && result
-            .response
-            .to_lowercase()
-            .contains(&title.to_lowercase())
-    {
+    let field = |row: &serde_json::Value, k: &str| {
+        row.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let Some(first) = decisions.first() else {
+        return;
+    };
+    // The reply may name any decision the model was shown, by title or id.
+    let reply = result.response.to_lowercase();
+    let named = decisions.iter().any(|row| {
+        let (title, id) = (field(row, "title"), field(row, "id"));
+        let bare_id = id.strip_prefix("nodespace://").unwrap_or(&id);
+        (!title.is_empty() && reply.contains(&title.to_lowercase()))
+            || (!bare_id.is_empty() && reply.contains(bare_id))
+    });
+    if named {
         return;
     }
+    let (id, title) = (field(first, "id"), field(first, "title"));
 
     let done_note = done_this_turn_note(&result.tool_calls_made);
     let question = format!(
@@ -5113,6 +5131,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                     decisions = decisions.len(),
                                     "create_node held back — a recorded decision may settle this work"
                                 );
+                                // Not a call that ran: the retry the refusal asks
+                                // for must not read as a repeat of it.
+                                seen_calls.remove(&(
+                                    tc.function_name.clone(),
+                                    canonical_args(&tc.arguments_json),
+                                ));
                                 let refused = declined_work_refused_result(&decisions);
                                 (
                                     args,
@@ -15606,6 +15630,87 @@ mod tests {
                 },
             ],
         ])
+    }
+
+    /// One model round that makes a single tool call.
+    fn one_call_round(id: &str, name: &str, args: serde_json::Value) -> Vec<StreamingChunk> {
+        vec![
+            StreamingChunk::ToolCallStart {
+                id: id.into(),
+                name: name.into(),
+                provider_extra: None,
+            },
+            StreamingChunk::ToolCallArgs {
+                id: id.into(),
+                args_json: args.to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                },
+            },
+        ]
+    }
+
+    /// A create held for a decision is retried by the model once it has read
+    /// the decisions, and the retry runs. The duplicate-call guard must not
+    /// count the held call as one already executed, or "none of these applies"
+    /// can never create the work.
+    #[tokio::test]
+    async fn a_held_create_retried_with_the_same_arguments_runs() {
+        let create = json!({"node_type": "task", "content": "Build a REST API"});
+        let engine = MockEngine::new(vec![
+            one_call_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                json!({"query": "build a REST API"}),
+            ),
+            one_call_round("c1", "create_node", create.clone()),
+            one_call_round("c2", "create_node", create),
+            text_round("Created."),
+        ]);
+        let registry = MockToolExecutor::new()
+            .with_tool(
+                "search_semantic",
+                json!({}),
+                json!({"count": 1, "results": [
+                    {"id": "nodespace://d1", "title": "A GraphQL API will not be built", "type": "decision"}
+                ]}),
+            )
+            .with_tool("create_node", json!({}), json!({"id": "nodespace://t1"}));
+        let mut candidate = skill_candidate("creating", 0.9, &["create_node", "search_semantic"]);
+        candidate.id = crate::skill_pipeline::CREATING_A_TASK_SKILL_ID.to_string();
+        candidate.role = nodespace_core::models::SkillRole::Procedure;
+        let exec = RoutingToolExecutor::new(registry, vec![candidate]);
+        let executed = exec.executed_handle();
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "Add a task to build a REST API.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let ran = executed.lock().unwrap().clone();
+        assert_eq!(
+            ran.iter().filter(|n| *n == "create_node").count(),
+            1,
+            "the first create is held and the retry runs, got {ran:?}"
+        );
+        assert!(
+            ran.iter().any(|n| n == "search_semantic"),
+            "the system searches the decisions before the first create, got {ran:?}"
+        );
+        assert!(
+            result.clarify.is_none(),
+            "the model went on, so the user is not asked"
+        );
     }
 
     #[tokio::test]
