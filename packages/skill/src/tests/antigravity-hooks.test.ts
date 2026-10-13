@@ -119,6 +119,15 @@ describe('the Antigravity hooks registration', () => {
     expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({ nodespace: theirs });
   });
 
+  it('takes a hook as its own by what its handlers run, not by a path mentioned elsewhere in it', () => {
+    const mentions = { note: `'${hookScript}'`, SessionStart: [{ type: 'command', command: 'echo theirs' }] };
+    writeFileSync(hooksFile, JSON.stringify({ nodespace: mentions }));
+
+    install(['antigravity']);
+
+    expect(JSON.parse(readFileSync(hooksFile, 'utf8'))).toEqual({ nodespace: mentions });
+  });
+
   it('reports a handler registered under another event as not in place', () => {
     install(['antigravity']);
     const file = JSON.parse(readFileSync(hooksFile, 'utf8'));
@@ -416,6 +425,35 @@ describe('the registered hook command', () => {
     set('skills', skills('v2', 'Implementing a task, revised'));
 
     expect(messageOf(run('PreInvocation', { invocationNum: 0 }))).toContain('## Skills in the graph');
+  });
+
+  it('tells a note found before the next user message with that message, once', () => {
+    fire('SessionStart');
+    writeTranscript(4, 'ok');
+    fire('PostToolUse', shell('nodespace node context t1'));
+    set('item', item(3, 'c2', 3));
+    set('context', 'c2');
+    fire('PreToolUse', shell('echo hi'));
+
+    const note = messageOf(fire('PreInvocation', { invocationNum: 0 }));
+
+    expect(note).toContain('What governs the item you are working on');
+    expect(fire('PreInvocation', { invocationNum: 0 })).toEqual({});
+  });
+
+  it('still refuses when its state cannot be written', () => {
+    fire('SessionStart');
+    writeTranscript(4, 'ok');
+    fire('PostToolUse', shell('nodespace node context t1'));
+    set('item', item(4, 'c2'));
+    set('context', 'c2');
+    chmodSync(join(TMP, '.nodespace', 'antigravity-sessions'), 0o555);
+
+    try {
+      expect(fire('PreToolUse', shell('echo hi'))!.decision).toBe('deny');
+    } finally {
+      chmodSync(join(TMP, '.nodespace', 'antigravity-sessions'), 0o755);
+    }
   });
 
   it('does not take a call with no invocation number for a user message', () => {

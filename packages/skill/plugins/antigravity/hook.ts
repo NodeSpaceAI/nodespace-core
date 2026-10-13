@@ -64,18 +64,19 @@ async function outputOf(payload: Record<string, unknown>): Promise<string> {
     return ''
   }
 
-  const prefix = `{"step_index":${index},`
+  const needle = `"step_index":${index}`
 
   try {
     for (const line of (await readFile(path, 'utf8')).split('\n')) {
-      if (!line.startsWith(prefix)) {
+      // Cheap first, so a long transcript is not parsed line by line.
+      if (!line.includes(needle)) {
         continue
       }
 
       try {
         const step: unknown = JSON.parse(line)
 
-        if (isRecord(step)) {
+        if (isRecord(step) && step.step_index === index) {
           const content = text(step.content)
           const at = content.indexOf(OUTPUT_MARKER)
 
@@ -115,6 +116,20 @@ async function handle(payload: Record<string, unknown>, answer: (output: Record<
   let pendingNote = saved?.pendingNote ?? null
 
   /**
+   * The state is written before the answer, and a state that cannot be
+   * written does not change it: a refusal is still a refusal.
+   */
+  async function persist(): Promise<void> {
+    try {
+      await save(dir, path, { session: session.snapshot(), pendingNote }, before)
+    } catch (err) {
+      if (process.env.NODESPACE_HOOK_DEBUG) {
+        process.stderr.write(`nodespace hook: ${String(err)}\n`)
+      }
+    }
+  }
+
+  /**
    * A session no earlier event started: a conversation begun before the
    * hooks were installed, or a state file lost. A prompt also starts one that
    * could not reach NodeSpace, so a daemon started since is found; a tool call
@@ -137,7 +152,7 @@ async function handle(payload: Record<string, unknown>, answer: (output: Record<
       pendingNote = null
     }
 
-    await save(dir, path, { session: session.snapshot(), pendingNote }, before)
+    await persist()
     answer(isContinued ? {} : injected(session.section()))
   } else if (EVENT === 'PreInvocation') {
     // Strictly 0: a payload without the number is not taken for a user, which
@@ -154,21 +169,22 @@ async function handle(payload: Record<string, unknown>, answer: (output: Record<
 
       const note = await session.prompt()
       const section = session.section()
-      // A note found while the conversation was between messages is for the
-      // user's last message, not this one: the prompt reads the list afresh.
-      pendingNote = null
 
       if (note) {
         parts.push(section && section !== told ? `${note}\n\n${section}` : note)
       } else if (section && section !== told) {
         parts.push(section)
       }
-    } else if (pendingNote) {
+    }
+
+    // What a tool call found for the agent is told with the next call, the
+    // user's message or the model's: the item's baseline has moved on.
+    if (pendingNote) {
       parts.push(pendingNote)
       pendingNote = null
     }
 
-    await save(dir, path, { session: session.snapshot(), pendingNote }, before)
+    await persist()
     answer(injected(parts.length > 0 ? parts.join('\n\n') : null))
   } else if (EVENT === 'PreToolUse') {
     await ensureStarted()
@@ -179,7 +195,7 @@ async function handle(payload: Record<string, unknown>, answer: (output: Record<
       pendingNote = pendingNote ? `${pendingNote}\n\n${verdict.note}` : verdict.note
     }
 
-    await save(dir, path, { session: session.snapshot(), pendingNote }, before)
+    await persist()
     answer(verdict && 'deny' in verdict ? { decision: 'deny', reason: verdict.deny } : { decision: 'allow' })
   } else if (EVENT === 'PostToolUse') {
     await ensureStarted()
@@ -190,7 +206,7 @@ async function handle(payload: Record<string, unknown>, answer: (output: Record<
     const output = line !== null && nodespaceInvocations(line).length > 0 ? await outputOf(payload) : ''
 
     await session.afterTool(line, output)
-    await save(dir, path, { session: session.snapshot(), pendingNote }, before)
+    await persist()
     answer({})
   }
 }

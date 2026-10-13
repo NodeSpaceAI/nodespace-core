@@ -816,7 +816,17 @@ function keyedHooks(hooks: NonNullable<NonNullable<AgentConfig['plugin']>['hooks
 
 /** Whether a hook under a keyed hooks file's key is one this installer wrote: its handlers name `script`. */
 function isOurKeyedHook(entry: unknown, script: string): boolean {
-  return JSON.stringify(entry).includes(quotedPath(script));
+  if (typeof entry !== 'object' || entry === null) return false;
+  const named = (handlers: unknown): boolean =>
+    Array.isArray(handlers) &&
+    handlers.some(
+      handler => typeof (handler as HookHandler | null)?.command === 'string' &&
+        ((handler as HookHandler).command as string).includes(quotedPath(script)),
+    );
+  return Object.values(entry).some(
+    listed => Array.isArray(listed) &&
+      listed.some(item => named([item]) || named((item as HookGroup | null)?.hooks)),
+  );
 }
 
 /** A hooks file whose top-level keys are hooks; `null` when the file is not one. */
