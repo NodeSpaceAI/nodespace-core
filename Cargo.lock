@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-agent"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-app"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "nodespace-app-build",
  "nodespace-app-lib",
@@ -3450,14 +3450,14 @@ dependencies = [
 
 [[package]]
 name = "nodespace-app-build"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "nodespace-app-lib"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3507,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-cli"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3535,7 +3535,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-core"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3572,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-daemon"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-nlp-engine"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3637,7 +3637,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-proto"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "prost 0.13.5",
  "protoc-bin-vendored",
@@ -3648,7 +3648,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-types"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "chrono",
  "proptest",
