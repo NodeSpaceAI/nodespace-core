@@ -1727,7 +1727,7 @@ async fn a_suggestion_does_not_hold_the_issue_in_review() {
     rewrite(
         &h,
         &finding,
-        "- [x] Finding (change, high, important): rows are not streamed. Principle: bound memory. Decision: defer. Reason: size small, but needs its own investigation.",
+        "- [x] Finding (change, high, important): rows are not streamed. Principle: bound memory. Decision: defer. Reason: size medium, needs its own investigation.",
     )
     .await;
     try_status(&h, &work.task, "ready_to_merge").await.unwrap();
