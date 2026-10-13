@@ -39,11 +39,29 @@ export interface AgentConfig {
     installDir?: string;
     /**
      * For a harness that reads hook commands from a JSON file of its own: the
-     * file, and the events to register `hookFile` (a path relative to the
-     * folder the plugin installs into) for. The installer owns those handlers
-     * alone, found by the command's path, and leaves every other entry as it is.
+     * file, and the events to register `command` (a path relative to the
+     * folder the plugin installs into) for.
+     *
+     * By default the file has a `hooks` object of event names, and the
+     * installer owns the handlers whose command names the script, found by
+     * its path, and leaves every other entry as it is.
+     *
+     * With `keyed`, the file's top-level keys are hooks (Antigravity's
+     * format), and the installer owns the one named `keyed` alone. Each
+     * event's command gets the event's name as its argument, since the
+     * payload does not carry it, and a `grouped` event lists `{ matcher,
+     * hooks }` groups, as the tool events do.
+     *
+     * `needsTrust` is set for a harness that runs the handlers only after the
+     * user has trusted them.
      */
-    hooks?: { file: string; command: string; events: Array<{ event: string; timeoutSeconds: number }> };
+    hooks?: {
+      file: string;
+      command: string;
+      events: Array<{ event: string; timeoutSeconds: number; grouped?: boolean }>;
+      keyed?: string;
+      needsTrust?: boolean;
+    };
   };
   /**
    * The harness's user-level instructions file, for a harness with no plugin

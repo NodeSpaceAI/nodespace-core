@@ -29,7 +29,7 @@ pub const SESSION_ENV: &str = "NODESPACE_WRITE_JOURNAL";
 /// runs. A harness whose hooks cannot set [`SESSION_ENV`] for the commands that
 /// follow them names its session this way, and its hooks use the same id.
 /// [`SESSION_ENV`] wins when both are set.
-const HARNESS_SESSION_ENV: &str = "CODEX_THREAD_ID";
+const HARNESS_SESSION_ENVS: [&str; 2] = ["CODEX_THREAD_ID", "ANTIGRAVITY_CONVERSATION_ID"];
 
 /// A journal not appended to for this long belongs to a session that is gone.
 /// An entry is only read until the plugin next compares the item, so a live
@@ -63,8 +63,8 @@ pub fn run(action: JournalAction) -> Result<()> {
 /// The session a write is journaled under: the variable the plugin set, and
 /// failing that the id the harness itself puts in a command's environment.
 fn session_name(var: impl Fn(&str) -> Option<String>) -> String {
-    [SESSION_ENV, HARNESS_SESSION_ENV]
-        .into_iter()
+    std::iter::once(SESSION_ENV)
+        .chain(HARNESS_SESSION_ENVS)
         .filter_map(var)
         .find(|value| !value.is_empty())
         .unwrap_or_default()
@@ -188,18 +188,29 @@ mod tests {
     fn the_plugins_variable_names_the_session_and_the_harnesss_id_is_the_fallback() {
         let both = |name: &str| match name {
             SESSION_ENV => Some("plugin".to_string()),
-            HARNESS_SESSION_ENV => Some("thread".to_string()),
+            "CODEX_THREAD_ID" => Some("thread".to_string()),
             _ => None,
         };
-        let harness_only = |name: &str| (name == HARNESS_SESSION_ENV).then(|| "thread".to_string());
+        let harness_only = |name: &str| (name == "CODEX_THREAD_ID").then(|| "thread".to_string());
+        let antigravity_only = |name: &str| {
+            (name == "ANTIGRAVITY_CONVERSATION_ID").then(|| "conversation".to_string())
+        };
         let empty_plugin = |name: &str| match name {
             SESSION_ENV => Some(String::new()),
-            HARNESS_SESSION_ENV => Some("thread".to_string()),
+            "CODEX_THREAD_ID" => Some("thread".to_string()),
             _ => None,
         };
 
         assert_eq!(session_name(both), "plugin");
         assert_eq!(session_name(harness_only), "thread");
+        assert_eq!(session_name(antigravity_only), "conversation");
+        // A command one harness started inside another's keeps the id the list names first.
+        let nested = |name: &str| match name {
+            "CODEX_THREAD_ID" => Some("thread".to_string()),
+            "ANTIGRAVITY_CONVERSATION_ID" => Some("conversation".to_string()),
+            _ => None,
+        };
+        assert_eq!(session_name(nested), "thread");
         assert_eq!(session_name(empty_plugin), "thread");
         assert_eq!(session_name(|_| None), "");
     }

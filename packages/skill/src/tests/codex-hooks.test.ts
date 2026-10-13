@@ -42,7 +42,7 @@ describe('the Codex hooks registration', () => {
   it('installs the hook script, the module it imports, and one handler per event', () => {
     const [result] = install(['codex']);
 
-    expect(readdirSync(join(codexHome, 'nodespace')).sort()).toEqual(['hook.ts', 'nodespace-session.ts']);
+    expect(readdirSync(join(codexHome, 'nodespace')).sort()).toEqual(['hook-process.ts', 'hook.ts', 'nodespace-session.ts']);
     expect(readFileSync(join(codexHome, 'nodespace', 'nodespace-session.ts'), 'utf8')).toBe(
       readFileSync(join(PACKAGE_ROOT, 'plugins/shared/nodespace-session.ts'), 'utf8')
     );

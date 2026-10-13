@@ -226,6 +226,67 @@ does. The reverse nesting has the mirror problem: a harness started from a
 Codex command with no variable of its own inherits `CODEX_THREAD_ID`, and its
 writes are journaled under the Codex thread.
 
+## The Antigravity hooks
+
+Antigravity runs each hook event as a command of its own, as Codex does.
+`plugins/antigravity/hook.ts` is that command, over the same
+`plugins/shared/nodespace-session.ts` and the process plumbing Codex's hook
+shares (`plugins/shared/hook-process.ts`: the host, the state file, stdin and
+stdout). Its state is
+`<NodeSpace home>/.nodespace/antigravity-sessions/<conversation id>.json`.
+
+Antigravity differs from Codex in what a hook is given:
+
+- The payload does not name its event. The registered command does: each
+  handler's command ends with the event's name, which the hook reads as its
+  first argument.
+- There is no user-prompt event. `PreInvocation` runs before every model call,
+  and its `invocationNum` is 0 for the first call after a user message and
+  counts up while the model's tool calls come back. The call numbered 0 is the
+  prompt: the skill list is compared there, and a refusal in force is lifted
+  there. A call that follows a tool result is not the user.
+- A `PostToolUse` hook must answer exactly `{}`: any other field makes
+  Antigravity abort the tool call. It carries the tool call and no output, so
+  the output of a `nodespace` command is read from the conversation's
+  transcript (`transcriptPath`, the step at `stepIdx`), and a note for the
+  agent waits for the next `PreInvocation`.
+- A `PreToolUse` hook must answer with a `decision`, and `{}` denies the call.
+  The hook answers `allow`, which leaves the permission system to decide as if
+  no hook ran (a command that needs a permission is still asked for, or denied
+  in print mode), and `deny` with the reason to refuse.
+
+| | Antigravity hook |
+|---|---|
+| Session start, project, orientation, consent rules, skill list | `SessionStart`: `injectSteps` with a `systemMessage` |
+| A changed skill list, and the launched task | `PreInvocation` numbered 0: `injectSteps` with a `systemMessage` (with the new list) |
+| Refusing a tool call | `PreToolUse`: `{"decision": "deny", "reason": ...}` |
+| A note on a tool result | the next `PreInvocation`: `injectSteps`, held in the state file from the `PreToolUse` that found it |
+
+The installer puts `hook.ts` and the two modules beside it in
+`~/.gemini/config/nodespace/` and registers one hook, named `nodespace`, in
+`~/.gemini/config/hooks.json`: the hook's key is the one thing it owns in that
+file, and every other hook is left as it is. A file that is not valid JSON is
+left alone with a warning. Antigravity runs a registered hook with no trust
+step, so the installer says nothing more than where it wrote.
+
+Antigravity has no status line and no place for the reach text, so the status
+duty is not available: a daemon that is not running means the section is not
+told at start, and the first prompt after it is running tells it.
+
+A hook always answers: a `PreToolUse` hook that fails answers `allow`, because
+Antigravity reads an empty answer as a denial, and a hook that fails to read
+or write its state does not stop the call. The registered command is the same
+POSIX shell form the Codex hooks use; Antigravity's hook shell on Windows has
+not been checked. Events that overlap each rewrite the state file and the last
+writer wins, so a note held for the agent can be lost when two overlap.
+
+A hook cannot set `NODESPACE_WRITE_JOURNAL` for the commands that follow it,
+but Antigravity puts `ANTIGRAVITY_CONVERSATION_ID` (the id its hooks receive as
+`conversationId`) in the environment of every command. The CLI names a write's
+journal after `NODESPACE_WRITE_JOURNAL`, then `CODEX_THREAD_ID`, then
+`ANTIGRAVITY_CONVERSATION_ID`, so the hook's journal and the CLI's agree. The
+nesting caveats of the Codex hooks apply the same way.
+
 ## The Pi extension and the OpenCode plugin
 
 Both do what the Claude Code plugin does, through their own harness's hooks.

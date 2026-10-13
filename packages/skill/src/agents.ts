@@ -101,6 +101,8 @@ export const SHARED_PLUGIN_DIR = 'plugins/shared';
 
 /** What both do, behind the few things a harness supplies (ADR-093 §5). */
 const SESSION_MODULE = 'nodespace-session.ts';
+/** What the hooks of a harness that runs one command per event share. */
+const HOOK_MODULE = 'hook-process.ts';
 
 /**
  * The Pi extension: Pi loads `extensions/<name>/index.ts` from its agent
@@ -134,16 +136,47 @@ export const OPENCODE_PLUGIN = {
 export const CODEX_PLUGIN = {
   dir: 'plugins/codex',
   files: ['hook.ts'],
-  shared: [[SESSION_MODULE, SESSION_MODULE]] as Array<[string, string]>,
+  shared: [
+    [SESSION_MODULE, SESSION_MODULE],
+    [HOOK_MODULE, HOOK_MODULE],
+  ] as Array<[string, string]>,
   installDir: join(codexHome, 'nodespace'),
   hooks: {
     file: join(codexHome, 'hooks.json'),
     command: 'hook.ts',
+    needsTrust: true,
     events: [
       { event: 'SessionStart', timeoutSeconds: 30 },
       { event: 'UserPromptSubmit', timeoutSeconds: 30 },
       { event: 'PreToolUse', timeoutSeconds: 15 },
       { event: 'PostToolUse', timeoutSeconds: 15 },
+    ],
+  },
+};
+
+/**
+ * The Antigravity hooks: one script and the modules it imports, in a folder of
+ * NodeSpace's own, and one hook of the global hooks file named `nodespace`.
+ * Antigravity sends no event name in the payload, so each handler's command
+ * names its event.
+ */
+export const ANTIGRAVITY_PLUGIN = {
+  dir: 'plugins/antigravity',
+  files: ['hook.ts'],
+  shared: [
+    [SESSION_MODULE, SESSION_MODULE],
+    [HOOK_MODULE, HOOK_MODULE],
+  ] as Array<[string, string]>,
+  installDir: join(antigravityConfigDir, 'nodespace'),
+  hooks: {
+    file: join(antigravityConfigDir, 'hooks.json'),
+    command: 'hook.ts',
+    keyed: 'nodespace',
+    events: [
+      { event: 'SessionStart', timeoutSeconds: 30 },
+      { event: 'PreInvocation', timeoutSeconds: 30 },
+      { event: 'PreToolUse', timeoutSeconds: 15, grouped: true },
+      { event: 'PostToolUse', timeoutSeconds: 15, grouped: true },
     ],
   },
 };
@@ -183,6 +216,7 @@ export const AGENTS: AgentConfig[] = [
     detectionDir: join(home, '.gemini', 'antigravity-cli'),
     installDir: join(antigravityConfigDir, 'skills', 'nodespace'),
     pruneRoot: antigravityConfigDir,
+    plugin: ANTIGRAVITY_PLUGIN,
     instructionsFile: join(antigravityConfigDir, 'AGENTS.md'),
     skillFrontmatter: SKILL_FRONTMATTER,
   },
