@@ -440,7 +440,7 @@ async fn a_stored_filter_compares_the_value_a_row_stores() -> Result<()> {
     // With it, the stored value is compared, in the same query for `task`.
     assert_eq!(
         matching(&h, "task", stored_is("changes_requested", false)).await,
-        [changes.clone()]
+        std::slice::from_ref(&changes)
     );
     // A plain task reads the same either way, and the issue that stores
     // `in_progress` is still `in_progress`.
