@@ -2,7 +2,7 @@
 /**
  * Prints a run's log as one line per thing that happened: each prompt, each
  * tool call with the start of its result, and what the agent said. Reads the
- * Claude Code, OpenCode and Codex event shapes.
+ * Claude Code, OpenCode, Codex and Antigravity event shapes.
  *
  *   bun scripts/eval/harness/trace.ts <log.jsonl> [--full]
  */
@@ -20,6 +20,8 @@ if (!file) {
 }
 
 const resultChars = process.argv.includes("--full") ? 4000 : 300;
+/** The text of each agent response step so far, by step index: it arrives in pieces. */
+const spoken = new Map<number, string>();
 const cut = (text: unknown, max: number) => String(text ?? "").replace(/\s+/g, " ").slice(0, max);
 const parts = (content: unknown): Json[] => (Array.isArray(content) ? (content as Json[]) : []);
 
@@ -69,6 +71,27 @@ for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
     console.log(`  -> ${cut(state.output ?? state.error, resultChars)}`);
   } else if (event.type === "text") {
     console.log(`SAYS ${cut(part.text, 1400)}`);
+  } else if (event.event === "step_update") {
+    // Antigravity: the agent's text arrives as deltas of one step, and a tool
+    // call is a step that goes ACTIVE (with its parameters) and then DONE or ERROR.
+    const step = (event.step_update ?? {}) as Json;
+    const index = Number(step.step_index);
+    const info = (step.tool_info ?? {}) as Json;
+    const parameters = (info.parameters ?? {}) as Json;
+
+    if (step.step_type === "agent_response") {
+      spoken.set(index, `${spoken.get(index) ?? ""}${String(step.text_delta ?? "")}`);
+
+      if (step.state === "DONE" && (spoken.get(index) ?? "").trim() !== "") {
+        console.log(`SAYS ${cut(spoken.get(index), 1400)}`);
+      }
+    } else if (step.step_type === "tool" && step.state === "ACTIVE") {
+      console.log(`TOOL ${String(step.tool_name)} ${cut(parameters.CommandLine ?? JSON.stringify(parameters), 500)}`);
+    } else if (step.step_type === "tool" && (step.state === "DONE" || step.state === "ERROR")) {
+      const error = (info.error ?? {}) as Json;
+
+      console.log(`  -> ${step.state === "ERROR" ? "ERROR " : ""}${cut(error.message ?? info.output, resultChars)}`);
+    }
   } else if (event.type === "item.started" || event.type === "item.completed") {
     // Codex: a shell command is an item, and so is each thing the agent says.
     const item = (event.item ?? {}) as Json;
