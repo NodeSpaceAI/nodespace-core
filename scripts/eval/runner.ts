@@ -1054,6 +1054,33 @@ function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
 function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
   const results: ScenarioResult[] = [];
 
+  // Prove the graph capture sees the database before any turn is scored on it.
+  // A capture that queries no type returns an empty snapshot without erroring,
+  // and then every "nothing was written" clause passes over a write and every
+  // "was created" clause fails, so a run of it looks like a result. A database
+  // the daemon has just seeded always holds schemas and nodes, so a snapshot
+  // with none is blind, not empty.
+  if (fixture.graph) {
+    const canary = captureSnapshot(env, fixture.graph.types, {
+      edgesFor: () => false,
+    });
+    const blind = canary.captureError
+      ? `it failed: ${canary.captureError}`
+      : canary.schemas.length === 0
+        ? "it found no schemas"
+        : canary.nodes.length === 0
+          ? "it found no nodes in a database that is seeded with some"
+          : null;
+    if (blind) {
+      throw new EnvironmentError(
+        `The graph snapshot is blind: ${blind}.`,
+        `Every end-state verdict of this run would be vacuous. Check that ` +
+          `'nodespace schema list' and 'nodespace node query' return what the ` +
+          `snapshot reads (graph.ts).`,
+      );
+    }
+  }
+
   /**
    * Consecutive failed sends tolerated before the run is declared void.
    *
@@ -1230,6 +1257,21 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
         if (!before?.nodes.some((p) => p.id === n.id)) groupNodeIds.add(n.id);
       }
       const diff = before && after ? diffSnapshots(before, after) : undefined;
+
+      // A snapshot that could not be captured voids the run rather than
+      // scoring the scenario. Scored as a failure, it reads as the model's, and
+      // a defect in the capture itself would then fail every scenario that
+      // trips it for the length of the run, with the cause visible only in the
+      // per-scenario failure text.
+      if (diff?.captureError) {
+        throw new EnvironmentError(
+          `The graph end-state could not be captured after '${scenario.id}': ` +
+            `${diff.captureError}`,
+          `Scenarios are graded on the graph, so a turn that cannot be read back ` +
+            `cannot be scored. Check the daemon, then the relations the fixture ` +
+            `walks (graph.relations) and the types it queries.`,
+        );
+      }
 
       // The degenerate-empty-generation failure mode (agent_loop.rs: the
       // model opens a turn and emits neither text nor a tool call) is an

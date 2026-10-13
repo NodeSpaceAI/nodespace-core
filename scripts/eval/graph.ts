@@ -381,7 +381,20 @@ export function captureSnapshot(
         // edge list — scoring 11c as "no 'mentions' edge was recorded", a dead
         // daemon filed as a model failure. Letting it reach the outer catch
         // sets `captureError`, and every assertion then declines to score.
-        const payload = runCli(env, ["relationship", "get", n.id, "--type", rel]);
+        //
+        // The one exception is a relation the fixture named (`relations`): it
+        // is declared on some types and not others, and the daemon refuses it
+        // on a node whose type does not declare it. That refusal, and only
+        // that one, means "this node has no such edge"; any other failure is
+        // still the dead daemon above and still fails the capture.
+        let payload: unknown;
+        try {
+          payload = runCli(env, ["relationship", "get", n.id, "--type", rel]);
+        } catch (e) {
+          const declared = UNIVERSAL_RELATIONS.includes(rel);
+          if (!declared && /not declared for node type/i.test(String(e))) continue;
+          throw e;
+        }
         for (const target of readRelatedIds(payload)) {
           edges.push({ from: n.id, relation: rel, to: target });
         }
