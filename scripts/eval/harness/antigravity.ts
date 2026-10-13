@@ -19,7 +19,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { REPO_ROOT } from "../env.ts";
 import { type ScenarioEnv, type Turn, PROMPTS, sessionEnv } from "./scenario.ts";
 
@@ -50,8 +50,14 @@ export async function antigravity(
     join(cwd, ".agents", "hooks.json"),
     JSON.stringify({ harness: { PreToolUse: [{ matcher: "run_command", hooks: [{ type: "command", command: `bun ${JSON.stringify(approve)}` }] }] } }, null, 2),
   );
-  // The hooks file is the scenario's, not the fixture project's.
-  writeFileSync(join(cwd, ".git/info/exclude"), `${readExclude(cwd)}.agents\n`);
+  // The hooks file is the scenario's, not the fixture project's. The session
+  // can edit it (it is in the checkout it works in), which is why the approver
+  // is a fixture rule and not a boundary.
+  const exclude = join(cwd, ".git/info/exclude");
+
+  if (existsSync(dirname(exclude)) && !readExclude(cwd).split("\n").includes(".agents")) {
+    writeFileSync(exclude, `${readExclude(cwd)}.agents\n`);
+  }
 
   // The caller may itself be inside a harness that names a write journal.
   const session = sessionEnv(env);
@@ -91,7 +97,20 @@ export async function antigravity(
         }
 
         if (event.event === "result") {
+          const denied = Array.isArray(result.denied_actions) ? result.denied_actions.length : 0;
+
           said = String(result.response ?? "");
+
+          if (result.status !== "SUCCESS") {
+            throw new Error(`agy ended the ${name} prompt with status ${String(result.status)}`);
+          }
+
+          // The permission system refused something the session needed: the
+          // answer says so, and a run with denials is not a measurement of
+          // the session's behaviour.
+          if (denied > 0) {
+            said += `\n[the permission system denied ${denied} action(s) on this prompt]`;
+          }
         }
       } catch {
         // Not JSON: kept in the log as it came.

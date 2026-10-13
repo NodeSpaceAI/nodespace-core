@@ -4,51 +4,182 @@
  * from the scratch checkout's `.agents/hooks.json`.
  *
  * Antigravity in print mode cannot prompt, so a tool call that needs a
- * permission is denied. This answers for the one fixture checkout and nothing
- * else: a shell command is approved when every command in the line is one the
- * scenario needs, and anything else is left to the permission system, which
- * denies it in print mode. It is not a bypass: `--dangerously-skip-permissions`
- * approves everything, this approves a short list.
+ * permission is denied. This answers for the one fixture checkout: a shell
+ * line is approved only when it is made of simple commands joined by `&&`,
+ * `||`, `;`, `|` or a newline, every word quoted or plain, whose first words
+ * are all in a short list. Anything it does not understand is left to the
+ * permission system (`ask`), which denies it in print mode: the rule fails
+ * closed, on a line and on input it cannot read.
  *
- * It answers with a `decision`, which `PreToolUse` requires, and prints
+ * It is NOT a sandbox. `sh <file>` and `node <file>` run whatever the file
+ * holds, and the agent can write files, so an approved line can run arbitrary
+ * code. What the rule does is keep an agent from reaching for a program the
+ * scenario does not need, in a fixture checkout and an isolated daemon. It is
+ * not `--dangerously-skip-permissions`, and it is not to be pointed at a
+ * checkout that matters.
+ *
+ * A `PreToolUse` hook must answer with a `decision`, so it prints one and
  * nothing else.
  */
 
-// A module, so the top-level `await` below is one.
-export {};
+export type Decision = { decision: "allow" | "auto_approve" | "ask"; reason?: string };
 
-/** The words a scenario run uses; each word is the first of one command. */
-const ALLOWED = new Set([
-  "nodespace", "git", "node", "sh", "cat", "ls", "grep", "echo", "printf", "head", "tail", "sed", "wc", "test",
-  "mkdir", "touch", "awk", "sort", "uniq", "diff", "pwd", "true",
-]);
+/** Commands that run as they are, whatever their arguments. */
+const PLAIN = new Set(["nodespace", "cat", "ls", "head", "tail", "grep", "wc", "echo", "printf", "pwd", "true", "test", "mkdir", "touch"]);
 
-/** The line with its single-quoted strings emptied: nothing inside them is read by the shell. */
-function withoutLiterals(line: string): string {
-  return line.replace(/'[^']*'/g, "''");
+/** What `git` may be asked, by its first word: no `-c`, no `--exec-path`, nothing that runs a program named on the line. */
+const GIT_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "add", "commit", "rev-parse", "branch", "ls-files"]);
+
+/** Arguments of an allowed git command that write a file or run a program. */
+const GIT_REFUSED = /^--(output|exec|open-files-in-pager|upload-pack|receive-pack)/;
+
+/** Redirections that only discard or merge output, removed before the line is read. */
+const HARMLESS_REDIRECTION = /(^|\s)(?:2>&1|&?>\s*\/dev\/null|2>\s*\/dev\/null)(?=\s|;|&|\||$)/g;
+
+/** Characters that start something this reader does not follow, outside quotes. */
+const UNFOLLOWED = /[`$\\<>(){}!]/;
+
+/**
+ * The simple commands of a shell line, each as its words, or `null` when the
+ * line has anything but plain words, quotes and the joining operators.
+ */
+export function words(line: string): string[][] | null {
+  const text = line.replace(HARMLESS_REDIRECTION, "$1");
+  const commands: string[][] = [];
+  let current: string[] = [];
+  let word = "";
+  let isWord = false;
+
+  const endWord = () => {
+    if (isWord) {
+      current.push(word);
+    }
+
+    word = "";
+    isWord = false;
+  };
+  const endCommand = () => {
+    endWord();
+
+    if (current.length > 0) {
+      commands.push(current);
+    }
+
+    current = [];
+  };
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i] ?? "";
+
+    if (char === "'") {
+      const end = text.indexOf("'", i + 1);
+
+      if (end < 0) {
+        return null;
+      }
+
+      word += text.slice(i + 1, end);
+      isWord = true;
+      i = end;
+    } else if (char === '"') {
+      let end = i + 1;
+
+      // Inside double quotes the shell still reads `$`, a backtick and `\`.
+      for (; end < text.length && text[end] !== '"'; end += 1) {
+        if ("$`\\".includes(text[end] ?? "")) {
+          return null;
+        }
+      }
+
+      if (end >= text.length) {
+        return null;
+      }
+
+      word += text.slice(i + 1, end);
+      isWord = true;
+      i = end;
+    } else if (char === " " || char === "\t") {
+      endWord();
+    } else if (char === "\n" || char === ";") {
+      endCommand();
+    } else if (char === "&") {
+      // `&&` joins commands; a lone `&` would run one in the background.
+      if (text[i + 1] !== "&") {
+        return null;
+      }
+
+      endCommand();
+      i += 1;
+    } else if (char === "|") {
+      endCommand();
+
+      if (text[i + 1] === "|") {
+        i += 1;
+      }
+    } else if (UNFOLLOWED.test(char)) {
+      return null;
+    } else {
+      word += char;
+      isWord = true;
+    }
+  }
+
+  endCommand();
+
+  return commands.length > 0 ? commands : null;
 }
 
-/** Splits a shell line at the operators that start another command. */
-function commandsOf(line: string): string[] {
-  return withoutLiterals(line).split(/&&|\|\||;|\||\n/).map(part => part.trim()).filter(part => part !== "");
+/** Whether one simple command is one the scenario uses. */
+function isAllowed(command: readonly string[]): boolean {
+  const [name = "", second = "", ...rest] = command;
+
+  // The name is looked up as written: a path, or `VAR=value` before it, is not on the list.
+  if (PLAIN.has(name)) {
+    return true;
+  }
+
+  if (name === "git") {
+    return GIT_SUBCOMMANDS.has(second) && ![second, ...rest].some(word => GIT_REFUSED.test(word));
+  }
+
+  // A script file: `-c`, `-e` and the like would run code written on the line.
+  if (name === "node" || name === "sh") {
+    return second !== "" && !second.startsWith("-");
+  }
+
+  return false;
 }
 
-function firstWord(command: string): string {
-  // A leading `VAR=value` is an environment assignment, not the command.
-  const words = command.split(/\s+/).filter(word => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+/** What to answer for one hook payload. Never throws. */
+export function decide(input: unknown): Decision {
+  const call = typeof input === "object" && input !== null ? (input as { toolCall?: unknown }).toolCall : undefined;
+  const { name, args } = (typeof call === "object" && call !== null ? call : {}) as { name?: unknown; args?: unknown };
 
-  return (words[0] ?? "").replace(/^.*\//, "");
+  if (typeof name !== "string" || name === "") {
+    return { decision: "ask", reason: "no tool named" };
+  }
+
+  if (name !== "run_command") {
+    // Not a shell command: the session's own mode decides.
+    return { decision: "allow" };
+  }
+
+  const line = typeof args === "object" && args !== null ? (args as { CommandLine?: unknown }).CommandLine : undefined;
+  const commands = typeof line === "string" ? words(line) : null;
+
+  return commands?.every(isAllowed)
+    ? { decision: "auto_approve" }
+    : { decision: "ask", reason: "not a command line the harness scenario uses" };
 }
 
-const input = JSON.parse(await Bun.stdin.text()) as { toolCall?: { name?: string; args?: { CommandLine?: string } } };
-const call = input.toolCall;
-const line = call?.args?.CommandLine ?? "";
+if (import.meta.main) {
+  let answer: Decision;
 
-if (call?.name !== "run_command") {
-  // Not a shell command: the session's own mode decides.
-  console.log(JSON.stringify({ decision: "allow" }));
-} else if (line !== "" && !/[`]|\$\(/.test(withoutLiterals(line)) && commandsOf(line).every(command => ALLOWED.has(firstWord(command)))) {
-  console.log(JSON.stringify({ decision: "auto_approve" }));
-} else {
-  console.log(JSON.stringify({ decision: "ask", reason: "not a command the harness scenario uses" }));
+  try {
+    answer = decide(JSON.parse(await Bun.stdin.text()));
+  } catch {
+    answer = { decision: "ask", reason: "unreadable hook input" };
+  }
+
+  console.log(JSON.stringify(answer));
 }
