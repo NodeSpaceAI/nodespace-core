@@ -320,7 +320,9 @@ async fn test_update_schema_remove_field_referenced_by_existing_template_rejecte
 
 /// Renaming a field the title template names is refused before anything is
 /// written, rather than rekeying the field and then failing on the template.
-/// A call that also sets a template that uses the new name goes through.
+/// The rename is validated against the template already stored, so it goes
+/// through only in three calls: a template that does not name the field, the
+/// rename, then the template with the new name.
 #[tokio::test]
 async fn test_update_schema_rename_of_a_field_the_template_names_changes_nothing() {
     let (svc, _tmp) = create_test_service().await;
