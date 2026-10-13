@@ -21,11 +21,11 @@ pub use nodespace_types::{
 use serde_json::Value;
 use std::sync::Arc;
 
-/// Reserved core property names that conflict with system properties
 /// How many definitions are named when `update_schema` holds a change for
 /// them. They go into one sentence a person reads; the rest are counted.
 const FIELD_CHANGE_REFERENCES_SHOWN: usize = 10;
 
+/// Reserved core property names that conflict with system properties
 const RESERVED_CORE_PROPERTIES: &[&str] = &[
     "id",
     "node_type",
@@ -3208,6 +3208,30 @@ pub async fn update_schema(
         }
     }
 
+    // --- Phase 0: Reject a removal the title template would be left naming ---
+    //
+    // The schema is validated after the write against the template this call
+    // leaves it with: the one it sets, or the stored one when it sets none.
+    // Refused here so that a caller is not first asked to agree to a removal
+    // that the validation would then refuse outright.
+    if let Some(ref remove_names) = params.remove_fields {
+        let template = params
+            .title_template
+            .as_deref()
+            .or(schema_before.title_template.as_deref());
+        if let Some(template) = template {
+            for name in remove_names {
+                if template.contains(&format!("{{{name}}}")) {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Field '{name}' is named by the title template \"{template}\" and \
+                         cannot be removed while it is. Set 'title_template' to one that does \
+                         not name it, in this call or before it."
+                    )));
+                }
+            }
+        }
+    }
+
     // --- Phase 0: Hold a change that active plays or saved queries depend on ---
     //
     // Last of the refusals ahead of Phase 1, so a call is never asked to agree
@@ -3285,7 +3309,8 @@ pub async fn update_schema(
                 .map(|r| {
                     let kind = match r.kind {
                         field_references::ReferenceKind::SavedQuery => "saved query",
-                        _ => "play",
+                        field_references::ReferenceKind::Play => "play",
+                        field_references::ReferenceKind::TitleTemplate => "title template",
                     };
                     format!("{kind} \"{}\" ({}, field `{}`)", r.title, r.place, r.field)
                 })

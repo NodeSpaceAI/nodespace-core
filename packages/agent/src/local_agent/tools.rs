@@ -2336,7 +2336,7 @@ fn def_update_schema() -> ToolDefinition {
                 },
                 "force": {
                     "type": "boolean",
-                    "description": "Set true only to repeat a call that was refused because the change would leave saved queries or plays naming a field that is gone or affect active plays, and only after the user has agreed to it."
+                    "description": "Set true only to repeat a call that was refused because the change would leave saved queries or plays naming a field that is gone or would affect active plays, and only after the user has agreed to it."
                 }
             },
             "required": ["schema_id"]
