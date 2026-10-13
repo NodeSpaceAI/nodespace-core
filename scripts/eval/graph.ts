@@ -122,15 +122,19 @@ export function snapshotQueryTypes(types: string[], schemas: string[]): string[]
 }
 
 /**
- * Max nodes pulled per type.
+ * Nodes pulled per `node query` page.
  *
- * Not "far above any scenario's footprint": a fresh database already holds a
- * few hundred `text` nodes, the bodies of the seeded skills and guidance, and
- * at 200 a node a turn wrote fell off the end of the list unseen, so a scenario
- * that asserts nothing was written passed over a write. A type that fills the
- * limit now fails the capture rather than being read short.
+ * The daemon clamps a query to 500 rows without saying so, so asking for more
+ * returns 500 and looks like the whole list. A fresh database already holds a
+ * few hundred `text` nodes (the bodies of the seeded skills and guidance), and
+ * rows come back oldest first, so a read cut short drops the node a turn just
+ * wrote and a scenario asserting nothing was written passes over a write. A
+ * type is therefore read a page at a time until a page comes back short.
  */
-const QUERY_LIMIT = 5000;
+export const QUERY_PAGE = 500;
+
+/** Pages read for one type before the capture gives up rather than loop. */
+const MAX_PAGES = 100;
 
 function runCli(env: EvalEnv, args: string[]): unknown {
   const r = Bun.spawnSync(
@@ -329,32 +333,41 @@ export function captureSnapshot(
       // an empty list. A type that does not exist at all can error instead —
       // tolerated for the same reason, since the caller's predicted type set
       // intentionally names types a given run may never create.
-      let payload: unknown;
-      try {
-        payload = runCli(env, [
+      const queryPage = (offset: number): unknown =>
+        runCli(env, [
           "node",
           "query",
           "--type",
           t,
           "--limit",
-          String(QUERY_LIMIT),
+          String(QUERY_PAGE),
+          "--offset",
+          String(offset),
         ]);
+      let payload: unknown;
+      try {
+        payload = queryPage(0);
       } catch {
         continue;
       }
-      const listed = readNodeList(payload);
-      // Outside the try above on purpose: a short read is not an expected
-      // failure, and tolerating it is how a write goes unseen.
-      if (listed.length >= QUERY_LIMIT) {
-        throw new Error(
-          `type '${t}' returned ${listed.length} nodes, the query limit; the ` +
-            `snapshot would miss nodes past it`,
-        );
-      }
-      for (const n of listed) {
-        if (seen.has(n.id)) continue;
-        seen.add(n.id);
-        nodes.push(n);
+      for (let page = 0; ; page++) {
+        const listed = readNodeList(payload);
+        for (const n of listed) {
+          if (seen.has(n.id)) continue;
+          seen.add(n.id);
+          nodes.push(n);
+        }
+        if (listed.length < QUERY_PAGE) break;
+        // Not tolerated like the first page: a later page that fails, or a
+        // type too large to read, would leave the list short without a sign,
+        // which is how a write goes unseen.
+        if (page + 1 >= MAX_PAGES) {
+          throw new Error(
+            `type '${t}' has more than ${MAX_PAGES * QUERY_PAGE} nodes; the ` +
+              `snapshot would miss the ones past them`,
+          );
+        }
+        payload = queryPage((page + 1) * QUERY_PAGE);
       }
     }
 
@@ -410,6 +423,23 @@ export function captureSnapshot(
       captureError: e instanceof Error ? e.message : String(e),
     };
   }
+}
+
+/**
+ * Why a snapshot of a freshly seeded database cannot be trusted, or null.
+ *
+ * A capture that queries no type returns an empty snapshot without erroring,
+ * and every "nothing was written" clause then passes over a write while every
+ * "was created" clause fails. A database the daemon has just seeded always
+ * holds schemas and nodes, so a snapshot with none is blind, not empty.
+ */
+export function snapshotBlindness(snap: GraphSnapshot): string | null {
+  if (snap.captureError) return `it failed: ${snap.captureError}`;
+  if (snap.schemas.length === 0) return "it found no schemas";
+  if (snap.nodes.length === 0) {
+    return "it found no nodes in a database that is seeded with some";
+  }
+  return null;
 }
 
 /**

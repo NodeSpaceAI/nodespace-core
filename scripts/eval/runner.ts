@@ -12,7 +12,12 @@
  */
 
 import { readEnv, ENV_USAGE, REPO_ROOT, type EvalEnv } from "./env.ts";
-import { captureSnapshot, diffSnapshots } from "./graph.ts";
+import {
+  captureSnapshot,
+  diffSnapshots,
+  snapshotBlindness,
+  type SnapshotNode,
+} from "./graph.ts";
 import {
   abortOnEnvironment,
   awaitSkillIndex,
@@ -1054,23 +1059,12 @@ function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
 function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
   const results: ScenarioResult[] = [];
 
-  // Prove the graph capture sees the database before any turn is scored on it.
-  // A capture that queries no type returns an empty snapshot without erroring,
-  // and then every "nothing was written" clause passes over a write and every
-  // "was created" clause fails, so a run of it looks like a result. A database
-  // the daemon has just seeded always holds schemas and nodes, so a snapshot
-  // with none is blind, not empty.
+  // Prove the graph capture sees the database before any turn is scored on it:
+  // a run of a blind one looks like a result (see `snapshotBlindness`).
   if (fixture.graph) {
-    const canary = captureSnapshot(env, fixture.graph.types, {
-      edgesFor: () => false,
-    });
-    const blind = canary.captureError
-      ? `it failed: ${canary.captureError}`
-      : canary.schemas.length === 0
-        ? "it found no schemas"
-        : canary.nodes.length === 0
-          ? "it found no nodes in a database that is seeded with some"
-          : null;
+    const blind = snapshotBlindness(
+      captureSnapshot(env, fixture.graph.types, { edgesFor: () => false }),
+    );
     if (blind) {
       throw new EnvironmentError(
         `The graph snapshot is blind: ${blind}.`,
@@ -1220,11 +1214,19 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // verified against the daemon, same version and same modified_at — so
       // that rule would find no edges at all and score 11c, the one scenario
       // that measures linking, as a false pass.
+      // One retry. A CLI call that fails once and then succeeds is a hiccup
+      // that would otherwise void a run of many reps; a defect in the capture
+      // fails the same way twice and still voids it.
+      const capture = (edgesFor: (n: SnapshotNode) => boolean) => {
+        const options = { edgesFor, relations: fixture.graph?.relations };
+        const first = captureSnapshot(env, fixture.graph?.types ?? [], options);
+        return first.captureError
+          ? captureSnapshot(env, fixture.graph?.types ?? [], options)
+          : first;
+      };
+
       const before = fixture.graph
-        ? captureSnapshot(env, fixture.graph.types, {
-            edgesFor: (n) => groupNodeIds.has(n.id),
-            relations: fixture.graph.relations,
-          })
+        ? capture((n) => groupNodeIds.has(n.id))
         : undefined;
 
       const scored = turn(chatId, scenario.prompt);
@@ -1246,12 +1248,11 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // be the alternative, but it would lose the create-and-link-in-one-turn
       // case above, which is a legitimate shape.
       const after = fixture.graph
-        ? captureSnapshot(env, fixture.graph.types, {
-            edgesFor: (n) =>
+        ? capture(
+            (n) =>
               groupNodeIds.has(n.id) ||
               !before?.nodes.some((p) => p.id === n.id),
-            relations: fixture.graph.relations,
-          })
+          )
         : undefined;
       for (const n of after?.nodes ?? []) {
         if (!before?.nodes.some((p) => p.id === n.id)) groupNodeIds.add(n.id);

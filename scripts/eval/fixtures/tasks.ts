@@ -11,7 +11,8 @@
  *   - a bug the agent cannot see is left unwritten;
  *   - a request an accepted decision declines creates nothing;
  *   - a question that stops work becomes a task assigned to the person who owes
- *     the answer and blocking the stopped task, which keeps its status;
+ *     the answer and blocking the stopped task, which keeps its status (its
+ *     assignee is not asserted, see `scoreQuestionTask`);
  *   - a question waiting on the user is put to the user, never answered by the
  *     agent, so nothing is recorded as their answer.
  *
@@ -290,7 +291,14 @@ function scoreReadyTask(diff: GraphDiff, ids: SeededIds): Verdict {
   return { passed: true };
 }
 
-/** A question task for its owner, blocking the stopped task, which is left as it was. */
+/**
+ * A question task for its owner, blocking the stopped task, whose own node is
+ * left as it was.
+ *
+ * Its assignee is not asserted: that is an edge on a seeded node, which the
+ * capture does not walk, and a removed edge is not tracked, so a re-assignment
+ * would pass here. The node's status and content are.
+ */
 function scoreQuestionTask(diff: GraphDiff, ids: SeededIds): Verdict {
   const work = addedWork(diff);
   if (work.length !== 1) {
@@ -309,7 +317,7 @@ function scoreQuestionTask(diff: GraphDiff, ids: SeededIds): Verdict {
   }
   const touched = touchedSeeded(diff, [ids.stopped]);
   if (touched) {
-    return fail(`the stopped task must keep its status and assignee, but ${touched} was changed`);
+    return fail(`the stopped task must keep its status, but ${touched} was changed`);
   }
   return { passed: true };
 }
