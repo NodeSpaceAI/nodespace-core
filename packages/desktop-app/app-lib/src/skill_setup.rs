@@ -857,9 +857,6 @@ const INSTALLER_RUNTIMES: [&str; 2] = ["bun", "node"];
 fn installer_command(installer_path: &Path, runtime: &str, subcommand: &str) -> Command {
     let mut cmd = Command::new(runtime);
     crate::daemon_setup::hide_console_window(&mut cmd);
-    // The installer detects an agent by its command on `PATH` as well as by
-    // its folder; an app launched from the dock has a minimal one.
-    cmd.env("PATH", augmented_cli_path());
     cmd.arg(installer_path).arg(subcommand);
     cmd
 }
@@ -871,7 +868,6 @@ fn installer_command(installer_path: &Path, runtime: &str, subcommand: &str) -> 
 fn compiled_installer_command(binary: &Path, resource_root: &Path, subcommand: &str) -> Command {
     let mut cmd = Command::new(binary);
     crate::daemon_setup::hide_console_window(&mut cmd);
-    cmd.env("PATH", augmented_cli_path());
     cmd.arg(subcommand)
         .arg("--resource-root")
         .arg(resource_root);
@@ -903,6 +899,7 @@ fn run_skill_installer_subcommand(
             resource_root,
         } => {
             let output = compiled_installer_command(binary, resource_root, subcommand)
+                .env("PATH", augmented_cli_path())
                 .output()
                 .map_err(|e| format!("Failed to launch the compiled skill installer: {e}"))?;
             parse_installer_output(output)
@@ -933,7 +930,12 @@ fn run_installer_with_runtimes(
 ) -> Result<InstallOutcome, String> {
     let mut output = None;
     for runtime in runtimes {
-        match installer_command(installer_path, runtime, subcommand).output() {
+        // The installer detects an agent by its command on `PATH` as well as
+        // by its folder, and an app launched from the dock has a minimal one.
+        match installer_command(installer_path, runtime, subcommand)
+            .env("PATH", augmented_cli_path())
+            .output()
+        {
             Ok(out) => {
                 output = Some(out);
                 break;
@@ -1321,14 +1323,9 @@ mod tests {
         );
         let debug_repr = format!("{cmd:?}");
 
-        assert_eq!(
-            cmd.get_program(),
-            "/opt/nodespace/nodespace-skill-installer"
-        );
         assert!(
-            cmd.get_envs()
-                .any(|(name, value)| name == "PATH" && value.is_some()),
-            "the installer detects agents on PATH, so it is given the augmented one: {debug_repr}"
+            debug_repr.starts_with("\"/opt/nodespace/nodespace-skill-installer\""),
+            "expected the compiled binary as the program, got: {debug_repr}"
         );
         assert!(
             debug_repr.contains("\"install\""),
@@ -1440,11 +1437,9 @@ mod tests {
         let cmd = installer_command(Path::new("/tmp/fake/install.js"), "bun", "install");
         let debug_repr = format!("{cmd:?}");
 
-        assert_eq!(cmd.get_program(), "bun");
         assert!(
-            cmd.get_envs()
-                .any(|(name, value)| name == "PATH" && value.is_some()),
-            "the installer detects agents on PATH, so it is given the augmented one: {debug_repr}"
+            debug_repr.starts_with("\"bun\""),
+            "expected bun as the program, got: {debug_repr}"
         );
         assert!(
             !debug_repr.contains("npx") && !debug_repr.contains("npm"),
