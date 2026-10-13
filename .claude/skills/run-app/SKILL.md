@@ -162,22 +162,32 @@ committing.
 `bun run dev:tauri` carries a development-only bridge, so you can inspect the
 WKWebView the app ships with, not Chrome. Drive it with `tauri-mcp`.
 
-**Launching the app is not isolated by `NODESPACE_HOME`.** It installs the
-sidecars into `~/.nodespace/bin`, kills a daemon on the default socket, and
-registers the debug launchd label (`app.nodespace.daemon.dev`), which is per user,
-not per `HOME`. A running dev daemon of the user's would be booted out. So:
+**Launching the app cannot be isolated from the user's service registration.**
+It installs the sidecars into `~/.nodespace/bin`, kills a daemon on the default
+socket, and registers the debug launchd label (`app.nodespace.daemon.dev`). That
+label is per user, so neither `HOME` nor `NODESPACE_HOME` scopes it, and the app
+registers it again whenever it rebuilds or finds a changed sidecar. A scratch
+`HOME` keeps the files and database out of the real home; it does **not** stop
+the app replacing the user's loaded job with one pointing at the scratch install.
+Get the user's go-ahead before launching it, and restore afterwards.
 
-1. Pick a short scratch home (`/tmp/nsh`) and pre-seed it: copy
+1. Note the user's job: `launchctl print gui/$(id -u)/app.nodespace.daemon.dev`
+   (its `path`, `program` and `pid`).
+2. Pick a short scratch home (`/tmp/nsh`) and pre-seed it: copy
    `target/debug/binaries/nodespaced-<triple>` and `nodespace-<triple>` to
    `/tmp/nsh/.nodespace/bin/nodespaced` and `nodespace`.
-2. Start that daemon with `HOME=/tmp/nsh`,
+3. Start that daemon with `HOME=/tmp/nsh`,
    `NODESPACED_SOCKET=/tmp/nsh/.nodespace/daemon-dev.sock`, `NODESPACE_HOME=/tmp/nsh/.nodespace`.
    The log must say `/tmp/nsh/...`, never `/Users/<you>/.nodespace/`.
-3. Launch with `HOME=/tmp/nsh CARGO_HOME=… RUSTUP_HOME=… bun run dev:tauri`
+4. Launch with `HOME=/tmp/nsh CARGO_HOME=… RUSTUP_HOME=… bun run dev:tauri`
    (literal paths for the two; a scratch HOME otherwise downloads a toolchain).
    Do not set `NODESPACED_SOCKET` for the app: the app registers a daemon on its
    home socket, so the two must agree.
-4. Before and after, `launchctl list | grep nodespace` must show the same pid.
+5. Afterwards restore the registration: `launchctl bootout
+   gui/$(id -u)/app.nodespace.daemon.dev`, then `launchctl bootstrap
+   gui/$(id -u) ~/Library/LaunchAgents/app.nodespace.daemon.dev.plist`, and
+   confirm `path` and `program` match step 1. Stop the scratch daemon and remove
+   `/tmp/nsh`.
 
 A session that cannot set `HOME` (a worktree-isolated agent) cannot do step 2
 or 3; have the user run them in their own terminal.
