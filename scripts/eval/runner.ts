@@ -1051,14 +1051,18 @@ function readGuidanceOrAbort(
   }
 }
 
+/** A remote model runs on the provider's hardware, not this GPU. */
+function assertNoContention(env: EvalEnv): void {
+  if (providerOf(env.model) !== "openai-compat") assertNoModelContention(env);
+}
+
 /** Read the daemon status and run preflight, aborting on an environment failure. */
 function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
   try {
     const s = readDaemonStatus(env);
     preflight(env, s);
     // After the model checks, so a wrong or missing model is reported first.
-    // A remote model runs on the provider's hardware, not this GPU.
-    if (providerOf(env.model) !== "openai-compat") assertNoModelContention(env);
+    assertNoContention(env);
     // Runs after the checks above and before any scenario: embeddings are
     // generated on a ~30s debounce, so a daemon freshly started against a
     // purged database — which is exactly what the documented `--between-runs`
@@ -1559,11 +1563,7 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
     firstProvenance.guidance ?? {},
   )) {
     console.error(
-      `[${fixture.name}] guidance seeded (${nodeType}): ${
-        entries.length === 0
-          ? "none found — cannot confirm what this run measured"
-          : entries.map(formatSeedEntry).join(", ")
-      }`,
+      `[${fixture.name}] guidance seeded (${nodeType}): ${entries.map(formatSeedEntry).join(", ")}`,
     );
   }
   if (runs > 1 && betweenRuns === undefined) {
@@ -1601,6 +1601,10 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
       if (runs > 1) console.error(`[${fixture.name}] ── rep ${rep}/${runs} ──`);
 
       const results = runRep(fixture, env);
+      // A model another process loaded while this rep ran (a queued merge's
+      // seam tests start one) can have starved the turns of GPU memory after
+      // the gate's check passed. Throwing here aborts before any results file.
+      assertNoContention(env);
       const {
         scored,
         excludedCount,

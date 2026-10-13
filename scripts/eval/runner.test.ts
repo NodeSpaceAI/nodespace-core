@@ -547,6 +547,20 @@ describe("checkGuidanceDrift", () => {
     expect(err?.message).toContain("rep 3");
   });
 
+  // The two hashes move independently: editing a skill's body changes only its
+  // guidance version, which a config-only comparison would call identical.
+  test("a changed guidance version alone is drift", () => {
+    const changed = {
+      skill: [
+        { key: "Research & Search", configVersion: "d64c01a0", guidanceVersion: "CHANGED" },
+        { key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" },
+      ],
+    };
+    expect(checkGuidanceDrift(guidance, changed, 2)).toBeInstanceOf(
+      EnvironmentError,
+    );
+  });
+
   test("an added or removed seeded node is drift", () => {
     const fewer = { skill: [{ key: "Node Creation", configVersion: "7d5db44b", guidanceVersion: "g" }] };
     expect(checkGuidanceDrift(guidance, fewer, 2)).toBeInstanceOf(

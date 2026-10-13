@@ -23,6 +23,7 @@
  * no results file is written.
  */
 
+import { realpathSync } from "node:fs";
 import { providerOf, REMOTE_MODEL_PREFIX, type EvalEnv } from "./env.ts";
 import type { GuidanceProvenance, SeedEntry } from "./types.ts";
 
@@ -529,7 +530,9 @@ export function readGuidanceProvenance(
     db,
     sql,
   ) => {
-    const r = Bun.spawnSync(["sqlite3", "-json", db, sql], {
+    // Read-only: the daemon owns this database, and a probe must not be able
+    // to create side files or contend for its write lock.
+    const r = Bun.spawnSync(["sqlite3", "-readonly", "-json", db, sql], {
       stdout: "pipe",
       stderr: "pipe",
       timeout: SKILL_PROBE_TIMEOUT_MS,
@@ -654,7 +657,10 @@ function isGenerativeModelFile(path: string): boolean {
  * it serves is expected and every other holder is not. Pure, so the parsing is
  * testable against fixed output.
  */
-export function findModelHolders(lsofOutput: string, socket: string): ModelHolder[] {
+export function findModelHolders(
+  lsofOutput: string,
+  ...sockets: string[]
+): ModelHolder[] {
   const holders: ModelHolder[] = [];
   let cur: (ModelHolder & { servesSocket: boolean }) | undefined;
   let fd = "";
@@ -689,7 +695,7 @@ export function findModelHolders(lsofOutput: string, socket: string): ModelHolde
       fd = value;
     } else if (field === "n") {
       if (fd === "cwd") cur.cwd = value;
-      if (value === socket) cur.servesSocket = true;
+      if (sockets.includes(value)) cur.servesSocket = true;
       if (isGenerativeModelFile(value) && !cur.models.includes(value)) {
         cur.models.push(value);
       }
@@ -725,7 +731,15 @@ export function assertNoModelContention(
         `loaded before running.`,
     );
   }
-  const holders = findModelHolders(output, env.socket);
+  // lsof reports the canonical path; the configured one may be relative or go
+  // through a symlink (`/tmp` is `/private/tmp` on macOS).
+  const sockets = [env.socket];
+  try {
+    sockets.push(realpathSync(env.socket));
+  } catch {
+    // Not on disk: only the configured spelling can match.
+  }
+  const holders = findModelHolders(output, ...sockets);
   if (holders.length === 0) return;
 
   const lines = holders.map(
@@ -753,7 +767,12 @@ function defaultListOpenFiles(): string {
   });
   const stdout = r.stdout.toString();
   // lsof exits 1 when it could not read some process's files, which on a
-  // multi-user machine is always — a listing that came back is usable.
+  // multi-user machine is always — a listing that came back is usable. A
+  // timeout kills it mid-listing: `exitCode` is then null with partial output,
+  // and a truncated listing would read as "no other holder".
+  if (r.exitCode !== 0 && r.exitCode !== 1) {
+    throw new Error(`lsof exited ${r.exitCode} (timed out or was killed)`);
+  }
   if (stdout === "") {
     throw new Error(`lsof exited ${r.exitCode} with no output`);
   }
