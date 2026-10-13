@@ -136,10 +136,13 @@ describe('the lines the CLI prints', () => {
 
   function run(...args: string[]): string {
     const inherited = envWithoutHarnessHomes();
+    // The child finds no agent by its command: the machine's own are not the test's.
+    // `bun` itself is looked up in the parent's path, so it is named in full.
+    const bun = spawnSync('which', ['bun'], { encoding: 'utf8' }).stdout.trim() || 'bun';
     const result = spawnSync(
-      'bun',
+      bun,
       [join(import.meta.dirname, '..', 'install.ts'), ...args, '--resource-root', resourceRoot],
-      { env: { ...inherited, HOME: home, USERPROFILE: home }, encoding: 'utf8' }
+      { env: { ...inherited, HOME: home, USERPROFILE: home, PATH: join(home, 'no-commands') }, encoding: 'utf8' }
     );
     expect(result.status).toBe(0);
     return result.stdout;

@@ -3,6 +3,12 @@ export type AgentName = 'claude-code' | 'codex' | 'antigravity' | 'opencode' | '
 export interface AgentConfig {
   name: AgentName;
   detectionDir: string;
+  /**
+   * The command that starts the harness. A harness that has been installed
+   * and never started has made no configuration folder yet, so one found on
+   * `$PATH` counts as present as well.
+   */
+  command: string;
   installDir: string;
   /**
    * The directory uninstall stops pruning empty folders at, never removing it,

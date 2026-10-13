@@ -12,7 +12,7 @@ import {
   statSync,
   utimesSync,
 } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const TMP = join(tmpdir(), `nodespace-skill-test-${process.pid}`);
@@ -154,13 +154,18 @@ function failingOn<F extends (path: never, ...rest: never[]) => unknown>(
   }) as F;
 }
 
+const REAL_PATH = process.env.PATH;
+
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
+  // The machine's own agents are not the test's: nothing is on the path.
+  process.env.PATH = join(TMP, 'no-commands');
   mkdirSync(FAKE_PKG_ROOT, { recursive: true });
   writeFileSync(join(FAKE_PKG_ROOT, 'SKILL.md'), SKILL_MD_CONTENT, 'utf8');
 });
 
 afterEach(() => {
+  process.env.PATH = REAL_PATH;
   vi.doUnmock('node:fs');
   vi.resetModules();
   rmSync(TMP, { recursive: true, force: true });
@@ -1447,6 +1452,36 @@ describe('detectAgents', () => {
     mkdirSync(AGENTS.find(a => a.name === 'opencode')!.detectionDir, { recursive: true });
 
     expect(detectAgents()).toEqual(['opencode']);
+  });
+
+  it('reports an agent installed and never started, by its command on the path', () => {
+    const bin = join(TMP, 'bin');
+    mkdirSync(bin, { recursive: true });
+
+    for (const command of ['pi', 'agy']) {
+      writeFileSync(join(bin, command), '#!/bin/sh\n', { mode: 0o755 });
+    }
+
+    // A file that is not executable, and a folder of the same name, are not commands.
+    writeFileSync(join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o644 });
+    mkdirSync(join(bin, 'opencode'));
+    process.env.PATH = bin;
+
+    expect(detectAgents()).toEqual(['antigravity', 'pi']);
+  });
+
+  it('counts a command that is a link to an executable, and not a broken link', () => {
+    const bin = join(TMP, 'bin');
+    const target = join(TMP, 'elsewhere', 'claude-real');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, '#!/bin/sh\n', { mode: 0o755 });
+    symlinkSync(target, join(bin, 'claude'));
+    symlinkSync(join(TMP, 'elsewhere', 'missing'), join(bin, 'codex'));
+    // An empty entry is not the working directory.
+    process.env.PATH = ['', bin].join(delimiter);
+
+    expect(detectAgents()).toEqual(['claude-code']);
   });
 });
 

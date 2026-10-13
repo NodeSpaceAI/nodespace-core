@@ -1,5 +1,8 @@
 import {
+  accessSync,
+  constants,
   existsSync,
+  statSync,
   mkdirSync,
   rmSync,
   rmdirSync,
@@ -9,7 +12,7 @@ import {
   lstatSync,
   realpathSync,
 } from 'node:fs';
-import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path';
+import { join, dirname, delimiter, relative, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { AGENTS, SHARED_PLUGIN_DIR } from './agents.js';
@@ -97,16 +100,50 @@ export function listReferenceFiles(packageRoot: string): string[] {
 }
 
 /**
- * Which configured agents are present on this machine, by the existence of
- * their `detectionDir` alone -- the same check `install` uses to decide what
- * to target, exported so a caller can ask that question *before* installing
- * anything. `checkInstalled` is the deliberately different question ("which
- * already have SKILL.md on disk"), and answers it only after an install has
- * happened; neither substitutes for the other.
+ * Whether a file named `name` (with a `PATHEXT` extension on Windows) is in a
+ * folder of `$PATH`, and executable.
+ */
+export function isOnPath(name: string): boolean {
+  const extensions =
+    process.platform === 'win32'
+      ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').filter(extension => extension !== '')
+      : [''];
+
+  for (const entry of (process.env.PATH ?? '').split(delimiter)) {
+    // A Windows path entry may be quoted.
+    const folder = entry.replace(/^"(.*)"$/, '$1');
+
+    if (folder === '') continue;
+
+    for (const extension of extensions) {
+      const candidate = join(folder, `${name}${extension}`);
+
+      try {
+        if (statSync(candidate).isFile()) {
+          accessSync(candidate, constants.X_OK);
+          return true;
+        }
+      } catch {
+        // Not here, or not executable: the next one.
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Which configured agents are present on this machine: their `detectionDir`
+ * exists, or their command is on `$PATH` (an agent installed and never
+ * started has made no folder yet). The same check `install` uses to decide
+ * what to target, exported so a caller can ask that question *before*
+ * installing anything. `checkInstalled` is the deliberately different
+ * question ("which already have SKILL.md on disk"), and answers it only after
+ * an install has happened; neither substitutes for the other.
  */
 export function detectAgents(): AgentName[] {
   return AGENTS
-    .filter(agent => existsSync(agent.detectionDir))
+    .filter(agent => existsSync(agent.detectionDir) || isOnPath(agent.command))
     .map(agent => agent.name);
 }
 
