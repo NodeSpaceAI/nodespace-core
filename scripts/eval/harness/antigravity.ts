@@ -29,6 +29,15 @@ import { type ScenarioEnv, type Turn, PROMPTS, installSkill, sessionEnv } from "
 
 const TURN_TIMEOUT_MS = 12 * 60 * 1000;
 const BLOCK_BEGIN = "<!-- nodespace:instructions:begin";
+/**
+ * Antigravity's agent follows the implementing skill's first step as written:
+ * the user chooses the work, so a prompt that only says "pick up the next
+ * task" ends with a list and a question. These prompts are the user's choice,
+ * made once, so the run reaches the work the cases are about.
+ */
+const CHOOSES = " I choose for you: take the highest-priority ready task for this project, and do not ask me which.";
+/** The second task is named: the first may still be open, and the run is about the one the scenario finishes. */
+const CHOOSES_SECOND = ' I choose: the task "Add a soak check to the README". Do not ask me which.';
 
 type Json = Record<string, unknown>;
 
@@ -83,6 +92,11 @@ export async function antigravity(
   const session = sessionEnv(env);
 
   delete session.NODESPACE_WRITE_JOURNAL;
+  // Antigravity's agent reads the finished task within seconds, not after the
+  // 80 second soak the other harnesses reach, so the watch compares at a
+  // matching pace: the case is whether the next call is refused, not how long
+  // the agent took to get there.
+  session.NODESPACE_WATCH_INTERVAL_SECONDS ??= "3";
 
   let conversation = "";
 
@@ -91,7 +105,7 @@ export async function antigravity(
 
     // The prompt is attached to `-p`: a flag after it would be read as the prompt.
     const argv = [
-      "agy", `-p=${PROMPTS[name]}`, "--output-format", "stream-json", "--mode", "accept-edits",
+      "agy", `-p=${PROMPTS[name]}${name === "first" ? CHOOSES : name === "second" ? CHOOSES_SECOND : ""}`, "--output-format", "stream-json", "--mode", "accept-edits",
       ...(env.model ? ["--model", env.model] : []),
       ...(conversation ? ["--conversation", conversation] : []),
     ];
