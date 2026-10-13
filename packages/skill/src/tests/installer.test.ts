@@ -207,12 +207,12 @@ describe('AGENTS config', () => {
     expect(delivery).toEqual({
       'claude-code': 'plugin',
       codex: 'plugin',
-      antigravity: 'block',
+      antigravity: 'plugin',
       opencode: 'plugin',
       pi: 'plugin',
     });
     for (const agent of AGENTS) {
-      if (agent.name !== 'codex') {
+      if (agent.name !== 'codex' && agent.name !== 'antigravity') {
         expect(agent.plugin && agent.instructionsFile, `${agent.name} has both`).toBeFalsy();
       }
       for (const [src] of pluginFiles(agent)) {

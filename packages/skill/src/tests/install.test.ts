@@ -164,12 +164,19 @@ describe('the lines the CLI prints', () => {
 
   // `nodespace skill status` prints what follows the agent's name as it is.
   it('reports in status whether the plugin or the instructions block is installed', () => {
-    for (const dir of ['.codex', join('.pi', 'agent'), join('.config', 'opencode')]) {
+    for (const dir of ['.codex', join('.pi', 'agent'), join('.config', 'opencode'), join('.gemini', 'antigravity-cli')]) {
       mkdirSync(join(home, dir), { recursive: true });
     }
     mkdirSync(resourceRoot, { recursive: true });
     writeFileSync(join(resourceRoot, 'SKILL.md'), 'skill', 'utf8');
-    for (const file of ['pi/index.ts', 'opencode/nodespace.ts', 'codex/hook.ts', 'shared/nodespace-session.ts']) {
+    for (const file of [
+      'pi/index.ts',
+      'opencode/nodespace.ts',
+      'codex/hook.ts',
+      'antigravity/hook.ts',
+      'shared/nodespace-session.ts',
+      'shared/hook-process.ts',
+    ]) {
       mkdirSync(join(resourceRoot, 'plugins', file, '..'), { recursive: true });
       writeFileSync(join(resourceRoot, 'plugins', file), '// plugin', 'utf8');
     }
@@ -178,6 +185,7 @@ describe('the lines the CLI prints', () => {
     expect(run('status')).toContain('✓ codex: present, plugin installed');
     expect(run('status')).toContain('✓ pi: present, plugin installed');
     expect(run('status')).toContain('✓ opencode: present, plugin installed');
+    expect(run('status')).toContain('✓ antigravity: present, plugin installed');
 
     rmSync(join(home, '.pi', 'agent', 'extensions'), { recursive: true });
     rmSync(join(home, '.codex', 'nodespace'), { recursive: true });

@@ -196,7 +196,7 @@ describe('a plugin in a folder of its own', () => {
   });
 });
 
-describe('the instructions block in a harness with no plugin', () => {
+describe('the instructions block in a harness whose hooks are not trusted or not run', () => {
   const codex = agent('antigravity');
   const file = join(TMP, '.gemini', 'config', 'AGENTS.md');
 
@@ -211,7 +211,7 @@ describe('the instructions block in a harness with no plugin', () => {
     expect(readFileSync(file, 'utf8')).toBe(`${renderBlock()}\n`);
     expect(result.installed).toContain(file);
     expect(record(codex).instructions_file).toBe(file);
-    expect(integrationStatus('antigravity')).toEqual({ kind: 'instructions-block', installed: true });
+    expect(integrationStatus('antigravity')).toEqual({ kind: 'plugin', installed: true });
   });
 
   it('appends to a file the user already keeps, and a second install changes nothing', () => {
@@ -245,7 +245,7 @@ describe('the instructions block in a harness with no plugin', () => {
 
     expect(readFileSync(file, 'utf8')).toBe(before + after);
     expect(result.removed).toContain(file);
-    expect(integrationStatus('antigravity')).toEqual({ kind: 'instructions-block', installed: false });
+    expect(integrationStatus('antigravity')).toEqual({ kind: 'plugin', installed: false });
   });
 
   it('deletes the file on uninstall when the block was all it held', () => {

@@ -9,6 +9,6 @@
     "sourceMap": false,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["plugins/pi/**/*", "plugins/opencode/**/*", "plugins/shared/**/*", "plugins/codex/**/*"],
+  "include": ["plugins/pi/**/*", "plugins/opencode/**/*", "plugins/shared/**/*", "plugins/codex/**/*", "plugins/antigravity/**/*"],
   "exclude": ["node_modules", "dist"]
 }

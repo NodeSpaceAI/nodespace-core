@@ -24,6 +24,7 @@ function constantIn(source: string, name: string): string | undefined {
 const COPIES: Record<string, string> = {
   'claude-code': 'plugins/claude-code/hooks/register.ts',
   codex: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
+  antigravity: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
   pi: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
   opencode: `${SHARED_PLUGIN_DIR}/nodespace-session.ts`,
 };
