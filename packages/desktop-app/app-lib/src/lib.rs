@@ -486,13 +486,19 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     use tauri::{menu::*, Manager};
 
     // Initialize tracing — respects RUST_LOG env var, defaults to info for nodespace_app
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("nodespace_app=info")),
-        )
-        .try_init()
-        .ok();
+    let tracing_builder = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("nodespace_app=info")),
+    );
+    // A Windows release build writes to its log file directly. The `stdout` slot
+    // `run` redirected is unreadable after a Start-menu launch (see
+    // `daemon_setup::redirect_gui_stdio_to_log_files`), which silently dropped
+    // every line. The file is plain text, so no ANSI colour codes either.
+    #[cfg(all(windows, not(debug_assertions)))]
+    let tracing_builder = tracing_builder
+        .with_writer(daemon_setup::gui_log_writer())
+        .with_ansi(false);
+    tracing_builder.try_init().ok();
 
     // Create shutdown token for coordinating graceful background task
     // termination. `app.run`'s event handler (`handle_run_event`) no longer
@@ -854,13 +860,13 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                 // Route to the focused window (none of these menu events are
                 // database-scoped — see `window_routing`).
                 window_routing::emit_routed(app, "menu-toggle-sidebar", (), None);
-                println!("Sidebar toggle requested from menu");
+                tracing::info!("Sidebar toggle requested from menu");
             } else if *event.id() == toggle_status_bar_id {
                 window_routing::emit_routed(app, "menu-toggle-status-bar", (), None);
-                println!("Status bar toggle requested from menu");
+                tracing::info!("Status bar toggle requested from menu");
             } else if *event.id() == import_folder_id {
                 window_routing::emit_routed(app, "menu-import-folder", (), None);
-                println!("Import folder requested from menu");
+                tracing::info!("Import folder requested from menu");
             } else if *event.id() == open_settings_id {
                 window_routing::emit_routed(app, "menu-open-settings", (), None);
             } else if *event.id() == open_integrations_id {
@@ -1700,6 +1706,58 @@ mod run_wiring_tests {
         assert!(
             redirect < runtime_built,
             "stdio is redirected before anything else runs, so no diagnostic is lost"
+        );
+    }
+
+    #[test]
+    fn run_writes_the_windows_release_log_to_the_file_not_the_stdout_slot() {
+        let run = run_source();
+        // A Start-menu launch leaves the redirected stdout slot unreadable, so
+        // the subscriber must own the file; the gate keeps `tauri dev` on its
+        // terminal.
+        let writer = position(
+            run,
+            "#[cfg(all(windows, not(debug_assertions)))]\n    \
+             let tracing_builder = tracing_builder\n        \
+             .with_writer(daemon_setup::gui_log_writer())",
+        );
+        let init = position(run, "tracing_builder.try_init()");
+
+        assert!(
+            writer < init,
+            "the writer is chosen before the subscriber is installed"
+        );
+        assert!(
+            !run.contains(concat!("print", "ln!(")),
+            "output through the stdout slot is lost after a Start-menu launch; use tracing"
+        );
+    }
+
+    #[test]
+    fn windows_helper_processes_open_no_console_window() {
+        let daemon_setup = include_str!("daemon_setup.rs");
+        let skill_setup = include_str!("skill_setup.rs");
+
+        for helper in ["reg", "taskkill"] {
+            let spawn = format!("Command::new(\"{helper}\")");
+            let hidden =
+                format!("hide_console_window(&mut std::process::Command::new(\"{helper}\"))");
+            let spawns = daemon_setup.matches(&spawn).count();
+            assert!(
+                spawns > 0,
+                "{helper} is no longer spawned; drop it from this list"
+            );
+            assert_eq!(
+                spawns,
+                daemon_setup.matches(&hidden).count(),
+                "every {helper} spawn must hide its console window: a GUI process has no \
+                 console, so Windows opens (and flashes) one per child"
+            );
+        }
+        assert_eq!(
+            skill_setup.matches("hide_console_window(").count(),
+            3,
+            "the CLI check and both installer launches must hide their console window"
         );
     }
 

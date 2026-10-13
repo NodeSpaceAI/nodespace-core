@@ -341,6 +341,29 @@ pub fn signal_daemon_to_stop() {
     }
 }
 
+/// Keep a helper process from opening a console window of its own.
+///
+/// A release build on Windows is a GUI-subsystem process with no console, so
+/// Windows allocates a fresh console window for every console-subsystem child
+/// it spawns (`reg.exe`, `taskkill.exe`, the compiled skill installer, ...)
+/// and the user sees it flash on screen. `CREATE_NO_WINDOW` suppresses that
+/// window without affecting the child's piped stdio. A no-op elsewhere.
+#[cfg(windows)]
+pub(crate) fn hide_console_window(
+    command: &mut std::process::Command,
+) -> &mut std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn hide_console_window(
+    command: &mut std::process::Command,
+) -> &mut std::process::Command {
+    command
+}
+
 /// Windows counterpart of [`signal_daemon_to_stop`] above. There is no
 /// graceful signal-based shutdown path on Windows anywhere in this codebase
 /// today — [`kill_running_daemon`]'s Windows variant already force-kills the
@@ -352,7 +375,7 @@ pub fn signal_daemon_to_stop() {
     let image_name = daemon_profile::active().image_name();
     #[cfg(not(test))]
     {
-        let _ = std::process::Command::new("taskkill")
+        let _ = hide_console_window(&mut std::process::Command::new("taskkill"))
             .args(["/F", "/IM", &image_name])
             .output();
     }
@@ -1206,7 +1229,7 @@ async fn kill_running_daemon(socket_path: &Path) {
     }
 
     let image_name = daemon_profile::active().image_name();
-    let _ = std::process::Command::new("taskkill")
+    let _ = hide_console_window(&mut std::process::Command::new("taskkill"))
         .args(["/F", "/IM", &image_name])
         .output();
     tracing::info!(%image_name, "Sent taskkill to daemon");
@@ -2474,7 +2497,7 @@ fn register_autorun_windows(daemon_bin: &Path) {
         bin_str,
         nodespace_proto::socket::LAUNCHER_ARGS.join(" ")
     );
-    let result = std::process::Command::new("reg")
+    let result = hide_console_window(&mut std::process::Command::new("reg"))
         .args([
             "add",
             &format!("HKCU\\{}", WINDOWS_AUTORUN_KEY),
@@ -2515,7 +2538,7 @@ fn register_autorun_windows(daemon_bin: &Path) {
 /// contents.
 #[cfg(windows)]
 pub(crate) fn autorun_windows_present() -> bool {
-    std::process::Command::new("reg")
+    hide_console_window(&mut std::process::Command::new("reg"))
         .args([
             "query",
             &format!("HKCU\\{}", WINDOWS_AUTORUN_KEY),
@@ -2545,7 +2568,7 @@ pub(crate) fn remove_autorun_windows() -> Result<bool> {
         return Ok(false);
     }
 
-    let out = std::process::Command::new("reg")
+    let out = hide_console_window(&mut std::process::Command::new("reg"))
         .args([
             "delete",
             &format!("HKCU\\{}", WINDOWS_AUTORUN_KEY),
@@ -2621,6 +2644,15 @@ extern "system" {
 /// a `SetStdHandle` failure, is silently ignored rather than treated as
 /// fatal. Losing this diagnostic path must never prevent the app itself from
 /// starting.
+///
+/// **`stdout` is not reliable after this call.** A launch from the Start menu
+/// (or any other shell launch that carries a monitor handle) starts the
+/// process with `STARTF_HASSHELLDATA` set, which parks that monitor handle in
+/// the `stdout` slot. While the flag is set, `GetStdHandle(STD_OUTPUT_HANDLE)`
+/// reads back `NULL` even after `SetStdHandle` succeeds, so `println!` goes
+/// nowhere. `stderr` is unaffected. Anything that must reach the log
+/// therefore writes to the file itself ([`gui_log_writer`] for `tracing`) or
+/// to `stderr`; it never relies on `stdout` alone.
 #[cfg(windows)]
 pub fn redirect_gui_stdio_to_log_files() {
     let Some(home) = home_dir() else { return };
@@ -2628,8 +2660,33 @@ pub fn redirect_gui_stdio_to_log_files() {
     if std::fs::create_dir_all(&log_dir).is_err() {
         return;
     }
-    redirect_std_handle_to_file(STD_OUTPUT_HANDLE, &log_dir.join("nodespace-app.log"));
-    redirect_std_handle_to_file(STD_ERROR_HANDLE, &log_dir.join("nodespace-app-error.log"));
+    redirect_std_handle_to_file(STD_OUTPUT_HANDLE, &log_dir.join(GUI_LOG_FILE));
+    redirect_std_handle_to_file(STD_ERROR_HANDLE, &log_dir.join(GUI_ERROR_LOG_FILE));
+}
+
+/// The GUI process's own log file, and the file its `stderr` is redirected to.
+#[cfg(windows)]
+const GUI_LOG_FILE: &str = "nodespace-app.log";
+#[cfg(windows)]
+const GUI_ERROR_LOG_FILE: &str = "nodespace-app-error.log";
+
+/// Where the GUI process's `tracing` output goes on a Windows release build:
+/// the app log file itself, opened directly, not the `stdout` slot
+/// [`redirect_gui_stdio_to_log_files`] also points at it. A shell launch makes
+/// that slot unreadable (see that function), and the log must not depend on
+/// how the app was started. Falls back to `stdout` if the file cannot be
+/// opened, so a logging problem never stops the app.
+#[cfg(windows)]
+pub fn gui_log_writer() -> tracing_subscriber::fmt::writer::BoxMakeWriter {
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+
+    let file = home_dir()
+        .map(|home| home.join(DAEMON_LOG_DIR).join(GUI_LOG_FILE))
+        .and_then(|path| open_daemon_log(&path).ok());
+    match file {
+        Some(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
+        None => BoxMakeWriter::new(std::io::stdout),
+    }
 }
 
 /// Open `path` for append (via [`open_daemon_log`]) and install it as the
