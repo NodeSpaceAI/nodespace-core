@@ -857,6 +857,9 @@ const INSTALLER_RUNTIMES: [&str; 2] = ["bun", "node"];
 fn installer_command(installer_path: &Path, runtime: &str, subcommand: &str) -> Command {
     let mut cmd = Command::new(runtime);
     crate::daemon_setup::hide_console_window(&mut cmd);
+    // The installer detects an agent by its command on `PATH` as well as by
+    // its folder; an app launched from the dock has a minimal one.
+    cmd.env("PATH", augmented_cli_path());
     cmd.arg(installer_path).arg(subcommand);
     cmd
 }
@@ -868,6 +871,7 @@ fn installer_command(installer_path: &Path, runtime: &str, subcommand: &str) -> 
 fn compiled_installer_command(binary: &Path, resource_root: &Path, subcommand: &str) -> Command {
     let mut cmd = Command::new(binary);
     crate::daemon_setup::hide_console_window(&mut cmd);
+    cmd.env("PATH", augmented_cli_path());
     cmd.arg(subcommand)
         .arg("--resource-root")
         .arg(resource_root);
@@ -1317,9 +1321,14 @@ mod tests {
         );
         let debug_repr = format!("{cmd:?}");
 
+        assert_eq!(
+            cmd.get_program(),
+            "/opt/nodespace/nodespace-skill-installer"
+        );
         assert!(
-            debug_repr.starts_with("\"/opt/nodespace/nodespace-skill-installer\""),
-            "expected the compiled binary as the program, got: {debug_repr}"
+            cmd.get_envs()
+                .any(|(name, value)| name == "PATH" && value.is_some()),
+            "the installer detects agents on PATH, so it is given the augmented one: {debug_repr}"
         );
         assert!(
             debug_repr.contains("\"install\""),
@@ -1431,9 +1440,11 @@ mod tests {
         let cmd = installer_command(Path::new("/tmp/fake/install.js"), "bun", "install");
         let debug_repr = format!("{cmd:?}");
 
+        assert_eq!(cmd.get_program(), "bun");
         assert!(
-            debug_repr.starts_with("\"bun\""),
-            "expected bun as the program, got: {debug_repr}"
+            cmd.get_envs()
+                .any(|(name, value)| name == "PATH" && value.is_some()),
+            "the installer detects agents on PATH, so it is given the augmented one: {debug_repr}"
         );
         assert!(
             !debug_repr.contains("npx") && !debug_repr.contains("npm"),

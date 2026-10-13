@@ -12,7 +12,7 @@ import {
   statSync,
   utimesSync,
 } from 'node:fs';
-import { join, basename, dirname } from 'node:path';
+import { join, basename, dirname, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const TMP = join(tmpdir(), `nodespace-skill-test-${process.pid}`);
@@ -1468,6 +1468,20 @@ describe('detectAgents', () => {
     process.env.PATH = bin;
 
     expect(detectAgents()).toEqual(['antigravity', 'pi']);
+  });
+
+  it('counts a command that is a link to an executable, and not a broken link', () => {
+    const bin = join(TMP, 'bin');
+    const target = join(TMP, 'elsewhere', 'claude-real');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, '#!/bin/sh\n', { mode: 0o755 });
+    symlinkSync(target, join(bin, 'claude'));
+    symlinkSync(join(TMP, 'elsewhere', 'missing'), join(bin, 'codex'));
+    // An empty entry is not the working directory.
+    process.env.PATH = ['', bin].join(delimiter);
+
+    expect(detectAgents()).toEqual(['claude-code']);
   });
 });
 

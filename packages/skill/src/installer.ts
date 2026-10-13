@@ -99,12 +99,20 @@ export function listReferenceFiles(packageRoot: string): string[] {
     .sort();
 }
 
-/** Whether an executable file named `name` is in a folder of `$PATH`. */
+/**
+ * Whether a file named `name` (with a `PATHEXT` extension on Windows) is in a
+ * folder of `$PATH`, and executable.
+ */
 export function isOnPath(name: string): boolean {
   const extensions =
-    process.platform === 'win32' ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')] : [''];
+    process.platform === 'win32'
+      ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').filter(extension => extension !== '')
+      : [''];
 
-  for (const folder of (process.env.PATH ?? '').split(delimiter)) {
+  for (const entry of (process.env.PATH ?? '').split(delimiter)) {
+    // A Windows path entry may be quoted.
+    const folder = entry.replace(/^"(.*)"$/, '$1');
+
     if (folder === '') continue;
 
     for (const extension of extensions) {

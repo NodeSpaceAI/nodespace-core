@@ -151,6 +151,8 @@ export const CODEX_PLUGIN = {
 export const AGENTS: AgentConfig[] = [
   {
     name: 'claude-code',
+    // Each `command` is the harness's binary as the app's agent catalog
+    // (`packages/agent/src/agent_catalog/registry.rs`) names it: keep the two in step.
     command: 'claude',
     detectionDir: claudeConfigDir,
     installDir: join(claudeConfigDir, 'skills', 'nodespace'),
