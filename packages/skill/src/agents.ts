@@ -151,6 +151,7 @@ export const CODEX_PLUGIN = {
 export const AGENTS: AgentConfig[] = [
   {
     name: 'claude-code',
+    command: 'claude',
     detectionDir: claudeConfigDir,
     installDir: join(claudeConfigDir, 'skills', 'nodespace'),
     plugin: CLAUDE_CODE_PLUGIN,
@@ -158,6 +159,7 @@ export const AGENTS: AgentConfig[] = [
   },
   {
     name: 'codex',
+    command: 'codex',
     detectionDir: codexHome,
     installDir: join(codexHome, 'skills', 'nodespace'),
     plugin: CODEX_PLUGIN,
@@ -168,6 +170,7 @@ export const AGENTS: AgentConfig[] = [
   },
   {
     name: 'antigravity',
+    command: 'agy',
     // ~/.gemini/antigravity-cli/ is the CLI's own data folder (state, logs,
     // its built-in skills), so its presence is what shows the CLI is
     // installed. Skills for every project are read from the shared config
@@ -183,6 +186,7 @@ export const AGENTS: AgentConfig[] = [
   },
   {
     name: 'opencode',
+    command: 'opencode',
     detectionDir: opencodeConfigDir,
     // OpenCode also reads the Claude skills folder. It keeps one skill per
     // `name`, so the skill installed in both is listed to the agent once.
@@ -192,6 +196,7 @@ export const AGENTS: AgentConfig[] = [
   },
   {
     name: 'pi',
+    command: 'pi',
     // Pi (pi.dev / earendil-works/pi) stores its global config, skills, and
     // extensions under ~/.pi/agent/ -- not a bare ~/.pi -- per its skills.md
     // and extensions.md docs (skill dirs: ~/.pi/agent/skills/, ~/.agents/skills/;

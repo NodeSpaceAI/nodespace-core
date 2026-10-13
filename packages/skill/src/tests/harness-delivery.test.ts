@@ -33,11 +33,16 @@ function record(config: Agent): { files: string[]; plugin_files?: string[]; inst
   return JSON.parse(readFileSync(join(config.installDir, INSTALL_RECORD), 'utf8'));
 }
 
+const REAL_PATH = process.env.PATH;
+
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
+  // The machine's own agents are not the test's: nothing is on the path.
+  process.env.PATH = join(TMP, 'no-commands');
 });
 
 afterEach(() => {
+  process.env.PATH = REAL_PATH;
   rmSync(TMP, { recursive: true, force: true });
 });
 
