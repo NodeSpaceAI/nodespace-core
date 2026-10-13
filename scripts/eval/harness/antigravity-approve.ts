@@ -109,7 +109,7 @@ export function words(line: string): string[][] | null {
         if (inside === "\\" && "$`\"\\".includes(text[end + 1] ?? "\u0000")) {
           end += 1;
           quoted += text[end] ?? "";
-        } else if (inside === "`" || (inside === "$" && /[A-Za-z0-9_{(@*#?!$-]/.test(text[end + 1] ?? ""))) {
+        } else if (inside === "`" || (inside === "$" && /[A-Za-z0-9_{([@*#?!$-]/.test(text[end + 1] ?? ""))) {
           return null;
         } else {
           quoted += inside;
@@ -159,6 +159,11 @@ function isAllowed(command: readonly string[]): boolean {
   const [name = "", second = "", ...rest] = command;
 
   // The name is looked up as written: a path, or `VAR=value` before it, is not on the list.
+  // `printf -v` assigns a variable, which a later `$[...]` could evaluate.
+  if (name === "printf") {
+    return ![second, ...rest].some(word => /^-[a-zA-Z]*v/.test(word));
+  }
+
   if (PLAIN.has(name)) {
     return true;
   }

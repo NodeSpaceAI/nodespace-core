@@ -37,9 +37,23 @@ describe("the Antigravity scenario approver", () => {
   });
 
   it("asks about an expansion inside double quotes", () => {
-    for (const line of ['echo "$HOME"', 'echo "${HOME}"', 'echo "$(id)"', 'echo "`id`"', 'echo "$1"', 'echo "$$"']) {
+    for (const line of [
+      'echo "$HOME"',
+      'echo "${HOME}"',
+      'echo "$(id)"',
+      'echo "`id`"',
+      'echo "$1"',
+      'echo "$$"',
+      // Arithmetic expansion, which evaluates a variable's `x[$(cmd)]` value.
+      'echo "$[1+1]"',
+      `printf -v a 'x[$(id)]'; echo "$[a]"`,
+    ]) {
       expect(run(line), line).toBe("ask");
     }
+  });
+
+  it("approves a printf that only prints", () => {
+    expect(run("printf '%s\\n' hello")).toBe("auto_approve");
   });
 
   it("asks about a nodespace command the scenario does not use", () => {
