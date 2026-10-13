@@ -163,10 +163,29 @@ esac
     expect(snap.nodes.some((n) => n.id === `n${total - 1}`)).toBe(true);
   });
 
+  test("a type of exactly two pages is read in full", () => {
+    const snap = captureSnapshot(pagedCli(QUERY_PAGE * 2), [], { edgesFor: () => false });
+    expect(snap.captureError).toBeUndefined();
+    expect(snap.nodes.length).toBe(QUERY_PAGE * 2);
+  });
+
   test("a type of exactly one page is read in full", () => {
     const snap = captureSnapshot(pagedCli(QUERY_PAGE), [], { edgesFor: () => false });
     expect(snap.captureError).toBeUndefined();
     expect(snap.nodes.length).toBe(QUERY_PAGE);
+  });
+
+  test("a first page that fails on a type the schema list names fails the capture", () => {
+    // Swallowed, the whole type would drop out of the snapshot and its writes
+    // would go unseen.
+    const snap = captureSnapshot(pagedCli(10, 0), [], { edgesFor: () => false });
+    expect(snap.captureError).toContain("transport closed");
+  });
+
+  test("a predicted type the schema list does not name adds no nodes", () => {
+    const snap = captureSnapshot(pagedCli(3), ["invoice"], { edgesFor: () => false });
+    expect(snap.captureError).toBeUndefined();
+    expect(snap.nodes.length).toBe(3);
   });
 
   test("a later page that fails fails the capture instead of reading short", () => {

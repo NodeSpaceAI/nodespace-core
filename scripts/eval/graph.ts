@@ -347,7 +347,11 @@ export function captureSnapshot(
       let payload: unknown;
       try {
         payload = queryPage(0);
-      } catch {
+      } catch (e) {
+        // Only a type the schema list does not name may be absent. One it
+        // does name exists, so a failure reading it is a transport fault, and
+        // dropping the type silently would leave its writes unseen.
+        if (schemas.includes(t)) throw e;
         continue;
       }
       for (let page = 0; ; page++) {

@@ -1214,20 +1214,22 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // verified against the daemon, same version and same modified_at — so
       // that rule would find no edges at all and score 11c, the one scenario
       // that measures linking, as a false pass.
-      // One retry. A CLI call that fails once and then succeeds is a hiccup
-      // that would otherwise void a run of many reps; a defect in the capture
-      // fails the same way twice and still voids it.
+      //
+      // `capture` retries once. A CLI call that fails once and then succeeds is
+      // a hiccup that would otherwise void a run of many reps; a defect in the
+      // capture fails the same way twice and still voids it. It returns
+      // nothing for a fixture that does not grade on the graph.
       const capture = (edgesFor: (n: SnapshotNode) => boolean) => {
-        const options = { edgesFor, relations: fixture.graph?.relations };
-        const first = captureSnapshot(env, fixture.graph?.types ?? [], options);
+        const graph = fixture.graph;
+        if (!graph) return undefined;
+        const options = { edgesFor, relations: graph.relations };
+        const first = captureSnapshot(env, graph.types, options);
         return first.captureError
-          ? captureSnapshot(env, fixture.graph?.types ?? [], options)
+          ? captureSnapshot(env, graph.types, options)
           : first;
       };
 
-      const before = fixture.graph
-        ? capture((n) => groupNodeIds.has(n.id))
-        : undefined;
+      const before = capture((n) => groupNodeIds.has(n.id));
 
       const scored = turn(chatId, scenario.prompt);
 
@@ -1247,13 +1249,10 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // turn that merely created a node. Restricting the diff instead would
       // be the alternative, but it would lose the create-and-link-in-one-turn
       // case above, which is a legitimate shape.
-      const after = fixture.graph
-        ? capture(
-            (n) =>
-              groupNodeIds.has(n.id) ||
-              !before?.nodes.some((p) => p.id === n.id),
-          )
-        : undefined;
+      const after = capture(
+        (n) =>
+          groupNodeIds.has(n.id) || !before?.nodes.some((p) => p.id === n.id),
+      );
       for (const n of after?.nodes ?? []) {
         if (!before?.nodes.some((p) => p.id === n.id)) groupNodeIds.add(n.id);
       }
