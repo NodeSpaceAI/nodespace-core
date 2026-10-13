@@ -35,8 +35,22 @@ fn marker_path_in(home: &Path) -> PathBuf {
     )
 }
 
+/// The home the marker lives under: `NODESPACE_HOME` when it redirects NodeSpace
+/// state (the one lever an isolated daemon honours, ADR-053), else the user's
+/// home. Without this the app read the real home's marker while an isolated
+/// daemon wrote under its redirected home, so one run's refusal showed up as
+/// another run's status.
+fn state_home(redirect: Option<std::ffi::OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
+    // An empty value is unset: as a path it would mean the working directory.
+    redirect
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or(user_home)
+}
+
 fn marker_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| marker_path_in(&home))
+    state_home(std::env::var_os("NODESPACE_HOME"), dirs::home_dir())
+        .map(|home| marker_path_in(&home))
 }
 
 /// The refusal recorded at `marker`, if any. A marker that cannot be parsed
@@ -422,5 +436,32 @@ mod tests {
                 debug_assertions
             )))
         );
+    }
+
+    #[test]
+    fn a_redirected_home_wins_over_the_users_home() {
+        let user = Some(PathBuf::from("/home/u"));
+
+        assert_eq!(
+            state_home(Some("/tmp/isolated".into()), user.clone()),
+            Some(PathBuf::from("/tmp/isolated"))
+        );
+        assert_eq!(state_home(None, user.clone()), user);
+    }
+
+    #[test]
+    fn an_empty_redirect_is_unset() {
+        let user = Some(PathBuf::from("/home/u"));
+
+        assert_eq!(state_home(Some("".into()), user.clone()), user);
+    }
+
+    #[test]
+    fn a_redirect_resolves_without_a_user_home() {
+        assert_eq!(
+            state_home(Some("/tmp/isolated".into()), None),
+            Some(PathBuf::from("/tmp/isolated"))
+        );
+        assert_eq!(state_home(None, None), None);
     }
 }

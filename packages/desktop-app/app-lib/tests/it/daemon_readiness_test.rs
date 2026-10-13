@@ -107,6 +107,12 @@ async fn check_daemon_status_command_reports_not_running_for_an_unbound_socket()
     let tmp = tempfile::tempdir().unwrap();
     let socket_path = tmp.path().join("daemon.sock");
     let _env_guard = EnvGuard::set("NODESPACED_SOCKET", &socket_path);
+    // The status is "incompatible_database" when the home holds a refusal
+    // marker, and the real home's can be present on a developer's machine (a
+    // daemon of another build refusing its older database). Point the home at
+    // the temp dir, the lever an isolated daemon honours, so only this test's
+    // own state is read.
+    let _home_guard = EnvGuard::set("NODESPACE_HOME", tmp.path());
 
     assert_eq!(
         nodespace_app_lib::daemon_status_body().await,
