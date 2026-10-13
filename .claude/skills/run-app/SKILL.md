@@ -199,6 +199,9 @@ bunx tauri-mcp driver-session stop
 - Clicking `.node__content--view` enters edit mode; the textarea exists only then.
 - `ipc-monitor` sees only `window.__TAURI__.core.invoke` calls, not the app's own
   traffic, and a reload resets it.
+- `hover` and `right-click` dispatch synthetic events (`focus` is untested; `isTrusted:
+  false`): JS handlers fire, but CSS `:hover` does not apply, so hover styles
+  cannot be verified this way.
 - A second app takes the next free port from 9223; target it with `--port`.
 
 ## Reading colors accurately
