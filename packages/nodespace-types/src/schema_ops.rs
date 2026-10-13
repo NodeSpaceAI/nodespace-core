@@ -218,8 +218,10 @@ pub struct UpdateSchemaParams {
     /// removed on the schema that declares it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_context_paths: Option<Vec<RelationshipPath>>,
-    /// Proceed even if active plays would be affected. When false (the
-    /// default), such an update is refused with the affected plays listed.
+    /// Proceed even if the change would affect active plays, or leave a saved
+    /// query or play naming a field that a removal or rename takes away.
+    /// When false (the default), such an update is refused with what is
+    /// affected listed.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub force: bool,

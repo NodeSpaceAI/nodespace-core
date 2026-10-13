@@ -340,10 +340,6 @@ const NODE_MARKDOWN_TRUNCATE: usize = 16_000;
 /// window with its references.
 const FIELD_REFERENCES_SHOWN: usize = 30;
 
-/// How many are named when `update_schema` refuses a change for them. Fewer
-/// than a read lists: they go into one sentence the user reads.
-const FIELD_CHANGE_REFERENCES_SHOWN: usize = 10;
-
 /// Maximum characters for node body in list/summary results.
 const BODY_TRUNCATE_SUMMARY: usize = 500;
 
@@ -1063,119 +1059,6 @@ fn resolved_payload(row: &Value) -> Value {
         }
     }
     payload
-}
-
-/// What an `update_schema` call that renames or removes a field would leave
-/// pointing at nothing, as a refusal to return to the model, or `None` when it
-/// changes no field that anything names.
-///
-/// The fields are the call's `remove_fields` and each `rename_fields` entry
-/// whose name changes (a relabel keeps the key). What names them is
-/// [`find_field_references`](nodespace_core::schema::field_references::find_field_references).
-async fn field_change_refusal(ns: &NodeService, args: &Value) -> Option<String> {
-    let schema_id = args.get("schema_id").and_then(Value::as_str)?;
-    let mut fields: Vec<&str> = args
-        .get("remove_fields")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    for rename in args
-        .get("rename_fields")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let from = rename.get("from").and_then(Value::as_str);
-        if let (Some(from), Some(to)) = (from, rename.get("to").and_then(Value::as_str)) {
-            if from != to {
-                fields.push(from);
-            }
-        }
-    }
-    if fields.is_empty() {
-        return None;
-    }
-
-    // A built-in field is refused by the schema write itself, whatever is
-    // agreed to, so the user is not asked to agree to it first. The guard
-    // holds only a field the user may change.
-    let schema = match ns.get_schema_node(schema_id).await {
-        Ok(Some(schema)) => schema,
-        Ok(None) => return None,
-        Err(e) => {
-            tracing::warn!(schema_id, error = %e, "could not read the schema to check what names a field; the change is not held");
-            return None;
-        }
-    };
-    fields.retain(|name| {
-        schema.fields.iter().any(|field| {
-            field.name == *name
-                && field.protection == nodespace_core::models::SchemaProtectionLevel::User
-        })
-    });
-    if fields.is_empty() {
-        return None;
-    }
-
-    let found = match nodespace_core::schema::field_references::find_field_references(ns, schema_id)
-        .await
-    {
-        Ok(found) => found,
-        Err(e) => {
-            tracing::warn!(schema_id, error = %e, "could not look up what names a field; the change is not held");
-            return None;
-        }
-    };
-    let named: Vec<_> = found
-        .references
-        .iter()
-        .filter(|r| fields.contains(&r.field.as_str()))
-        .collect();
-    if named.is_empty() {
-        return None;
-    }
-
-    // The what-names-it list is the first sentence, whole: the failure notice
-    // a user sees when the model says nothing keeps only that sentence. It is
-    // capped, with the rest counted, as a schema read's is.
-    let more = named.len().saturating_sub(FIELD_CHANGE_REFERENCES_SHOWN);
-    let mut names: Vec<String> = named
-        .iter()
-        .take(FIELD_CHANGE_REFERENCES_SHOWN)
-        .map(|reference| {
-            let kind = match reference.kind {
-                nodespace_core::schema::field_references::ReferenceKind::SavedQuery => {
-                    "saved query"
-                }
-                nodespace_core::schema::field_references::ReferenceKind::Play => "play",
-                nodespace_core::schema::field_references::ReferenceKind::TitleTemplate => {
-                    "title template of"
-                }
-            };
-            format!(
-                "{kind} \"{}\" ({}, field `{}`)",
-                reference.title, reference.place, reference.field
-            )
-        })
-        .collect();
-    if more > 0 {
-        names.push(format!("{more} more"));
-    }
-    Some(format!(
-        "Not applied: changing {} would leave {} naming a field that is gone.\n\
-         Searched: {}.\n\
-         Tell the user which of these names it, and ask whether to go ahead. Once they agree, \
-         call update_schema again with the same arguments and confirmed=true.",
-        fields
-            .iter()
-            .map(|f| format!("`{f}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        names.join("; "),
-        found.searched.join("; ")
-    ))
 }
 
 /// Whether a read node is a schema.
@@ -2451,9 +2334,9 @@ fn def_update_schema() -> ToolDefinition {
                     "description": "Context paths to remove, written as they were added (e.g. \"spec.decisions\").",
                     "items": { "type": "string" }
                 },
-                "confirmed": {
+                "force": {
                     "type": "boolean",
-                    "description": "Set true only to repeat a call that was refused because the change would leave saved queries, plays or title templates naming a field that is gone, and only after the user has agreed to it."
+                    "description": "Set true only to repeat a call that was refused because the change would leave saved queries or plays naming a field that is gone or would affect active plays, and only after the user has agreed to it."
                 }
             },
             "required": ["schema_id"]
@@ -5813,23 +5696,6 @@ impl GraphToolExecutor {
 
         let mut args = args;
         let as_text = enum_fields_without_values_as_text(&mut args, "add_fields");
-
-        // A rename or a removal leaves whatever names the field naming
-        // nothing. Said before it is written, so the user can agree to it
-        // (ADR-100 §4, §5); `confirmed` is the agreement. It is this tool's
-        // own and is not passed on: the schema write's `force` (for the
-        // plays a change affects) is a different agreement, and stays out of
-        // the tool's parameters.
-        let confirmed = args
-            .as_object_mut()
-            .and_then(|object| object.remove("confirmed"))
-            .and_then(|value| value.as_bool())
-            == Some(true);
-        if !confirmed {
-            if let Some(refusal) = field_change_refusal(&ns, &args).await {
-                return Ok(error_result(tool_call_id, "update_schema", &refusal));
-            }
-        }
 
         let result = handle_update_schema(&ns, args).await;
 
@@ -10831,9 +10697,9 @@ mod tests {
         }
 
         /// A rename or a removal that would leave a saved query naming a
-        /// field that is gone is refused with what names it, and goes through
-        /// once repeated with `confirmed`. A relabel, an addition and a
-        /// built-in field are not held.
+        /// field that is gone is refused by the schema write with what names
+        /// it, and goes through once repeated with `force`. A relabel is not
+        /// held, and a built-in field is refused whatever is agreed.
         #[tokio::test(flavor = "multi_thread")]
         async fn renaming_a_named_field_is_refused_until_forced() {
             let (ns, _tmp) = make_test_service().await;
@@ -10881,7 +10747,7 @@ mod tests {
                     && text.contains(
                         "saved query \\\"Open tickets\\\" (filter on state, field `state`)"
                     )
-                    && text.contains("confirmed=true"),
+                    && text.contains("force=true"),
                 "{text}"
             );
             let names: Vec<String> = ns
@@ -10908,13 +10774,13 @@ mod tests {
                 .unwrap();
             assert!(!relabel.is_error, "{}", relabel.result);
 
-            let mut confirmed = rename;
-            confirmed["confirmed"] = json!(true);
-            let done = executor.execute("update_schema", confirmed).await.unwrap();
+            let mut forced = rename;
+            forced["force"] = json!(true);
+            let done = executor.execute("update_schema", forced).await.unwrap();
             assert!(!done.is_error, "{}", done.result);
 
-            // A built-in field is not held for agreement: the schema write
-            // refuses it whatever is agreed, and says so itself.
+            // A core-protected field is not held for agreement: the schema
+            // write refuses it whatever is agreed, and says so itself.
             ns.create_node(nodespace_core::models::Node::new(
                 "query".to_string(),
                 "Open tasks".to_string(),
@@ -10938,7 +10804,7 @@ mod tests {
             assert!(built_in.is_error);
             let text = built_in.result.to_string();
             assert!(
-                !text.contains("confirmed=true") && text.contains("protected"),
+                !text.contains("force=true") && text.contains("protected"),
                 "{text}"
             );
         }

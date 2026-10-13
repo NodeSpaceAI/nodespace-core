@@ -21,6 +21,10 @@ pub use nodespace_types::{
 use serde_json::Value;
 use std::sync::Arc;
 
+/// How many definitions are named when `update_schema` holds a change for
+/// them. They go into one sentence a person reads; the rest are counted.
+const FIELD_CHANGE_REFERENCES_SHOWN: usize = 10;
+
 /// Reserved core property names that conflict with system properties
 const RESERVED_CORE_PROPERTIES: &[&str] = &[
     "id",
@@ -3139,57 +3143,6 @@ pub async fn update_schema(
         .await?;
     }
 
-    // Check if any active plays would be affected by this schema change.
-    // Done before any mutations so a blocked rename doesn't partially execute.
-    //
-    // Only removals and renames can invalidate a Play's references; adding a
-    // field, an enum value or a relationship provably cannot, and must not make
-    // every user pass `force=true` to extend a type a core Play happens to
-    // trigger on (ADR-079).
-    let change_kind = if params.remove_fields.as_ref().is_some_and(|f| !f.is_empty())
-        || params.rename_fields.as_ref().is_some_and(|f| !f.is_empty())
-        || params
-            .remove_relationships
-            .as_ref()
-            .is_some_and(|r| !r.is_empty())
-        // Re-pointing `extends` is destructive even though it adds no syntax:
-        // the previous parent's fields leave the effective field set, so a
-        // Play reading an inherited field stops resolving it (ADR-078).
-        || params.extends.is_some()
-    {
-        crate::playbook::validation::SchemaChangeKind::Destructive
-    } else {
-        crate::playbook::validation::SchemaChangeKind::Additive
-    };
-
-    let affected = crate::playbook::validation::check_schema_change_impact(
-        &params.schema_id,
-        change_kind,
-        node_service,
-    )
-    .await
-    .map_err(|e| MarkdownError::internal_error(format!("Impact analysis failed: {}", e)))?;
-
-    if !affected.is_empty() && !params.force {
-        let names: Vec<String> = affected.iter().map(|a| a.to_string()).collect();
-        return Err(MarkdownError::invalid_params(format!(
-            "Schema change would affect {} active play(s): {}. Use force=true to proceed.",
-            affected.len(),
-            names.join("; ")
-        )));
-    }
-
-    let affected_names: Option<Vec<String>> = if !affected.is_empty() {
-        Some(
-            affected
-                .iter()
-                .map(|a| format!("{} ({})", a.play_name, a.play_id))
-                .collect(),
-        )
-    } else {
-        None
-    };
-
     // --- Phase 0: Reject unprefixed field names on a type NodeSpace owns ---
     //
     // A bare name on a core type can be claimed by a core property in a future
@@ -3254,6 +3207,172 @@ pub async fn update_schema(
             }
         }
     }
+
+    // --- Phase 0: Reject a removal the title template would be left naming ---
+    //
+    // The schema is validated after the write against the template this call
+    // leaves it with: the one it sets, or the stored one when it sets none.
+    // Refused here so that a caller is not first asked to agree to a removal
+    // that the validation would then refuse outright.
+    if let Some(ref remove_names) = params.remove_fields {
+        let template = params
+            .title_template
+            .as_deref()
+            .or(schema_before.title_template.as_deref());
+        if let Some(template) = template {
+            // A name this call also supplies again, by an addition or a
+            // rename, is still declared afterwards: that is how a templated
+            // field's type is changed.
+            let supplied = |name: &String| {
+                params.add_fields.iter().flatten().any(|f| &f.name == name)
+                    || params.rename_fields.iter().flatten().any(|r| &r.to == name)
+            };
+            for name in remove_names.iter().filter(|name| !supplied(name)) {
+                if template.contains(&format!("{{{name}}}")) {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Field '{name}' is named by the title template \"{template}\" and \
+                         cannot be removed while it is. Set 'title_template' to one that does \
+                         not name it, in this call or before it."
+                    )));
+                }
+            }
+        }
+    }
+
+    // --- Phase 0: Hold a change that active plays or saved queries depend on ---
+    //
+    // Last of the refusals ahead of Phase 1, so a call is never asked to agree
+    // to a change that is then refused outright, and one refusal carries
+    // everything that needs agreeing: `force` is the one agreement.
+    //
+    // Active plays: only removals and renames can invalidate a Play's
+    // references; adding a field, an enum value or a relationship provably
+    // cannot, and must not make every user pass `force=true` to extend a type
+    // a core Play happens to trigger on (ADR-079).
+    let change_kind = if params.remove_fields.as_ref().is_some_and(|f| !f.is_empty())
+        || params.rename_fields.as_ref().is_some_and(|f| !f.is_empty())
+        || params
+            .remove_relationships
+            .as_ref()
+            .is_some_and(|r| !r.is_empty())
+        // Re-pointing `extends` is destructive even though it adds no syntax:
+        // the previous parent's fields leave the effective field set, so a
+        // Play reading an inherited field stops resolving it (ADR-078).
+        || params.extends.is_some()
+    {
+        crate::playbook::validation::SchemaChangeKind::Destructive
+    } else {
+        crate::playbook::validation::SchemaChangeKind::Additive
+    };
+
+    let affected = crate::playbook::validation::check_schema_change_impact(
+        &params.schema_id,
+        change_kind,
+        node_service,
+    )
+    .await
+    .map_err(|e| MarkdownError::internal_error(format!("Impact analysis failed: {}", e)))?;
+
+    // Definitions that name a field a removal or an identity rename takes
+    // away (ADR-100 §5). A relabel keeps the key. The title templates that
+    // name it are refused above and are not listed, since `force` could not
+    // let them through.
+    let mut named: Vec<String> = Vec::new();
+    let mut searched: Vec<String> = Vec::new();
+    if !params.force {
+        let mut changed: Vec<&str> = params
+            .remove_fields
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        changed.extend(
+            params
+                .rename_fields
+                .iter()
+                .flatten()
+                .filter(|rename| rename.from != rename.to)
+                .map(|rename| rename.from.as_str()),
+        );
+        if !changed.is_empty() {
+            let found = field_references::find_field_references(node_service, &params.schema_id)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Looking up what names the field failed: {e}"
+                    ))
+                })?;
+            let holding: Vec<_> = found
+                .references
+                .iter()
+                .filter(|r| {
+                    r.kind != field_references::ReferenceKind::TitleTemplate
+                        && changed.contains(&r.field.as_str())
+                })
+                .collect();
+            named = holding
+                .iter()
+                .take(FIELD_CHANGE_REFERENCES_SHOWN)
+                .map(|r| {
+                    let kind = match r.kind {
+                        field_references::ReferenceKind::SavedQuery => "saved query",
+                        field_references::ReferenceKind::Play => "play",
+                        field_references::ReferenceKind::TitleTemplate => "title template",
+                    };
+                    format!("{kind} \"{}\" ({}, field `{}`)", r.title, r.place, r.field)
+                })
+                .collect();
+            let more = holding.len().saturating_sub(FIELD_CHANGE_REFERENCES_SHOWN);
+            if more > 0 {
+                named.push(format!("{more} more"));
+            }
+            if !named.is_empty() {
+                searched = found.searched;
+            }
+        }
+    }
+
+    if !params.force && (!affected.is_empty() || !named.is_empty()) {
+        // What names the field is the first sentence, whole: a failure notice
+        // shown to a user keeps only that sentence.
+        let mut message = String::from("Not applied: this change ");
+        if !named.is_empty() {
+            message.push_str(&format!(
+                "would leave {} naming a field that is gone",
+                named.join("; ")
+            ));
+        }
+        if !affected.is_empty() {
+            if !named.is_empty() {
+                message.push_str(", and it ");
+            }
+            let names: Vec<String> = affected.iter().map(|a| a.to_string()).collect();
+            message.push_str(&format!(
+                "would affect {} active play(s): {}",
+                affected.len(),
+                names.join("; ")
+            ));
+        }
+        message.push('.');
+        if !searched.is_empty() {
+            message.push_str(&format!(" Searched: {}.", searched.join("; ")));
+        }
+        message.push_str(
+            " Tell the user what is affected and, once they agree, repeat the call with force=true.",
+        );
+        return Err(MarkdownError::invalid_params(message));
+    }
+
+    let affected_names: Option<Vec<String>> = if !affected.is_empty() {
+        Some(
+            affected
+                .iter()
+                .map(|a| format!("{} ({})", a.play_name, a.play_id))
+                .collect(),
+        )
+    } else {
+        None
+    };
 
     // --- Phase 1: Process renames (identity renames migrate data; display-only renames do not) ---
     let mut fields_renamed = 0;

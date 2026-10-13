@@ -7597,3 +7597,298 @@ async fn a_doubly_prefixed_field_is_not_shadowed_by_a_singly_prefixed_one() {
         .to_string();
     assert!(error.contains("'custom:x' cannot be declared"), "{error}");
 }
+
+/// A saved query that filters on a field is named by the schema write itself,
+/// so a caller that is not the agent's tool is held the same way: a removal
+/// or rename of that field is refused with the list and changes nothing until
+/// `force` is given. A relabel keeps the key, and a field nothing names is not
+/// held.
+#[tokio::test]
+async fn test_update_schema_holds_a_change_a_saved_query_names() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "state", "type": "text" },
+                { "name": "note", "type": "text" },
+                { "name": "owner", "type": "text" }
+            ]
+        }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+    svc.create_node(Node::new(
+        "query".to_string(),
+        "Open tickets".to_string(),
+        json!({
+            "target_type": "ticket",
+            "filters": [{
+                "type": "property", "operator": "equals",
+                "property": "state", "value": "open"
+            }]
+        }),
+    ))
+    .await
+    .unwrap();
+    let field_names = |svc: Arc<NodeService>| async move {
+        svc.get_schema_node("ticket")
+            .await
+            .unwrap()
+            .unwrap()
+            .fields
+            .into_iter()
+            .map(|f| f.name)
+            .collect::<Vec<_>>()
+    };
+
+    // A rename: refused with the list, the first sentence carrying it.
+    let rename = json!({
+        "schema_id": "ticket",
+        "rename_fields": [{ "from": "state", "to": "stage" }]
+    });
+    let refused = handle_update_schema(&svc, rename.clone())
+        .await
+        .expect_err("a rename a saved query names is held");
+    let msg = refused.to_string();
+    let first_sentence = msg.split(". ").next().unwrap();
+    assert!(
+        first_sentence.contains("saved query \"Open tickets\" (filter on state, field `state`)"),
+        "{msg}"
+    );
+    assert!(msg.contains("force=true"), "{msg}");
+    assert_eq!(
+        field_names(svc.clone()).await,
+        ["state", "note", "owner"],
+        "a refusal changes nothing"
+    );
+
+    // A removal is held the same way.
+    let removal = json!({ "schema_id": "ticket", "remove_fields": ["state"] });
+    let refused = handle_update_schema(&svc, removal)
+        .await
+        .expect_err("a removal a saved query names is held");
+    assert!(refused.to_string().contains("Open tickets"), "{refused}");
+
+    // A relabel keeps the key, and a field nothing names goes freely.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "rename_fields": [{ "from": "state", "to": "state", "friendlyName": "Where it is" }]
+        }),
+    )
+    .await
+    .expect("a relabel is not held");
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["note"] }),
+    )
+    .await
+    .expect("a field nothing names is not held");
+
+    // Agreed, the rename goes through.
+    let mut forced = rename;
+    forced["force"] = json!(true);
+    handle_update_schema(&svc, forced)
+        .await
+        .expect("an agreed rename is applied");
+    assert_eq!(field_names(svc.clone()).await, ["stage", "owner"]);
+}
+
+/// A seeded `User`-protected field of a built-in type is the user's to
+/// change, so it is held for what names it rather than refused outright, and
+/// a `Core`-protected one is refused whatever is agreed.
+#[tokio::test]
+async fn test_update_schema_holds_a_user_field_of_a_built_in_type_for_what_names_it() {
+    let (svc, _tmp) = create_test_service().await;
+    svc.create_node(Node::new(
+        "query".to_string(),
+        "Urgent tasks".to_string(),
+        json!({
+            "target_type": "task",
+            "filters": [{
+                "type": "property", "operator": "equals",
+                "property": "priority", "value": "high"
+            }]
+        }),
+    ))
+    .await
+    .unwrap();
+
+    let removal = json!({ "schema_id": "task", "remove_fields": ["priority"] });
+    let held = handle_update_schema(&svc, removal.clone())
+        .await
+        .expect_err("a field a saved query names is held");
+    // The seeded plays that trigger on a task and the saved query are one
+    // refusal, one agreement.
+    let held = held.to_string();
+    assert!(
+        held.contains("Not applied: this change would leave saved query")
+            && held.contains("saved query \"Urgent tasks\" (filter on priority")
+            && held.contains(", and it would affect")
+            && held.contains("active play(s)")
+            && held.ends_with("repeat the call with force=true."),
+        "{held}"
+    );
+
+    // Not asked to agree to what is refused anyway, with or without `force`.
+    let core = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["status"] }),
+    )
+    .await
+    .expect_err("a core-protected field is refused");
+    assert!(
+        core.to_string().contains("protected") && !core.to_string().contains("force=true"),
+        "{core}"
+    );
+
+    let mut forced = removal;
+    forced["force"] = json!(true);
+    handle_update_schema(&svc, forced)
+        .await
+        .expect("an agreed removal of a user-protected field is applied");
+
+    let core = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["status"], "force": true }),
+    )
+    .await
+    .expect_err("a core-protected field is refused whatever is agreed");
+    assert!(core.to_string().contains("protected"), "{core}");
+}
+
+/// A removal the title template names is refused outright, even when a saved
+/// query names the field too: the caller is not asked to agree to it first.
+/// Setting a template that does not name it in the same call is what works.
+#[tokio::test]
+async fn test_update_schema_removal_a_template_names_is_refused_not_held() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "state", "type": "text" },
+                { "name": "owner", "type": "text" }
+            ],
+            "title_template": "{state}"
+        }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+    svc.create_node(Node::new(
+        "query".to_string(),
+        "Open tickets".to_string(),
+        json!({
+            "target_type": "ticket",
+            "filters": [{
+                "type": "property", "operator": "equals",
+                "property": "state", "value": "open"
+            }]
+        }),
+    ))
+    .await
+    .unwrap();
+
+    let refused = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["state"] }),
+    )
+    .await
+    .expect_err("the title template names the field")
+    .to_string();
+    assert!(
+        refused.contains("title template") && !refused.contains("force=true"),
+        "{refused}"
+    );
+
+    // With the template moved off the field in the same call, the removal is
+    // a hold for the saved query, and agreed it is applied.
+    let removal = json!({
+        "schema_id": "ticket",
+        "remove_fields": ["state"],
+        "title_template": "{owner}"
+    });
+    let held = handle_update_schema(&svc, removal.clone())
+        .await
+        .expect_err("the saved query still names the field")
+        .to_string();
+    assert!(held.contains("Open tickets"), "{held}");
+    let mut forced = removal;
+    forced["force"] = json!(true);
+    handle_update_schema(&svc, forced)
+        .await
+        .expect("an agreed removal with the template moved is applied");
+}
+
+/// The list in a refusal is capped, with the rest counted, since it is one
+/// sentence a person reads.
+#[tokio::test]
+async fn test_update_schema_hold_lists_a_capped_number_of_references() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Ticket", "fields": [{ "name": "state", "type": "text" }] }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+    for n in 0..12 {
+        svc.create_node(Node::new(
+            "query".to_string(),
+            format!("Open tickets {n}"),
+            json!({
+                "target_type": "ticket",
+                "filters": [{
+                    "type": "property", "operator": "equals",
+                    "property": "state", "value": "open"
+                }]
+            }),
+        ))
+        .await
+        .unwrap();
+    }
+
+    let held = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "ticket", "remove_fields": ["state"] }),
+    )
+    .await
+    .expect_err("twelve saved queries name the field")
+    .to_string();
+    assert_eq!(held.matches("saved query \"").count(), 10, "{held}");
+    assert!(
+        held.contains("2 more naming a field that is gone"),
+        "{held}"
+    );
+}
+
+/// Removing a templated field and declaring it again in the same call is how
+/// its type is changed, and leaves the template naming a field that exists.
+#[tokio::test]
+async fn test_update_schema_removal_with_the_field_added_again_is_not_refused() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{ "name": "state", "type": "text" }],
+            "title_template": "{state}"
+        }),
+    )
+    .await
+    .expect("Ticket schema creation failed");
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "remove_fields": ["state"],
+            "add_fields": [{ "name": "state", "type": "number" }]
+        }),
+    )
+    .await
+    .expect("a field removed and added again keeps the template valid");
+}
