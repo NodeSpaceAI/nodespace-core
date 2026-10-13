@@ -25,8 +25,9 @@
 //! inside this crate could silently answer for the wrong binary.
 //!
 //! The daemon and the CLI place this name in their state directory, which
-//! `NODESPACE_HOME` redirects (a test setting); the desktop app does not read
-//! that variable and uses the user's home.
+//! `NODESPACE_HOME` redirects (a test setting). The desktop app places its
+//! socket and service registration under the user's home, and reads that
+//! variable only to find the incompatible-database marker the daemon writes.
 //!
 //! The `NODESPACED_SOCKET` environment variable overrides the default on both
 //! sides. It is an override only: every side must be able to derive the same

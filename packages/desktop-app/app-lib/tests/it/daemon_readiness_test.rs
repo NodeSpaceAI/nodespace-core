@@ -121,6 +121,36 @@ async fn check_daemon_status_command_reports_not_running_for_an_unbound_socket()
     );
 }
 
+/// The marker the daemon writes under a redirected home is the one the status
+/// reads: a refusal recorded there turns a down daemon's status into
+/// `incompatible_database`, so the app and an isolated daemon agree on where it
+/// lives.
+#[tokio::test]
+async fn check_daemon_status_reads_the_marker_under_a_redirected_home() {
+    let _mutex_guard = CONNECT_MUTEX.lock().await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let socket_path = tmp.path().join("daemon.sock");
+    let _env_guard = EnvGuard::set("NODESPACED_SOCKET", &socket_path);
+    let _home_guard = EnvGuard::set("NODESPACE_HOME", tmp.path());
+
+    let state_dir = tmp.path().join(nodespace_proto::socket::STATE_DIR);
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join(nodespace_proto::socket::incompatible_database_name(cfg!(
+            debug_assertions
+        ))),
+        r#"{"databasePath":"/tmp/x.db","detail":"older schema","detectedAt":"2026-10-13T00:00:00+00:00"}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        nodespace_app_lib::daemon_status_body().await,
+        "incompatible_database",
+        "a refusal under the redirected home must be the status of a down daemon"
+    );
+}
+
 // `Starting` is produced only when the 500ms connect itself times out
 // (daemon_setup.rs's `check_daemon_socket`) — not by "socket bound but
 // nothing calls accept()", since the OS completes a UDS connect from its

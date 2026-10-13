@@ -40,6 +40,11 @@ fn marker_path_in(home: &Path) -> PathBuf {
 /// home. Without this the app read the real home's marker while an isolated
 /// daemon wrote under its redirected home, so one run's refusal showed up as
 /// another run's status.
+///
+/// The marker follows the daemon only when both were started with the same
+/// variable: the app's socket and service registration still sit under the
+/// user's home, so a daemon launched by the service manager does not inherit a
+/// variable exported in the app's shell.
 fn state_home(redirect: Option<std::ffi::OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
     // An empty value is unset: as a path it would mean the working directory.
     redirect
