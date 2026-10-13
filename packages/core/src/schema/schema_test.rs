@@ -318,6 +318,68 @@ async fn test_update_schema_remove_field_referenced_by_existing_template_rejecte
     );
 }
 
+/// Renaming a field the title template names is refused before anything is
+/// written, rather than rekeying the field and then failing on the template.
+/// The rename is validated against the template already stored, so it goes
+/// through only in three calls: a template that does not name the field, the
+/// rename, then the template with the new name.
+#[tokio::test]
+async fn test_update_schema_rename_of_a_field_the_template_names_changes_nothing() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Contact",
+            "fields": [
+                { "name": "first_name", "type": "text" },
+                { "name": "last_name", "type": "text" }
+            ],
+            "title_template": "{first_name} {last_name}"
+        }),
+    )
+    .await
+    .expect("Contact schema creation failed");
+
+    let refused = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "contact",
+            "rename_fields": [{ "from": "first_name", "to": "given_name" }]
+        }),
+    )
+    .await
+    .expect_err("a rename the template still names is refused");
+    let message = format!("{refused:?}");
+    assert!(
+        message.contains("first_name") && message.contains("title template"),
+        "{message}"
+    );
+    let schema = svc.get_schema_node("contact").await.unwrap().unwrap();
+    let names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["first_name", "last_name"], "nothing was renamed");
+
+    // The sequence the refusal names: a template that does not name the
+    // field, the rename, then the template with the new name.
+    for step in [
+        json!({ "schema_id": "contact", "title_template": "{last_name}" }),
+        json!({
+            "schema_id": "contact",
+            "rename_fields": [{ "from": "first_name", "to": "given_name" }]
+        }),
+        json!({ "schema_id": "contact", "title_template": "{given_name} {last_name}" }),
+    ] {
+        handle_update_schema(&svc, step.clone())
+            .await
+            .unwrap_or_else(|e| panic!("{step}: {e:?}"));
+    }
+    let schema = svc.get_schema_node("contact").await.unwrap().unwrap();
+    assert!(schema.fields.iter().any(|f| f.name == "given_name"));
+    assert_eq!(
+        schema.title_template.as_deref(),
+        Some("{given_name} {last_name}")
+    );
+}
+
 #[tokio::test]
 async fn test_update_schema_remove_field_and_clear_template_succeeds() {
     let (svc, _tmp) = create_test_service().await;

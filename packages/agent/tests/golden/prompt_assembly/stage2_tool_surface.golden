@@ -688,6 +688,10 @@ parameters_schema:
       },
       "type": "array"
     },
+    "confirmed": {
+      "description": "Set true only to repeat a call that was refused because the change would leave saved queries, plays or title templates naming a field that is gone, and only after the user has agreed to it.",
+      "type": "boolean"
+    },
     "description": {
       "description": "New description of the SCHEMA TYPE ITSELF, not of any one field — a summary of what this entity type represents. Optional.",
       "type": "string"

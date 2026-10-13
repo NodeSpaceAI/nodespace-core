@@ -9,7 +9,9 @@
 //! describer, a skill and the options for a change. It is found through the
 //! type registry, so a subtype of a type that takes part takes part too.
 
-use nodespace_agent::skill_pipeline::{PLAY_AUTHORING_SKILL_ID, QUERY_BUILDING_SKILL_ID};
+use nodespace_agent::skill_pipeline::{
+    PLAY_AUTHORING_SKILL_ID, QUERY_BUILDING_SKILL_ID, SCHEMA_CHANGING_SKILL_ID,
+};
 use nodespace_core::models::{
     AiChatMessageRole, AiChatTurnOutcome, CoreNodeType, Node, PlayFields, QueryFields,
     AI_CHAT_PINS, NODESPACE_AGENT, PLAY_RULES_FIELD,
@@ -17,12 +19,18 @@ use nodespace_core::models::{
 use nodespace_core::playbook::types::{
     GraphEventType, RuleClass, RuleDefinition, Selector, Trigger,
 };
+use nodespace_core::schema::description::{describe_schema, SchemaDescription};
 use nodespace_core::services::query_service::description::describe_query;
 use nodespace_core::services::{
     CreateNodeParams, InsertPositionOwned, NewRelationship, NodeService, NodeServiceError,
 };
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::services::chat_messages::{append_message, display_title, NewMessage};
+
+/// What a describer returns: the text, once whatever it reads has been read.
+type Described<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 
 /// What a type supplies to take part in a bound chat (ADR-100 §2).
 pub struct BoundChatType {
@@ -36,8 +44,9 @@ pub struct BoundChatType {
     pub changes: &'static [&'static str],
     /// The node in plain language, from what it stores and with no model
     /// call. It is given the node and the markdown link to it, and returns the
-    /// text that goes before the question.
-    pub describe: fn(&Node, &str) -> String,
+    /// text that goes before the question. It may read the graph for what the
+    /// node's row does not hold, such as the type a schema extends.
+    pub describe: for<'a> fn(&'a NodeService, &'a Node, &'a str) -> Described<'a>,
 }
 
 impl BoundChatType {
@@ -64,7 +73,7 @@ const PLAY: BoundChatType = BoundChatType {
         "Add a rule",
         "Remove a rule",
     ],
-    describe: describe_play,
+    describe: |_, play, link| Box::pin(async move { describe_play(play, link) }),
 };
 
 /// A saved query is described from its definition, asked about and changed
@@ -78,13 +87,30 @@ const QUERY: BoundChatType = BoundChatType {
         "Change what it lists",
         "Change how it is shown",
     ],
-    describe: describe_query_node,
+    describe: |_, query, link| Box::pin(async move { describe_query_node(query, link) }),
+};
+
+/// A schema is described from its stored definition, asked about and changed
+/// with the type-changing skill, and changed in four ways (ADR-100 §5).
+const SCHEMA: BoundChatType = BoundChatType {
+    noun: "type",
+    skill_id: SCHEMA_CHANGING_SKILL_ID,
+    changes: &[
+        "Add a field",
+        "Change a field",
+        "Add a value to a list",
+        "Remove a field",
+    ],
+    describe: describe_schema_node,
 };
 
 /// The types that take part, each with what it supplies. A type is matched by
 /// what it is or extends, so a subtype takes part with its ancestor's.
-const PARTICIPANTS: [(CoreNodeType, &BoundChatType); 2] =
-    [(CoreNodeType::Play, &PLAY), (CoreNodeType::Query, &QUERY)];
+const PARTICIPANTS: [(CoreNodeType, &BoundChatType); 3] = [
+    (CoreNodeType::Play, &PLAY),
+    (CoreNodeType::Query, &QUERY),
+    (CoreNodeType::Schema, &SCHEMA),
+];
 
 /// What `node_type` supplies, or `None` when it does not take part.
 async fn bound_chat_type(
@@ -217,7 +243,7 @@ pub async fn open_bound_chat(
     }
 
     let options = supplied.options();
-    let content = opening_message(supplied, &title, &node);
+    let content = opening_message(node_service, supplied, &title, &node).await;
     let opening = NewMessage {
         outcome: Some(AiChatTurnOutcome::Clarified),
         options: &options,
@@ -259,11 +285,16 @@ async fn remove_chat(node_service: &NodeService, chat_id: &str) {
 /// The message is stored content: it describes the node as it was when the
 /// chat was opened, and a node changed later, in this chat or elsewhere, is
 /// not described again. The agent reads the node as it is before it answers.
-fn opening_message(supplied: &BoundChatType, title: &str, node: &Node) -> String {
+async fn opening_message(
+    node_service: &NodeService,
+    supplied: &BoundChatType,
+    title: &str,
+    node: &Node,
+) -> String {
     let link = node_link(supplied.noun, title, &node.id);
     format!(
         "{}\n\nWhat would you like to change?",
-        (supplied.describe)(node, &link)
+        (supplied.describe)(node_service, node, &link).await
     )
 }
 
@@ -280,6 +311,63 @@ fn node_link(noun: &str, title: &str, id: &str) -> String {
         label.trim().to_string()
     };
     format!("[{label}](nodespace://{id})")
+}
+
+/// A type in words, with no model call: what it is for, whether it is built
+/// in, what it extends and each field, rendered from its definition
+/// ([`describe_schema`]).
+///
+/// The fields are the effective set, so a type that extends another lists what
+/// it inherits, each naming the type that declares it. A type whose definition
+/// cannot be read says so, as a saved query does.
+fn describe_schema_node<'a>(
+    node_service: &'a NodeService,
+    node: &'a Node,
+    link: &'a str,
+) -> Described<'a> {
+    Box::pin(async move {
+        let unreadable =
+            || format!("Here is {link}. Its definition can't be read as it is stored.");
+        let Ok(Some(schema)) = node_service.get_schema_node(&node.id).await else {
+            return unreadable();
+        };
+        let Ok((fields, owners, _chain)) = node_service.resolve_field_owners(&node.id).await else {
+            return unreadable();
+        };
+        // A field a built-in schema declares is fixed, here or on a type that
+        // extends it.
+        let mut built_in = std::collections::HashSet::new();
+        for owner in owners.values() {
+            if built_in.contains(owner) {
+                continue;
+            }
+            if let Ok(Some(declaring)) = node_service.get_schema_node(owner).await {
+                if declaring.is_core {
+                    built_in.insert(owner.clone());
+                }
+            }
+        }
+        // What the type is for is its description: the schema node's children.
+        let purpose = node_service
+            .get_children(&node.id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|child| child.content.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        describe_schema(
+            link,
+            &SchemaDescription {
+                schema: &schema,
+                purpose: Some(purpose.as_str()),
+                fields: &fields,
+                owners: &owners,
+                built_in: &built_in,
+            },
+        )
+    })
 }
 
 /// A saved query in words, with no model call: what it lists, rendered from
@@ -451,8 +539,8 @@ mod tests {
     }
 
     /// The opening message of a play built in memory.
-    fn play_opening(title: &str, play: &Node) -> String {
-        opening_message(&PLAY, title, play)
+    async fn play_opening(svc: &NodeService, title: &str, play: &Node) -> String {
+        opening_message(svc, &PLAY, title, play).await
     }
 
     async fn play(svc: &NodeService, title: &str) -> String {
@@ -591,8 +679,9 @@ mod tests {
     /// Each rule of a play with several is described, in rule order: a
     /// scheduled trigger, an action that runs over a collection, and an
     /// invariant rule, which says it runs before the change is saved.
-    #[test]
-    fn the_opening_message_describes_each_rule_of_a_play_with_several() {
+    #[tokio::test]
+    async fn the_opening_message_describes_each_rule_of_a_play_with_several() {
+        let (svc, _dir) = test_service().await;
         let roll_over = json!({
             "name": "roll over",
             "description": "Moves unfinished tasks to the next cycle.",
@@ -633,7 +722,7 @@ mod tests {
             json!({ "rules": [close_parent_rule(), roll_over, guard] }),
         );
 
-        let content = play_opening("Close finished parents", &play);
+        let content = play_opening(&svc, "Close finished parents", &play).await;
         assert!(content.contains("It has 3 rules."), "{content}");
         let rules: Vec<usize> = ["**close parent**", "**roll over**", "**no empty epic**"]
             .iter()
@@ -688,7 +777,7 @@ mod tests {
             "Half broken".to_string(),
             json!({ "enabled": "yes", "rules": [close_parent_rule()] }),
         );
-        let content = play_opening("Half broken", &bad_switch);
+        let content = play_opening(&svc, "Half broken", &bad_switch).await;
         assert!(
             content.contains("It has one rule.\n\n**close parent**"),
             "{content}"
@@ -699,7 +788,7 @@ mod tests {
             "Empty".to_string(),
             json!({ "enabled": "yes", "rules": [] }),
         );
-        let content = play_opening("Empty", &empty_and_bad_switch);
+        let content = play_opening(&svc, "Empty", &empty_and_bad_switch).await;
         assert!(content.contains("It has no rules yet."), "{content}");
 
         let unreadable = Node::new(
@@ -707,7 +796,7 @@ mod tests {
             "Broken".to_string(),
             json!({ "description": "Does something.", "rules": "nope" }),
         );
-        let content = play_opening("Broken", &unreadable);
+        let content = play_opening(&svc, "Broken", &unreadable).await;
         assert!(
             content
                 .contains("does. Does something.\n\nIts rules can't be read as they are stored."),
@@ -936,13 +1025,18 @@ mod tests {
     /// A type supplies a describer, a skill and its changes, and the
     /// mechanism does the rest: the option to explain comes first whatever
     /// the type lists, and the question follows the description.
-    #[test]
-    fn the_mechanism_puts_explaining_first_for_any_type() {
+    #[tokio::test]
+    async fn the_mechanism_puts_explaining_first_for_any_type() {
+        let (svc, _dir) = test_service().await;
         let schema_like = BoundChatType {
             noun: "type",
             skill_id: "skill-1",
             changes: &["Add a field", "Remove a field"],
-            describe: |node, link| format!("{link} is a type with {} fields.", node.content.len()),
+            describe: |_, node, link| {
+                Box::pin(
+                    async move { format!("{link} is a type with {} fields.", node.content.len()) },
+                )
+            },
         };
         assert_eq!(
             schema_like.options(),
@@ -956,7 +1050,7 @@ mod tests {
             json!({}),
         );
         assert_eq!(
-            opening_message(&schema_like, "Invoice", &node),
+            opening_message(&svc, &schema_like, "Invoice", &node).await,
             "[Invoice](nodespace://t1) is a type with 7 fields.\n\nWhat would you like to change?"
         );
 
@@ -1021,19 +1115,160 @@ mod tests {
         );
     }
 
+    /// A type the user defined opens on what it is for and each of its fields,
+    /// says it is open, and offers to explain it first.
+    #[tokio::test]
+    async fn a_users_type_opens_on_its_fields_and_says_it_is_open() {
+        let (svc, _dir) = test_service().await;
+        nodespace_core::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "Ticket",
+                "description": "A customer support request.",
+                "fields": [
+                    { "name": "summary", "type": "text", "description": "What went wrong." },
+                    { "name": "state", "type": "enum", "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "closed", "label": "Closed" }
+                    ] }
+                ]
+            }),
+        )
+        .await
+        .expect("create the type");
+
+        let chat_id = open_bound_chat(&svc, "ticket", ChatModel::default())
+            .await
+            .unwrap();
+
+        let chat = svc.get_node(&chat_id).await.unwrap().unwrap();
+        assert_eq!(chat.content, "Edit Ticket");
+        let opening = load_messages(&svc, &chat_id).await.unwrap().remove(0);
+        assert_eq!(
+            opening.options,
+            [
+                "Explain this type",
+                "Add a field",
+                "Change a field",
+                "Add a value to a list",
+                "Remove a field",
+            ]
+        );
+        for expected in [
+            "Here is what [Ticket](nodespace://ticket) is. A customer support request.",
+            "It is your own type, so its fields can be added, changed and removed.",
+            "It has 2 fields.",
+            "- **summary** (text): What went wrong.",
+            "- **state** (enum): Values: open, closed.",
+        ] {
+            assert!(opening.content.contains(expected), "{}", opening.content);
+        }
+        assert!(
+            opening.content.ends_with("What would you like to change?"),
+            "{}",
+            opening.content
+        );
+        let pins = load_chat_pins(&svc, &chat_id).await;
+        assert_eq!(
+            pins.nodes
+                .iter()
+                .map(|n| (n.node_id.as_str(), n.node_type.as_str()))
+                .collect::<Vec<_>>(),
+            [("nodespace://ticket", "schema")]
+        );
+    }
+
+    /// A built-in type says what it fixes and what a person may add, and a
+    /// type that extends it lists what it inherits, naming where from.
+    #[tokio::test]
+    async fn a_built_in_type_says_it_is_closed_and_a_subtype_names_its_parent() {
+        let (svc, _dir) = test_service().await;
+        nodespace_core::schema::handle_create_schema(
+            &svc,
+            json!({ "name": "Bug", "extends": "task", "fields": [
+                { "name": "severity", "type": "text" }
+            ] }),
+        )
+        .await
+        .expect("create the subtype");
+
+        let task = load_messages(
+            &svc,
+            &open_bound_chat(&svc, "task", ChatModel::default())
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .remove(0);
+        assert!(
+            task.content.contains(
+                "It is a built-in type, so the fields it declares are fixed and cannot be \
+                 changed or removed."
+            ),
+            "{}",
+            task.content
+        );
+        assert!(
+            task.content.contains("under a prefix such as `custom:`"),
+            "{}",
+            task.content
+        );
+        // Every field the type declares is fixed, not only the ones marked so.
+        let priority = task
+            .content
+            .lines()
+            .find(|line| line.starts_with("- **priority**"))
+            .expect("priority is listed");
+        assert!(
+            priority.contains("More values can be added.")
+                && priority.ends_with("Built in: it cannot be changed or removed."),
+            "{priority}"
+        );
+
+        let bug = load_messages(
+            &svc,
+            &open_bound_chat(&svc, "bug", ChatModel::default())
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .remove(0);
+        assert!(
+            bug.content.contains("It is your own type"),
+            "{}",
+            bug.content
+        );
+        assert!(
+            bug.content
+                .contains("It extends `task`, so it has that type's fields as well."),
+            "{}",
+            bug.content
+        );
+        assert!(
+            bug.content.contains("- **severity** (text)"),
+            "{}",
+            bug.content
+        );
+        assert!(bug.content.contains("From `task`."), "{}", bug.content);
+    }
+
     /// A title cannot break the link that records the mention.
-    #[test]
-    fn the_link_text_drops_the_characters_that_would_end_it() {
+    #[tokio::test]
+    async fn the_link_text_drops_the_characters_that_would_end_it() {
+        let (svc, _dir) = test_service().await;
         let play = Node::new_with_id(
             "p1".to_string(),
             "play".to_string(),
             String::new(),
             json!({ "rules": [] }),
         );
-        assert!(play_opening("Close [done] parents", &play)
+        assert!(play_opening(&svc, "Close [done] parents", &play)
+            .await
             .starts_with("Here is what [Close done parents](nodespace://p1) does."));
-        assert!(
-            play_opening("  ", &play).starts_with("Here is what [this play](nodespace://p1) does.")
-        );
+        assert!(play_opening(&svc, "  ", &play)
+            .await
+            .starts_with("Here is what [this play](nodespace://p1) does."));
     }
 }

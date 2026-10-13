@@ -26,6 +26,7 @@ mod live_skill_guidance_fetch;
 mod live_skill_retrieval_stability;
 mod live_stage1_compound_intent;
 mod live_stage1_golden_prompts;
+mod live_type_chat_options;
 mod live_unset_schema_field;
 mod live_update_node_noop_gate;
 mod matrix_scenario_winnability;

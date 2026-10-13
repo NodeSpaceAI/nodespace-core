@@ -3,7 +3,9 @@
 //! Provides the `create_schema` tool for creating custom schemas with explicit
 //! field and relationship definitions.
 
+pub mod description;
 pub mod extends_chain;
+pub mod field_references;
 
 use crate::behaviors::SchemaNodeBehavior;
 use crate::markdown::MarkdownError;
@@ -3224,6 +3226,30 @@ pub async fn update_schema(
             for rename in renames {
                 if !has_namespace_prefix(&rename.to) {
                     return Err(reject(&rename.to, "renamed on"));
+                }
+            }
+        }
+    }
+
+    // --- Phase 0: Reject a rename the title template would be left naming ---
+    //
+    // A rename rekeys the field and its data, and the schema is validated
+    // against the template it has stored, not the one this call sets. A
+    // template that still names the old key is refused then, after the
+    // rekey has begun. Checked here, so the call changes nothing, and says
+    // what does work: a template that does not name the field, then the
+    // rename, then the template with the new name.
+    if let Some(ref renames) = params.rename_fields {
+        if let Some(template) = schema_before.title_template.as_deref() {
+            for rename in renames.iter().filter(|r| r.from != r.to) {
+                if template.contains(&format!("{{{}}}", rename.from)) {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Field '{}' is named by the title template \"{template}\" and cannot \
+                         be renamed to '{}' while it is. Set 'title_template' to one that does \
+                         not name it, rename the field, then set 'title_template' with the new \
+                         name.",
+                        rename.from, rename.to
+                    )));
                 }
             }
         }

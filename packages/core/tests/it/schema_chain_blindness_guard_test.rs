@@ -225,6 +225,18 @@ const ALLOWLIST: &[Allowed] = &[
               only valid for a field type_id itself declares.",
     },
     Allowed {
+        file: "schema/field_references.rs",
+        function: "find_field_references",
+        field_kind: "fields",
+        why: "Own-only on purpose: the fields asked about are the ones a \
+              change to this type can rename or remove, and only a field the \
+              type itself declares can be (an inherited one belongs to the \
+              ancestor's schema and is changed there). What names an \
+              inherited field is found by calling this for the ancestor. \
+              Types that extend this one are searched for what names these \
+              fields; they are not asked about their own.",
+    },
+    Allowed {
         file: "playbook/workflow_state.rs",
         function: "get_workflow_state",
         field_kind: "fields",
