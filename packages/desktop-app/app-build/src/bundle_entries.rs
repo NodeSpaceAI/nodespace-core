@@ -39,7 +39,9 @@ use serde_json::{json, Value};
 /// which `tauri_build` merges over that file as a JSON merge patch. Arrays are
 /// replaced whole, so the patch restates each list read from the file, minus
 /// the unstaged entries. An explicitly set `TAURI_CONFIG` (the tauri CLI's
-/// `--config`) is left alone: whoever set it owns the bundle config.
+/// `--config`) is merged over that patch, so a key it sets wins, a bundle list
+/// it declares replaces ours, and a `--config` that touches nothing in the
+/// bundle (a dev-only `withGlobalTauri`, say) does not turn the drop off.
 ///
 /// Sets `TAURI_CONFIG` for the rest of the process, so call it from the build
 /// script's `main`, before `tauri_build::build()`.
@@ -48,12 +50,17 @@ use serde_json::{json, Value};
 ///
 /// If `tauri.conf.json` cannot be read or is not valid JSON.
 pub fn drop_unstaged_bundle_entries() {
-    if !applies(
-        env::var("PROFILE").ok().as_deref(),
-        env::var_os("TAURI_CONFIG").is_some(),
-    ) {
+    if !applies(env::var("PROFILE").ok().as_deref()) {
         return;
     }
+    // A config that is set but not JSON is left for `tauri_build` to reject.
+    let explicit = match env::var("TAURI_CONFIG") {
+        Ok(config) => match serde_json::from_str::<Value>(&config) {
+            Ok(config) => Some(config),
+            Err(_) => return,
+        },
+        Err(_) => None,
+    };
     let target_triple = env::var("TARGET").expect("cargo always sets TARGET for build scripts");
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("cargo always sets CARGO_CFG_TARGET_OS");
     let exe_suffix = if target_os == "windows" { ".exe" } else { "" };
@@ -62,7 +69,7 @@ pub fn drop_unstaged_bundle_entries() {
         &std::fs::read_to_string("tauri.conf.json").expect("tauri.conf.json is readable"),
     )
     .expect("tauri.conf.json is valid JSON");
-    let Some(Plan { patch, missing }) =
+    let Some(Plan { mut patch, missing }) =
         plan(&conf, &target_triple, exe_suffix, Path::is_file, |dir| {
             dir.read_dir()
                 .is_ok_and(|mut entries| entries.next().is_some())
@@ -70,6 +77,9 @@ pub fn drop_unstaged_bundle_entries() {
     else {
         return;
     };
+    if let Some(explicit) = &explicit {
+        merge_patch(&mut patch, explicit);
+    }
 
     // `set_var` is fine on edition 2021 — build scripts are single-threaded by
     // Cargo's contract.
@@ -90,10 +100,35 @@ pub fn drop_unstaged_bundle_entries() {
     }
 }
 
-/// Whether the drop applies: a debug build whose bundle config nobody set
-/// explicitly.
-fn applies(profile: Option<&str>, tauri_config_is_set: bool) -> bool {
-    profile == Some("debug") && !tauri_config_is_set
+/// Whether the drop applies: a debug build.
+fn applies(profile: Option<&str>) -> bool {
+    profile == Some("debug")
+}
+
+/// Applies the JSON merge patch `over` to the merge patch `base`, so the result
+/// patches a file the way `base` then `over` would. Objects merge key by key,
+/// anything else (an array included) is replaced whole, and a `null` is kept:
+/// it deletes a key of the file the patch lands on, which `base` has no entry
+/// to delete.
+fn merge_patch(base: &mut Value, over: &Value) {
+    let Value::Object(over) = over else {
+        *base = over.clone();
+        return;
+    };
+    if !base.is_object() {
+        *base = json!({});
+    }
+    let Some(base) = base.as_object_mut() else {
+        return;
+    };
+    for (key, value) in over {
+        match base.get_mut(key) {
+            Some(existing) if !value.is_null() => merge_patch(existing, value),
+            _ => {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+    }
 }
 
 /// What a debug build leaves out of its bundle config.
@@ -450,11 +485,55 @@ mod tests {
     }
 
     #[test]
-    fn only_a_debug_build_without_an_explicit_config_drops_entries() {
-        assert!(applies(Some("debug"), false));
-        assert!(!applies(Some("release"), false));
-        assert!(!applies(Some("debug"), true));
-        assert!(!applies(None, false));
+    fn only_a_debug_build_drops_entries() {
+        assert!(applies(Some("debug")));
+        assert!(!applies(Some("release")));
+        assert!(!applies(None));
+    }
+
+    #[test]
+    fn an_explicit_config_that_leaves_the_bundle_alone_keeps_the_drop() {
+        let mut patch =
+            json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });
+
+        merge_patch(&mut patch, &json!({ "app": { "withGlobalTauri": true } }));
+
+        assert_eq!(
+            patch,
+            json!({
+                "bundle": { "externalBin": ["binaries/daemon"], "resources": [] },
+                "app": { "withGlobalTauri": true },
+            })
+        );
+    }
+
+    #[test]
+    fn an_explicit_null_over_a_set_key_is_kept_to_delete_it_from_the_file() {
+        let mut patch = json!({ "bundle": { "externalBin": ["binaries/daemon"] } });
+
+        merge_patch(&mut patch, &json!({ "bundle": { "externalBin": null } }));
+
+        assert_eq!(patch, json!({ "bundle": { "externalBin": null } }));
+    }
+
+    #[test]
+    fn an_explicit_bundle_list_replaces_ours_and_a_null_is_kept() {
+        let mut patch =
+            json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });
+
+        merge_patch(
+            &mut patch,
+            &json!({ "bundle": { "externalBin": ["binaries/other"], "icon": null } }),
+        );
+
+        assert_eq!(
+            patch,
+            json!({ "bundle": {
+                "externalBin": ["binaries/other"],
+                "resources": [],
+                "icon": null,
+            } })
+        );
     }
 
     #[test]

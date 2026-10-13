@@ -157,6 +157,53 @@ ls -la ~/.nodespace/database/nodespace.db   # mtime must predate your session
 Delete stray screenshots and `.playwright-mcp/` from the repo before
 committing.
 
+## Inspecting the real Tauri app (debug bridge)
+
+`bun run dev:tauri` carries a development-only bridge, so you can inspect the
+WKWebView the app ships with, not Chrome. Drive it with `tauri-mcp`.
+
+**Launching the app is not isolated by `NODESPACE_HOME`.** It installs the
+sidecars into `~/.nodespace/bin`, kills a daemon on the default socket, and
+registers the debug launchd label (`app.nodespace.daemon.dev`), which is per user,
+not per `HOME`. A running dev daemon of the user's would be booted out. So:
+
+1. Pick a short scratch home (`/tmp/nsh`) and pre-seed it: copy
+   `target/debug/binaries/nodespaced-<triple>` and `nodespace-<triple>` to
+   `/tmp/nsh/.nodespace/bin/nodespaced` and `nodespace`.
+2. Start that daemon with `HOME=/tmp/nsh`,
+   `NODESPACED_SOCKET=/tmp/nsh/.nodespace/daemon-dev.sock`, `NODESPACE_HOME=/tmp/nsh/.nodespace`.
+   The log must say `/tmp/nsh/...`, never `/Users/<you>/.nodespace/`.
+3. Launch with `HOME=/tmp/nsh CARGO_HOME=… RUSTUP_HOME=… bun run dev:tauri`
+   (literal paths for the two; a scratch HOME otherwise downloads a toolchain).
+   Do not set `NODESPACED_SOCKET` for the app: the app registers a daemon on its
+   home socket, so the two must agree.
+4. Before and after, `launchctl list | grep nodespace` must show the same pid.
+
+A session that cannot set `HOME` (a worktree-isolated agent) cannot do step 2
+or 3; have the user run them in their own terminal.
+
+```bash
+bunx tauri-mcp driver-session start      # 127.0.0.1:9223; --port N for another app
+bunx tauri-mcp webview-dom-snapshot --type accessibility
+bunx tauri-mcp webview-execute-js --script "(() => document.title)()"
+bunx tauri-mcp webview-interact --action click --selector ".node__content--view"
+bunx tauri-mcp webview-keyboard --action type --selector "textarea.node__content" --text "hi"
+bunx tauri-mcp read-logs --source console --lines 20
+bunx tauri-mcp ipc-execute-command --command list_databases
+bunx tauri-mcp webview-screenshot        # writes a .jpg into the cwd: delete it
+bunx tauri-mcp driver-session stop
+```
+
+- A fresh scratch database shows a "Who are you?" modal over the page; click
+  `Skip` first (`--selector Skip --strategy text`).
+- Clicking `.node__content--view` enters edit mode; the textarea exists only then.
+- `ipc-monitor` sees only `window.__TAURI__.core.invoke` calls, not the app's own
+  traffic, and a reload resets it.
+- `hover` and `right-click` dispatch synthetic events (`focus` is untested; `isTrusted:
+  false`): JS handlers fire, but CSS `:hover` does not apply, so hover styles
+  cannot be verified this way.
+- A second app takes the next free port from 9223; target it with `--port`.
+
 ## Reading colors accurately
 
 Computed values beat eyeballing a screenshot. Measure on a real rendered

@@ -107,11 +107,47 @@ async fn check_daemon_status_command_reports_not_running_for_an_unbound_socket()
     let tmp = tempfile::tempdir().unwrap();
     let socket_path = tmp.path().join("daemon.sock");
     let _env_guard = EnvGuard::set("NODESPACED_SOCKET", &socket_path);
+    // The status is "incompatible_database" when the home holds a refusal
+    // marker, and the real home's can be present on a developer's machine (a
+    // daemon of another build refusing its older database). Point the home at
+    // the temp dir, the lever an isolated daemon honours, so only this test's
+    // own state is read.
+    let _home_guard = EnvGuard::set("NODESPACE_HOME", tmp.path());
 
     assert_eq!(
         nodespace_app_lib::daemon_status_body().await,
         "not_running",
         "check_daemon_status must report not_running for a socket nothing is listening on"
+    );
+}
+
+/// The marker the daemon writes under a redirected home is the one the status
+/// reads: a refusal recorded there turns a down daemon's status into
+/// `incompatible_database`, so the app and an isolated daemon agree on where it
+/// lives.
+#[tokio::test]
+async fn check_daemon_status_reads_the_marker_under_a_redirected_home() {
+    let _mutex_guard = CONNECT_MUTEX.lock().await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let socket_path = tmp.path().join("daemon.sock");
+    let _env_guard = EnvGuard::set("NODESPACED_SOCKET", &socket_path);
+    let _home_guard = EnvGuard::set("NODESPACE_HOME", tmp.path());
+
+    let state_dir = tmp.path().join(nodespace_proto::socket::STATE_DIR);
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join(nodespace_proto::socket::incompatible_database_name(cfg!(
+            debug_assertions
+        ))),
+        r#"{"databasePath":"/tmp/x.db","detail":"older schema","detectedAt":"2026-10-13T00:00:00+00:00"}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        nodespace_app_lib::daemon_status_body().await,
+        "incompatible_database",
+        "a refusal under the redirected home must be the status of a down daemon"
     );
 }
 

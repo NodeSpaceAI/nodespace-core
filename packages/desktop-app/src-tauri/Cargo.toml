@@ -23,6 +23,11 @@ path = "src/main.rs"
 # scripts never do, so shipped builds stay uninspectable).
 [features]
 devtools = ["tauri/devtools"]
+# Opt-in debug bridge (development builds only — `bun run dev:tauri` passes it;
+# a release build with it fails to compile). The bridge's permission file must
+# come from a direct dependency of this crate, so the optional dependency
+# below is named here as well as in nodespace-app-lib.
+debug-bridge = ["nodespace-app-lib/debug-bridge", "dep:tauri-plugin-mcp-bridge"]
 
 [dependencies]
 nodespace-app-lib = { path = "../app-lib" }
@@ -37,6 +42,9 @@ tauri = { version = "2", features = [] }
 # are initialised in nodespace-app-lib's `run()`.
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# Only for the debug bridge's permission file; the plugin is initialised in
+# nodespace-app-lib. Pinned exactly, same version as there.
+tauri-plugin-mcp-bridge = { version = "=0.13.0", optional = true }
 
 [dev-dependencies]
 # `tauri::test::MockRuntime`, to build this crate's real context and ACL in
