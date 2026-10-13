@@ -493,7 +493,8 @@ mod tests {
 
     #[test]
     fn an_explicit_config_that_leaves_the_bundle_alone_keeps_the_drop() {
-        let mut patch = json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });
+        let mut patch =
+            json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });
 
         merge_patch(&mut patch, &json!({ "app": { "withGlobalTauri": true } }));
 
@@ -508,7 +509,8 @@ mod tests {
 
     #[test]
     fn an_explicit_bundle_list_replaces_ours_and_a_null_is_kept() {
-        let mut patch = json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });
+        let mut patch =
+            json!({ "bundle": { "externalBin": ["binaries/daemon"], "resources": [] } });
 
         merge_patch(
             &mut patch,
