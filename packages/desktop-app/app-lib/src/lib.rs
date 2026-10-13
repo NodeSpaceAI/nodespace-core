@@ -58,6 +58,19 @@ pub use extensions::{assemble, AppExtensions, DaemonProfile, LatestVersionSource
 // Core's window capability, added at startup so every app crate gets it.
 pub mod window_capability;
 
+// Development-only bridge for agents to inspect and drive the running app. It
+// executes arbitrary JavaScript in the webview over an unauthenticated local
+// socket, so a build that ships must never contain it: the feature is not in
+// `default`, no release or bundle script passes it, and the check below turns a
+// release-profile build with it into a compile error.
+#[cfg(feature = "debug-bridge")]
+pub mod debug_bridge;
+#[cfg(all(feature = "debug-bridge", not(debug_assertions)))]
+compile_error!(
+    "the `debug-bridge` feature is for development builds only: it runs arbitrary JavaScript in \
+     the webview over an unauthenticated socket, so a release build must not enable it"
+);
+
 // Window <-> database routing: window label/pin tracking and the
 // emit-routing helper that replaces every hardcoded "main" window emit.
 pub mod window_routing;
@@ -520,6 +533,8 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             // setup returns, so adding the capability first puts it in place
             // before the frontend's first call.
             window_capability::add(app)?;
+            #[cfg(feature = "debug-bridge")]
+            debug_bridge::grant(app)?;
 
             // Create menu items
             let toggle_sidebar = MenuItemBuilder::new("Toggle Sidebar")

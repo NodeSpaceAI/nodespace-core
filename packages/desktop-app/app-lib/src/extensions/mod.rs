@@ -86,6 +86,13 @@ pub(crate) fn core_plugins<R: Runtime>() -> Vec<Box<dyn Plugin<R>>> {
 
     plugins.push(Box::new(tauri_plugin_opener::init::<R>()));
     plugins.push(Box::new(tauri_plugin_dialog::init::<R>()));
+
+    // Development builds only; the feature is a compile error in a release
+    // profile (see `debug_bridge`). Listed here so an extension plugin cannot
+    // reuse its name.
+    #[cfg(feature = "debug-bridge")]
+    plugins.push(Box::new(crate::debug_bridge::plugin::<R>()));
+
     plugins
 }
 

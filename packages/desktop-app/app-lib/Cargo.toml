@@ -44,6 +44,15 @@ semver = "1"
 # SHA-256 check of the bundled embedding model before it is copied into place
 # (ADR-058's pinned digest).
 sha2 = "0.10"
+# Debug bridge: evaluates JavaScript in the webview and reports IPC traffic over
+# a local socket so an agent can drive the running app. Optional and pinned
+# exactly; only `debug-bridge` compiles it (see `debug_bridge`).
+tauri-plugin-mcp-bridge = { version = "=0.13.1", optional = true }
+
+[features]
+# Development builds only: `debug_bridge` makes a release build with this
+# feature a compile error.
+debug-bridge = ["dep:tauri-plugin-mcp-bridge"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Reads the machine-wide launchd registration (XML or binary) for the notice

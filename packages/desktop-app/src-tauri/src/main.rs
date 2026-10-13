@@ -16,4 +16,6 @@ fn context<R: tauri::Runtime>() -> tauri::Context<R> {
 }
 
 #[cfg(test)]
+mod debug_bridge_tests;
+#[cfg(test)]
 mod window_capability_tests;
