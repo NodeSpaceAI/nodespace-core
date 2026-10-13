@@ -353,9 +353,13 @@ pub(crate) fn hide_console_window(
     command: &mut std::process::Command,
 ) -> &mut std::process::Command {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.creation_flags(CREATE_NO_WINDOW)
 }
+
+/// `CREATE_NO_WINDOW` for the one spawn that uses `tokio::process::Command`,
+/// which [`hide_console_window`] does not take.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(not(windows))]
 pub(crate) fn hide_console_window(
@@ -2609,41 +2613,50 @@ extern "system" {
     fn SetStdHandle(std_handle: u32, handle: std::os::windows::raw::HANDLE) -> i32;
 }
 
-/// Redirect this process's OWN `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` to log
-/// files under `~/.nodespace/logs/`, so `eprintln!`/`println!` output
+/// The GUI process's own log file, and the file its `stderr` is redirected to.
+#[cfg(any(windows, test))]
+const GUI_LOG_FILE: &str = "nodespace-app.log";
+#[cfg(any(windows, test))]
+const GUI_ERROR_LOG_FILE: &str = "nodespace-app-error.log";
+
+/// Both GUI log files under `log_dir`, as `(log, error_log)`.
+#[cfg(any(windows, test))]
+fn gui_log_paths(log_dir: &Path) -> (PathBuf, PathBuf) {
+    (log_dir.join(GUI_LOG_FILE), log_dir.join(GUI_ERROR_LOG_FILE))
+}
+
+/// Rotate both GUI log files if they have outgrown the size threshold.
+///
+/// Runs once at app startup, before this process opens either file, so the
+/// rename never races this process's own handle. Another instance still
+/// running keeps writing into the rotated file (its handle follows the file),
+/// which is harmless. Not periodic: the GUI log holds a handful of lines per
+/// session, unlike the daemon's, so growth within one session is not a concern.
+#[cfg(any(windows, test))]
+fn rotate_gui_logs(log_dir: &Path) {
+    let (log, error_log) = gui_log_paths(log_dir);
+    rotate_log_file(&log);
+    rotate_log_file(&error_log);
+}
+
+/// Redirect this process's OWN `STD_ERROR_HANDLE` (and, best-effort,
+/// `STD_OUTPUT_HANDLE`) to log files under `~/.nodespace/logs/`, so output
 /// produced directly inside the GUI process (not via the daemon child) isn't
-/// silently discarded.
+/// silently discarded. Rotates both files first (see [`rotate_gui_logs`]).
 ///
 /// This is a distinct problem from [`spawn_daemon_windows`]'s log-file
 /// redirection above: that fixes the daemon *child* process's stdio (routed
 /// via `Stdio` at spawn time, from the parent). This process — the GUI app
 /// itself — has no parent-supplied `Stdio` to redirect; a release build sets
-/// `windows_subsystem = "windows"` (`main.rs`), so when launched normally
-/// (Start Menu, a desktop shortcut, or the HKCU autorun entry
-/// [`register_autorun_windows`] writes — none of which pass explicit stdio
-/// handles), Windows never attaches a console or any standard handle to it
-/// at all: `eprintln!`/`println!` have nowhere to go from the moment the
-/// process starts, not just for one diagnostic. `SetStdHandle` replaces the
+/// `windows_subsystem = "windows"` (`main.rs`), so a launch that passes no
+/// explicit stdio handles (a desktop shortcut, the HKCU autorun entry
+/// [`register_autorun_windows`] writes, `cmd /c start`) gives the process no
+/// console and no standard handle at all: `eprintln!`/`println!` have nowhere
+/// to go from the moment the process starts. `SetStdHandle` replaces the
 /// process's OS-level standard handle directly, which is the only lever
 /// available here — there is no `Command`/`Stdio` in play for a process
-/// redirecting its own stdio.
-///
-/// Confirmed on a real Windows box (issue-2137 investigation) with a
-/// standalone `windows_subsystem = "windows"` harness launched with no
-/// inherited stdio (`cmd /c start /WAIT`, matching how the app is actually
-/// launched — a direct SSH invocation inherits sshd's own piped stdio and
-/// does not reproduce the bug): before this redirect, `eprintln!`/
-/// `println!` output is confirmed lost; after it, both streams land
-/// correctly in the log file. This confirms `io::stdout()`/
-/// `io::stderr()` re-resolve the OS standard handle at write time rather
-/// than caching a "no console" state from before the `SetStdHandle` call, on
-/// this Rust/Windows version.
-///
-/// Best-effort, matching [`daemon_log_stdio`]'s log-file-open failure
-/// handling: a failure to create the log directory, open either log file, or
-/// a `SetStdHandle` failure, is silently ignored rather than treated as
-/// fatal. Losing this diagnostic path must never prevent the app itself from
-/// starting.
+/// redirecting its own stdio. `io::stdout()`/`io::stderr()` re-resolve the OS
+/// handle at write time, so the replacement takes effect for later writes.
 ///
 /// **`stdout` is not reliable after this call.** A launch from the Start menu
 /// (or any other shell launch that carries a monitor handle) starts the
@@ -2652,7 +2665,17 @@ extern "system" {
 /// reads back `NULL` even after `SetStdHandle` succeeds, so `println!` goes
 /// nowhere. `stderr` is unaffected. Anything that must reach the log
 /// therefore writes to the file itself ([`gui_log_writer`] for `tracing`) or
-/// to `stderr`; it never relies on `stdout` alone.
+/// to `stderr`; it never relies on `stdout` alone. This was measured on a
+/// Windows 11 machine by launching a standalone harness from the Start menu
+/// and reading the raw process parameters; clearing the flag restores
+/// `GetStdHandle`, but that is an undocumented structure, so the code avoids
+/// the slot instead.
+///
+/// Best-effort, matching [`daemon_log_stdio`]'s log-file-open failure
+/// handling: a failure to create the log directory, open either log file, or
+/// a `SetStdHandle` failure, is silently ignored rather than treated as
+/// fatal. Losing this diagnostic path must never prevent the app itself from
+/// starting.
 #[cfg(windows)]
 pub fn redirect_gui_stdio_to_log_files() {
     let Some(home) = home_dir() else { return };
@@ -2660,15 +2683,11 @@ pub fn redirect_gui_stdio_to_log_files() {
     if std::fs::create_dir_all(&log_dir).is_err() {
         return;
     }
-    redirect_std_handle_to_file(STD_OUTPUT_HANDLE, &log_dir.join(GUI_LOG_FILE));
-    redirect_std_handle_to_file(STD_ERROR_HANDLE, &log_dir.join(GUI_ERROR_LOG_FILE));
+    rotate_gui_logs(&log_dir);
+    let (log, error_log) = gui_log_paths(&log_dir);
+    redirect_std_handle_to_file(STD_OUTPUT_HANDLE, &log);
+    redirect_std_handle_to_file(STD_ERROR_HANDLE, &error_log);
 }
-
-/// The GUI process's own log file, and the file its `stderr` is redirected to.
-#[cfg(windows)]
-const GUI_LOG_FILE: &str = "nodespace-app.log";
-#[cfg(windows)]
-const GUI_ERROR_LOG_FILE: &str = "nodespace-app-error.log";
 
 /// Where the GUI process's `tracing` output goes on a Windows release build:
 /// the app log file itself, opened directly, not the `stdout` slot
@@ -2681,7 +2700,7 @@ pub fn gui_log_writer() -> tracing_subscriber::fmt::writer::BoxMakeWriter {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
     let file = home_dir()
-        .map(|home| home.join(DAEMON_LOG_DIR).join(GUI_LOG_FILE))
+        .map(|home| gui_log_paths(&home.join(DAEMON_LOG_DIR)).0)
         .and_then(|path| open_daemon_log(&path).ok());
     match file {
         Some(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
@@ -3646,8 +3665,8 @@ mod unix_quit_signal_tests {
 #[cfg(test)]
 mod daemon_log_rotation_tests {
     use super::{
-        daemon_log_paths, open_daemon_log, rotate_daemon_logs, rotate_log_file, DAEMON_LOG_KEEP,
-        DAEMON_LOG_MAX_BYTES,
+        daemon_log_paths, gui_log_paths, open_daemon_log, rotate_daemon_logs, rotate_gui_logs,
+        rotate_log_file, DAEMON_LOG_KEEP, DAEMON_LOG_MAX_BYTES,
     };
     use std::io::Write;
     use std::path::{Path, PathBuf};
@@ -3866,6 +3885,26 @@ mod daemon_log_rotation_tests {
 
         assert!(rotated(&stdout_log, 1).exists(), "stdout log must rotate");
         assert!(rotated(&stderr_log, 1).exists(), "stderr log must rotate");
+    }
+
+    #[test]
+    fn rotate_gui_logs_rotates_only_the_oversized_file() {
+        // The app's own log is now written to for the whole session (not just
+        // through the stdout slot), so it needs the same size bound as the
+        // daemon's, and must stay clear of the daemon's file names.
+        let dir = tempfile::tempdir().unwrap();
+        let (log, error_log) = gui_log_paths(dir.path());
+        let (daemon_log, _) = daemon_log_paths(dir.path());
+        assert_ne!(log, daemon_log, "the app log is its own file");
+        write_sized(&log, DAEMON_LOG_MAX_BYTES + 1);
+        write_sized(&error_log, 64);
+
+        rotate_gui_logs(dir.path());
+
+        assert!(rotated(&log, 1).exists(), "an oversized app log rotates");
+        assert!(!log.exists(), "the live path is freed for the next open");
+        assert!(!rotated(&error_log, 1).exists());
+        assert_eq!(std::fs::metadata(&error_log).unwrap().len(), 64);
     }
 
     #[test]

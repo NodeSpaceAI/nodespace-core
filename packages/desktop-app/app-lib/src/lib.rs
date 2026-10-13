@@ -448,15 +448,16 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
 ///   never built on a release of either that core has not run.
 pub fn run(mut extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     // A release build has no console at all (see the `windows_subsystem`
-    // attribute on the app crate's `main.rs`), so `eprintln!`/`println!`
-    // anywhere in this process would otherwise be silently discarded. Redirect this
-    // process's own stdio to log files before the runtime and the app are
-    // built, so none of their diagnostics has already been lost. Debug builds
-    // keep their attached console (no `windows_subsystem = "windows"` there),
-    // so this is gated to release-on-Windows only to avoid silently moving a
-    // developer's live terminal output into a log file during `tauri dev`.
-    // See `daemon_setup::redirect_gui_stdio_to_log_files`'s doc comment for
-    // the real-Windows verification behind this.
+    // attribute on the app crate's `main.rs`), so `eprintln!` anywhere in this
+    // process would otherwise be silently discarded. Redirect this process's
+    // own stdio to log files before the runtime and the app are built, so none
+    // of their diagnostics has already been lost. `stdout` is not dependable
+    // after a Start-menu launch, which is why `run_app` hands `tracing` the
+    // file directly instead; see `daemon_setup::redirect_gui_stdio_to_log_files`.
+    // Debug builds keep their attached console (no `windows_subsystem =
+    // "windows"` there), so this is gated to release-on-Windows only to avoid
+    // silently moving a developer's live terminal output into a log file during
+    // `tauri dev`.
     #[cfg(all(windows, not(debug_assertions)))]
     daemon_setup::redirect_gui_stdio_to_log_files();
 
@@ -1715,14 +1716,16 @@ mod run_wiring_tests {
         // A Start-menu launch leaves the redirected stdout slot unreadable, so
         // the subscriber must own the file; the gate keeps `tauri dev` on its
         // terminal.
-        let writer = position(
-            run,
-            "#[cfg(all(windows, not(debug_assertions)))]\n    \
-             let tracing_builder = tracing_builder\n        \
-             .with_writer(daemon_setup::gui_log_writer())",
-        );
+        let writer = position(run, ".with_writer(daemon_setup::gui_log_writer())");
         let init = position(run, "tracing_builder.try_init()");
+        let gate = run[..writer]
+            .rfind("#[cfg(all(windows, not(debug_assertions)))]")
+            .expect("the file writer is gated to a Windows release build");
 
+        assert!(
+            run[gate..writer].matches("#[cfg(").count() == 1,
+            "the writer sits directly under its gate"
+        );
         assert!(
             writer < init,
             "the writer is chosen before the subscriber is installed"
@@ -1754,11 +1757,35 @@ mod run_wiring_tests {
                  console, so Windows opens (and flashes) one per child"
             );
         }
-        assert_eq!(
-            skill_setup.matches("hide_console_window(").count(),
-            3,
-            "the CLI check and both installer launches must hide their console window"
-        );
+        // Every command the skill setup builds outside its tests must be
+        // followed by the shared helper, within a couple of lines.
+        let production = skill_setup
+            .split("#[cfg(test)]")
+            .next()
+            .expect("skill_setup has a non-test part");
+        let spawns: Vec<usize> = production
+            .match_indices("Command::new(")
+            .map(|(at, _)| at)
+            .filter(|&at| {
+                let line_start = production[..at].rfind('\n').map_or(0, |n| n + 1);
+                let commented = production[line_start..at].trim_start().starts_with("//");
+                // An absolute Unix path (`/usr/libexec/...`) cannot run on Windows.
+                let unix_only = production[at..].starts_with("Command::new(\"/");
+                !commented && !unix_only
+            })
+            .collect();
+        assert!(!spawns.is_empty(), "skill_setup no longer spawns anything");
+        for at in spawns {
+            // Bytes, not a `str` slice: the cut can land inside a multi-byte
+            // character of a nearby comment.
+            let bytes = production.as_bytes();
+            let nearby =
+                String::from_utf8_lossy(&bytes[at.saturating_sub(60)..(at + 160).min(bytes.len())]);
+            assert!(
+                nearby.contains("hide_console_window("),
+                "a skill_setup command must hide its console window: {nearby}"
+            );
+        }
     }
 
     #[test]
