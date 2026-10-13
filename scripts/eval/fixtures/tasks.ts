@@ -124,6 +124,44 @@ export function useSeededIds(ids: SeededIds): void {
   seeded = ids;
 }
 
+/**
+ * Put the reported task back as a done task with one unticked box.
+ *
+ * That is the inconsistency scenario 1 reports, and the daemon refuses to write
+ * it directly: a play rule rejects a change to `done` while a checkbox under
+ * the task is unchecked, so a reset after an agent changed the task's status
+ * fails the whole seed. The box is ticked, the status set, and the box
+ * unticked again, which the rule allows because it only looks at a change of
+ * the task's own status.
+ */
+function ensureDoneTaskWithOpenBox(env: EvalEnv, task: string): void {
+  const text = DONE_TASK_BOX.replace(/^\s*-\s*\[[ xX]\]\s*/, "");
+  const present = listType(env, "checkbox").find((n) =>
+    (n.content ?? n.title ?? "").replace(/^\s*-\s*\[[ xX]\]\s*/, "") === text,
+  );
+  let box = present?.id ? bareId(present.id) : undefined;
+  if (!box) {
+    const created = runNs(env, [
+      "node",
+      "create",
+      "--type",
+      "checkbox",
+      "--content",
+      DONE_TASK_BOX,
+      "--parent",
+      task,
+    ]) as { id?: string } | null;
+    if (!created?.id) throw new Error("seeding the checklist box returned no id");
+    box = bareId(created.id);
+  }
+  // `checked` is derived from the box's content, so it is changed there.
+  const setBox = (content: string) =>
+    runNs(env, ["node", "update", box, "--content", content]);
+  setBox(`- [x] ${text}`);
+  runNs(env, ["node", "update", task, "--properties", JSON.stringify({ status: "done" })]);
+  setBox(DONE_TASK_BOX);
+}
+
 function personId(env: EvalEnv, p: { first: string; last: string }): string {
   const full = `${p.first} ${p.last}`;
   const present = findByTitle(env, "person", full);
@@ -188,15 +226,11 @@ export function seedWorkspace(env: EvalEnv): SeededIds {
 
   const stopped = ensureNode(env, "task", STOPPED_TASK, { status: "open" });
   const review = ensureNode(env, "task", REVIEW_TASK, { status: "in_progress" });
-  const done = ensureNode(env, "task", DONE_TASK, { status: "done" });
+  // No status here: it is set below, around its checklist.
+  const done = ensureNode(env, "task", DONE_TASK, {});
   const question = ensureNode(env, "task", WAITING_QUESTION, { status: "open" });
 
-  const box = listType(env, "checkbox").find(
-    (n) => (n.content ?? n.title ?? "") === DONE_TASK_BOX,
-  );
-  if (!box) {
-    runNs(env, ["node", "create", "--type", "checkbox", "--content", DONE_TASK_BOX, "--parent", done]);
-  }
+  ensureDoneTaskWithOpenBox(env, done);
 
   const decision = ensureNode(env, "decision", DECLINED_TITLE, {
     decision_status: "accepted",
