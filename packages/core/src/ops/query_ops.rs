@@ -66,8 +66,8 @@ pub struct AgentFilterItem {
     #[serde(default)]
     pub negate: Option<bool>,
     /// Compare the stored value of each row, not the value it reads as at the
-    /// queried type: a property filter's own opt-out of the status mapping
-    /// of a subtype's extended enum (ADR-078).
+    /// queried type: a property filter's opt-out of the mapping of a
+    /// subtype's extended enum value (ADR-078).
     #[serde(default)]
     pub stored: Option<bool>,
     /// The node a relationship filter's `path` must reach.
@@ -264,11 +264,6 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
     if item.node_id.is_some() && item.anchor.is_some() {
         return Err(OpsError::InvalidParams(
             "A filter takes 'node_id' or 'anchor', not both".to_string(),
-        ));
-    }
-    if item.stored.is_some() && filter_type != FilterType::Property {
-        return Err(OpsError::InvalidParams(
-            "'stored' applies only to a property filter".to_string(),
         ));
     }
     if item.anchor.is_some() && filter_type != FilterType::Relationship {

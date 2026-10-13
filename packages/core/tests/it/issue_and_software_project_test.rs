@@ -407,6 +407,70 @@ async fn a_typed_update_refuses_a_node_of_the_other_type() -> Result<()> {
 /// A query written against `task` matches issues and reads an issue's own
 /// status as the task status it maps to. One written against `issue` reads
 /// the stored value and the issue's own fields.
+/// `stored` compares what each row stores, at the queried type's scope: an
+/// issue's own status is read as itself, a plain task reads the same either
+/// way, and a negated stored filter keeps every other row.
+#[tokio::test]
+async fn a_stored_filter_compares_the_value_a_row_stores() -> Result<()> {
+    let h = Harness::start().await?;
+    let task = h.create("task", json!({ "status": "in_progress" })).await?;
+    let changes = h
+        .create("issue", json!({ "status": "changes_requested" }))
+        .await?;
+    let working = h
+        .create("issue", json!({ "status": "in_progress" }))
+        .await?;
+
+    let stored_is = |value: &str, negate: bool| {
+        json!([{
+            "type": "property", "operator": "equals", "property": "status",
+            "value": value, "stored": true, "negate": negate
+        }])
+    };
+
+    // Without `stored`, the value is the task status it maps to: the issue
+    // is `in_progress` and `changes_requested` names nothing at `task` scope.
+    assert_eq!(
+        matching(&h, "task", status_is("in_progress")).await,
+        [task.clone(), changes.clone(), working.clone()]
+    );
+    assert!(matching(&h, "task", status_is("changes_requested"))
+        .await
+        .is_empty());
+    // With it, the stored value is compared, in the same query for `task`.
+    assert_eq!(
+        matching(&h, "task", stored_is("changes_requested", false)).await,
+        [changes.clone()]
+    );
+    // A plain task reads the same either way, and the issue that stores
+    // `in_progress` is still `in_progress`.
+    assert_eq!(
+        matching(&h, "task", stored_is("in_progress", false)).await,
+        [task.clone(), working.clone()]
+    );
+    // Negated, it keeps every row it does not hold for.
+    assert_eq!(
+        matching(&h, "task", stored_is("changes_requested", true)).await,
+        [task.clone(), working.clone()]
+    );
+
+    // It is a property filter's flag: any other type refuses it.
+    let input: ExecuteQueryInput = serde_json::from_value(json!({
+        "target_type": "task",
+        "filters": [{
+            "type": "relationship", "operator": "equals", "path": ["child_of"],
+            "node_id": task, "stored": true
+        }]
+    }))?;
+    let refused = execute_query_nodes(&h.service, input).await.unwrap_err();
+    assert!(
+        refused.to_string().contains("'stored' applies only"),
+        "{refused}"
+    );
+    h.stop().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_task_query_reads_an_issue_status_as_the_one_it_maps_to() -> Result<()> {
     let h = Harness::start().await?;

@@ -197,6 +197,9 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
             validate_identifier(&hop.name, "filter path relationship")?;
         }
     }
+    if filter.stored.is_some() && filter.filter_type != FilterType::Property {
+        anyhow::bail!("'stored' applies only to a property filter");
+    }
     if filter.relative_date.is_some() {
         if filter.value.is_some() {
             anyhow::bail!("a filter takes 'value' or 'relative_date', not both");

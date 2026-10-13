@@ -560,7 +560,7 @@ pub fn issue_findings_rules() -> serde_json::Value {
             ]),
             "Refuse the change and say each finding needs a decision and a reason",
             "This issue has a finding with no decision, so it cannot leave review. Add \
-             `Decision: fix`, `Decision: defer` or `Decision: reject` and a `Reason:` to the \
+             `Decision: fix.`, `Decision: defer.` or `Decision: reject.` and a `Reason:` to the \
              text of each finding that has none, then move the issue again. Follow the \
              Reviewing a Task skill.",
         ),

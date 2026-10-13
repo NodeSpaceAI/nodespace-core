@@ -2590,6 +2590,10 @@ fn def_run_query() -> ToolDefinition {
         "type": "boolean",
         "description": "Set true to keep the nodes this filter does NOT hold for, e.g. status not equal to 'done'. A node with no value for the property is kept too."
     });
+    filter_item["properties"]["stored"] = json!({
+        "type": "boolean",
+        "description": "Property filters only. Set true to compare the value each node stores, not the value it reads as at the queried type: a task query reads an issue's 'changes_requested' as 'in_progress', and with stored it compares as 'changes_requested'."
+    });
 
     ToolDefinition {
         name: "run_query".into(),

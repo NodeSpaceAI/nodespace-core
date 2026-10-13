@@ -46,6 +46,10 @@ pub struct QueryArgs {
     /// the nested filter". A property may be a path into an object field's
     /// value or a link field's parts: `"property":"repository.url"` is the
     /// `url` of the link field `repository`, and `repository.title` its title.
+    /// A property filter takes `"stored": true` to compare the value each
+    /// node stores, not the value it reads as at the queried type: a query for
+    /// `task` reads an issue's `changes_requested` as `in_progress`, and with
+    /// `stored` it compares as `changes_requested`.
     /// A permitted filter keeps the nodes for which setting `property` to
     /// `value` would not be rejected by a rule, as a dry run of that change
     /// predicts it, e.g.
