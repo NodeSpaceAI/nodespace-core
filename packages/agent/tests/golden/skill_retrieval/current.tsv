@@ -4,9 +4,9 @@ track architecture decisions and who made them	Schema Creation	Window	2	0.788	Re
 log the design decisions for the system and who authored each one	Recording a Decision	Window	1	1.000	Recording a Decision	1.000	Play Authoring	+0.121	Play Authoring
 create a record of who made which architecture decision	Recording a Decision	Window	1	1.135	Recording a Decision	1.135	Node Creation	+0.253	Node Creation
 keep a history of decisions made about how the system is built	Schema Creation	Window	3	0.856	Recording a Decision	1.014	Recording a Decision	-0.157	Graph Editing
-track equipment checkout and return status	Schema Creation	Window	2	0.796	Addressing Review Findings	0.839	Addressing Review Findings	-0.043	Schema Creation
-track albums I mean to listen to	Schema Creation	Window	4	0.711	Recording a Decision	0.772	Recording a Decision	-0.061	Schema Creation
-I need a tracker for the venues I book	Schema Creation	Window	1	0.849	Schema Creation	0.849	Research & Search	+0.022	Schema Creation
+track equipment checkout and return status	Schema Creation	Window	2	0.796	Instrumenting a Change	0.852	Instrumenting a Change	-0.056	Schema Creation
+track albums I mean to listen to	Schema Creation	Window	4	0.711	Instrumenting a Change	0.779	Instrumenting a Change	-0.068	Schema Creation
+I need a tracker for the venues I book	Schema Creation	Window	2	0.849	Researching	0.885	Researching	-0.036	Schema Creation
 start keeping tabs on who owes me money	Schema Creation	Window	4	0.805	Answering a Question	0.885	Answering a Question	-0.080	Graph Editing
 set up something to log my freelance gigs	Schema Creation	Window	1	0.849	Schema Creation	0.849	Creating a Task	+0.008	Schema Creation
 add a priority field to my invoices	Schema Creation	Window	2	0.820	Implementing a Task	0.842	Implementing a Task	-0.021	Schema Creation
@@ -15,8 +15,8 @@ link this invoice to the Acme account	Relationship Management	Window	1	0.787	Rel
 Add a new task to follow up with the vendor next week	Node Creation	Window	2	0.864	Implementing a Task	0.981	Implementing a Task	-0.117	Node Creation
 put down Kind of Blue, it's by Miles Davis	Node Creation	Window	2	0.715	Node Deletion	0.716	Node Deletion	-0.002	Node Deletion
 add a task to call the roofer on Friday	Node Creation	Window	3	0.765	Creating a Task	0.832	Creating a Task	-0.066	Graph Editing
-log a new invoice for Acme, $2400, due next month	Node Creation	Window	7	0.647	Schema Creation	0.704	Schema Creation	-0.057	Schema Creation
-Add this note to my reading list collection	Organization	Window	4	0.809	Node Creation	0.844	Node Creation	-0.036	Node Creation
+log a new invoice for Acme, $2400, due next month	Node Creation	Window	7	0.647	Instrumenting a Change	0.725	Instrumenting a Change	-0.078	Schema Creation
+Add this note to my reading list collection	Organization	Window	4	0.809	Researching	0.882	Researching	-0.074	Node Creation
 file these under the Q3 folder	Organization	Window	1	0.834	Organization	0.834	Bulk Import	+0.001	Organization
 put the roofing notes in with the house stuff	Organization	Window	7	0.748	Node Creation	0.817	Node Creation	-0.069	Node Creation
 The incident Rowan was on call for — mark it resolved	Graph Editing	Window	3	0.784	Answering a Question	0.825	Answering a Question	-0.041	Conflict Journal
@@ -25,10 +25,10 @@ mark incident resolved	Graph Editing	Window	3	0.821	Completing a Task	0.843	Comp
 set the incident's resolved field to true	Graph Editing	Window	2	0.879	Addressing Review Findings	0.880	Addressing Review Findings	-0.001	Graph Editing
 mark the invoice as paid	Graph Editing	Window	2	0.811	Answering a Question	0.839	Answering a Question	-0.028	Graph Editing
 close out the support ticket	Graph Editing	Window	2	0.835	Completing a Task	0.918	Completing a Task	-0.083	Graph Editing
-mark the outage report done	Graph Editing	Window	2	0.837	Completing a Task	0.858	Completing a Task	-0.021	Graph Editing
+mark the outage report done	Graph Editing	Window	2	0.837	Instrumenting a Change	0.886	Instrumenting a Change	-0.049	Graph Editing
 remove the due date from the launch task	Graph Editing	Window	3	0.791	Implementing a Task	0.863	Implementing a Task	-0.072	Node Deletion
-clear the assignee on the onboarding ticket	Graph Editing	Window	1	0.831	Graph Editing	0.831	Completing a Task	+0.014	Graph Editing
-the 2400 one came back, set it to returned	Graph Editing	Window	5	0.729	Answering a Question	0.777	Answering a Question	-0.048	Node Merge
+clear the assignee on the onboarding ticket	Graph Editing	Window	2	0.831	Shipping a Change	0.849	Shipping a Change	-0.018	Graph Editing
+the 2400 one came back, set it to returned	Graph Editing	Window	5	0.729	Diagnosing a Bug	0.780	Diagnosing a Bug	-0.051	Node Merge
 mark the Camden invoice as paid	Graph Editing	Window	2	0.774	Answering a Question	0.778	Answering a Question	-0.004	Graph Editing
 that rehearsal got cancelled, update it	Graph Editing	Window	2	0.762	Reviewing a Plan	0.824	Reviewing a Plan	-0.062	Graph Editing
 resolve the conflict between the two Sarah Chen records	Conflict Journal	Window	1	0.918	Conflict Journal	0.918	Node Merge	+0.039	Conflict Journal
@@ -37,7 +37,7 @@ dismiss that duplicate collision, it's fine	Conflict Journal	Window	1	0.961	Conf
 are there any unresolved conflicts?	Conflict Journal	Window	1	0.906	Conflict Journal	0.906	Answering a Question	+0.056	Conflict Journal
 keep the existing node for that conflict	Conflict Journal	Window	1	0.977	Conflict Journal	0.977	Node Deletion	+0.012	Conflict Journal
 delete the resolved incidents	Node Deletion	Window	1	0.904	Node Deletion	0.904	Conflict Journal	+0.051	Node Deletion
-get rid of all the resolved bugs	Node Deletion	Window	1	0.893	Node Deletion	0.893	Addressing Review Findings	+0.001	Node Deletion
+get rid of all the resolved bugs	Node Deletion	Window	2	0.893	Diagnosing a Bug	0.915	Diagnosing a Bug	-0.021	Node Deletion
 purge resolved alerts from last month	Node Deletion	Window	1	0.869	Node Deletion	0.869	Addressing Review Findings	+0.004	Node Deletion
 delete the incident, it's resolved	Node Deletion	Window	1	0.924	Node Deletion	0.924	Answering a Question	+0.039	Node Deletion
 remove the resolved tickets	Node Deletion	Window	2	0.841	Building and Changing a View	0.849	Building and Changing a View	-0.008	Node Deletion
@@ -48,28 +48,28 @@ remove the paid invoices	Node Deletion	Window	1	0.800	Node Deletion	0.800	Play A
 get rid of the paid invoices	Node Deletion	Window	1	0.814	Node Deletion	0.814	Answering a Question	+0.023	Node Deletion
 get rid of the duplicate customer record	Node Deletion	Window	5	0.850	Conflict Journal	0.895	Conflict Journal	-0.045	Conflict Journal
 what did I write about the Halvorsen meeting?	Research & Search	Window	3	0.734	Recording a Decision	0.790	Recording a Decision	-0.056	Conflict Journal
-what equipment is on the books?	Research & Search	Window	1	0.821	Research & Search	0.821	Authoring a Skill	+0.010	Research & Search
-run through the albums for me	Research & Search	Window	2	0.802	Asking the User	0.809	Asking the User	-0.007	Research & Search
-load this markdown doc in as notes	Bulk Import	Window	1	0.935	Bulk Import	0.935	Writing a Spec	+0.116	Bulk Import
-find, look up, or search stored knowledge for the notes from last week's planning call	Research & Search	First	1	0.987	Research & Search	0.987	Addressing Review Findings	+0.141	Research & Search
-find, look up, or search stored knowledge for unpaid invoices	Research & Search	First	1	0.966	Research & Search	0.966	Addressing Review Findings	+0.127	Research & Search
-find, look up, or search stored knowledge for tasks that are done	Research & Search	First	1	1.156	Research & Search	1.156	Node Deletion	+0.263	Research & Search
-find, look up, or search stored knowledge for resolved incidents	Research & Search	First	1	1.079	Research & Search	1.079	Addressing Review Findings	+0.142	Research & Search
-find, look up, or search stored knowledge for how offline sync works	Research & Search	First	1	0.993	Research & Search	0.993	Addressing Review Findings	+0.134	Research & Search
-find, look up, or search stored knowledge for why we chose Postgres	Research & Search	First	1	1.078	Research & Search	1.078	Building and Changing a View	+0.187	Research & Search
-find, look up, or search stored knowledge for what is due this week	Research & Search	First	1	1.057	Research & Search	1.057	Reviewing a Task	+0.185	Research & Search
-find, look up, or search stored knowledge for duplicate customer records	Research & Search	First	1	1.024	Research & Search	1.024	Conflict Journal	+0.134	Research & Search
-find, look up, or search stored knowledge for tasks that depend on the API migration	Research & Search	First	1	1.061	Research & Search	1.061	Addressing Review Findings	+0.141	Research & Search
-find, look up, or search stored knowledge for notes in the Cooking collection	Research & Search	First	1	1.060	Research & Search	1.060	Node Deletion	+0.178	Research & Search
+what equipment is on the books?	Research & Search	Window	2	0.821	Researching	0.926	Researching	-0.105	Research & Search
+run through the albums for me	Research & Search	Window	2	0.802	Researching	0.831	Researching	-0.029	Research & Search
+load this markdown doc in as notes	Bulk Import	Window	1	0.935	Bulk Import	0.935	Researching	+0.079	Bulk Import
+find, look up, or search stored knowledge for the notes from last week's planning call	Research & Search	First	1	0.987	Research & Search	0.987	Researching	+0.095	Research & Search
+find, look up, or search stored knowledge for unpaid invoices	Research & Search	First	1	0.966	Research & Search	0.966	Researching	+0.090	Research & Search
+find, look up, or search stored knowledge for tasks that are done	Research & Search	First	1	1.156	Research & Search	1.156	Researching	+0.194	Research & Search
+find, look up, or search stored knowledge for resolved incidents	Research & Search	First	1	1.079	Research & Search	1.079	Researching	+0.124	Research & Search
+find, look up, or search stored knowledge for how offline sync works	Research & Search	First	1	0.993	Research & Search	0.993	Researching	+0.088	Research & Search
+find, look up, or search stored knowledge for why we chose Postgres	Research & Search	First	1	1.078	Research & Search	1.078	Researching	+0.130	Research & Search
+find, look up, or search stored knowledge for what is due this week	Research & Search	First	1	1.057	Research & Search	1.057	Researching	+0.106	Research & Search
+find, look up, or search stored knowledge for duplicate customer records	Research & Search	First	1	1.024	Research & Search	1.024	Researching	+0.097	Research & Search
+find, look up, or search stored knowledge for tasks that depend on the API migration	Research & Search	First	1	1.061	Research & Search	1.061	Researching	+0.125	Research & Search
+find, look up, or search stored knowledge for notes in the Cooking collection	Research & Search	First	1	1.060	Research & Search	1.060	Researching	+0.100	Research & Search
 create a ticket for the login bug	Node Creation	First	1	0.921	Node Creation	0.921	Creating a Task	+0.033	Node Creation
-add a new customer called Harbor Freight	Node Creation	First	1	0.737	Node Creation	0.737	Creating a Task	+0.002	Node Creation
-new note: call the plumber	Node Creation	LeadCreates	3	0.800	Answering a Question	0.803	Answering a Question	-0.003	Graph Editing
+add a new customer called Harbor Freight	Node Creation	First	2	0.737	Shipping a Change	0.808	Shipping a Change	-0.071	Node Creation
+new note: call the plumber	Node Creation	LeadCreates	3	0.800	Instrumenting a Change	0.805	Instrumenting a Change	-0.005	Graph Editing
 make a task to renew the domain	Node Creation	LeadCreates	3	0.888	Graph Editing	0.933	Graph Editing	-0.045	Graph Editing
 log today's gig at the Blue Room, paid 300	Node Creation	LeadCreates	5	0.648	Implementing a Task	0.690	Implementing a Task	-0.042	Graph Editing
 add another album: Blue Train by Coltrane	Node Creation	LeadCreates	4	0.705	Conflict Journal	0.732	Conflict Journal	-0.027	Conflict Journal
 add a severity field to tickets	Schema Creation	First	2	0.836	Graph Editing	0.839	Graph Editing	-0.003	Graph Editing
 rename the owner field on projects to lead	Schema Creation	First	3	0.814	Graph Editing	0.838	Graph Editing	-0.024	Graph Editing
-I want to keep a record of the books I lend out	Schema Creation	First	4	0.848	Recording a Decision	0.884	Recording a Decision	-0.036	Research & Search
+I want to keep a record of the books I lend out	Schema Creation	First	4	0.848	Researching	0.957	Researching	-0.110	Research & Search
 define a new type for vendors with a name and a contact	Schema Creation	First	2	0.870	Understanding and Changing a Type	0.911	Understanding and Changing a Type	-0.041	Schema Creation
 tickets should also have an environment, staging or production	Schema Creation	First	1	0.832	Schema Creation	0.832	Node Creation	+0.003	Schema Creation
 set up Postmortems with a severity and review date	Schema Creation	First	3	0.856	Reviewing a Plan	0.880	Reviewing a Plan	-0.025	Schema Creation
@@ -77,41 +77,41 @@ keep track of merge requests with a reviewer and a status	Schema Creation	First	
 set up Deletion requests with a requester and a due date	Schema Creation	First	2	0.853	Node Deletion	0.920	Node Deletion	-0.067	Schema Creation
 rename the Q3 plan to Q3 roadmap	Graph Editing	First	2	0.750	Reviewing a Plan	0.821	Reviewing a Plan	-0.070	Graph Editing
 set the due date on the roofing task to Friday	Graph Editing	First	2	0.783	Implementing a Task	0.826	Implementing a Task	-0.043	Graph Editing
-bump the priority on the login bug to high	Graph Editing	First	1	0.853	Graph Editing	0.853	Bulk Import	+0.004	Graph Editing
-the Camden invoice came in, mark it paid	Graph Editing	First	2	0.752	Bulk Import	0.761	Bulk Import	-0.009	Bulk Import
-change the amount on the Acme invoice to 2600	Graph Editing	First	3	0.684	Play Authoring	0.699	Play Authoring	-0.015	Play Authoring
+bump the priority on the login bug to high	Graph Editing	First	2	0.853	Diagnosing a Bug	0.876	Diagnosing a Bug	-0.022	Graph Editing
+the Camden invoice came in, mark it paid	Graph Editing	First	3	0.752	Bulk Import	0.761	Bulk Import	-0.009	Bulk Import
+change the amount on the Acme invoice to 2600	Graph Editing	First	3	0.684	Instrumenting a Change	0.713	Instrumenting a Change	-0.029	Play Authoring
 record an edge between the rebuild task and the storage decision	Relationship Management	Window	2	0.897	Recording a Decision	0.981	Recording a Decision	-0.085	Relationship Management
 connect the retro notes to the sprint they belong to	Relationship Management	First	1	0.805	Relationship Management	0.805	Node Merge	+0.004	Relationship Management
-this task depends on the API migration	Relationship Management	First	7	0.785	Creating a Task	0.898	Creating a Task	-0.112	Node Creation
+this task depends on the API migration	Relationship Management	First	7	0.785	Deprecating and Migrating	0.906	Deprecating and Migrating	-0.121	Node Creation
 the launch task is blocked by the security review	Relationship Management	First	6	0.717	Reviewing a Task	0.947	Reviewing a Task	-0.230	Play Workflow State
-attach the contract to the Harbor Freight account	Relationship Management	First	1	0.719	Relationship Management	0.719	Graph Editing	+0.047	Relationship Management
+attach the contract to the Harbor Freight account	Relationship Management	First	2	0.719	Shipping a Change	0.736	Shipping a Change	-0.017	Relationship Management
 which tasks depend on the API migration?	Relationship Management	Window	4	0.783	Creating a Task	0.872	Creating a Task	-0.089	Node Creation
-group these notes under Travel	Organization	First	1	0.864	Organization	0.864	Research & Search	+0.053	Organization
+group these notes under Travel	Organization	First	1	0.864	Organization	0.864	Researching	+0.049	Organization
 move the recipe notes into the Cooking collection	Organization	First	1	0.840	Organization	0.840	Building and Changing a View	+0.000	Organization
 categorize these receipts as business expenses	Organization	First	1	0.772	Organization	0.772	Splitting a Plan into Tasks	+0.002	Organization
-add the roofing quote to the House collection	Organization	First	6	0.720	Building and Changing a View	0.793	Building and Changing a View	-0.073	Play Authoring
+add the roofing quote to the House collection	Organization	First	6	0.720	Researching	0.796	Researching	-0.076	Play Authoring
 delete the note about the plumber	Node Deletion	First	1	0.862	Node Deletion	0.862	Building and Changing a View	+0.059	Node Deletion
 trash the old meeting notes	Node Deletion	First	1	0.853	Node Deletion	0.853	Node Merge	+0.004	Node Deletion
 erase that draft	Node Deletion	First	1	0.884	Node Deletion	0.884	Writing a Spec	+0.023	Node Deletion
-drop the cancelled gigs	Node Deletion	First	1	0.817	Node Deletion	0.817	Completing a Task	+0.052	Node Deletion
+drop the cancelled gigs	Node Deletion	First	1	0.817	Node Deletion	0.817	Shipping a Change	+0.023	Node Deletion
 list the sync collisions	Conflict Journal	First	1	0.935	Conflict Journal	0.935	Node Merge	+0.151	Conflict Journal
 which records are colliding?	Conflict Journal	First	1	0.985	Conflict Journal	0.985	Node Merge	+0.038	Conflict Journal
 merge the two Sarah Chen records	Node Merge	First	1	0.955	Node Merge	0.955	Conflict Journal	+0.117	Node Merge
 combine these duplicate customer records into one	Node Merge	First	1	0.983	Node Merge	0.983	Conflict Journal	+0.083	Node Merge
 these two contacts are the same person, merge them	Node Merge	First	1	0.937	Node Merge	0.937	Conflict Journal	+0.077	Node Merge
 fold the duplicate Acme account into the original	Node Merge	First	1	0.822	Node Merge	0.822	Conflict Journal	+0.054	Node Merge
-dedupe the two vendor entries for Harbor Freight	Node Merge	First	2	0.738	Bulk Import	0.742	Bulk Import	-0.005	Bulk Import
+dedupe the two vendor entries for Harbor Freight	Node Merge	First	3	0.738	Deprecating and Migrating	0.825	Deprecating and Migrating	-0.087	Bulk Import
 why didn't the play trigger for this task?	Play Workflow State	First	1	0.923	Play Workflow State	0.923	Implementing a Task	+0.046	Play Workflow State
 why hasn't the automation fired on the invoice?	Play Workflow State	First	1	0.867	Play Workflow State	0.867	Implementing a Task	+0.076	Play Workflow State
 what's still missing before the rule runs for this ticket?	Play Workflow State	First	2	0.851	Answering a Question	0.876	Answering a Question	-0.024	Play Workflow State
-turn off the rollover play	Play Authoring	First	1	0.880	Play Authoring	0.880	Play Workflow State	+0.106	Play Authoring
+turn off the rollover play	Play Authoring	First	1	0.880	Play Authoring	0.880	Shipping a Change	+0.063	Play Authoring
 change the play so it runs when a task is marked done	Play Authoring	First	1	1.071	Play Authoring	1.071	Implementing a Task	+0.113	Play Authoring
 add a rule that archives invoices once they're paid	Play Authoring	First	3	0.841	Answering a Question	0.866	Answering a Question	-0.024	Graph Editing
 make the automation skip cancelled tasks	Play Authoring	First	2	0.846	Completing a Task	0.903	Completing a Task	-0.057	Play Authoring
 import my notes folder	Bulk Import	First	1	0.901	Bulk Import	0.901	Organization	+0.090	Bulk Import
 bring in this markdown file as a document	Bulk Import	First	1	0.963	Bulk Import	0.963	Writing a Spec	+0.138	Bulk Import
 create nodes from this markdown outline	Bulk Import	First	1	1.000	Bulk Import	1.000	Node Creation	+0.008	Bulk Import
-import the README into the knowledge base	Bulk Import	First	1	0.876	Bulk Import	0.876	Writing a Spec	+0.046	Bulk Import
+import the README into the knowledge base	Bulk Import	First	1	0.876	Bulk Import	0.876	Researching	+0.030	Bulk Import
 write a spec for the CSV export feature	Writing a Spec	First	1	1.043	Writing a Spec	1.043	Schema Creation	+0.195	Schema Creation
 spec out offline sync with its acceptance criteria	Writing a Spec	First	1	0.991	Writing a Spec	0.991	Schema Creation	+0.186	Schema Creation
 draft the requirements for the billing rework	Writing a Spec	First	1	0.887	Writing a Spec	0.887	Graph Editing	+0.065	Graph Editing
@@ -140,6 +140,24 @@ mark the export task done	Completing a Task	Window	1	0.941	Completing a Task	0.9
 record the decision to use Postgres for sessions	Recording a Decision	First	1	0.998	Recording a Decision	0.998	Graph Editing	+0.133	Graph Editing
 log an architecture decision: we are going with gRPC	Recording a Decision	First	1	0.997	Recording a Decision	0.997	Bulk Import	+0.198	Node Creation
 supersede the old caching decision with this one	Recording a Decision	First	1	0.911	Recording a Decision	0.911	Node Deletion	+0.071	Node Deletion
+the export crashes on large files and I don't know why	Diagnosing a Bug	First	1	0.889	Diagnosing a Bug	0.889	Bulk Import	+0.054	Bulk Import
+find out why the sync keeps dropping edits	Diagnosing a Bug	First	1	0.865	Diagnosing a Bug	0.865	Graph Editing	+0.002	Graph Editing
+track down the cause of this regression in the importer	Diagnosing a Bug	First	1	0.921	Diagnosing a Bug	0.921	Bulk Import	+0.030	Bulk Import
+prototype both caching approaches and see which is faster	Prototyping	First	1	1.005	Prototyping	1.005	Research & Search	+0.108	Research & Search
+build a quick throwaway to check the batched write is feasible	Prototyping	First	1	0.990	Prototyping	0.990	Play Workflow State	+0.118	Play Workflow State
+try out a spike to see whether the new index fits the data	Prototyping	First	1	0.989	Prototyping	0.989	Research & Search	+0.120	Research & Search
+research how the sqlite-vec library handles concurrent writes and cite its documentation	Researching	First	1	0.875	Researching	0.875	Conflict Journal	+0.042	Conflict Journal
+investigate what the licence of this library allows and cite it	Researching	First	1	1.085	Researching	1.085	Research & Search	+0.200	Research & Search
+research what the OAuth standard requires for token expiry and cite the source	Researching	First	1	0.910	Researching	0.910	Play Authoring	+0.094	Play Authoring
+deprecate the v1 export API and move callers to v2	Deprecating and Migrating	First	1	1.018	Deprecating and Migrating	1.018	Node Merge	+0.195	Node Merge
+phase out the old settings format without breaking anyone	Deprecating and Migrating	First	1	0.949	Deprecating and Migrating	0.949	Graph Editing	+0.021	Graph Editing
+plan the removal of the legacy importer	Deprecating and Migrating	First	1	0.880	Deprecating and Migrating	0.880	Bulk Import	+0.037	Bulk Import
+roll out the export change to users in stages with a rollback	Shipping a Change	First	1	1.090	Shipping a Change	1.090	Graph Editing	+0.171	Graph Editing
+get the approved change released and record what we observe after	Shipping a Change	First	1	0.993	Shipping a Change	0.993	Graph Editing	+0.040	Graph Editing
+write the pre-release checklist for the billing change	Shipping a Change	First	1	0.941	Shipping a Change	0.941	Graph Editing	+0.026	Graph Editing
+decide what the export change should log and measure	Instrumenting a Change	First	1	1.068	Instrumenting a Change	1.068	Graph Editing	+0.158	Graph Editing
+add metrics and tracing criteria to the sync task	Instrumenting a Change	First	1	0.953	Instrumenting a Change	0.953	Graph Editing	+0.063	Graph Editing
+what error rate and latency should we monitor for this change	Instrumenting a Change	First	1	1.029	Instrumenting a Change	1.029	Graph Editing	+0.196	Graph Editing
 write a skill for how we cut releases	Authoring a Skill	First	1	1.030	Authoring a Skill	1.030	Play Authoring	+0.133	Play Authoring
 save this procedure so the agent follows it next time	Authoring a Skill	First	1	0.946	Authoring a Skill	0.946	Graph Editing	+0.059	Graph Editing
 teach the agent our naming conventions	Authoring a Skill	First	1	0.949	Authoring a Skill	0.949	Schema Creation	+0.144	Schema Creation
@@ -149,21 +167,21 @@ record a chore to upgrade the build tooling	Creating a Task	Window	1	0.960	Creat
 what is waiting on me?	Answering a Question	Window	1	0.862	Answering a Question	0.862	Research & Search	+0.080	Research & Search
 show me the questions I still have to answer	Answering a Question	Window	1	0.962	Answering a Question	0.962	Research & Search	+0.134	Research & Search
 create a ticket for the login bug	not Schema Creation	NotFirst	-	0.867	Node Creation	0.921	-	-	Node Creation
-add a new customer called Harbor Freight	not Schema Creation	NotFirst	-	0.718	Node Creation	0.737	-	-	Node Creation
+add a new customer called Harbor Freight	not Schema Creation	NotFirst	-	0.718	Shipping a Change	0.808	-	-	Node Creation
 add another album: Blue Train by Coltrane	not Schema Creation	NotFirst	-	0.655	Conflict Journal	0.732	-	-	Conflict Journal
 log today's gig at the Blue Room, paid 300	not Schema Creation	NotFirst	-	0.658	Implementing a Task	0.690	-	-	Graph Editing
 save a view of my overdue invoices	not Schema Creation	NotFirst	-	-	Building and Changing a View	0.868	-	-	Graph Editing
 create a saved query for open tickets	not Schema Creation	NotFirst	-	0.802	Building and Changing a View	0.878	-	-	Node Creation
 make a filter for tasks due this week	not Schema Creation	NotFirst	-	0.771	Implementing a Task	0.918	-	-	Node Creation
 set up a board of tickets by status	not Schema Creation	NotFirst	-	0.843	Graph Editing	0.849	-	-	Graph Editing
-I need a tracker for the venues I book	not Node Creation	NotFirst	-	0.787	Schema Creation	0.849	-	-	Schema Creation
+I need a tracker for the venues I book	not Node Creation	NotFirst	-	0.787	Researching	0.885	-	-	Schema Creation
 start keeping tabs on who owes me money	not Node Creation	NotFirst	-	0.763	Answering a Question	0.885	-	-	Graph Editing
 link this invoice to the Acme account	not Graph Editing	NotFirst	-	0.682	Relationship Management	0.787	-	-	Relationship Management
-attach the contract to the Harbor Freight account	not Graph Editing	NotFirst	-	0.671	Relationship Management	0.719	-	-	Relationship Management
-Add this note to my reading list collection	not Relationship Management	NotFirst	-	0.784	Node Creation	0.844	-	-	Node Creation
+attach the contract to the Harbor Freight account	not Graph Editing	NotFirst	-	0.671	Shipping a Change	0.736	-	-	Relationship Management
+Add this note to my reading list collection	not Relationship Management	NotFirst	-	0.784	Researching	0.882	-	-	Node Creation
 move the recipe notes into the Cooking collection	not Relationship Management	NotFirst	-	-	Organization	0.840	-	-	Organization
 merge the two Sarah Chen records	not Conflict Journal	NotFirst	-	0.838	Node Merge	0.955	-	-	Node Merge
 combine these duplicate customer records into one	not Conflict Journal	NotFirst	-	0.900	Node Merge	0.983	-	-	Node Merge
 show me the open conflicts	not Node Merge	NotFirst	-	0.740	Conflict Journal	0.955	-	-	Conflict Journal
 add a task to call the roofer on Friday	not Bulk Import	NotFirst	-	0.705	Creating a Task	0.832	-	-	Graph Editing
-new note: call the plumber	not Bulk Import	NotFirst	-	0.717	Answering a Question	0.803	-	-	Graph Editing
+new note: call the plumber	not Bulk Import	NotFirst	-	0.717	Instrumenting a Change	0.805	-	-	Graph Editing

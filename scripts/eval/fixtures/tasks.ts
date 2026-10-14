@@ -1,6 +1,6 @@
 /**
  * Tasks eval — scores whether an agent that has the task procedures follows
- * them: Creating a Task and Answering a Question.
+ * them: Creating a Task, Answering a Question and Diagnosing a Bug.
  *
  * The retrieval evals measure which skill is found. This one measures what an
  * agent that has it does with it, graded on what the graph holds afterwards
@@ -9,6 +9,8 @@
  *   - a bug the agent can see is created as a ready task: a brief, a checklist
  *     and its project, with no open question or blocker in front of it;
  *   - a bug the agent cannot see is left unwritten;
+ *   - a bug whose cause is asked for is written up with what was observed, its
+ *     cause and a regression check, never as a bare report;
  *   - a request an accepted decision declines creates nothing;
  *   - a question that stops work becomes a task assigned to the person who owes
  *     the answer and blocking the stopped task, which keeps its status (its
@@ -59,6 +61,7 @@ const RELATIONS = ["assignee", "project", "blocks", "blocked_by"];
 
 type Expected =
   | { kind: "ready-task" }
+  | { kind: "diagnosis" }
   | { kind: "no-writes" }
   | { kind: "question-task" }
   | { kind: "asks-user" };
@@ -75,6 +78,15 @@ const FIXTURES: TaskScenario[] = [
       "Something is off in Query engine rewrite: Cut the release branch is marked " +
       "done but one box on its checklist is still unticked. Get that tracked as work.",
     expected: { kind: "ready-task" },
+  },
+  {
+    id: "bug-diagnosed",
+    scenario: "A bug whose cause is asked for is written up with its reproduction and a regression check",
+    prompt:
+      "Cut the release branch is marked done but one box on its checklist is " +
+      "still unticked. I don't know how that happens. Find out why, and write " +
+      "up what you find as work in Query engine rewrite.",
+    expected: { kind: "diagnosis" },
   },
   {
     id: "bug-not-reproducible",
@@ -379,6 +391,34 @@ function scoreReadyTask(diff: GraphDiff, ids: SeededIds): Verdict {
   return { passed: true };
 }
 
+/** What a diagnosis states about how the failure was seen. */
+const OBSERVED = /reproduc|observ|steps|ran |tried|result|printed|saw/i;
+/** What it states about why it happens. */
+const CAUSE = /\bcause\b|\bbecause\b|root cause/i;
+/** A checklist item that guards the fix with a test. */
+const REGRESSION = /regression/i;
+
+/**
+ * A diagnosed bug is one task: a brief that says how it was seen and why it
+ * happens, and a checklist whose items include a regression test, all unticked,
+ * linked to its project, with the reported task left as it was.
+ */
+function scoreDiagnosis(diff: GraphDiff, ids: SeededIds): Verdict {
+  const ready = scoreReadyTask(diff, ids);
+  if (!ready.passed) return ready;
+  const task = addedWork(diff)[0];
+  const brief = children(diff, task, "text")
+    .map((n) => n.content)
+    .join("\n");
+  if (!OBSERVED.test(brief)) return fail("the brief does not say how the failure was seen");
+  if (!CAUSE.test(brief)) return fail("the brief does not state a cause");
+  const boxes = children(diff, task, "checkbox");
+  if (!boxes.some((b) => REGRESSION.test(b.content))) {
+    return fail("the checklist holds no regression test");
+  }
+  return { passed: true };
+}
+
 /**
  * A question task for its owner, blocking the stopped task, whose own node is
  * left as it was.
@@ -445,6 +485,7 @@ export function scoreOutcome(
   if (e.kind === "no-writes") return scoreNoWrites(diff);
   if (e.kind === "asks-user") return scoreAsksUser(diff, turns);
   if (!seeded) return fail("the workspace was never seeded, so ids are unknown");
+  if (e.kind === "diagnosis") return scoreDiagnosis(diff, seeded);
   return e.kind === "ready-task" ? scoreReadyTask(diff, seeded) : scoreQuestionTask(diff, seeded);
 }
 
@@ -458,7 +499,7 @@ export function scoreTrajectory(scenario: Scenario, turns: TurnRecord[]): Verdic
   const e = (scenario as TaskScenario).expected;
   const calls = turn.toolsCalled;
   const firstCreate = calls.indexOf("create_node");
-  if (e.kind === "ready-task") {
+  if (e.kind === "ready-task" || e.kind === "diagnosis") {
     const searched = calls.indexOf("search_nodes");
     return searched !== -1 && (firstCreate === -1 || searched < firstCreate)
       ? { passed: true }
@@ -475,7 +516,7 @@ export function scoreTrajectory(scenario: Scenario, turns: TurnRecord[]): Verdic
 
 const fixture: EvalFixture = {
   name: "tasks",
-  description: "Tasks Eval Results (creating a task, answering a question)",
+  description: "Tasks Eval Results (creating a task, answering a question, diagnosing a bug)",
   // One chat per scenario: a write one scenario made must not be a precondition
   // for, or a distraction in, the next.
   groups: FIXTURES.map((s) => [s]),

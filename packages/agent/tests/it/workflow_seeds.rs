@@ -20,9 +20,9 @@ use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::{Node, NodeUpdate, SkillFields, SKILL_APPLIES_TO, SKILL_ATTACHED_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, IN_PROGRESS_QUERY_ID,
-    NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
-    SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, DECISIONS_BY_STATUS_QUERY_ID,
+    IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
+    READY_TO_MERGE_QUERY_ID, SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use nodespace_core::PlaybookEngine;
@@ -302,6 +302,12 @@ async fn the_procedures_are_seeded_with_their_links() {
         "Authoring a Skill",
         CREATING,
         ANSWERING,
+        "Diagnosing a Bug",
+        "Prototyping",
+        "Researching",
+        "Deprecating and Migrating",
+        "Shipping a Change",
+        "Instrumenting a Change",
     ];
     for title in titles {
         let seed = SKILL_SEEDS
@@ -364,6 +370,22 @@ async fn the_procedures_are_seeded_with_their_links() {
     );
     assert_eq!(attached(CREATING), [NEEDS_SHAPING_QUERY_ID]);
     assert_eq!(attached(ANSWERING), [WAITING_ON_YOU_QUERY_ID]);
+    // Each uncertain-start procedure arrives where that work does: a defect
+    // typed in by hand is in Needs shaping, a design question comes up while
+    // a spec is written, and a proposed decision waits on the facts that
+    // settle it.
+    assert_eq!(attached("Diagnosing a Bug"), [NEEDS_SHAPING_QUERY_ID]);
+    assert_eq!(attached("Prototyping"), [SPECS_BY_STATUS_QUERY_ID]);
+    assert_eq!(attached("Researching"), [DECISIONS_BY_STATUS_QUERY_ID]);
+    // Deprecating hands its sequence to the plan, where Splitting a Plan into
+    // Tasks slices it; Shipping starts where the review ends; and what a
+    // change logs and measures is written as criteria while it is shaped.
+    assert_eq!(
+        attached("Deprecating and Migrating"),
+        [PLANS_BY_STATUS_QUERY_ID]
+    );
+    assert_eq!(attached("Shipping a Change"), [READY_TO_MERGE_QUERY_ID]);
+    assert_eq!(attached("Instrumenting a Change"), [NEEDS_SHAPING_QUERY_ID]);
     // No other built-in is attached to anything.
     let attached_titles = [
         IMPLEMENTING,
@@ -375,6 +397,12 @@ async fn the_procedures_are_seeded_with_their_links() {
         "Reviewing a Plan",
         "Splitting a Plan into Tasks",
         "Asking the User",
+        "Diagnosing a Bug",
+        "Prototyping",
+        "Researching",
+        "Deprecating and Migrating",
+        "Shipping a Change",
+        "Instrumenting a Change",
     ];
     for seed in SKILL_SEEDS {
         if !attached_titles.contains(&seed.title) {
@@ -407,6 +435,9 @@ fn every_planning_skill_arrives_with_the_work() {
         "Writing a Spec",
         "Reviewing a Plan",
         "Splitting a Plan into Tasks",
+        "Diagnosing a Bug",
+        "Prototyping",
+        "Researching",
     ] {
         assert!(attached(title), "{title} is attached to no queue");
         assert!(
@@ -445,6 +476,12 @@ fn the_planning_skills_name_no_harness_tracker_or_link() {
         IMPLEMENTING,
         REVIEWING,
         ADDRESSING,
+        "Diagnosing a Bug",
+        "Prototyping",
+        "Researching",
+        "Deprecating and Migrating",
+        "Shipping a Change",
+        "Instrumenting a Change",
     ];
     // Built from fragments so this list is not itself a hit for a checker.
     let forbidden = [
@@ -517,8 +554,8 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
     on_spec.sort_unstable();
     assert_eq!(
         on_spec,
-        ["Asking the User", "Writing a Spec"],
-        "a spec carries the spec-writing procedure and asking the user"
+        ["Asking the User", "Prototyping", "Writing a Spec"],
+        "a spec carries the spec-writing procedure, asking the user and prototyping"
     );
     let plan = h.create("plan", "Streamed export", json!({})).await;
     h.link(&plan, "spec", &spec).await;
@@ -529,10 +566,11 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
         on_plan,
         [
             "Asking the User",
+            "Deprecating and Migrating",
             "Reviewing a Plan",
             "Splitting a Plan into Tasks"
         ],
-        "a plan carries the review, the splitting and asking the user"
+        "a plan carries the review, the splitting, asking the user and deprecating"
     );
     h.set(&spec, json!({ "spec_status": "approved" })).await;
     h.set(&plan, json!({ "plan_status": "approved" })).await;
@@ -1464,7 +1502,12 @@ async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_to
         )
         .await;
     assert_eq!(shaping["items"][0]["id"], uri(&by_hand), "{shaping}");
-    assert_eq!(skill_names(&shaping), [CREATING]);
+    let mut on_shaping = skill_names(&shaping);
+    on_shaping.sort_unstable();
+    assert_eq!(
+        on_shaping,
+        [CREATING, "Diagnosing a Bug", "Instrumenting a Change"]
+    );
 
     // A question the issue's owner needs answered by the user: a task
     // assigned to them that blocks the issue.

@@ -1983,6 +1983,11 @@ const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
     // Separates it from Explaining on "I don't understand"; the matrix ranks
     // that request against it.
     ("Asking the User", &["skills_win_their_requests"]),
+    ("Diagnosing a Bug", &["skills_win_their_requests"]),
+    ("Prototyping", &["skills_win_their_requests"]),
+    ("Researching", &["skills_win_their_requests"]),
+    ("Deprecating and Migrating", &["skills_win_their_requests"]),
+    ("Shipping a Change", &["skills_win_their_requests"]),
     (
         "Schema Creation",
         &[
