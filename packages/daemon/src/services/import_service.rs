@@ -1204,7 +1204,9 @@ struct CollectionMetadata {
 }
 
 fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMetadata {
-    let relative = file_path.strip_prefix(base_dir).unwrap_or(file_path);
+    let stripped = file_path.strip_prefix(base_dir);
+    let under_base = stripped.is_ok();
+    let relative = stripped.unwrap_or(file_path);
     let segments: Vec<&str> = relative
         .parent()
         .unwrap_or(Path::new(""))
@@ -1228,7 +1230,10 @@ fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMe
         // letters, the ':' delimiter in a name such as a drive letter, or a
         // chain deeper than a collection path may be) falls back to the bare
         // name, as these folders always routed before.
-        if path.len() > MAX_ROUTED_PREFIX_DEPTH
+        // A file outside the base directory has no meaningful prefix either (its
+        // segments are the absolute path).
+        if !under_base
+            || path.len() > MAX_ROUTED_PREFIX_DEPTH
             || path.iter().any(|p| p.trim().is_empty() || p.contains(':'))
         {
             path.clear();
@@ -2447,6 +2452,9 @@ mod tests {
             ("My Team:Docs:Lessons".to_string(), false)
         );
         // A prefix that cannot be a collection path falls back to the bare name.
+        let outside =
+            derive_collection_metadata(Path::new("/elsewhere/archived/a.md"), Path::new("/base"));
+        assert_eq!(outside.collection, "Archived");
         assert_eq!(route(b, "_/archived/a.md"), ("Archived".to_string(), true));
         assert_eq!(
             route(b, "a/b/c/d/e/f/g/h/i/j/decisions/x.md"),
