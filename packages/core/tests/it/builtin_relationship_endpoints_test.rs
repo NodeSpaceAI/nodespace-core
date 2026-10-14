@@ -30,11 +30,15 @@ async fn service_with_one_node() -> Result<(Arc<NodeService>, TempDir)> {
 }
 
 async fn mentions(svc: &Arc<NodeService>, from: &str, to: &str) -> Result<(), OpsError> {
+    link(svc, from, "mentions", to).await
+}
+
+async fn link(svc: &Arc<NodeService>, from: &str, name: &str, to: &str) -> Result<(), OpsError> {
     rel_ops::create_relationship(
         svc,
         rel_ops::CreateRelInput {
             source_id: from.to_string(),
-            relationship_name: "mentions".to_string(),
+            relationship_name: name.to_string(),
             target_id: to.to_string(),
             edge_data: None,
         },
@@ -62,5 +66,31 @@ async fn a_mentions_edge_from_a_missing_source_is_a_missing_node() -> Result<()>
         matches!(&err, OpsError::NotFound { id } if id == MISSING),
         "got {err:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_has_role_edge_to_a_missing_target_is_a_missing_node() -> Result<()> {
+    let (svc, _t) = service_with_one_node().await?;
+    let err = link(&svc, REAL, "has_role", MISSING).await.unwrap_err();
+    assert!(
+        matches!(&err, OpsError::NotFound { id } if id == MISSING),
+        "got {err:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_mentions_edge_between_existing_nodes_is_created() -> Result<()> {
+    let (svc, _t) = service_with_one_node().await?;
+    let other = "bf53417d-8511-5995-aecb-300ecf227fcb";
+    svc.create_node(Node::new_with_id(
+        other.to_string(),
+        "text".to_string(),
+        "Other".to_string(),
+        json!({}),
+    ))
+    .await?;
+    mentions(&svc, REAL, other).await?;
     Ok(())
 }
