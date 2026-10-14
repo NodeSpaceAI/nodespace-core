@@ -128,6 +128,51 @@ describe("bug-created-ready", () => {
   });
 });
 
+describe("bug-diagnosed", () => {
+  const s = scenario("bug-diagnosed");
+  const diagnosed = (): GraphDiff => {
+    const d = readyDiff();
+    d.addedNodes[1] = node(
+      "n2",
+      "text",
+      "Reproduced: ran the done transition with one box unticked and the change was refused. " +
+        "The cause is a rule that only reads a change of the task's own status.",
+    );
+    d.addedNodes[2] = node("n3", "checkbox", "- [ ] A regression test fails before the fix");
+    return d;
+  };
+
+  test("a brief with the observation and cause, and a regression item, passes", () => {
+    expect(scoreOutcome(s, diagnosed()).passed).toBe(true);
+  });
+
+  test("a bare report with no cause fails", () => {
+    const d = diagnosed();
+    d.addedNodes[1] = node("n2", "text", "Ran it and it was wrong.");
+    expect(scoreOutcome(s, d).failure).toContain("cause");
+  });
+
+  test("a brief that never says how it was seen fails", () => {
+    const d = diagnosed();
+    d.addedNodes[1] = node("n2", "text", "The cause is a missing rule.");
+    expect(scoreOutcome(s, d).failure).toContain("seen");
+  });
+
+  test("a checklist with no regression test fails", () => {
+    const d = diagnosed();
+    d.addedNodes[2] = node("n3", "checkbox", "- [ ] Fix the rule");
+    expect(scoreOutcome(s, d).failure).toContain("regression");
+  });
+
+  test("nothing written fails", () => {
+    expect(scoreOutcome(s, empty()).passed).toBe(false);
+  });
+
+  test("a created task is preceded by a search", () => {
+    expect(scoreTrajectory(s, [turn("", ["search_nodes", "create_node"])]).passed).toBe(true);
+  });
+});
+
 describe("no-write scenarios", () => {
   for (const id of ["bug-not-reproducible", "declined-request"]) {
     test(`${id}: nothing written passes, a created task fails`, () => {

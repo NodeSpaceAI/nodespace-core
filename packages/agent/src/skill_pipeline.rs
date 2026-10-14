@@ -29,9 +29,9 @@ use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::{CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, IN_PROGRESS_QUERY_ID,
-    NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
-    SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, DECISIONS_BY_STATUS_QUERY_ID,
+    IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
+    READY_TO_MERGE_QUERY_ID, SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
 };
 use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 
@@ -1117,6 +1117,141 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/skill-authoring.md"),
     },
+    SkillSeed {
+        // Diagnosing a Bug
+        //
+        // Attached to "Needs shaping": a defect typed in by hand arrives
+        // there with no reproduction and no cause, which is what the
+        // procedure supplies before the work is shaped. Adapted from
+        // `diagnosing-bugs` (mattpocock/skills, MIT).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1c",
+        title: "Diagnosing a Bug",
+        use_for: "Explain why a program fails: reproduce the failure, narrow it to the smallest failing case, and find its root cause by testing one hypothesis at a time. Use when the user asks why something crashes, what is causing a failure or regression, or to track down a root cause.",
+        tools: &["search_nodes", "get_node", "get_node_context", "create_node", "create_relationship", "route_clarify"],
+        max_iterations: 24,
+        not_for: Some("File or record a bug report as a task."),
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Issue.as_str(),
+            CoreNodeType::Decision.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[NEEDS_SHAPING_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/diagnosing-a-bug.md"),
+    },
+    SkillSeed {
+        // Prototyping
+        //
+        // Attached to "Specs by status": a design question that running
+        // code answers comes up while a spec is written, and its answer is
+        // a decision the spec links. Adapted from `prototype`
+        // (mattpocock/skills, MIT).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1d",
+        title: "Prototyping",
+        use_for: "Build a quick throwaway prototype or spike to try candidate approaches and measure which one works, then discard it. Use when the user asks to prototype, spike or experiment with an approach to see whether it is feasible or faster.",
+        tools: &["search_nodes", "get_node", "create_node", "create_relationship", "route_clarify"],
+        max_iterations: 16,
+        not_for: Some("Link or point one record at another."),
+        applies_to: &[
+            CoreNodeType::Decision.as_str(),
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[SPECS_BY_STATUS_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/prototyping.md"),
+    },
+    SkillSeed {
+        // Researching
+        //
+        // Attached to "Decisions by status": a proposed decision is waiting
+        // on facts, and the cited answer is what settles it. Adapted from
+        // `research` (mattpocock/skills, MIT).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1e",
+        title: "Researching",
+        use_for: "Look up an external technical fact in primary sources, such as a library's documentation, a standard or a licence, and cite the source of each claim. Use when the user asks to research what a library, standard or licence says.",
+        tools: &["search_nodes", "search_semantic", "get_node", "create_node", "create_relationship", "route_clarify"],
+        max_iterations: 16,
+        not_for: Some("Write requirements or a spec."),
+        applies_to: &[
+            CoreNodeType::Decision.as_str(),
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[DECISIONS_BY_STATUS_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/researching.md"),
+    },
+    SkillSeed {
+        // Deprecating and Migrating
+        //
+        // Attached to "Plans by status": the sequence it writes is a plan's
+        // to carry, and Splitting a Plan into Tasks, attached there too,
+        // slices it. Adapted from `deprecation-and-migration`
+        // (addyosmani/agent-skills, MIT).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1f",
+        title: "Deprecating and Migrating",
+        use_for: "Deprecate, phase out or sunset an old API, data format or feature in software that has users: find who still uses it, move them to its replacement in stages, then remove it, with a rollback for every step.",
+        tools: &["search_nodes", "get_node", "create_node", "create_relationship", "route_clarify"],
+        max_iterations: 16,
+        not_for: Some("Supersede a recorded decision, or merge or delete a record."),
+        applies_to: &[
+            CoreNodeType::Decision.as_str(),
+            CoreNodeType::Plan.as_str(),
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[PLANS_BY_STATUS_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/deprecating-and-migrating.md"),
+    },
+    SkillSeed {
+        // Shipping a Change
+        //
+        // Attached to "Ready to merge", the stage that precedes a release.
+        // It runs no pipeline: what lands a change stays the team's own.
+        // Adapted from `shipping-and-launch` (addyosmani/agent-skills, MIT).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c20",
+        title: "Shipping a Change",
+        use_for: "Ship a reviewed code change to its users in stages with a rollback plan, and record how the launch went. Use when asked to ship, release, launch or roll out a code change.",
+        tools: &["get_node_context", "get_node", "create_node", "update_node", "route_clarify"],
+        max_iterations: 24,
+        not_for: Some("Write or change a skill or an instruction."),
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Issue.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[READY_TO_MERGE_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/shipping-a-change.md"),
+    },
+    SkillSeed {
+        // Instrumenting a Change
+        //
+        // Attached to "Needs shaping": what to log and measure is written as
+        // criteria on a task before it is built. Adapted from
+        // `observability-and-instrumentation` (addyosmani/agent-skills, MIT).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c21",
+        title: "Instrumenting a Change",
+        use_for: "Decide what logging, metrics and tracing a code change needs so that its behaviour can be observed: what to log, which error rate and latency to measure, where a trace is needed. Use when asked what to log, measure, monitor or trace for a change.",
+        tools: &["get_node_context", "get_node", "create_node", "route_clarify"],
+        max_iterations: 12,
+        not_for: None,
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Issue.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[NEEDS_SHAPING_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/instrumenting-a-change.md"),
+    },
 ];
 
 /// `SCHEMA_RULES` entries deliberately NOT included in the Schema Creation
@@ -1633,7 +1768,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 27, "Should have 27 seed skills");
+        assert_eq!(seeds.len(), 33, "Should have 33 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());

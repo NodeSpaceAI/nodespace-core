@@ -388,6 +388,84 @@ const CASES: &[Case] = &[
         "supersede the old caching decision with this one",
         "Recording a Decision",
     ),
+    // Diagnosing a Bug: a defect whose cause is not known.
+    first(
+        "the export crashes on large files and I don't know why",
+        "Diagnosing a Bug",
+    ),
+    first(
+        "find out why the sync keeps dropping edits",
+        "Diagnosing a Bug",
+    ),
+    first(
+        "track down the cause of this regression in the importer",
+        "Diagnosing a Bug",
+    ),
+    // Prototyping: a design question that running code answers.
+    first(
+        "prototype both caching approaches and see which is faster",
+        "Prototyping",
+    ),
+    first(
+        "build a quick throwaway to check the batched write is feasible",
+        "Prototyping",
+    ),
+    first(
+        "try out a spike to see whether the new index fits the data",
+        "Prototyping",
+    ),
+    // Researching: a fact found in primary sources and cited.
+    first(
+        "research how the sqlite-vec library handles concurrent writes and cite its documentation",
+        "Researching",
+    ),
+    first(
+        "investigate what the licence of this library allows and cite it",
+        "Researching",
+    ),
+    first(
+        "research what the OAuth standard requires for token expiry and cite the source",
+        "Researching",
+    ),
+    // Deprecating and Migrating: retiring something others may rely on.
+    first(
+        "deprecate the v1 export API and move callers to v2",
+        "Deprecating and Migrating",
+    ),
+    first(
+        "phase out the old settings format without breaking anyone",
+        "Deprecating and Migrating",
+    ),
+    first(
+        "plan the removal of the legacy importer",
+        "Deprecating and Migrating",
+    ),
+    // Shipping a Change: a reviewed change released in stages.
+    first(
+        "roll out the export change to users in stages with a rollback",
+        "Shipping a Change",
+    ),
+    first(
+        "get the approved change released and record what we observe after",
+        "Shipping a Change",
+    ),
+    first(
+        "write the pre-release checklist for the billing change",
+        "Shipping a Change",
+    ),
+    // Instrumenting a Change: what to log and measure.
+    first(
+        "decide what the export change should log and measure",
+        "Instrumenting a Change",
+    ),
+    first(
+        "add metrics and tracing criteria to the sync task",
+        "Instrumenting a Change",
+    ),
+    first(
+        "what error rate and latency should we monitor for this change",
+        "Instrumenting a Change",
+    ),
     // Authoring a Skill: an instruction written down for later.
     first("write a skill for how we cut releases", "Authoring a Skill"),
     first(
