@@ -879,10 +879,17 @@ impl NodeService {
         // end is the stored target. `has_child` is exempt, so it skips the
         // lookup on the hot outline path.
         if relationship_name != "has_child" {
-            if let Some(target) = self.get_node(target_id).await? {
-                let accepts_references = self.accepts_inbound_references(&target.node_type).await?;
-                Self::refuse_ai_chat_target(relationship_name, &target, accepts_references)?;
+            // Both ends must exist: left to the store, a missing one is a
+            // foreign-key failure no caller can tell from a fault.
+            if self.get_node(source_id).await?.is_none() {
+                return Err(NodeServiceError::node_not_found(source_id));
             }
+            let target = self
+                .get_node(target_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+            let accepts_references = self.accepts_inbound_references(&target.node_type).await?;
+            Self::refuse_ai_chat_target(relationship_name, &target, accepts_references)?;
         }
 
         // Built-in type-specific validation. Only a builtin reaches here — a
