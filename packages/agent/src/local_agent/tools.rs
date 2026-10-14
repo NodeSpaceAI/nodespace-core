@@ -10978,6 +10978,16 @@ mod tests {
             ops_error_to_tool(missing(), "create_relationship"),
             ToolError::UnresolvedId { ref id, .. } if id == "Anoop's ID here"
         ));
+        // A missing collection is not a node id.
+        assert!(matches!(
+            ops_error_to_tool(
+                OpsError::CollectionNotFound {
+                    name: "Projects".to_string()
+                },
+                "update_node"
+            ),
+            ToolError::ExecutionFailed(_)
+        ));
         // A read of a missing node stays an ordinary failure.
         assert!(matches!(
             ops_error_to_tool(missing(), "get_node"),

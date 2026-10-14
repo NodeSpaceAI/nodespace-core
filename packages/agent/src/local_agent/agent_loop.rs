@@ -1383,6 +1383,9 @@ fn is_unresolved_id_refusal(record: &ToolExecutionRecord) -> bool {
         && record.result.get("error").and_then(|v| v.as_str()) == Some(UNRESOLVED_ID_ERROR)
 }
 
+/// How many search candidates an unresolved-id question offers.
+const UNRESOLVED_ID_MAX_CANDIDATES: usize = 4;
+
 /// The nodes a name search after the refusal returned, as `(id, title)`.
 fn search_candidates(after: &[ToolExecutionRecord]) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
@@ -1408,9 +1411,6 @@ fn search_candidates(after: &[ToolExecutionRecord]) -> Vec<(String, String)> {
     found
 }
 
-/// How many search candidates an unresolved-id question offers.
-const UNRESOLVED_ID_MAX_CANDIDATES: usize = 4;
-
 /// Ask the user which node was meant when a write's id never resolved.
 ///
 /// Applied to every completed turn, beside [`declined_work_backstop`]. When a
@@ -1420,20 +1420,27 @@ const UNRESOLVED_ID_MAX_CANDIDATES: usize = 4;
 /// It is replaced with a question offering what a name search found, if the
 /// model ran one.
 ///
-/// Left alone when the model asked (its question stands) and when a write
-/// landed after the refusal (the model resolved the id and went on).
+/// Left alone when the model asked (its question stands) and when a write of
+/// the same tool landed after the refusal (the model resolved the id and went
+/// on). A different write landing says nothing about the refused one, the same
+/// reasoning as [`duplicate_entity_backstop`].
 fn unresolved_id_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
-    let Some(refused_at) = result
-        .tool_calls_made
-        .iter()
-        .rposition(is_unresolved_id_refusal)
-    else {
+    if result.clarify.is_some() {
+        return;
+    }
+    // The last refusal that no later write of the same tool released. Several
+    // refusals in one turn is a case not yet seen: only the last unreleased one
+    // is asked about, the others are still refused.
+    let calls = &result.tool_calls_made;
+    let Some(refused_at) = (0..calls.len()).rposition(|i| {
+        is_unresolved_id_refusal(&calls[i])
+            && !calls[i + 1..].iter().any(|later| {
+                later.name == calls[i].name && super::deletion_confirmation::landed_write(later)
+            })
+    }) else {
         return;
     };
     let after = &result.tool_calls_made[refused_at + 1..];
-    if result.clarify.is_some() || after.iter().any(super::deletion_confirmation::landed_write) {
-        return;
-    }
     let refused = &result.tool_calls_made[refused_at];
     let id = refused.result["id"]
         .as_str()
@@ -13897,6 +13904,49 @@ mod tests {
         unresolved_id_backstop(&mut session, &mut result);
         assert!(result.clarify.is_none());
         assert_eq!(result.response, "Linked.");
+    }
+
+    #[test]
+    fn an_unrelated_write_after_an_unresolved_id_does_not_release_the_backstop() {
+        let mut session = new_session();
+        let unrelated = ToolExecutionRecord {
+            tool_call_id: "tc_2".into(),
+            name: "create_node".into(),
+            args: json!({"node_type": "text", "content": "Notes"}),
+            result: json!({"id": "nodespace://n1"}),
+            is_error: false,
+            duration_ms: 0,
+        };
+        let mut result = unresolved_write_result(vec![unrelated]);
+        unresolved_id_backstop(&mut session, &mut result);
+        assert!(result.clarify.is_some(), "the refused link was never made");
+    }
+
+    #[test]
+    fn an_earlier_unreleased_refusal_is_still_asked_about() {
+        let mut session = new_session();
+        let mut result = unresolved_write_result(Vec::new());
+        // The link is refused then lands; a later update is refused and never
+        // resolved, so it is the one asked about.
+        result.tool_calls_made.push(ToolExecutionRecord {
+            tool_call_id: "tc_2".into(),
+            name: "create_relationship".into(),
+            args: json!({"from_id": "t1", "to_id": "p1", "relationship_type": "blocked_by"}),
+            result: json!({"created": true}),
+            is_error: false,
+            duration_ms: 0,
+        });
+        result.tool_calls_made.push(ToolExecutionRecord {
+            tool_call_id: "tc_3".into(),
+            name: "update_node".into(),
+            args: json!({"id": "ghost"}),
+            result: unresolved_id_refused_result("ghost"),
+            is_error: true,
+            duration_ms: 0,
+        });
+        unresolved_id_backstop(&mut session, &mut result);
+        let clarify = result.clarify.expect("the update was never resolved");
+        assert!(clarify.question.contains("ghost"));
     }
 
     /// Executor whose `create_relationship` fails with the typed unresolved-id
