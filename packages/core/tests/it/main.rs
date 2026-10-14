@@ -13,6 +13,7 @@ mod ai_chat_message_test;
 mod ai_chat_reference_test;
 mod ai_chat_subtypes_test;
 mod array_field_type_validation_test;
+mod builtin_relationship_endpoints_test;
 mod bulk_invariant_dispatch_test;
 mod collection_membership_test;
 mod collection_name_convergence_test;

@@ -879,10 +879,17 @@ impl NodeService {
         // end is the stored target. `has_child` is exempt, so it skips the
         // lookup on the hot outline path.
         if relationship_name != "has_child" {
-            if let Some(target) = self.get_node(target_id).await? {
-                let accepts_references = self.accepts_inbound_references(&target.node_type).await?;
-                Self::refuse_ai_chat_target(relationship_name, &target, accepts_references)?;
+            // Both ends must exist: left to the store, a missing one is a
+            // foreign-key failure no caller can tell from a fault.
+            if !self.node_exists(source_id).await? {
+                return Err(NodeServiceError::node_not_found(source_id));
             }
+            let target = self
+                .get_node(target_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+            let accepts_references = self.accepts_inbound_references(&target.node_type).await?;
+            Self::refuse_ai_chat_target(relationship_name, &target, accepts_references)?;
         }
 
         // Built-in type-specific validation. Only a builtin reaches here — a
@@ -1215,7 +1222,22 @@ impl NodeService {
         // Another build's fields on the stored relationship (ADR-082 §2.2).
         self.validate_extension_edge_fields(relationship_name, &edge_data)?;
 
-        if let Some(target) = Self::get_node_in_tx_or_virtual_date(tx, target_id).await? {
+        // Parity with `create_relationship`: a built-in edge (other than the
+        // outline's `has_child`) to a node that does not exist is a missing
+        // node, not the store's foreign-key failure.
+        if is_builtin
+            && relationship_name != "has_child"
+            && Self::get_node_in_tx_or_virtual_date(tx, source_id)
+                .await?
+                .is_none()
+        {
+            return Err(NodeServiceError::node_not_found(source_id));
+        }
+        let target = Self::get_node_in_tx_or_virtual_date(tx, target_id).await?;
+        if is_builtin && relationship_name != "has_child" && target.is_none() {
+            return Err(NodeServiceError::node_not_found(target_id));
+        }
+        if let Some(target) = target {
             let accepts_references = crate::db::SqliteStore::accepts_inbound_references_in_tx(
                 tx.store_tx(),
                 &target.node_type,
