@@ -1199,7 +1199,6 @@ struct CollectionMetadata {
 
 fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMetadata {
     let relative = file_path.strip_prefix(base_dir).unwrap_or(file_path);
-    let path_str = relative.to_string_lossy().to_lowercase();
     let segments: Vec<&str> = relative
         .parent()
         .unwrap_or(Path::new(""))
@@ -1207,28 +1206,33 @@ fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMe
         .filter_map(|c| c.as_os_str().to_str())
         .collect();
 
-    if path_str.contains("/archived/")
-        || segments.iter().any(|s| s.eq_ignore_ascii_case("archived"))
-    {
-        return CollectionMetadata {
-            collection: "Archived".to_string(),
-            is_archived: true,
-        };
-    }
+    // Special folders route to a fixed collection name wherever they sit in the
+    // path. The directories ABOVE the matched folder stay in the collection path
+    // (`docs-sync-smoke/archived/x.md` -> `Docs Sync Smoke:Archived`), exactly as
+    // every other directory is joined from all its segments below. Dropping them
+    // put `Archived`/`ADR`/`Lessons` outside the import's own top collection.
+    // Matching is by whole path segment, so it is the same for a top-level
+    // folder, a nested one and a Windows path.
+    let special_folder = |names: &[&str], collection: &str, is_archived: bool| {
+        let idx = segments
+            .iter()
+            .position(|s| names.iter().any(|n| s.eq_ignore_ascii_case(n)))?;
+        let mut path: Vec<String> = segments[..idx].iter().map(|s| to_title_case(s)).collect();
+        path.push(collection.to_string());
+        Some(CollectionMetadata {
+            collection: path.join(":"),
+            is_archived,
+        })
+    };
 
-    if path_str.contains("/decisions/") || path_str.contains("/adr/") {
-        return CollectionMetadata {
-            collection: "ADR".to_string(),
-            is_archived: false,
-        };
+    if let Some(meta) = special_folder(&["archived"], "Archived", true) {
+        return meta;
     }
-
-    if path_str.contains("/lessons/") || segments.iter().any(|s| s.eq_ignore_ascii_case("lessons"))
-    {
-        return CollectionMetadata {
-            collection: "Lessons".to_string(),
-            is_archived: false,
-        };
+    if let Some(meta) = special_folder(&["decisions", "adr"], "ADR", false) {
+        return meta;
+    }
+    if let Some(meta) = special_folder(&["lessons"], "Lessons", false) {
+        return meta;
     }
 
     if segments
@@ -2394,6 +2398,121 @@ mod tests {
             ns.store().count_nodes_by_type("text").await.unwrap(),
             text_nodes_before,
             "self-heal adds only the missing edge — it must not duplicate any node",
+        );
+    }
+    fn route(base: &str, file: &str) -> (String, bool) {
+        let meta = derive_collection_metadata(&Path::new(base).join(file), Path::new(base));
+        (meta.collection, meta.is_archived)
+    }
+
+    /// The special folders (`archived/`, `decisions/`, `adr/`, `lessons/`) keep
+    /// the directories above them, so an import whose base directory holds ONE
+    /// docs folder yields a single tree rather than a second top-level one.
+    #[test]
+    fn special_folders_keep_the_directories_above_them() {
+        let b = "/base";
+        assert_eq!(
+            route(b, "docs-sync-smoke/archived/a.md"),
+            ("Docs Sync Smoke:Archived".to_string(), true)
+        );
+        assert_eq!(
+            route(b, "docs-sync-smoke/archived/architecture/ai/a.md"),
+            ("Docs Sync Smoke:Archived".to_string(), true)
+        );
+        assert_eq!(
+            route(b, "docs-sync-smoke/decisions/001.md"),
+            ("Docs Sync Smoke:ADR".to_string(), false)
+        );
+        assert_eq!(
+            route(b, "docs-sync-smoke/adr/001.md"),
+            ("Docs Sync Smoke:ADR".to_string(), false)
+        );
+        assert_eq!(
+            route(b, "my-team/docs/Lessons/x.md"),
+            ("My Team:Docs:Lessons".to_string(), false)
+        );
+        // The same folders next to ordinary ones route under the same prefix.
+        assert_eq!(
+            route(b, "docs-sync-smoke/architecture/a.md").0,
+            "Docs Sync Smoke:Architecture"
+        );
+    }
+
+    /// With the docs folder itself as the base directory the names are the
+    /// top-level ones, and a top-level `decisions/` is an ADR folder like a
+    /// nested one (it used to fall through to a collection named `Decisions`).
+    #[test]
+    fn special_folders_at_the_base_directory_are_top_level() {
+        let b = "/base";
+        assert_eq!(route(b, "archived/a.md"), ("Archived".to_string(), true));
+        assert_eq!(route(b, "decisions/001.md"), ("ADR".to_string(), false));
+        assert_eq!(route(b, "adr/001.md"), ("ADR".to_string(), false));
+        assert_eq!(route(b, "lessons/x.md"), ("Lessons".to_string(), false));
+        assert_eq!(route(b, "readme.md"), ("Docs".to_string(), false));
+        // Archived wins over a decisions folder below it.
+        assert_eq!(
+            route(b, "archived/decisions/001.md"),
+            ("Archived".to_string(), true)
+        );
+    }
+
+    /// End to end: importing the PARENT of a docs folder nests every routed
+    /// collection, the special folders included, under the one top collection.
+    #[tokio::test]
+    async fn auto_routing_nests_special_folders_under_the_top_collection() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let docs = dir.path().join("docs-sync-smoke");
+        let mut files = Vec::new();
+        for rel in [
+            "README.md",
+            "architecture/a.md",
+            "archived/old.md",
+            "decisions/001.md",
+        ] {
+            let p = docs.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "# Title\n\nBody.\n").unwrap();
+            files.push(p.to_str().unwrap().to_string());
+        }
+        let opts = ImportOptions {
+            base_directory: dir.path().to_str().unwrap().to_string(),
+            auto_collection_routing: true,
+            ..Default::default()
+        };
+        run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+
+        let entries = ns
+            .store()
+            .get_all_collections_with_member_counts()
+            .await
+            .unwrap();
+        let name_of = |id: &str| {
+            entries
+                .iter()
+                .find(|(n, _, _)| n.id == id)
+                .map(|(n, _, _)| n.content.clone())
+                .unwrap()
+        };
+        let mut edges: Vec<(String, Vec<String>)> = entries
+            .iter()
+            .map(|(n, _, parents)| {
+                let mut p: Vec<String> = parents.iter().map(|id| name_of(id)).collect();
+                p.sort();
+                (n.content.clone(), p)
+            })
+            .collect();
+        edges.sort();
+        let top = vec!["Docs Sync Smoke".to_string()];
+        assert_eq!(
+            edges,
+            vec![
+                ("ADR".to_string(), top.clone()),
+                ("Architecture".to_string(), top.clone()),
+                ("Archived".to_string(), top.clone()),
+                ("Docs Sync Smoke".to_string(), vec![]),
+            ],
+            "every routed collection hangs under the single top collection",
         );
     }
 }

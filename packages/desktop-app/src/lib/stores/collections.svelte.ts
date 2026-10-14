@@ -548,6 +548,46 @@ function pruneEmptyCollections(
 }
 
 /**
+ * Choose the single parent a multi-parent collection is displayed under. A
+ * collection can be `member_of` several collections at once, and a collection
+ * and its sub-collection are often both parents of the same child (for example
+ * a workspace-wide container the Sync app files every collection under, next to
+ * the real parent). Displaying it under the broader one hides the real nesting,
+ * so prefer a parent that is itself nested below another of the candidates (its
+ * transitive ancestor chain contains them), i.e. the most specific parent. With
+ * no such relation, or on a tie, the first parent wins, as before.
+ */
+function pickDisplayParent(
+  parentIds: readonly string[],
+  parentsById: ReadonlyMap<string, readonly string[]>
+): string {
+  if (parentIds.length === 1) return parentIds[0];
+  const ancestorsOf = (id: string): Set<string> => {
+    const seen = new Set<string>();
+    const stack = [...(parentsById.get(id) ?? [])];
+    while (stack.length > 0) {
+      const next = stack.pop()!;
+      if (seen.has(next)) continue; // also guards against a cycle
+      seen.add(next);
+      stack.push(...(parentsById.get(next) ?? []));
+    }
+    return seen;
+  };
+  let best = parentIds[0];
+  let bestDepth = ancestorsOf(best).size;
+  for (const candidate of parentIds.slice(1)) {
+    const ancestors = ancestorsOf(candidate);
+    // Strictly deeper only: a candidate nested below the current best (the best
+    // is among its ancestors) replaces it.
+    if (ancestors.has(best) && ancestors.size > bestDepth) {
+      best = candidate;
+      bestDepth = ancestors.size;
+    }
+  }
+  return best;
+}
+
+/**
  * Transform flat collections into tree structure for UI display.
  * Uses parentCollectionIds to build proper hierarchy.
  *
@@ -587,13 +627,17 @@ export function buildCollectionsTree(
   // For each collection, add it as a child to its parent(s)
   // Note: A collection can have multiple parents, but for tree display
   // we only show it under the first parent to avoid duplication
+  const parentsById = new Map<string, readonly string[]>(
+    collections.map((c) => [c.id, c.parentCollectionIds || []])
+  );
   for (const c of collections) {
     // Root collections are never display parents: a collection whose only
     // parents are roots shows at the top level instead of nesting under one.
     const parentIds = (c.parentCollectionIds || []).filter((p) => !rootCollectionIds.has(p));
     if (parentIds.length > 0) {
-      // Add to first parent only (to avoid showing same collection multiple times)
-      const firstParentId = parentIds[0];
+      // Show it under ONE parent only (to avoid showing the same collection
+      // multiple times): the most specific one, see `pickDisplayParent`.
+      const firstParentId = pickDisplayParent(parentIds, parentsById);
       const parent = itemMap.get(firstParentId);
       const child = itemMap.get(c.id);
       if (parent && child) {

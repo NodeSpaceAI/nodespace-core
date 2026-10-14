@@ -705,6 +705,54 @@ describe('Collections Store', () => {
     });
   });
 
+  describe('buildCollectionsTree multi-parent display parent', () => {
+    // A collection filed under both a workspace-wide container and its real
+    // parent (the container is itself the real parent's parent) is shown under
+    // the real parent, whatever order the parent ids arrive in.
+    const mk = (id: string, name: string, parents: string[]): CollectionInfo => ({
+      ...createTestCollectionInfo({ id, name, memberCount: 1 }),
+      parentCollectionIds: parents,
+    });
+
+    it.each([
+      ['container first', ['default', 'smoke']],
+      ['real parent first', ['smoke', 'default']],
+    ])('nests under the most specific parent (%s)', (_label, parents) => {
+      const tree = buildCollectionsTree([
+        mk('default', 'Default Collection', []),
+        mk('smoke', 'Docs Sync Smoke', ['default']),
+        mk('arch', 'Architecture', parents),
+      ]);
+
+      expect(tree.map((c) => c.id)).toEqual(['default']);
+      const smoke = tree[0].children?.find((c) => c.id === 'smoke');
+      expect(tree[0].children?.map((c) => c.id)).toEqual(['smoke']);
+      expect(smoke?.children?.map((c) => c.id)).toEqual(['arch']);
+    });
+
+    it('keeps the first parent when the parents are unrelated', () => {
+      const tree = buildCollectionsTree([
+        mk('a', 'Alpha', []),
+        mk('b', 'Beta', []),
+        mk('shared', 'Shared', ['b', 'a']),
+      ]);
+
+      expect(tree.find((c) => c.id === 'b')?.children?.map((c) => c.id)).toEqual(['shared']);
+      expect(tree.find((c) => c.id === 'a')?.children).toEqual([]);
+    });
+
+    it('terminates on a parent cycle', () => {
+      const tree = buildCollectionsTree([
+        mk('x', 'X', ['y']),
+        mk('y', 'Y', ['x']),
+        mk('z', 'Z', ['x', 'y']),
+      ]);
+
+      // No top-level row in a pure cycle; the point is that this returns.
+      expect(Array.isArray(tree)).toBe(true);
+    });
+  });
+
   describe('buildCollectionsTree root filtering', () => {
     // A root collection: a container the tree does not show. Collections whose
     // only parent is a root show at the top level instead of nesting under it.
