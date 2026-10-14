@@ -17,7 +17,9 @@ use nodespace_core::markdown::{
     prepare_nodes_from_markdown, transform_links_in_nodes_with_mentions, PreparedNode,
 };
 use nodespace_core::models::CoreNodeType;
-use nodespace_core::services::{CollectionService, NodeService as CoreNodeService};
+use nodespace_core::services::{
+    CollectionService, NodeService as CoreNodeService, MAX_COLLECTION_DEPTH,
+};
 use nodespace_core::SqliteStore;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -1192,6 +1194,10 @@ fn proto_file_result(r: LocalFileImportResult) -> FileImportResult {
 // Smart collection routing (ported from commands/import.rs)
 // ---------------------------------------------------------------------------
 
+/// Longest directory prefix a special folder keeps above its fixed name: one
+/// below the collection path depth limit (the fixed name takes the last level).
+const MAX_ROUTED_PREFIX_DEPTH: usize = MAX_COLLECTION_DEPTH - 1;
+
 struct CollectionMetadata {
     collection: String,
     is_archived: bool,
@@ -1218,6 +1224,15 @@ fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMe
             .iter()
             .position(|s| names.iter().any(|n| s.eq_ignore_ascii_case(n)))?;
         let mut path: Vec<String> = segments[..idx].iter().map(|s| to_title_case(s)).collect();
+        // A prefix that cannot be a collection path (a directory with no
+        // letters, the ':' delimiter in a name such as a drive letter, or a
+        // chain deeper than a collection path may be) falls back to the bare
+        // name, as these folders always routed before.
+        if path.len() > MAX_ROUTED_PREFIX_DEPTH
+            || path.iter().any(|p| p.trim().is_empty() || p.contains(':'))
+        {
+            path.clear();
+        }
         path.push(collection.to_string());
         Some(CollectionMetadata {
             collection: path.join(":"),
@@ -2430,6 +2445,21 @@ mod tests {
         assert_eq!(
             route(b, "my-team/docs/Lessons/x.md"),
             ("My Team:Docs:Lessons".to_string(), false)
+        );
+        // A prefix that cannot be a collection path falls back to the bare name.
+        assert_eq!(route(b, "_/archived/a.md"), ("Archived".to_string(), true));
+        assert_eq!(
+            route(b, "a/b/c/d/e/f/g/h/i/j/decisions/x.md"),
+            ("ADR".to_string(), false)
+        );
+        assert_eq!(
+            route(b, "a/b/c/d/e/f/g/h/i/decisions/x.md"),
+            ("A:B:C:D:E:F:G:H:I:ADR".to_string(), false)
+        );
+        // Decisions win over lessons.
+        assert_eq!(
+            route(b, "lessons/decisions/x.md"),
+            ("Lessons:ADR".to_string(), false)
         );
         // The same folders next to ordinary ones route under the same prefix.
         assert_eq!(

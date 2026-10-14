@@ -741,6 +741,34 @@ describe('Collections Store', () => {
       expect(tree.find((c) => c.id === 'a')?.children).toEqual([]);
     });
 
+    it('drops an ancestor candidate whichever position it has among three parents', () => {
+      for (const parents of [
+        ['default', 'smoke', 'other'],
+        ['other', 'default', 'smoke'],
+        ['smoke', 'other', 'default']
+      ]) {
+        const tree = buildCollectionsTree([
+          mk('default', 'Default Collection', []),
+          mk('smoke', 'Docs Sync Smoke', ['default']),
+          mk('other', 'Other', []),
+          mk('arch', 'Architecture', parents)
+        ]);
+        const under = (id: string): string[] => {
+          const find = (items: CollectionItem[]): CollectionItem | undefined => {
+            for (const i of items) {
+              if (i.id === id) return i;
+              const f = find(i.children ?? []);
+              if (f) return f;
+            }
+            return undefined;
+          };
+          return (find(tree)?.children ?? []).map((c) => c.id);
+        };
+        // Never under the broad container, which is reached through `smoke`.
+        expect(under('default')).toEqual(['smoke']);
+      }
+    });
+
     it('terminates on a parent cycle', () => {
       const tree = buildCollectionsTree([
         mk('x', 'X', ['y']),

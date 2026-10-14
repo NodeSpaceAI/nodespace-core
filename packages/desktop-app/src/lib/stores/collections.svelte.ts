@@ -553,9 +553,9 @@ function pruneEmptyCollections(
  * and its sub-collection are often both parents of the same child (for example
  * a workspace-wide container the Sync app files every collection under, next to
  * the real parent). Displaying it under the broader one hides the real nesting,
- * so prefer a parent that is itself nested below another of the candidates (its
- * transitive ancestor chain contains them), i.e. the most specific parent. With
- * no such relation, or on a tie, the first parent wins, as before.
+ * so drop every candidate that is an ancestor of another candidate (reached
+ * through that other one) and keep the first of what is left. With no such
+ * relation the first parent wins, as before.
  */
 function pickDisplayParent(
   parentIds: readonly string[],
@@ -573,18 +573,13 @@ function pickDisplayParent(
     }
     return seen;
   };
-  let best = parentIds[0];
-  let bestDepth = ancestorsOf(best).size;
-  for (const candidate of parentIds.slice(1)) {
-    const ancestors = ancestorsOf(candidate);
-    // Strictly deeper only: a candidate nested below the current best (the best
-    // is among its ancestors) replaces it.
-    if (ancestors.has(best) && ancestors.size > bestDepth) {
-      best = candidate;
-      bestDepth = ancestors.size;
-    }
-  }
-  return best;
+  // Candidates that are not an ancestor of another candidate: the most specific
+  // ones. Unrelated candidates tie, and the first of them wins, as before.
+  const ancestors = new Map(parentIds.map((id) => [id, ancestorsOf(id)]));
+  const mostSpecific = parentIds.filter(
+    (id) => !parentIds.some((other) => other !== id && ancestors.get(other)!.has(id))
+  );
+  return mostSpecific[0] ?? parentIds[0];
 }
 
 /**
