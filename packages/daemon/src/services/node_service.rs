@@ -3765,6 +3765,9 @@ fn ascii_json(value: &serde_json::Value) -> String {
 pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
     match err {
         OpsError::NotFound { id } => Status::not_found(format!("Not found: {}", id)),
+        OpsError::CollectionNotFound { name } => {
+            Status::not_found(format!("Collection not found: {}", name))
+        }
         OpsError::AlreadyExists { id } => Status::already_exists(format!("Already exists: {}", id)),
         OpsError::VersionConflict {
             node_id,

@@ -26,6 +26,11 @@ pub enum OpsError {
     #[error("Not found: {id}")]
     NotFound { id: String },
 
+    /// A collection path that names no collection. Not a node id, so a caller
+    /// that tells a caller "no node has this id" must not read it as one.
+    #[error("Collection not found: {name}")]
+    CollectionNotFound { name: String },
+
     #[error("Already exists: {id}")]
     AlreadyExists { id: String },
 
@@ -150,7 +155,7 @@ impl From<NodeServiceError> for OpsError {
                 rule_name,
                 message,
             },
-            NodeServiceError::CollectionNotFound(name) => OpsError::NotFound { id: name },
+            NodeServiceError::CollectionNotFound(name) => OpsError::CollectionNotFound { name },
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::CollectionCycle(msg) => OpsError::ValidationFailed(msg),

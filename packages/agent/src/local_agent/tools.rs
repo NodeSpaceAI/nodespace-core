@@ -675,6 +675,17 @@ fn error_result(tool_call_id: &str, name: &str, message: &str) -> ToolResult {
 
 /// Convert an OpsError to a ToolError.
 fn ops_error_to_tool(e: OpsError, tool_name: &str) -> ToolError {
+    // A write aimed at a node that does not exist is the model's to resolve
+    // (search, then retry) or the user's to answer; a typed error lets the
+    // loop tell it from a store failure.
+    if let OpsError::NotFound { id } = &e {
+        if is_write_tool(tool_name) {
+            return ToolError::UnresolvedId {
+                tool: tool_name.to_string(),
+                id: id.clone(),
+            };
+        }
+    }
     // A write that named a version the node has moved past (ADR-094 §6). The
     // message says what to do next, because retrying the same call with the
     // new version would overwrite a change the caller has not read.
@@ -10957,6 +10968,32 @@ mod tests {
     }
 
     // -- error_result / ok_result helpers --
+
+    #[test]
+    fn a_missing_node_on_a_write_is_a_typed_unresolved_id() {
+        let missing = || OpsError::NotFound {
+            id: "Anoop's ID here".to_string(),
+        };
+        assert!(matches!(
+            ops_error_to_tool(missing(), "create_relationship"),
+            ToolError::UnresolvedId { ref id, .. } if id == "Anoop's ID here"
+        ));
+        // A missing collection is not a node id.
+        assert!(matches!(
+            ops_error_to_tool(
+                OpsError::CollectionNotFound {
+                    name: "Projects".to_string()
+                },
+                "update_node"
+            ),
+            ToolError::ExecutionFailed(_)
+        ));
+        // A read of a missing node stays an ordinary failure.
+        assert!(matches!(
+            ops_error_to_tool(missing(), "get_node"),
+            ToolError::ExecutionFailed(_)
+        ));
+    }
 
     #[test]
     fn error_result_is_flagged() {
