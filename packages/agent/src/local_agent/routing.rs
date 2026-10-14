@@ -412,7 +412,7 @@ fn split_request_opening<'a>(words: &'a [&'a str]) -> (RequestOpening, &'a [&'a 
 /// a miss is a turn that has the read tools only and says it cannot write, and
 /// the next message routes on its own.
 fn asks_for_a_write(words: &[&str]) -> bool {
-    const WRITING: [&str; 37] = [
+    const WRITING: [&str; 39] = [
         "add",
         "create",
         "make",
@@ -449,9 +449,23 @@ fn asks_for_a_write(words: &[&str]) -> bool {
         "copy",
         "merge",
         "restore",
+        "answer",
+        "answered",
         "then",
     ];
     words.iter().any(|w| WRITING.contains(w))
+}
+
+/// Whether any word of `message` names a change to the graph
+/// ([`asks_for_a_write`]), for a message Stage 1 has already decided is a
+/// lookup.
+pub fn asks_for_a_change(message: &str) -> bool {
+    let lowered = message.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    asks_for_a_write(&words)
 }
 
 /// The decision for a message Stage 1 was asked about by itself, with no
@@ -1548,16 +1562,30 @@ pub fn all_candidate_scores(candidates: &[SkillCandidate]) -> String {
 /// mark it done") runs the turn without the write skills, and the model says
 /// it cannot, rather than acting.
 ///
+/// `asked_for_a_change` is whether the user's own message names a change.
+/// Stage 1 reads "take the question that is waiting on me and get it
+/// answered" as a lookup, and the lookup then drops the one procedure that
+/// retrieval had ranked first for it (Answering a Question, 1.07 against 0.87
+/// for Research & Search on the unprefixed request), so the question was never
+/// put to the user. A message that names a change keeps the procedure lane's
+/// candidate; the tool skills are still narrowed to those that read.
+///
 /// A skill the chat pins is kept whatever it whitelists, without its write
 /// tools (ADR-090 §5). The chat was opened for it, so a question asked there
 /// is answered with its procedure and its read tools, and a turn that only
 /// reads cannot write through it: "Explain this play" is offered `get_play`
 /// and not `update_play`.
-pub fn read_only_candidates(candidates: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+pub fn read_only_candidates(
+    candidates: Vec<SkillCandidate>,
+    asked_for_a_change: bool,
+) -> Vec<SkillCandidate> {
     let read_only: Vec<SkillCandidate> = candidates
         .iter()
         .filter_map(|c| {
             if !c.tools.iter().any(|t| super::tools::is_write_tool(t)) {
+                return Some(c.clone());
+            }
+            if asked_for_a_change && c.role == SkillRole::Procedure {
                 return Some(c.clone());
             }
             c.pinned.then(|| {
@@ -2128,14 +2156,51 @@ mod tests {
 
     #[test]
     fn a_lookup_keeps_the_read_only_candidates_in_their_order() {
-        let kept = read_only_candidates(vec![
-            candidate("Node Deletion", 0.99, &["search_nodes", "delete_node"]),
-            candidate("Research & Search", 0.97, &["search_nodes", "get_node"]),
-            candidate("Implementing a Task", 0.96, &["update_task_status"]),
-            candidate("Play Workflow State", 0.95, &["get_workflow_state"]),
-        ]);
+        let kept = read_only_candidates(
+            vec![
+                candidate("Node Deletion", 0.99, &["search_nodes", "delete_node"]),
+                candidate("Research & Search", 0.97, &["search_nodes", "get_node"]),
+                candidate("Implementing a Task", 0.96, &["update_task_status"]),
+                candidate("Play Workflow State", 0.95, &["get_workflow_state"]),
+            ],
+            false,
+        );
         let names: Vec<&str> = kept.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["Research & Search", "Play Workflow State"]);
+    }
+
+    #[test]
+    fn a_lookup_that_names_a_change_keeps_the_procedure_lane() {
+        let retrieved = vec![
+            candidate("Research & Search", 0.87, &["search_nodes"]),
+            candidate("Graph Editing", 0.83, &["update_node"]),
+            procedure(
+                "Answering a Question",
+                1.07,
+                &["run_query", "update_task_status"],
+            ),
+        ];
+        let names = |kept: &[SkillCandidate]| -> Vec<String> {
+            kept.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(
+            names(&read_only_candidates(retrieved.clone(), true)),
+            ["Research & Search", "Answering a Question"],
+            "the tool skills are narrowed, the procedure the request retrieved stays"
+        );
+        assert_eq!(
+            names(&read_only_candidates(retrieved, false)),
+            ["Research & Search"],
+            "a lookup that names no change is narrowed as before"
+        );
+    }
+
+    #[test]
+    fn a_message_that_asks_for_an_answer_to_be_recorded_names_a_change() {
+        assert!(asks_for_a_change(
+            "Take the question that's waiting on me and get it answered."
+        ));
+        assert!(!asks_for_a_change("Which questions are waiting on me?"));
     }
 
     #[test]
@@ -2144,7 +2209,7 @@ mod tests {
             candidate("Node Deletion", 0.99, &["delete_node"]),
             candidate("Organization", 0.97, &["create_relationship"]),
         ];
-        let kept = read_only_candidates(retrieved.clone());
+        let kept = read_only_candidates(retrieved.clone(), false);
         assert_eq!(kept.len(), retrieved.len());
     }
 
@@ -2155,7 +2220,7 @@ mod tests {
             candidate("Research & Search", 0.01, &["search_nodes"]),
         ];
         assert!(!clears_score_gate(&retrieved[1]));
-        let kept = read_only_candidates(retrieved);
+        let kept = read_only_candidates(retrieved, false);
         assert_eq!(
             kept.len(),
             2,
@@ -4742,7 +4807,7 @@ mod tests {
         let editing = candidate("editing", 0.8, &["update_node"]);
         let research = candidate("research", 0.9, &["search_nodes"]);
 
-        let kept = read_only_candidates(vec![research.clone(), editing.clone(), authoring]);
+        let kept = read_only_candidates(vec![research.clone(), editing.clone(), authoring], false);
         assert_eq!(
             kept.iter()
                 .map(|c| (c.name.as_str(), c.tools.clone()))
@@ -4755,7 +4820,7 @@ mod tests {
 
         // With no pin the same lookup is narrowed as it always was.
         let unpinned = candidate("authoring", 0.0, &["get_play", "update_play"]);
-        let kept = read_only_candidates(vec![research, editing, unpinned]);
+        let kept = read_only_candidates(vec![research, editing, unpinned], false);
         assert_eq!(
             kept.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
             ["research"]

@@ -3678,8 +3678,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // A lookup reads, so the procedures and tools of the skills that write
         // are left out of the turn. See `routing::read_only_candidates`.
         if routed.lookup_topic.is_some() {
-            routed.candidates =
-                routing::read_only_candidates(std::mem::take(&mut routed.candidates));
+            routed.candidates = routing::read_only_candidates(
+                std::mem::take(&mut routed.candidates),
+                routing::asks_for_a_change(user_message),
+            );
         }
 
         // Stage 2's surface: scoped to what the eligible candidates permit, so
