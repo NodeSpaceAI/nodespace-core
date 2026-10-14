@@ -1355,6 +1355,122 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     });
 }
 
+/// Error code carried by a write refused because an id it named resolves to no
+/// node. The turn-end backstop finds the refusal by it.
+const UNRESOLVED_ID_ERROR: &str = "unresolved_id";
+
+/// Build the tool result for a write whose id resolved to no node.
+///
+/// Nothing was written. The model gets one chance to search for the node and
+/// retry with its real id; if the turn still ends without that or a question,
+/// [`unresolved_id_backstop`] asks the user.
+fn unresolved_id_refused_result(id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": UNRESOLVED_ID_ERROR,
+        "id": id,
+        "message": format!(
+            "Not executed: no node has the id \"{id}\". Search for the node by name \
+             to get its real id and call this tool again with it. If the search finds \
+             several candidates or none, call route_clarify to ask the user which node \
+             they meant. Never invent or guess an id."
+        ),
+    })
+}
+
+/// Whether `record` is a write refused for an id that resolves to no node.
+fn is_unresolved_id_refusal(record: &ToolExecutionRecord) -> bool {
+    record.is_error
+        && record.result.get("error").and_then(|v| v.as_str()) == Some(UNRESOLVED_ID_ERROR)
+}
+
+/// The nodes a name search after the refusal returned, as `(id, title)`.
+fn search_candidates(after: &[ToolExecutionRecord]) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for record in after.iter().filter(|r| {
+        !r.is_error
+            && crate::local_agent::tools::Tool::from_name(&r.name)
+                == Some(crate::local_agent::tools::Tool::SearchNodes)
+    }) {
+        let rows = record
+            .result
+            .get("nodes")
+            .or_else(|| record.result.get("results"))
+            .and_then(|v| v.as_array());
+        for row in rows.into_iter().flatten() {
+            let field = |k: &str| row.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+            let (id, title) = (field("id"), field("title"));
+            if !id.is_empty() && !title.is_empty() && !found.iter().any(|(i, _)| i == id) {
+                found.push((id.to_string(), title.to_string()));
+            }
+        }
+    }
+    found.truncate(UNRESOLVED_ID_MAX_CANDIDATES);
+    found
+}
+
+/// How many search candidates an unresolved-id question offers.
+const UNRESOLVED_ID_MAX_CANDIDATES: usize = 4;
+
+/// Ask the user which node was meant when a write's id never resolved.
+///
+/// Applied to every completed turn, beside [`declined_work_backstop`]. When a
+/// write was refused for an id that resolves to no node (see
+/// [`unresolved_id_refused_result`]) and the turn ended with no question put to
+/// the user and no write landed after it, the reply would be the raw tool error.
+/// It is replaced with a question offering what a name search found, if the
+/// model ran one.
+///
+/// Left alone when the model asked (its question stands) and when a write
+/// landed after the refusal (the model resolved the id and went on).
+fn unresolved_id_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
+    let Some(refused_at) = result
+        .tool_calls_made
+        .iter()
+        .rposition(is_unresolved_id_refusal)
+    else {
+        return;
+    };
+    let after = &result.tool_calls_made[refused_at + 1..];
+    if result.clarify.is_some() || after.iter().any(super::deletion_confirmation::landed_write) {
+        return;
+    }
+    let refused = &result.tool_calls_made[refused_at];
+    let id = refused.result["id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let candidates = search_candidates(after);
+
+    let done_note = done_this_turn_note(&result.tool_calls_made);
+    let action = humanize_tool_name(&refused.name);
+    let action = if action.starts_with("the ") {
+        action.to_string()
+    } else {
+        format!("the {action}")
+    };
+    let question = format!(
+        "I couldn't run {action}: \"{id}\" doesn't match any node. Which node did you mean?{done_note}"
+    );
+    let options: Vec<String> = candidates
+        .iter()
+        .map(|(id, title)| format!("\"{title}\" ({id})"))
+        .collect();
+    let clarification = format_clarification(&question, &options);
+    tracing::warn!(
+        session_id = %session.id,
+        unresolved_id = %id,
+        "Write refused for an unresolved id and left unresolved by the model — asking the user"
+    );
+
+    replace_turn_reply(session, &clarification);
+    result.response = clarification;
+    result.clarify = Some(crate::agent_types::ClarifyPrompt {
+        question,
+        options,
+        pending_deletions: Vec::new(),
+    });
+}
+
 /// Whether `record` is a `create_node` held back for [`decisions_that_may_settle`].
 fn is_declined_work_hold(record: &ToolExecutionRecord) -> bool {
     record.name == "create_node"
@@ -3465,6 +3581,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
             declined_work_backstop(session, &mut result);
+            unresolved_id_backstop(session, &mut result);
             cut_off_turn_backstop(session, &mut result, end, intent_clarified);
             type_listing_backstop(session, &mut result);
         }
@@ -5255,6 +5372,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
                 let (mut result_value, is_error) = match tool_result {
                     Ok(tr) => (tr.result, tr.is_error),
+                    Err(crate::agent_types::ToolError::UnresolvedId { id, .. }) => {
+                        (unresolved_id_refused_result(&id), true)
+                    }
                     Err(e) => (serde_json::json!({"error": e.to_string()}), true),
                 };
                 if let (Some((sent, id)), false, Some(object)) =
@@ -13689,6 +13809,170 @@ mod tests {
         let mut result = held_create_result("Created.", vec![landed]);
         declined_work_backstop(&mut session, &mut result);
         assert!(result.clarify.is_none());
+    }
+
+    fn unresolved_write_result(after: Vec<ToolExecutionRecord>) -> AgentTurnResult {
+        let mut calls = vec![ToolExecutionRecord {
+            tool_call_id: "tc_1".into(),
+            name: "create_relationship".into(),
+            args: json!({"from_id": "t1", "to_id": "Anoop's ID here", "relationship_type": "blocked_by"}),
+            result: unresolved_id_refused_result("Anoop's ID here"),
+            is_error: true,
+            duration_ms: 0,
+        }];
+        calls.extend(after);
+        AgentTurnResult {
+            response: "Error: unresolved_id".to_string(),
+            reasoning: None,
+            tool_calls_made: calls,
+            usage: Default::default(),
+            clarify: None,
+        }
+    }
+
+    #[test]
+    fn an_unresolved_id_error_is_a_typed_refusal_the_loop_recognises() {
+        let result = unresolved_write_result(Vec::new());
+        assert!(is_unresolved_id_refusal(&result.tool_calls_made[0]));
+        assert!(!is_unresolved_id_refusal(&ToolExecutionRecord {
+            tool_call_id: "x".into(),
+            name: "update_node".into(),
+            args: json!({}),
+            result: json!({"error": "tool execution failed: boom"}),
+            is_error: true,
+            duration_ms: 0,
+        }));
+    }
+
+    #[test]
+    fn an_unresolved_id_left_unresolved_asks_the_user_offering_search_candidates() {
+        let mut session = new_session();
+        let search = ToolExecutionRecord {
+            tool_call_id: "tc_2".into(),
+            name: "search_nodes".into(),
+            args: json!({"query": "Anoop"}),
+            result: json!({"count": 1, "nodes": [{"id": "nodespace://p1", "title": "Anoop"}]}),
+            is_error: false,
+            duration_ms: 0,
+        };
+        let mut result = unresolved_write_result(vec![search]);
+        unresolved_id_backstop(&mut session, &mut result);
+
+        let clarify = result.clarify.expect("the user must be asked");
+        assert!(clarify.question.contains("Anoop's ID here"));
+        assert_eq!(
+            clarify.options,
+            vec!["\"Anoop\" (nodespace://p1)".to_string()]
+        );
+        assert!(!result.response.contains("unresolved_id"));
+    }
+
+    #[test]
+    fn an_unresolved_id_the_model_already_asked_about_is_left_alone() {
+        let mut session = new_session();
+        let mut result = unresolved_write_result(Vec::new());
+        result.clarify = Some(crate::agent_types::ClarifyPrompt {
+            question: "Which Anoop?".into(),
+            options: Vec::new(),
+            pending_deletions: Vec::new(),
+        });
+        result.response = "Which Anoop?".into();
+        unresolved_id_backstop(&mut session, &mut result);
+        assert_eq!(result.response, "Which Anoop?");
+    }
+
+    #[test]
+    fn a_write_landing_after_an_unresolved_id_releases_the_backstop() {
+        let mut session = new_session();
+        let landed = ToolExecutionRecord {
+            tool_call_id: "tc_2".into(),
+            name: "create_relationship".into(),
+            args: json!({"from_id": "t1", "to_id": "p1", "relationship_type": "blocked_by"}),
+            result: json!({"created": true}),
+            is_error: false,
+            duration_ms: 0,
+        };
+        let mut result = unresolved_write_result(vec![landed]);
+        result.response = "Linked.".into();
+        unresolved_id_backstop(&mut session, &mut result);
+        assert!(result.clarify.is_none());
+        assert_eq!(result.response, "Linked.");
+    }
+
+    /// Executor whose `create_relationship` fails with the typed unresolved-id
+    /// error until given the id a search returned.
+    struct ResolvesAfterSearchExecutor {
+        inner: MockToolExecutor,
+    }
+
+    #[async_trait]
+    impl AgentToolExecutor for ResolvesAfterSearchExecutor {
+        async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+            self.inner.available_tools().await
+        }
+
+        async fn execute(
+            &self,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            if name == "create_relationship" && args["to_id"] != "abc123" {
+                return Err(ToolError::UnresolvedId {
+                    tool: name.to_string(),
+                    id: args["to_id"].as_str().unwrap_or_default().to_string(),
+                });
+            }
+            self.inner.execute(name, args).await
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_id_is_refused_and_the_corrected_retry_runs() {
+        let engine = MockEngine::new(vec![
+            one_call_round(
+                "c1",
+                "create_relationship",
+                json!({"from_id": "t1", "to_id": "Anoop's ID here", "relationship_type": "blocked_by"}),
+            ),
+            one_call_round("s1", "search_nodes", json!({"query": "Anoop"})),
+            one_call_round(
+                "c2",
+                "create_relationship",
+                json!({"from_id": "t1", "to_id": "abc123", "relationship_type": "blocked_by"}),
+            ),
+            text_round("Linked."),
+        ]);
+        let exec = ResolvesAfterSearchExecutor {
+            inner: MockToolExecutor::new().with_tool(
+                "create_relationship",
+                json!({"type": "object", "properties": {}}),
+                json!({"created": true}),
+            ),
+        };
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "Block t1 on Anoop.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(is_unresolved_id_refusal(&result.tool_calls_made[0]));
+        assert!(
+            result
+                .tool_calls_made
+                .iter()
+                .any(super::super::deletion_confirmation::landed_write),
+            "the corrected retry must run: {:?}",
+            result.tool_calls_made
+        );
+        assert!(result.clarify.is_none());
+        assert_eq!(result.response, "Linked.");
     }
 
     #[test]

@@ -40,6 +40,17 @@ pub enum ToolError {
         reason: String,
     },
 
+    /// A write named an id that resolves to no node: a placeholder, a name in
+    /// place of an id, or an id that no longer exists. Typed so the agent loop
+    /// can refuse the call and ask the user, rather than read an error string.
+    #[error("{tool} failed: no node has the id \"{id}\"")]
+    UnresolvedId {
+        /// Name of the tool.
+        tool: String,
+        /// The id that did not resolve, as the call gave it.
+        id: String,
+    },
+
     /// The tool execution itself failed.
     #[error("tool execution failed: {0}")]
     ExecutionFailed(String),
