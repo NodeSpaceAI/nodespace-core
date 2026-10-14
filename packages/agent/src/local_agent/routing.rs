@@ -412,7 +412,7 @@ fn split_request_opening<'a>(words: &'a [&'a str]) -> (RequestOpening, &'a [&'a 
 /// a miss is a turn that has the read tools only and says it cannot write, and
 /// the next message routes on its own.
 fn asks_for_a_write(words: &[&str]) -> bool {
-    const WRITING: [&str; 39] = [
+    const WRITING: [&str; 37] = [
         "add",
         "create",
         "make",
@@ -449,23 +449,31 @@ fn asks_for_a_write(words: &[&str]) -> bool {
         "copy",
         "merge",
         "restore",
-        "answer",
-        "answered",
         "then",
     ];
     words.iter().any(|w| WRITING.contains(w))
 }
 
-/// Whether any word of `message` names a change to the graph
-/// ([`asks_for_a_write`]), for a message Stage 1 has already decided is a
-/// lookup.
+/// Whether `message` names a change to the graph, for a message Stage 1 has
+/// already decided is a lookup.
+///
+/// A word of [`asks_for_a_write`], or an answer to be recorded: "answer" is
+/// also a noun ("what did Anoop answer?", "which have been answered?"), so it
+/// counts only as a command ("answer it") or as "get it answered", never in a
+/// word list the question shapes read.
 pub fn asks_for_a_change(message: &str) -> bool {
     let lowered = message.to_lowercase();
     let words: Vec<&str> = lowered
         .split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    asks_for_a_write(&words)
+    let (_, command) = split_request_opening(&words);
+    let answers_it = command.first() == Some(&"answer")
+        || command
+            .iter()
+            .position(|w| matches!(*w, "get" | "got"))
+            .is_some_and(|i| command[i + 1..].iter().take(3).any(|w| *w == "answered"));
+    asks_for_a_write(&words) || answers_it
 }
 
 /// The decision for a message Stage 1 was asked about by itself, with no
@@ -1563,12 +1571,11 @@ pub fn all_candidate_scores(candidates: &[SkillCandidate]) -> String {
 /// it cannot, rather than acting.
 ///
 /// `asked_for_a_change` is whether the user's own message names a change.
-/// Stage 1 reads "take the question that is waiting on me and get it
-/// answered" as a lookup, and the lookup then drops the one procedure that
-/// retrieval had ranked first for it (Answering a Question, 1.07 against 0.87
-/// for Research & Search on the unprefixed request), so the question was never
-/// put to the user. A message that names a change keeps the procedure lane's
-/// candidate; the tool skills are still narrowed to those that read.
+/// Stage 1 can read a request to get something done as a lookup, and the
+/// narrowing then drops the one procedure retrieval ranked first for it, so
+/// the model never sees it. A message that names a change keeps the lane's
+/// procedure; the tool skills are still narrowed to those that read. A pinned
+/// procedure keeps the rule below and loses its write tools either way.
 ///
 /// A skill the chat pins is kept whatever it whitelists, without its write
 /// tools (ADR-090 §5). The chat was opened for it, so a question asked there
@@ -1585,14 +1592,12 @@ pub fn read_only_candidates(
             if !c.tools.iter().any(|t| super::tools::is_write_tool(t)) {
                 return Some(c.clone());
             }
-            if asked_for_a_change && c.role == SkillRole::Procedure {
-                return Some(c.clone());
-            }
-            c.pinned.then(|| {
+            if c.pinned {
                 let mut reads = c.clone();
                 reads.tools.retain(|t| !super::tools::is_write_tool(t));
-                reads
-            })
+                return Some(reads);
+            }
+            (asked_for_a_change && c.role == SkillRole::Procedure).then(|| c.clone())
         })
         .collect();
     if read_only.iter().any(clears_score_gate) {
@@ -2196,11 +2201,67 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_procedure_loses_its_write_tools_on_a_lookup_that_names_a_change() {
+        let mut pinned = procedure(
+            "Answering a Question",
+            0.9,
+            &["run_query", "update_task_status"],
+        );
+        pinned.pinned = true;
+        let kept = read_only_candidates(
+            vec![
+                candidate("Research & Search", 0.8, &["search_nodes"]),
+                pinned,
+            ],
+            true,
+        );
+        assert_eq!(kept[1].tools, ["run_query"]);
+    }
+
+    #[test]
+    fn a_procedure_that_clears_the_gate_is_kept_beside_a_read_skill_that_does_not() {
+        let retrieved = vec![
+            candidate("Node Deletion", 0.99, &["delete_node"]),
+            candidate("Research & Search", 0.01, &["search_nodes"]),
+            procedure("Answering a Question", 0.9, &["update_task_status"]),
+        ];
+        let names = |kept: Vec<SkillCandidate>| -> Vec<String> {
+            kept.into_iter().map(|c| c.name).collect()
+        };
+        assert_eq!(
+            names(read_only_candidates(retrieved.clone(), true)),
+            ["Research & Search", "Answering a Question"],
+            "the tool skills that write are left out, with the procedure the message asked for kept"
+        );
+        assert_eq!(
+            names(read_only_candidates(retrieved, false)),
+            ["Node Deletion", "Research & Search", "Answering a Question"],
+            "with no change named, nothing read-only clears and the retrieved set stands"
+        );
+    }
+
+    #[test]
     fn a_message_that_asks_for_an_answer_to_be_recorded_names_a_change() {
-        assert!(asks_for_a_change(
-            "Take the question that's waiting on me and get it answered."
-        ));
-        assert!(!asks_for_a_change("Which questions are waiting on me?"));
+        for message in [
+            "Take the question that's waiting on me and get it answered.",
+            "Answer Anoop's question for me",
+            "Please answer the question on the migration guide",
+            "Mark the review done",
+        ] {
+            assert!(asks_for_a_change(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn answer_as_a_noun_or_a_read_names_no_change() {
+        for message in [
+            "Which questions are waiting on me?",
+            "What did Anoop answer?",
+            "Which questions have been answered?",
+            "Show me the answer to the export question",
+        ] {
+            assert!(!asks_for_a_change(message), "{message}");
+        }
     }
 
     #[test]
