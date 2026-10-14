@@ -394,9 +394,9 @@ function scoreReadyTask(diff: GraphDiff, ids: SeededIds): Verdict {
 /** What a diagnosis states about how the failure was seen. */
 const OBSERVED = /reproduc|observ|steps|ran |tried|result|printed|saw/i;
 /** What it states about why it happens. */
-const CAUSE = /cause|because|due to|root|rule|reason/i;
+const CAUSE = /\bcause\b|\bbecause\b|root cause/i;
 /** A checklist item that guards the fix with a test. */
-const REGRESSION = /regression|test/i;
+const REGRESSION = /regression/i;
 
 /**
  * A diagnosed bug is one task: a brief that says how it was seen and why it

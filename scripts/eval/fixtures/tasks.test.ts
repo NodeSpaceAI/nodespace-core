@@ -164,6 +164,18 @@ describe("bug-diagnosed", () => {
     expect(scoreOutcome(s, d).failure).toContain("regression");
   });
 
+  test("a generic test item is not a regression test", () => {
+    const d = diagnosed();
+    d.addedNodes[2] = node("n3", "checkbox", "- [ ] Add a test for the rule");
+    expect(scoreOutcome(s, d).failure).toContain("regression");
+  });
+
+  test("a rule named without a cause is not a diagnosis", () => {
+    const d = diagnosed();
+    d.addedNodes[1] = node("n2", "text", "Ran it and saw the rule refuse the change.");
+    expect(scoreOutcome(s, d).failure).toContain("cause");
+  });
+
   test("nothing written fails", () => {
     expect(scoreOutcome(s, empty()).passed).toBe(false);
   });
