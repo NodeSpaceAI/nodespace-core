@@ -12,7 +12,16 @@
   const log = createLogger('IntegrationsSettings');
 
   interface IntegrationStatus {
+    /** `nodespace` resolves on the user's PATH, by any means. */
     pathAlreadyConfigured: boolean;
+    /** A shell rc file carries NodeSpace's own PATH line. */
+    pathExportPresent: boolean;
+  }
+
+  interface PathConfigResult {
+    alreadyOnPath: boolean;
+    files: { path: string; outcome: 'written' | 'created' | 'unchanged' }[];
+    restartRequired: boolean;
   }
 
   interface DetectedAgents {
@@ -66,9 +75,18 @@
     pathWorking = true;
     pathFeedback = null;
     try {
-      await invoke('configure_path');
+      const result = await invoke<PathConfigResult>('configure_path');
       status = await invoke<IntegrationStatus>('get_integrations_status');
-      pathFeedback = { ok: true, message: '~/.nodespace/bin added to PATH in your shell profiles.' };
+      const files = result.files.map((f) => `${f.path} (${f.outcome})`).join(', ');
+      const restart = result.restartRequired
+        ? ' Restart open terminals and agent sessions to pick it up.'
+        : '';
+      pathFeedback = {
+        ok: true,
+        message: result.alreadyOnPath
+          ? 'nodespace already runs from your terminal; nothing was changed.'
+          : `~/.nodespace/bin added to PATH: ${files}.${restart}`
+      };
     } catch (err) {
       pathFeedback = { ok: false, message: toError(err).message };
     } finally {
@@ -177,10 +195,12 @@
         </div>
       {/if}
       <div class="flex gap-3">
-        {#if pathIsConfigured}
+        {#if status?.pathExportPresent}
           <Button variant="outline" size="sm" onclick={removeFromPath} disabled={pathWorking}>
             {pathWorking ? 'Removing…' : 'Remove from PATH'}
           </Button>
+        {:else if pathIsConfigured}
+          <!-- Resolved by something else (e.g. the Homebrew cask): nothing of ours to add or remove. -->
         {:else}
           <Button size="sm" onclick={addToPath} disabled={pathWorking}>
             {pathWorking ? 'Adding…' : 'Add to PATH'}

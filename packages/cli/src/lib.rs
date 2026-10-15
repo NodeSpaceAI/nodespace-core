@@ -425,7 +425,8 @@ fn connect_error_context(sock: &std::path::Path, failure: ConnectFailure) -> Str
         ),
         ConnectFailure::NotRunning => format!(
             "Could not connect to nodespaced at {}.\n\
-             Is the daemon running? Start it with `nodespaced` in another terminal.",
+             Is the daemon running? Open the NodeSpace app (it starts the daemon), \
+             or run `nodespaced` in another terminal. Quitting from the tray stops it.",
             sock.display()
         ),
     }

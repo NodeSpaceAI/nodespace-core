@@ -33,7 +33,19 @@
     completed: boolean;
     pathConfigured: boolean;
     skillConfigured: boolean;
+    /** `nodespace` already resolves on the user's PATH, by any means. */
     pathAlreadyConfigured: boolean;
+  }
+
+  interface PathFileReport {
+    path: string;
+    outcome: 'written' | 'created' | 'unchanged';
+  }
+
+  interface PathConfigResult {
+    alreadyOnPath: boolean;
+    files: PathFileReport[];
+    restartRequired: boolean;
   }
 
   interface DetectedAgents {
@@ -128,8 +140,11 @@
   // handled at all.
   let skillResult = $state<SkillSetupResult | null>(null);
 
-  // Whether the PATH export was already present before we ran
+  // Whether `nodespace` already resolved on the PATH before we ran
   let pathWasAlreadyConfigured = $state(false);
+
+  // What configure_path actually did, for the success banner.
+  let pathResult = $state<PathConfigResult | null>(null);
 
   // ── derived step sequence ──────────────────────────────────────────────────
 
@@ -281,7 +296,7 @@
     isLoading = true;
     stepError = null;
     try {
-      await invoke('configure_path');
+      pathResult = await invoke<PathConfigResult>('configure_path');
       pathDone = true;
       stepSuccess = true;
       log.info('PATH configured successfully');
@@ -475,15 +490,24 @@
 
         {#if pathWasAlreadyConfigured}
           <div class="info-banner">
-            Already configured — your shell profile already includes the NodeSpace path.
+            Already configured — <code>nodespace</code> already runs from your terminal.
           </div>
           <div class="step-actions">
             <button class="primary-button" onclick={nextStep}>Next</button>
           </div>
         {:else if stepSuccess}
           <div class="success-banner">
-            Added to <code>~/.zshrc</code> and/or <code>~/.bash_profile</code>. Open a new terminal
-            to apply.
+            {#each pathResult?.files ?? [] as file (file.path)}
+              <div>
+                {#if file.outcome === 'created'}Created{:else if file.outcome === 'written'}Added to{:else}Already in{/if}
+                <code>{file.path}</code>.
+              </div>
+            {/each}
+            {#if pathResult?.restartRequired}
+              <div>
+                Restart open terminals and agent sessions — only new ones see the change.
+              </div>
+            {/if}
           </div>
           <div class="step-actions">
             <button class="primary-button" onclick={nextStep}>Next</button>

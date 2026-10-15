@@ -1,13 +1,11 @@
 //! System tray for `nodespaced` (ADR-031).
 //!
 //! Owns the menu-bar / notification-area icon and acts as the platform-wide
-//! UI launcher. Quit is symmetric across both halves of the app: the tray's
-//! own "Quit" also asks any running desktop-app window to close (see
-//! [`signal_ui_to_quit`]), and the desktop app's own window-close path
-//! (Cmd+Q, the red traffic-light button, or any other close that actually
-//! goes through) signals this daemon to stop in turn (see `nodespace-app-lib`'s
-//! `daemon_setup::signal_daemon_to_stop`) — a single action from either side
-//! fully quits NodeSpace rather than leaving the other half running.
+//! UI launcher. The window is a client of this service, not its owner: the
+//! tray's "Quit" stops the daemon and also asks any running desktop-app
+//! window to close (see [`signal_ui_to_quit`]), while closing the window
+//! (Cmd+Q, the red traffic-light button) ends the UI only and leaves this
+//! daemon and its tray icon running for the CLI and agent skills.
 //!
 //! Threading: the `tao` event loop must run on the main thread (macOS
 //! `NSApplication` is main-thread-only), so the tonic gRPC server runs on a
