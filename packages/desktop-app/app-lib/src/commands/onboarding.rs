@@ -16,18 +16,23 @@ use tonic::Request;
 
 /// Current onboarding status returned to the frontend on startup.
 ///
-/// Deliberately cheap: a config read plus a few `.exists()` probes. The
-/// app shell invokes this on EVERY launch just to read `completed`, so
-/// nothing expensive belongs here — agent detection, which shells out to the
-/// skill installer, is its own command ([`detect_agents`]) that only the
-/// callers actually needing it pay for.
+/// Deliberately cheap: a config read, a few rc-file reads and one
+/// `nodespace --version` probe. The app shell invokes this on EVERY launch
+/// just to read `completed`, so nothing slower belongs here — agent
+/// detection, which shells out to the skill installer, is its own command
+/// ([`detect_agents`]) that only the callers actually needing it pay for.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnboardingStatus {
     pub completed: bool,
     pub path_configured: bool,
     pub skill_configured: bool,
+    /// `nodespace` resolves on the user's shell PATH, by whatever means
+    /// (the Homebrew cask, the installer script, our rc line).
     pub path_already_configured: bool,
+    /// A known rc file carries NodeSpace's own PATH line, i.e. there is
+    /// something for "Remove from PATH" to remove.
+    pub path_export_present: bool,
 }
 
 /// Which agents the skill installer would target if run right now, as agent
@@ -133,50 +138,227 @@ async fn update_config_at(
     atomic_file::write_json(dir, CONFIG_FILE, &cfg).await
 }
 
+/// Text every NodeSpace PATH line carries, in any shell's syntax. Detection,
+/// writing and removal all key on it.
+const PATH_MARKER: &str = "$HOME/.nodespace/bin";
+
+const POSIX_EXPORT_LINE: &str = "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
+const FISH_EXPORT_LINE: &str = "\n# NodeSpace CLI\nfish_add_path $HOME/.nodespace/bin\n";
+
+/// The user's login shell, as far as PATH setup needs to tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginShell {
+    Zsh,
+    Bash,
+    Fish,
+    /// Anything else (sh, dash, ksh, unset): the POSIX `~/.profile`.
+    Other,
+}
+
+impl LoginShell {
+    fn from_env(shell: Option<&str>) -> Self {
+        let name = shell
+            .and_then(|s| Path::new(s).file_name())
+            .and_then(|n| n.to_str());
+        match name {
+            Some("zsh") => Self::Zsh,
+            Some("bash") => Self::Bash,
+            Some("fish") => Self::Fish,
+            _ => Self::Other,
+        }
+    }
+
+    fn export_line(self) -> &'static str {
+        match self {
+            Self::Fish => FISH_EXPORT_LINE,
+            _ => POSIX_EXPORT_LINE,
+        }
+    }
+}
+
+/// Every file NodeSpace may have written its PATH line to: what the app's
+/// wizard writes and what the installer script writes. Detection, writing and
+/// removal all use this one set, so a second run never duplicates the line and
+/// an uninstall leaves none behind.
+fn known_rc_files(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".zshrc"),
+        home.join(".bash_profile"),
+        home.join(".bashrc"),
+        home.join(".profile"),
+        home.join(".config").join("fish").join("config.fish"),
+    ]
+}
+
+/// The one file the line is written to for `shell` when no known file has it.
+fn target_rc_file(home: &Path, shell: LoginShell) -> PathBuf {
+    match shell {
+        LoginShell::Zsh => home.join(".zshrc"),
+        LoginShell::Fish => home.join(".config").join("fish").join("config.fish"),
+        LoginShell::Bash => bash_target(home, cfg!(target_os = "macos")),
+        LoginShell::Other => home.join(".profile"),
+    }
+}
+
+/// Bash reads `~/.bash_profile` in a login shell and `~/.bashrc` otherwise.
+/// macOS terminals always open login shells, which never read `~/.bashrc`, so
+/// it is always `~/.bash_profile` there; elsewhere `~/.bashrc`, unless the
+/// user already keeps a `~/.bash_profile`.
+fn bash_target(home: &Path, macos: bool) -> PathBuf {
+    let bash_profile = home.join(".bash_profile");
+    if macos || bash_profile.exists() {
+        bash_profile
+    } else {
+        home.join(".bashrc")
+    }
+}
+
+/// What happened to one rc file.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PathFileOutcome {
+    /// The line was appended to an existing file.
+    Written,
+    /// The file did not exist and was created with the line.
+    Created,
+    /// The line was already there; nothing changed.
+    Unchanged,
+}
+
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathFileReport {
+    pub path: String,
+    pub outcome: PathFileOutcome,
+}
+
+/// What [`configure_path`] did, so the wizard can report it instead of
+/// claiming success.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathConfigResult {
+    /// `nodespace` already resolved on the PATH, so nothing was touched.
+    pub already_on_path: bool,
+    pub files: Vec<PathFileReport>,
+    /// A new PATH reaches new shells only; true when a terminal or agent
+    /// session that is already open still cannot find `nodespace`.
+    pub restart_required: bool,
+}
+
 /// Return true if the PATH export line is already present in the given file.
-async fn file_contains_nodespace_path(path: &PathBuf) -> bool {
+async fn file_contains_nodespace_path(path: &Path) -> bool {
     match tokio::fs::read_to_string(path).await {
-        Ok(content) => content.contains("$HOME/.nodespace/bin"),
+        Ok(content) => content.contains(PATH_MARKER),
         Err(_) => false,
     }
 }
 
-/// Append `export PATH` line to a shell file if the file exists and the line
-/// is not already present.  Returns `true` if the file was modified.
-async fn append_path_to_file(path: &PathBuf) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(false);
+/// True when any known rc file carries the NodeSpace PATH line.
+async fn any_rc_file_has_path(home: &Path) -> bool {
+    for file in known_rc_files(home) {
+        if file_contains_nodespace_path(&file).await {
+            return true;
+        }
     }
-    if file_contains_nodespace_path(path).await {
-        return Ok(false);
+    false
+}
+
+/// Append `line` to `path`, creating the file (and its directory) when it does
+/// not exist. A file that already has the PATH line is left alone.
+async fn append_path_to_file(path: &Path, line: &str) -> Result<PathFileOutcome, String> {
+    let existing = match tokio::fs::read_to_string(path).await {
+        Ok(content) => Some(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("Failed to read {}: {e}", path.display())),
+    };
+    if existing
+        .as_deref()
+        .is_some_and(|content| content.contains(PATH_MARKER))
+    {
+        return Ok(PathFileOutcome::Unchanged);
     }
-    let line = "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
-    let mut content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    content.push_str(line);
+    let created = existing.is_none();
+    let mut content = existing.unwrap_or_default();
+    if created {
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+        }
+        content.push_str(line.trim_start_matches('\n'));
+    } else {
+        content.push_str(line);
+    }
     tokio::fs::write(path, content)
         .await
         .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-    Ok(true)
+    Ok(if created {
+        PathFileOutcome::Created
+    } else {
+        PathFileOutcome::Written
+    })
+}
+
+/// Put the PATH line where `shell` will read it, unless a known rc file
+/// already has it (never a second export). Fails, naming the file, rather than
+/// reporting a write that did not happen.
+async fn apply_path_config(home: &Path, shell: LoginShell) -> Result<Vec<PathFileReport>, String> {
+    let mut present = Vec::new();
+    for file in known_rc_files(home) {
+        if file_contains_nodespace_path(&file).await {
+            present.push(PathFileReport {
+                path: file.display().to_string(),
+                outcome: PathFileOutcome::Unchanged,
+            });
+        }
+    }
+    if !present.is_empty() {
+        return Ok(present);
+    }
+    let target = target_rc_file(home, shell);
+    let outcome = append_path_to_file(&target, shell.export_line()).await?;
+    Ok(vec![PathFileReport {
+        path: target.display().to_string(),
+        outcome,
+    }])
+}
+
+/// The decision behind [`configure_path`], with the machine-dependent inputs
+/// (home, login shell, whether the CLI already resolves) passed in.
+async fn configure_path_at(
+    home: &Path,
+    shell: LoginShell,
+    cli_on_path: bool,
+) -> Result<PathConfigResult, String> {
+    if cli_on_path {
+        return Ok(PathConfigResult {
+            already_on_path: true,
+            files: Vec::new(),
+            restart_required: false,
+        });
+    }
+    let files = apply_path_config(home, shell).await?;
+    Ok(PathConfigResult {
+        already_on_path: false,
+        files,
+        restart_required: true,
+    })
 }
 
 /// Remove all NodeSpace PATH lines from a shell file. Returns `true` if modified.
-async fn remove_path_from_file(path: &PathBuf) -> Result<bool, String> {
+async fn remove_path_from_file(path: &Path) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
     }
     let content = tokio::fs::read_to_string(path)
         .await
         .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    if !content.contains("$HOME/.nodespace/bin") {
+    if !content.contains(PATH_MARKER) {
         return Ok(false);
     }
     let filtered: Vec<&str> = content
         .lines()
-        .filter(|l| {
-            !l.contains("$HOME/.nodespace/bin") && !l.trim_start().starts_with("# NodeSpace CLI")
-        })
+        .filter(|l| !l.contains(PATH_MARKER) && !l.trim_start().starts_with("# NodeSpace CLI"))
         .collect();
     // Strip trailing blank lines left by the separator we wrote, then restore final newline.
     let trimmed: Vec<&str> = filtered
@@ -189,7 +371,9 @@ async fn remove_path_from_file(path: &PathBuf) -> Result<bool, String> {
         .rev()
         .collect();
     let mut result = trimmed.join("\n");
-    result.push('\n');
+    if !result.is_empty() {
+        result.push('\n');
+    }
     tokio::fs::write(path, result)
         .await
         .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
@@ -199,23 +383,32 @@ async fn remove_path_from_file(path: &PathBuf) -> Result<bool, String> {
 // ── commands ─────────────────────────────────────────────────────────────────
 
 /// Read persisted onboarding state and detect installed integrations.
+///
+/// The PATH probe runs the CLI, so the app shell's every-launch call pays for
+/// it only while onboarding is still incomplete (the wizard is the one reader
+/// of the field then); [`get_integrations_status`] always probes.
 #[tauri::command]
 pub async fn check_onboarding_status() -> Result<OnboardingStatus, String> {
+    onboarding_status(false).await
+}
+
+async fn onboarding_status(always_probe_cli: bool) -> Result<OnboardingStatus, String> {
     let cfg = read_config().await?;
 
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
-    // Check whether the PATH export is already in any shell config.
-    let zshrc = home.join(".zshrc");
-    let bash_profile = home.join(".bash_profile");
-    let path_already_configured = file_contains_nodespace_path(&zshrc).await
-        || file_contains_nodespace_path(&bash_profile).await;
+    // The real question is whether `nodespace` resolves, not whether a file
+    // mentions it: a Homebrew cask links it into place with no rc edit at all.
+    let path_already_configured =
+        (always_probe_cli || !cfg.onboarding_completed) && cli_resolves_on_path().await;
+    let path_export_present = any_rc_file_has_path(&home).await;
 
     Ok(OnboardingStatus {
         completed: cfg.onboarding_completed,
         path_configured: cfg.integrations.path_configured,
         skill_configured: cfg.integrations.skill_configured,
         path_already_configured,
+        path_export_present,
     })
 }
 
@@ -236,17 +429,42 @@ pub async fn detect_agents(app_handle: tauri::AppHandle) -> DetectedAgents {
     }
 }
 
-/// Append the NodeSpace PATH export to `~/.zshrc` and/or `~/.bash_profile`
-/// (whichever exist). Idempotent — will not add the line if already present.
-/// Updates the `path_configured` flag in config.json.
+/// Add the NodeSpace PATH export to the rc file of the user's login shell
+/// (`SHELL`), creating it when missing, and report which file changed.
+/// Does nothing when `nodespace` already resolves, and never adds a second
+/// export when any known rc file already has one. Updates the
+/// `path_configured` flag in config.json only when the PATH is in place.
 #[tauri::command]
-pub async fn configure_path() -> Result<(), String> {
+pub async fn configure_path() -> Result<PathConfigResult, String> {
+    if cfg!(windows) {
+        return Err(
+            "Adding NodeSpace to PATH from the app is not supported on Windows; \
+             add the NodeSpace CLI folder to your PATH in System Settings."
+                .to_string(),
+        );
+    }
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    let shell = LoginShell::from_env(std::env::var("SHELL").ok().as_deref());
+    let cli_on_path = cli_resolves_on_path().await;
 
-    append_path_to_file(&home.join(".zshrc")).await?;
-    append_path_to_file(&home.join(".bash_profile")).await?;
+    let result = configure_path_at(&home, shell, cli_on_path).await?;
 
-    update_config(|cfg| cfg.integrations.path_configured = true).await
+    // Recorded only when NodeSpace's own line is in place; a CLI that already
+    // resolves by other means (the cask) left nothing of ours configured.
+    if !result.already_on_path {
+        update_config(|cfg| cfg.integrations.path_configured = true).await?;
+    }
+    Ok(result)
+}
+
+/// Whether `nodespace` resolves on a shell PATH approximated by
+/// [`skill_setup::check_cli_on_path`] (the system PATH plus the usual
+/// per-user bin directories, not the user's own rc files). Runs the CLI, so it
+/// is kept off the async worker threads.
+async fn cli_resolves_on_path() -> bool {
+    tokio::task::spawn_blocking(skill_setup::check_cli_on_path)
+        .await
+        .unwrap_or(false)
 }
 
 /// Install the NodeSpace skill into detected agents (delegates to skill_setup).
@@ -306,13 +524,14 @@ pub async fn get_skill_setup_status(
     })
 }
 
-/// Remove the NodeSpace PATH export from `~/.zshrc` and/or `~/.bash_profile`.
-/// Updates the `path_configured` flag in config.json.
+/// Remove the NodeSpace PATH export from every rc file it may have been
+/// written to. Updates the `path_configured` flag in config.json.
 #[tauri::command]
 pub async fn remove_from_path() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    remove_path_from_file(&home.join(".zshrc")).await?;
-    remove_path_from_file(&home.join(".bash_profile")).await?;
+    for file in known_rc_files(&home) {
+        remove_path_from_file(&file).await?;
+    }
 
     update_config(|cfg| cfg.integrations.path_configured = false).await
 }
@@ -320,7 +539,7 @@ pub async fn remove_from_path() -> Result<(), String> {
 /// Return live integration status (path + skill) without running any installer.
 #[tauri::command]
 pub async fn get_integrations_status() -> Result<OnboardingStatus, String> {
-    check_onboarding_status().await
+    onboarding_status(true).await
 }
 
 /// Remove the NodeSpace skill files from every installed-into agent's skill
@@ -584,6 +803,165 @@ mod tests {
         assert!(cfg.integrations.skill_configured);
         assert!(cfg.identity_prompt_dismissed);
         assert!(!dir_path.join("config.json.tmp").exists());
+    }
+
+    fn export_count(content: &str) -> usize {
+        content.matches(PATH_MARKER).count()
+    }
+
+    #[tokio::test]
+    async fn missing_rc_file_is_created_and_reported() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let result = configure_path_at(home.path(), LoginShell::Zsh, false)
+            .await
+            .expect("configure");
+
+        let zshrc = home.path().join(".zshrc");
+        assert_eq!(
+            result.files,
+            vec![PathFileReport {
+                path: zshrc.display().to_string(),
+                outcome: PathFileOutcome::Created,
+            }]
+        );
+        assert!(result.restart_required);
+        assert!(!result.already_on_path);
+        let written = std::fs::read_to_string(&zshrc).expect("read");
+        assert_eq!(export_count(&written), 1);
+    }
+
+    #[tokio::test]
+    async fn existing_rc_file_is_appended_to_and_keeps_its_content() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let zshrc = home.path().join(".zshrc");
+        std::fs::write(&zshrc, "alias ll='ls -l'\n").expect("seed");
+
+        let result = configure_path_at(home.path(), LoginShell::Zsh, false)
+            .await
+            .expect("configure");
+
+        assert_eq!(result.files[0].outcome, PathFileOutcome::Written);
+        let written = std::fs::read_to_string(&zshrc).expect("read");
+        assert!(written.starts_with("alias ll='ls -l'\n"));
+        assert_eq!(export_count(&written), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_run_leaves_one_export_line() {
+        let home = tempfile::tempdir().expect("tempdir");
+        configure_path_at(home.path(), LoginShell::Zsh, false)
+            .await
+            .expect("first");
+        let second = configure_path_at(home.path(), LoginShell::Zsh, false)
+            .await
+            .expect("second");
+
+        assert_eq!(second.files[0].outcome, PathFileOutcome::Unchanged);
+        let written = std::fs::read_to_string(home.path().join(".zshrc")).expect("read");
+        assert_eq!(export_count(&written), 1);
+    }
+
+    #[tokio::test]
+    async fn a_line_the_installer_wrote_elsewhere_is_not_duplicated() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let bashrc = home.path().join(".bashrc");
+        std::fs::write(&bashrc, POSIX_EXPORT_LINE).expect("seed");
+
+        let result = configure_path_at(home.path(), LoginShell::Zsh, false)
+            .await
+            .expect("configure");
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].outcome, PathFileOutcome::Unchanged);
+        assert!(!home.path().join(".zshrc").exists());
+    }
+
+    #[tokio::test]
+    async fn nothing_is_touched_when_the_cli_already_resolves() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let result = configure_path_at(home.path(), LoginShell::Zsh, true)
+            .await
+            .expect("configure");
+
+        assert!(result.already_on_path);
+        assert!(result.files.is_empty());
+        assert!(!result.restart_required);
+        assert!(!home.path().join(".zshrc").exists());
+    }
+
+    #[tokio::test]
+    async fn other_shells_get_their_own_file_and_syntax() {
+        let fish_home = tempfile::tempdir().expect("tempdir");
+        configure_path_at(fish_home.path(), LoginShell::Fish, false)
+            .await
+            .expect("fish");
+        let fish = std::fs::read_to_string(fish_home.path().join(".config/fish/config.fish"))
+            .expect("config.fish");
+        assert!(fish.contains("fish_add_path $HOME/.nodespace/bin"));
+        assert!(!fish.contains("export PATH"));
+
+        let other_home = tempfile::tempdir().expect("tempdir");
+        configure_path_at(
+            other_home.path(),
+            LoginShell::from_env(Some("/bin/dash")),
+            false,
+        )
+        .await
+        .expect("other");
+        assert!(other_home.path().join(".profile").exists());
+    }
+
+    #[test]
+    fn bash_writes_bash_profile_on_macos_and_bashrc_elsewhere() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            bash_target(home.path(), true),
+            home.path().join(".bash_profile")
+        );
+        // A `.bashrc` alone must not win on macOS: login shells skip it.
+        std::fs::write(home.path().join(".bashrc"), "").expect("seed");
+        assert_eq!(
+            bash_target(home.path(), true),
+            home.path().join(".bash_profile")
+        );
+        assert_eq!(bash_target(home.path(), false), home.path().join(".bashrc"));
+        std::fs::write(home.path().join(".bash_profile"), "").expect("seed");
+        assert_eq!(
+            bash_target(home.path(), false),
+            home.path().join(".bash_profile")
+        );
+    }
+
+    #[test]
+    fn the_login_shell_comes_from_shell_env() {
+        assert_eq!(LoginShell::from_env(Some("/bin/zsh")), LoginShell::Zsh);
+        assert_eq!(
+            LoginShell::from_env(Some("/opt/homebrew/bin/bash")),
+            LoginShell::Bash
+        );
+        assert_eq!(
+            LoginShell::from_env(Some("/usr/bin/fish")),
+            LoginShell::Fish
+        );
+        assert_eq!(LoginShell::from_env(None), LoginShell::Other);
+    }
+
+    #[tokio::test]
+    async fn removal_clears_every_known_file() {
+        let home = tempfile::tempdir().expect("tempdir");
+        for name in [".zshrc", ".bashrc", ".profile"] {
+            std::fs::write(
+                home.path().join(name),
+                format!("keep me\n{POSIX_EXPORT_LINE}"),
+            )
+            .expect("seed");
+        }
+        for file in known_rc_files(home.path()) {
+            remove_path_from_file(&file).await.expect("remove");
+        }
+        assert!(!any_rc_file_has_path(home.path()).await);
+        let kept = std::fs::read_to_string(home.path().join(".zshrc")).expect("read");
+        assert_eq!(kept, "keep me\n");
     }
 
     /// An unparseable config must abort the update rather than write defaults

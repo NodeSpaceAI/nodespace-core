@@ -1228,10 +1228,13 @@ mod window_geometry_capture_tests {
     }
 }
 
-/// Perform graceful shutdown: cancel background tasks, and stop the daemon
-/// so a window close (Cmd+Q, the red traffic-light button, or any other path
-/// that actually reaches this point) also fully quits the daemon half of the
-/// app instead of leaving it -- and its tray icon -- running invisibly.
+/// Perform graceful shutdown of the UI: cancel background tasks and remove
+/// the UI pid file. The daemon is deliberately left running: the window is a
+/// client of the service, not its owner, so a window close (Cmd+Q, the red
+/// traffic-light button, or any other path that reaches this point) must not
+/// take the CLI and agent skills away. The tray's "Quit" is the one way to
+/// stop the daemon (it also asks this process to close, see
+/// [`listen_for_quit_signal`]).
 ///
 /// Guarded by [`ShutdownToken::begin_shutdown_once`] so the sequence runs
 /// exactly once per token even though `ExitRequested` and `Exit` can both
@@ -1247,10 +1250,7 @@ mod window_geometry_capture_tests {
 /// which stalls the UI at exactly the moment a flush needs to make progress.
 /// It also couldn't have helped the background tasks it was meant to give
 /// time to: they run on the async runtime's own worker threads and react to
-/// `cancel()` independently of how long this thread blocks afterward. The
-/// daemon-stop call below is the same story: synchronous and fire-and-forget
-/// (see `daemon_setup::signal_daemon_to_stop`'s doc comment), so it can't
-/// stall this thread either.
+/// `cancel()` independently of how long this thread blocks afterward.
 pub(crate) fn graceful_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     use tauri::Manager;
 
@@ -1267,28 +1267,22 @@ pub(crate) fn graceful_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle
 
     #[cfg(unix)]
     daemon_setup::remove_own_ui_pid_file();
-    #[cfg(any(unix, windows))]
-    daemon_setup::signal_daemon_to_stop();
 
     tracing::info!("Shutdown: complete");
 }
 
-/// Pins the "window-close also stops the daemon" half of this fix at the
-/// call site itself: `graceful_shutdown`'s actual `kill`/`taskkill` call is
-/// compiled out under `cfg(test)` (see `daemon_setup::signal_daemon_to_stop`'s
-/// doc comment for why — it would otherwise be a real, irreversible action
-/// against whatever daemon happens to be running on the machine `cargo test`
-/// executes on), so there is no way to observe the *effect* behaviorally in
-/// this suite. This instead asserts the *wiring*: that `graceful_shutdown`'s
-/// body actually calls the daemon-stop and pid-file-cleanup functions, the
-/// same level `shutdown_tests.rs` already tests `graceful_shutdown` calls at
-/// (`ShutdownToken::cancel`) — matching `window_geometry_capture_tests`'
-/// established precedent for pinning an effect that can't be exercised
-/// behaviorally against a source-text assertion instead.
+/// Pins the "window close leaves the daemon running" contract at the call
+/// site itself: stopping a daemon is a real, irreversible action against
+/// whatever process holds the socket on the machine `cargo test` runs on, so
+/// the suite can't observe it behaviorally. This asserts the *wiring*
+/// instead: that `graceful_shutdown`'s body cleans up the UI pid file and
+/// never reaches for a daemon-stopping call, matching
+/// `window_geometry_capture_tests`' precedent of a source-text assertion for
+/// an effect that can't be exercised directly.
 #[cfg(test)]
-mod graceful_shutdown_stops_daemon_tests {
+mod graceful_shutdown_leaves_daemon_tests {
     #[test]
-    fn graceful_shutdown_stops_the_daemon_and_cleans_up_the_ui_pid_file() {
+    fn graceful_shutdown_cleans_up_the_ui_pid_file_and_leaves_the_daemon_running() {
         let source = include_str!("lib.rs");
         let start = source
             .find("pub(crate) fn graceful_shutdown")
@@ -1307,10 +1301,11 @@ mod graceful_shutdown_stops_daemon_tests {
         let function_source = &source[start..end];
 
         assert!(
-            function_source.contains("daemon_setup::signal_daemon_to_stop()"),
-            "graceful_shutdown must call daemon_setup::signal_daemon_to_stop() so a window \
-             close (Cmd+Q, the red traffic-light button, or any other path that actually \
-             reaches ExitRequested/Exit) also stops the daemon and its tray icon"
+            !function_source.contains("libc::kill")
+                && !function_source.contains("taskkill")
+                && !function_source.contains("stop_daemon"),
+            "graceful_shutdown must not stop the daemon: a window close ends the UI only, \
+             and the tray's Quit is the one way to stop the service"
         );
         assert!(
             function_source.contains("daemon_setup::remove_own_ui_pid_file()"),
@@ -1561,7 +1556,7 @@ mod relaunch_tests {
 /// a SIGTERM from the daemon's tray Quit route through the same function,
 /// and does app setup actually register the pid file + SIGTERM listener
 /// that make that possible. Same source-text-assertion approach as
-/// `graceful_shutdown_stops_daemon_tests` and the pre-existing
+/// `graceful_shutdown_leaves_daemon_tests` and the pre-existing
 /// `window_geometry_capture_tests` above.
 #[cfg(test)]
 mod quit_wiring_tests {

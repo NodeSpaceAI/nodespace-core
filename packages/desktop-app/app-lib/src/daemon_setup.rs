@@ -298,49 +298,6 @@ fn process_argv0_matches(pid: i32, expected_path: &str) -> bool {
     args.split_whitespace().next() == Some(expected_path)
 }
 
-/// Send SIGTERM to the running daemon so a GUI quit (Cmd+Q, the red
-/// traffic-light button, or any other window-close path that actually
-/// reaches [`crate::graceful_shutdown`]) also stops the background service —
-/// and, transitively, removes its tray icon — instead of leaving it running
-/// invisibly. Verified the same way [`kill_stale_daemon_sync`] verifies its
-/// own target, via [`pids_holding_unix_socket`] + [`process_argv0_matches`].
-///
-/// Synchronous and fire-and-forget: this does not wait for the daemon to
-/// actually exit. The daemon has its own watchdog-protected drain once it
-/// receives the signal (`SHUTDOWN_WATCHDOG_TIMEOUT` in `nodespaced`'s
-/// `main.rs`), and this call site — inside a `RunEvent` handler on the
-/// tao/wry event loop — must not block waiting on it.
-///
-/// The actual `kill` syscall is compiled out under `cfg(test)`: this is a
-/// real, irreversible action against whatever process is actually holding
-/// the daemon socket on the machine `cargo test` runs on, which is not safe
-/// to execute as a side effect of a unit test suite (`graceful_shutdown`,
-/// this function's only caller, is exercised directly by several tests in
-/// `shutdown_tests.rs`). [`pids_holding_unix_socket`] and
-/// [`process_argv0_matches`] above are read-only OS queries and stay
-/// unconditional — they're what the tests below exercise.
-#[cfg(unix)]
-pub fn signal_daemon_to_stop() {
-    let Some(home) = home_dir() else { return };
-    let socket_path = home.join(daemon_socket_relative());
-    let installed = home
-        .join(DAEMON_BIN_DIR)
-        .join(daemon_binary_name())
-        .to_string_lossy()
-        .into_owned();
-
-    for pid in pids_holding_unix_socket(&socket_path) {
-        if process_argv0_matches(pid, &installed) {
-            #[cfg(not(test))]
-            {
-                // SAFETY: kill() is always safe to call with a valid pid and signal.
-                unsafe { libc::kill(pid, libc::SIGTERM) };
-            }
-            tracing::info!(pid, "Sent SIGTERM to nodespaced on app quit");
-        }
-    }
-}
-
 /// Keep a helper process from opening a console window of its own.
 ///
 /// A release build on Windows is a GUI-subsystem process with no console, so
@@ -366,24 +323,6 @@ pub(crate) fn hide_console_window(
     command: &mut std::process::Command,
 ) -> &mut std::process::Command {
     command
-}
-
-/// Windows counterpart of [`signal_daemon_to_stop`] above. There is no
-/// graceful signal-based shutdown path on Windows anywhere in this codebase
-/// today — [`kill_running_daemon`]'s Windows variant already force-kills the
-/// daemon via `taskkill` for the binary-update-restart case — so this
-/// mirrors that existing, already-accepted gap rather than introducing a new
-/// one: the daemon's `shutdown_all`/GPU-release drain does not run.
-#[cfg(windows)]
-pub fn signal_daemon_to_stop() {
-    let image_name = daemon_profile::active().image_name();
-    #[cfg(not(test))]
-    {
-        let _ = hide_console_window(&mut std::process::Command::new("taskkill"))
-            .args(["/F", "/IM", &image_name])
-            .output();
-    }
-    tracing::info!(%image_name, "Sent taskkill to nodespaced on app quit");
 }
 
 /// Filename [`ui_pid_relative`]'s callers write/read, scoped by this
@@ -425,8 +364,7 @@ pub fn write_own_ui_pid_file() {
 /// an unrelated process. Not load-bearing for correctness on its own — every
 /// reader of this file also verifies the pid's argv0 before acting on it —
 /// but keeps the file honest between runs. Call from
-/// [`crate::graceful_shutdown`], mirroring [`signal_daemon_to_stop`]'s call
-/// site.
+/// [`crate::graceful_shutdown`].
 #[cfg(unix)]
 pub fn remove_own_ui_pid_file() {
     let Some(home) = home_dir() else { return };
@@ -1182,9 +1120,9 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
         .unwrap_or_default();
     for pid in pids_holding_unix_socket(socket_path) {
         if process_argv0_matches(pid, &installed) {
-            // Compiled out under `cfg(test)`, as in `signal_daemon_to_stop`: it
-            // is an irreversible action against whichever process holds the
-            // socket on the machine `cargo test` runs on.
+            // Compiled out under `cfg(test)`: it is an irreversible action
+            // against whichever process holds the socket on the machine
+            // `cargo test` runs on.
             #[cfg(not(test))]
             {
                 // SAFETY: kill() is always safe to call with a valid pid and signal.
@@ -2347,8 +2285,7 @@ async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
 /// interval to verify the *timer* itself fires reliably and stops on
 /// cancellation, independent of daemon-restart machinery a unit test cannot
 /// safely exercise against a real machine (see `kill_running_daemon`'s own
-/// signal-sending behavior, which — unlike `signal_daemon_to_stop` — has no
-/// `cfg(not(test))` guard and instead relies on there being no real,
+/// signal-sending behavior, which relies on there being no real,
 /// matching-argv0 nodespaced process on the machine running the test suite).
 #[cfg(any(windows, test))]
 async fn run_periodic_checks<F, Fut>(
@@ -3525,14 +3462,10 @@ mod sidecar_path_tests {
     }
 }
 
-/// Coverage for the pieces of the Unix quit-signalling path
-/// ([`signal_daemon_to_stop`], and the shared [`pids_holding_unix_socket`] /
-/// [`process_argv0_matches`] helpers it and [`kill_stale_daemon_sync`] /
-/// [`kill_running_daemon`] all use) that can be exercised safely: real,
-/// read-only OS queries against this test binary's own process, never an
-/// actual signal. The `kill` syscall itself is compiled out under
-/// `cfg(test)` — see [`signal_daemon_to_stop`]'s doc comment for why it
-/// can't be exercised behaviorally here.
+/// Coverage for the shared [`pids_holding_unix_socket`] /
+/// [`process_argv0_matches`] helpers that [`kill_stale_daemon_sync`] and
+/// [`kill_running_daemon`] use: real, read-only OS queries against this test
+/// binary's own process, never an actual signal.
 #[cfg(all(test, unix))]
 mod unix_quit_signal_tests {
     use super::{process_argv0_matches, write_pid_file};
