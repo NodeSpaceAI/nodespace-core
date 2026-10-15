@@ -490,6 +490,23 @@ const CASES: &[Case] = &[
         "record a chore to upgrade the build tooling",
         "Creating a Task",
     ),
+    // A question put down for a person, as Stage 1 words it: a task for them.
+    window(
+        "create a task for Anoop regarding v1 export format or only v2 coverage of the migration guide",
+        "Creating a Task",
+    ),
+    window(
+        "create a task for Priya to confirm the API rate limit before finishing SDK docs",
+        "Creating a Task",
+    ),
+    window(
+        "create a task for Marcus about which database region we picked that is blocking the deploy checklist",
+        "Creating a Task",
+    ),
+    window(
+        "create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies",
+        "Creating a Task",
+    ),
     window("what is waiting on me?", "Answering a Question"),
     window(
         "show me the questions I still have to answer",
@@ -600,6 +617,9 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
 /// miss and nothing else: a request listed here that is also in
 /// [`REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD`] still fails if that skill leads it.
 const NOT_YET_WON: &[&str] = &[
+    // A task for a person whose query also carries the thing it waits on:
+    // "press release ... until she replies" leads Reviewing a Task.
+    "create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies",
     // One new record, which a skill that cannot create one leads.
     "log a new invoice for Acme, $2400, due next month",
     "add another album: Blue Train by Coltrane",

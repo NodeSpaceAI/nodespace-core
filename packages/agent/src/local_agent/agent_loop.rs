@@ -2271,48 +2271,31 @@ const TOTAL_TOKEN_BUDGET: u32 = 32_000;
 /// Tokens reserved for the system prompt and tool definitions.
 const SYSTEM_PROMPT_BUDGET: u32 = 4_000;
 
-/// Stability-motivated prefill ceiling, independent of the context-window
-/// budget above.
+/// Stability-motivated ceiling on the *history* a turn carries, independent of
+/// the context-window budget above.
 ///
 /// One measured run hit a Metal command-buffer OOM during prefill on a 16 GB
-/// machine at an 8,518-token **total** prompt (system prompt + history,
-/// 35.5 KB), with `n_ctx` granted at 32,768 — i.e. the context-window budget
-/// (`total_budget` in `maybe_summarize_history`, effectively ~30K tokens on
-/// that machine) was nowhere near full when the *backend* failed. A prompt
-/// can be well within the model's context window and still be large enough
-/// to risk exhausting Metal's transient compute-buffer allocation during a
-/// single prefill. This gate therefore compares against the same
-/// `history_tokens + system_tokens` total gate 1 uses (the full prompt
-/// actually submitted to `llama_decode`), not history alone — the
-/// tool-registered system prompt is itself ~6,600 tokens (see gate 1's doc
-/// comment), so a history-only comparison would never reflect what Metal
-/// actually decodes.
+/// machine at an 8,518-token total prompt, with `n_ctx` granted at 32,768, so
+/// the window budget was nowhere near full when the backend failed. A later
+/// attempt to reproduce it on matching hardware could not: three full
+/// eval-matrix runs, including prompts up to 9,469 tokens, decoded cleanly.
+/// The trigger remains unmeasured, and this constant is **explicitly
+/// provisional**.
 ///
-/// The system prompt a turn is now sent is larger than that: Stage 2 adds the
-/// routed procedures and the tool declarations, about 63 KB of text before any
-/// history. It exceeds this ceiling on its own, so any tool loop of more than
-/// four messages summarises, and decodes at that size ran cleanly on the same
-/// class of machine.
+/// It bounds history alone. The system prompt a Stage 2 turn is sent (routed
+/// procedures plus tool declarations, about 63 KB) is about 18k tokens before
+/// any history and decoded cleanly in the live runs made with it, so a ceiling
+/// that counted it would be exceeded by every turn and summarise every tool
+/// loop, thinning the state the model is working from.
 ///
-/// A later attempt to reproduce that OOM on matching 16 GB hardware to
-/// measure the actual failure threshold (with `powermetrics` GPU telemetry)
-/// could not: three full eval-matrix runs, including prompts up to
-/// 9,469 tokens — larger than the original failure — decoded cleanly with no
-/// backend error. The original OOM's exact trigger (allocator fragmentation
-/// state, concurrent GPU clients, thermal state, or plain Metal
-/// nondeterminism) remains unmeasured.
-///
-/// **This constant is therefore explicitly provisional**, not derived from a
-/// validated safe/unsafe boundary: it sits below the observed 8,518-token
-/// failure point with margin (and above the ~6,600-token system prompt
-/// alone, so a turn with little history does not spuriously trigger
-/// summarization every time), on the reasoning that giving up context-window
-/// headroom that mostly goes unused (the shared-chat-node pattern that
-/// triggered the original OOM rarely needs more than a few thousand tokens of
-/// live history to function) is a cheap hedge against a failure mode whose
-/// recovery is now loud but still costs a turn. Revise this once a real
-/// repro pins the actual Metal failure threshold.
-const PREFILL_STABILITY_CEILING: u32 = 8_000;
+/// The total prompt is therefore no longer bounded: a turn may carry the
+/// system prompt plus this much history, about 22k tokens, well above the
+/// 8,518-token failure point. What stays of the hedge is that history cannot
+/// grow without bound on a spacious window. The value is a round number, not a
+/// measured boundary, and a single large search result can exceed it and
+/// trigger summarisation, which keeps the turn's request and the most recent
+/// messages verbatim.
+const HISTORY_STABILITY_CEILING: u32 = 4_000;
 
 /// Last-resort user-facing message when a turn produces nothing usable — no
 /// tool executions to summarize and no (non-empty, non-pseudo-code) text from
@@ -6428,19 +6411,18 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // the window. A second check against a static
         // `total_budget - SYSTEM_PROMPT_BUDGET` budget used to sit here, but
         // SYSTEM_PROMPT_BUDGET (4,000) is well under the real tool-registered
-        // system prompt (~6,600 measured in nlp-engine). That let the second
+        // system prompt (~6,600 when this was measured; a Stage 2 turn's is now
+        // about 18k). That let the second
         // check pass — and skip summarization — in exactly the corridor where
         // this first check had already established the prompt overflows the
         // window, because it compared against a looser, wrong-headroom budget.
         //
-        // Gate 2 (`PREFILL_STABILITY_CEILING`): independent of the window
-        // budget — see its doc comment. A large model on a spacious machine
-        // can pass gate 1 by a wide margin while still submitting a prefill
-        // large enough to risk the backend failure the measured OOM found. Compares
-        // against the same total gate 1 does (the whole prompt actually
-        // submitted for decode), not history alone.
+        // Gate 2 (`HISTORY_STABILITY_CEILING`): independent of the window
+        // budget, and on history alone — see its doc comment. A spacious
+        // window passes gate 1 by a wide margin however long the history
+        // grows; this keeps the history itself bounded.
         let total_prompt_tokens = history_tokens + system_tokens;
-        if total_prompt_tokens <= total_budget && total_prompt_tokens <= PREFILL_STABILITY_CEILING {
+        if total_prompt_tokens <= total_budget && history_tokens <= HISTORY_STABILITY_CEILING {
             return Ok(());
         }
 
@@ -8216,10 +8198,10 @@ mod tests {
     /// Measured: a Metal backend OOM during prefill on a 16 GB machine with
     /// `n_ctx` granted at 32,768 — the context-window budget was nowhere
     /// near full (~8.5K tokens against a ~30K-token budget) when the
-    /// *backend* failed. `PREFILL_STABILITY_CEILING` is a second, narrower
+    /// *backend* failed. `HISTORY_STABILITY_CEILING` is a second, narrower
     /// gate independent of the context window, so a spacious `n_ctx` does
-    /// not let the total prompt (history + system) grow past it just
-    /// because gate 1 (the window budget) has room to spare.
+    /// not let the history grow past it just because gate 1 (the window
+    /// budget) has room to spare.
     #[tokio::test]
     async fn summarization_triggers_on_stability_ceiling_despite_spacious_window() {
         let engine = Arc::new(MockEngine::with_context_window(
@@ -8261,12 +8243,11 @@ mod tests {
         // ~8.5K history tokens (@ ~4 chars/token: 20 * 1700 = 34,000 chars).
         // The test harness has no PromptAssembler wired in, so
         // `system_content` falls back to `EMERGENCY_FALLBACK_PROMPT` — a
-        // short, fixed string (tens of tokens), unlike production's ~6,600-
-        // token tool-registered prompt. Total (history + this small system
-        // prompt) still clears PREFILL_STABILITY_CEILING (8,000) while
-        // staying far under a 32,768 window budget (~30K after
-        // MAX_RESPONSE_TOKENS) — gate 1 alone would not trigger
-        // summarization here; only gate 2 does.
+        // short, fixed string (tens of tokens), unlike production's ~18k-
+        // token Stage 2 prompt. The history clears
+        // HISTORY_STABILITY_CEILING (4,000) while staying far under a 32,768
+        // window budget (~30K after MAX_RESPONSE_TOKENS) — gate 1 alone
+        // would not trigger summarization here; only gate 2 does.
         for i in 0..20 {
             let role = if i % 2 == 0 {
                 Role::User
@@ -8621,13 +8602,12 @@ mod tests {
         );
     }
 
-    /// PREFILL_STABILITY_CEILING must account for the system prompt, not
-    /// just history — this is the exact regression a history-only
-    /// comparison would miss: history alone sits under the ceiling, but
-    /// history + a realistic-size system prompt (production's tool-
-    /// registered prompt runs ~6,600 tokens) pushes the total over it.
+    /// The ceiling bounds history alone. A Stage 2 turn's system prompt is
+    /// about 18k tokens by itself; counting it would summarise every tool
+    /// loop, so a small history under a production-size system prompt must
+    /// be left whole.
     #[tokio::test]
-    async fn stability_ceiling_counts_the_system_prompt_not_just_history() {
+    async fn stability_ceiling_does_not_count_the_system_prompt() {
         let engine = Arc::new(MockEngine::with_context_window(
             vec![vec![
                 StreamingChunk::Token {
@@ -8648,9 +8628,9 @@ mod tests {
 
         let mut session = new_session();
 
-        // ~5.5K history tokens (@ ~4 chars/token: 20 * 1100 = 22,000 chars) —
-        // under PREFILL_STABILITY_CEILING (8,000) on its own.
-        for i in 0..20 {
+        // ~2.5K history tokens (@ ~4 chars/token: 10 * 1000 = 10,000 chars) —
+        // well under HISTORY_STABILITY_CEILING (4,000).
+        for i in 0..10 {
             let role = if i % 2 == 0 {
                 Role::User
             } else {
@@ -8658,27 +8638,26 @@ mod tests {
             };
             session.messages.push(ChatMessage::text(
                 role,
-                format!("Msg {}: {}", i, "w".repeat(1100)),
+                format!("Msg {}: {}", i, "w".repeat(1000)),
             ));
         }
         let messages_before = session.messages.len();
 
-        // ~6,600-token system prompt (26,400 chars), matching production's
-        // measured tool-registered prompt size. history (~5.5K) alone is
-        // under the ceiling; history + this system prompt (~12K) is not.
-        let realistic_system_prompt = "s".repeat(26_400);
+        // ~18k-token system prompt (72,000 chars), the size a Stage 2 turn
+        // is sent. Over the old 8,000-token total ceiling on its own, still
+        // inside the 32,768 window.
+        let stage2_system_prompt = "s".repeat(72_000);
 
         agent_loop
-            .maybe_summarize_history(&mut session, &realistic_system_prompt)
+            .maybe_summarize_history(&mut session, &stage2_system_prompt)
             .await
             .unwrap();
 
-        assert!(
-            session.messages.len() < messages_before,
-            "history + system prompt over PREFILL_STABILITY_CEILING must trigger \
-             summarization even though history alone is under it. Before: {}, After: {}",
+        assert_eq!(
+            session.messages.len(),
             messages_before,
-            session.messages.len()
+            "a history under the ceiling must not be summarised because the \
+             system prompt is large"
         );
     }
 

@@ -164,6 +164,10 @@ teach the agent our naming conventions	Authoring a Skill	First	1	0.949	Authoring
 update the release skill to mention the changelog	Authoring a Skill	First	1	0.987	Authoring a Skill	0.987	Graph Editing	+0.032	Graph Editing
 file a bug: the export button does nothing	Creating a Task	Window	1	0.844	Creating a Task	0.844	Bulk Import	+0.019	Bulk Import
 record a chore to upgrade the build tooling	Creating a Task	Window	1	0.960	Creating a Task	0.960	Graph Editing	+0.025	Graph Editing
+create a task for Anoop regarding v1 export format or only v2 coverage of the migration guide	Creating a Task	Window	1	0.924	Creating a Task	0.924	Node Creation	+0.006	Node Creation
+create a task for Priya to confirm the API rate limit before finishing SDK docs	Creating a Task	Window	1	0.911	Creating a Task	0.911	Node Creation	+0.050	Node Creation
+create a task for Marcus about which database region we picked that is blocking the deploy checklist	Creating a Task	Window	1	0.925	Creating a Task	0.925	Play Workflow State	+0.049	Play Workflow State
+create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies	Creating a Task	Window	-	-	Reviewing a Task	0.937	Reviewing a Task	-	Play Authoring
 what is waiting on me?	Answering a Question	Window	1	0.862	Answering a Question	0.862	Research & Search	+0.080	Research & Search
 show me the questions I still have to answer	Answering a Question	Window	1	0.962	Answering a Question	0.962	Research & Search	+0.134	Research & Search
 create a ticket for the login bug	not Schema Creation	NotFirst	-	0.867	Node Creation	0.921	-	-	Node Creation
