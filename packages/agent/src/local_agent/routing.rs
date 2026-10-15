@@ -459,7 +459,8 @@ fn asks_for_a_write(words: &[&str]) -> bool {
 ///
 /// A word of [`asks_for_a_write`], or an answer to be recorded: "answer" is
 /// also a noun ("what did Anoop answer?", "which have been answered?"), so it
-/// counts only as a command ("answer it") or as "get it answered", never in a
+/// counts only as a command ("answer it") or as "get it answered" (with an
+/// object, so "get the answered questions" is a read), never in a
 /// word list the question shapes read.
 pub fn asks_for_a_change(message: &str) -> bool {
     let lowered = message.to_lowercase();
@@ -472,7 +473,10 @@ pub fn asks_for_a_change(message: &str) -> bool {
         || command
             .iter()
             .position(|w| matches!(*w, "get" | "got"))
-            .is_some_and(|i| command[i + 1..].iter().take(3).any(|w| *w == "answered"));
+            .is_some_and(|i| {
+                matches!(command.get(i + 1), Some(&("it" | "them" | "this" | "that")))
+                    && command[i + 2..].iter().take(2).any(|w| *w == "answered")
+            });
     asks_for_a_write(&words) || answers_it
 }
 
@@ -2259,6 +2263,9 @@ mod tests {
             "What did Anoop answer?",
             "Which questions have been answered?",
             "Show me the answer to the export question",
+            "What questions got answered yesterday?",
+            "Get all answered questions",
+            "Get the answered questions",
         ] {
             assert!(!asks_for_a_change(message), "{message}");
         }
