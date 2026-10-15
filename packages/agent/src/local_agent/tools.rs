@@ -84,6 +84,22 @@ impl StringOrList {
             StringOrList::Many(v) => v,
         }
     }
+
+    /// The entries, trimmed and without empty ones. A single string is split
+    /// where a person would: paragraphs at blank lines, items at line breaks.
+    fn entries(self, split_on_blank_lines: bool) -> Vec<String> {
+        let raw: Vec<String> = match self {
+            StringOrList::Many(items) => items,
+            StringOrList::One(text) if split_on_blank_lines => {
+                text.split("\n\n").map(str::to_string).collect()
+            }
+            StringOrList::One(text) => text.lines().map(str::to_string).collect(),
+        };
+        raw.into_iter()
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect()
+    }
 }
 
 /// The model passes `content` as the node text. `node_service` derives the
@@ -231,6 +247,31 @@ struct CreateQuestionTaskParams {
         alias = "blocked_task_id"
     )]
     pub stopped_task: String,
+}
+
+/// Parameters for the create_task tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateTaskParams {
+    /// What will exist when the work is done.
+    #[serde(alias = "content", alias = "name")]
+    pub title: String,
+    /// The brief, one entry per paragraph.
+    #[serde(alias = "description", alias = "paragraphs")]
+    pub brief: StringOrList,
+    /// The checklist, one testable condition per entry.
+    #[serde(
+        alias = "checklist_items",
+        alias = "checkboxes",
+        alias = "acceptance_criteria"
+    )]
+    pub checklist: StringOrList,
+    /// The project the task belongs to: its id, or its exact title.
+    #[serde(default, alias = "project_id")]
+    pub project: Option<String>,
+    /// `task` (the default), or `issue` for a change to code.
+    #[serde(default, alias = "type")]
+    pub node_type: Option<String>,
 }
 
 /// Parameters for the delete_node tool
@@ -3066,6 +3107,55 @@ fn def_create_question_task() -> ToolDefinition {
     }
 }
 
+fn def_create_task() -> ToolDefinition {
+    ToolDefinition {
+        name: "create_task".into(),
+        description: "Create a task that is ready the moment it exists: its title, its brief, its \
+             checklist and its project, in one call. The brief becomes text under the task, one \
+             paragraph per entry, and the checklist becomes unticked checkboxes under it, one \
+             per entry. Use it to record newly found work (a bug, a chore, a follow-up) once \
+             you know what it is. Do not build a task from create_node and create_relationship \
+             calls. A project is named by id or exact title; no search is needed first."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "What will exist when the work is done, in a short phrase."
+                },
+                "brief": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "The brief, one entry per paragraph: what the result does, \
+                         durable and behavioural, naming no file paths or line numbers, and \
+                         what is out of scope. For a diagnosed bug: how it was seen and why \
+                         it happens."
+                },
+                "checklist": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "The conditions that define done, one per entry, each \
+                         testable and stated as behaviour. Write the condition only, with no \
+                         checkbox marker; every item is created unticked."
+                },
+                "project": {
+                    "type": "string",
+                    "description": "The project the task belongs to: its ID, or its exact \
+                         title. Leave it out when the work belongs to no project."
+                },
+                "node_type": {
+                    "type": "string",
+                    "enum": ["task", "issue"],
+                    "description": "'issue' for a change to code, 'task' (the default) for \
+                         anything else."
+                }
+            },
+            "required": ["title", "brief", "checklist"]
+        }),
+    }
+}
+
 /// Stage-2-callable counterpart to Stage 1's `route_clarify` (see
 /// `routing::stage1_tool_definitions`) — same tool NAME
 /// (`routing::ROUTE_CLARIFY_TOOL`), a deliberately different ARGUMENT shape.
@@ -3208,6 +3298,7 @@ pub enum Tool {
     GetNodeContext,
     DeleteRelationship,
     CreateQuestionTask,
+    CreateTask,
 }
 
 impl Tool {
@@ -3247,6 +3338,7 @@ impl Tool {
         Tool::GetNodeContext,
         Tool::DeleteRelationship,
         Tool::CreateQuestionTask,
+        Tool::CreateTask,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -3290,7 +3382,8 @@ impl Tool {
                 Tool::RunQuery => Tool::GetNodeContext,
                 Tool::GetNodeContext => Tool::DeleteRelationship,
                 Tool::DeleteRelationship => Tool::CreateQuestionTask,
-                Tool::CreateQuestionTask => break,
+                Tool::CreateQuestionTask => Tool::CreateTask,
+                Tool::CreateTask => break,
             };
         }
         n
@@ -3344,6 +3437,7 @@ impl Tool {
                 Tool::GetNodeContext => 24,
                 Tool::DeleteRelationship => 25,
                 Tool::CreateQuestionTask => 26,
+                Tool::CreateTask => 27,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -3384,6 +3478,7 @@ impl Tool {
             Tool::GetNodeContext => "get_node_context",
             Tool::DeleteRelationship => "delete_relationship",
             Tool::CreateQuestionTask => "create_question_task",
+            Tool::CreateTask => "create_task",
         }
     }
 
@@ -3420,6 +3515,7 @@ impl Tool {
             Tool::GetNodeContext => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9619",
             Tool::DeleteRelationship => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a961a",
             Tool::CreateQuestionTask => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a961b",
+            Tool::CreateTask => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a961c",
         }
     }
 
@@ -3463,6 +3559,10 @@ impl Tool {
             // The CLI does it as the three commands the skill teaches: create
             // the task, assign it, and make it block the stopped task.
             Tool::CreateQuestionTask => None,
+            // The CLI does it as the commands the skill teaches: create the
+            // task, then each paragraph of its brief and each checklist item
+            // under it, then link it from its project.
+            Tool::CreateTask => None,
         }
     }
 
@@ -3510,6 +3610,7 @@ impl Tool {
             Tool::GetNodeContext => def_get_node_context(),
             Tool::DeleteRelationship => def_delete_relationship(),
             Tool::CreateQuestionTask => def_create_question_task(),
+            Tool::CreateTask => def_create_task(),
         }
     }
 
@@ -3547,6 +3648,7 @@ impl Tool {
             Tool::GetNodeContext => "node context lookup",
             Tool::DeleteRelationship => "relationship removal",
             Tool::CreateQuestionTask => "question task creation",
+            Tool::CreateTask => "task creation",
         }
     }
 
@@ -3623,7 +3725,9 @@ impl Tool {
             | Tool::DeleteNode
             | Tool::MergeConflict
             // A repeat is a second question task for the same question.
-            | Tool::CreateQuestionTask => WriteSemantics::DuplicableWrite,
+            | Tool::CreateQuestionTask
+            // A repeat is a second task with the same brief and checklist.
+            | Tool::CreateTask => WriteSemantics::DuplicableWrite,
         }
     }
 
@@ -3642,7 +3746,8 @@ impl Tool {
             | Tool::UpdateNode
             | Tool::UpdateTaskStatus
             | Tool::UpdatePlay
-            | Tool::CreateQuestionTask => Some(WrittenNode::Reported("id")),
+            | Tool::CreateQuestionTask
+            | Tool::CreateTask => Some(WrittenNode::Reported("id")),
             Tool::CreateSchema | Tool::UpdateSchema => Some(WrittenNode::Reported("schemaId")),
             Tool::CreateRelationship | Tool::DeleteRelationship => {
                 Some(WrittenNode::Anchor("from_id"))
@@ -3687,7 +3792,8 @@ impl Tool {
             Tool::CreateNode
             | Tool::CreateNodesFromMarkdown
             | Tool::CreateSchema
-            | Tool::CreateQuestionTask => true,
+            | Tool::CreateQuestionTask
+            | Tool::CreateTask => true,
             Tool::SearchNodes
             | Tool::ResolveQuery
             | Tool::SearchSemantic
@@ -3769,6 +3875,8 @@ impl Tool {
             Tool::DeleteRelationship => false,
             // Adds a task and its links; the stopped task is left as it was.
             Tool::CreateQuestionTask => false,
+            // Adds a task, its brief and checklist, and a link from its project.
+            Tool::CreateTask => false,
         }
     }
 
@@ -3819,7 +3927,8 @@ impl Tool {
             | Tool::MergeConflict
             | Tool::UpdatePlay
             | Tool::DeleteRelationship
-            | Tool::CreateQuestionTask => false,
+            | Tool::CreateQuestionTask
+            | Tool::CreateTask => false,
         }
     }
 
@@ -3867,7 +3976,8 @@ impl Tool {
             | Tool::RunQuery
             | Tool::GetNodeContext
             | Tool::DeleteRelationship
-            | Tool::CreateQuestionTask => false,
+            | Tool::CreateQuestionTask
+            | Tool::CreateTask => false,
         }
     }
 
@@ -3914,6 +4024,9 @@ impl Tool {
             Tool::GetNodeContext | Tool::DeleteRelationship => None,
             // Takes ids and always makes a task.
             Tool::CreateQuestionTask => None,
+            // Its own `node_type` is task or issue, a closed pair, not a
+            // type the call names out of the types in scope.
+            Tool::CreateTask => None,
         }
     }
 
@@ -3962,6 +4075,7 @@ impl Tool {
             | Tool::MergeConflict => None,
             // Creates a task of its own; it changes no existing node's type.
             Tool::CreateQuestionTask => None,
+            Tool::CreateTask => None,
         }
     }
 }
@@ -6261,6 +6375,189 @@ impl GraphToolExecutor {
         ))
     }
 
+    /// Create a task that is ready the moment it exists: the task, a text
+    /// node under it for each paragraph of its brief, an unticked checkbox
+    /// under it for each checklist item, and a link from its project.
+    ///
+    /// The project is read and checked before anything is written, so a bad
+    /// id refuses with nothing created. A write that then fails removes the
+    /// task with everything under it, so the call leaves the graph as it found
+    /// it or as asked.
+    async fn exec_create_task(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        use nodespace_core::models::CoreNodeType;
+
+        const TOOL: &str = "create_task";
+        let invalid = |reason: &str| ToolError::InvalidArguments {
+            tool: TOOL.to_string(),
+            reason: reason.to_string(),
+        };
+        let params: CreateTaskParams =
+            serde_json::from_value(args).map_err(|e| invalid(&e.to_string()))?;
+
+        let title = params.title.trim().to_string();
+        if title.is_empty() {
+            return Err(invalid(
+                "'title' is required: say in a short phrase what will exist when the work is done.",
+            ));
+        }
+        let node_type = match params
+            .node_type
+            .as_deref()
+            .map(|t| t.trim().to_lowercase())
+            .as_deref()
+        {
+            None | Some("") | Some("task") => CoreNodeType::Task,
+            Some("issue") => CoreNodeType::Issue,
+            Some(other) => {
+                return Err(invalid(&format!(
+                    "'node_type' must be \"task\" or \"issue\", not \"{other}\"."
+                )))
+            }
+        };
+        let brief = params.brief.entries(true);
+        if brief.is_empty() {
+            return Err(invalid(
+                "'brief' is required: pass at least one paragraph saying what the result does \
+                 and what is out of scope. Nothing was created.",
+            ));
+        }
+        let checklist: Vec<String> = params
+            .checklist
+            .entries(false)
+            .into_iter()
+            .map(|item| {
+                let item = item
+                    .trim_start_matches(['-', '*', ' '])
+                    .trim_start_matches("[ ]")
+                    .trim_start_matches("[x]")
+                    .trim()
+                    .to_string();
+                format!("- [ ] {item}")
+            })
+            .filter(|item| item != "- [ ] ")
+            .collect();
+        if checklist.is_empty() {
+            return Err(invalid(
+                "'checklist' is required: pass at least one testable condition that defines \
+                 done. A task with no checklist is not ready. Nothing was created.",
+            ));
+        }
+
+        let ns = self.node_service()?;
+        let project_id = match params.project.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(reference) => Some(
+                resolve_node_reference(
+                    &ns,
+                    TOOL,
+                    reference,
+                    "project",
+                    CoreNodeType::Project,
+                    "project",
+                )
+                .await?,
+            ),
+        };
+
+        let create = |content: String, node_type: &str, parent_id: Option<String>| {
+            node_ops::CreateNodeInput {
+                id: None,
+                node_type: node_type.to_string(),
+                content,
+                parent_id,
+                position: nodespace_core::services::InsertPositionOwned::End,
+                properties: json!({}),
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+            }
+        };
+
+        let created = node_ops::create_node(&ns, create(title, node_type.as_str(), None))
+            .await
+            .map_err(|e| ops_error_to_tool(e, TOOL))?;
+        let task_id = created.node_id;
+
+        let rollback = |step: String, cause: String| {
+            let ns = ns.clone();
+            let task_id = task_id.clone();
+            async move {
+                let removed = node_ops::delete_node(
+                    &ns,
+                    node_ops::DeleteNodeInput {
+                        node_id: task_id.clone(),
+                        version: None,
+                    },
+                )
+                .await
+                .is_ok();
+                let state = if removed {
+                    "Nothing was created.".to_string()
+                } else {
+                    format!(
+                        "The task {} was created but is not complete; remove it with \
+                         delete_node before trying again.",
+                        node_uri(&task_id)
+                    )
+                };
+                ToolError::ExecutionFailed(format!("{TOOL} failed while {step}: {cause}. {state}"))
+            }
+        };
+
+        for paragraph in &brief {
+            if let Err(e) = node_ops::create_node(
+                &ns,
+                create(paragraph.clone(), "text", Some(task_id.clone())),
+            )
+            .await
+            {
+                return Err(rollback("writing the brief".to_string(), e.to_string()).await);
+            }
+        }
+        for item in &checklist {
+            if let Err(e) = node_ops::create_node(
+                &ns,
+                create(item.clone(), "checkbox", Some(task_id.clone())),
+            )
+            .await
+            {
+                return Err(rollback("writing the checklist".to_string(), e.to_string()).await);
+            }
+        }
+        if let Some(project) = &project_id {
+            if let Err(e) = rel_ops::create_relationship(
+                &ns,
+                rel_ops::CreateRelInput {
+                    source_id: project.clone(),
+                    relationship_name: "tasks".to_string(),
+                    target_id: task_id.clone(),
+                    edge_data: None,
+                },
+            )
+            .await
+            {
+                return Err(rollback("putting it in the project".to_string(), e.to_string()).await);
+            }
+        }
+
+        Ok(ok_result(
+            tool_call_id,
+            TOOL,
+            json!({
+                "id": node_uri(&task_id),
+                "node_type": node_type.as_str(),
+                "brief_paragraphs": brief.len(),
+                "checklist_items": checklist.len(),
+                "project": project_id.as_deref().map(node_uri),
+                "created": true,
+            }),
+        ))
+    }
+
     async fn exec_list_conflicts(
         &self,
         tool_call_id: &str,
@@ -7314,6 +7611,7 @@ impl AgentToolExecutor for GraphToolExecutor {
             Tool::GetNodeContext => self.exec_get_node_context(&tool_call_id, args).await,
             Tool::DeleteRelationship => self.exec_delete_relationship(&tool_call_id, args).await,
             Tool::CreateQuestionTask => self.exec_create_question_task(&tool_call_id, args).await,
+            Tool::CreateTask => self.exec_create_task(&tool_call_id, args).await,
         }
     }
 
@@ -8579,7 +8877,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 27);
+        assert_eq!(all_tool_definitions().len(), 28);
     }
 
     #[test]

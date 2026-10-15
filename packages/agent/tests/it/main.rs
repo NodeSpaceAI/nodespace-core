@@ -43,6 +43,7 @@ mod search_nodes_excludes_conversations;
 mod search_nodes_relationship_as_property;
 mod search_skills_latency;
 mod seed_tables;
+mod create_task;
 mod skill_confusion_matrix;
 mod skill_guidance_fetch_mechanism;
 mod skill_guidance_tool_commands;

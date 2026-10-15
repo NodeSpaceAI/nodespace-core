@@ -1033,7 +1033,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: CREATING_A_TASK_SKILL_ID,
         title: "Creating a Task",
         use_for: "Record newly found work that has no spec: a bug report, a chore, or a follow-up found in the middle of other work. Check it is not already built or declined, reproduce the bug, and write its brief and checklist so it is ready the moment it exists.",
-        tools: &["search_nodes", "get_node", "create_node", "update_node", "create_relationship", "update_task_status", "create_question_task", "route_clarify"],
+        tools: &["search_nodes", "get_node", "create_node", "update_node", "create_relationship", "update_task_status", "create_question_task", "create_task", "route_clarify"],
         // Two finds, the task, its brief and checklist, the project link, and
         // the question that settles its size.
         max_iterations: 14,
@@ -1127,7 +1127,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1c",
         title: "Diagnosing a Bug",
         use_for: "Explain why a program fails: reproduce the failure, narrow it to the smallest failing case, and find its root cause by testing one hypothesis at a time. Use when the user asks why something crashes, what is causing a failure or regression, or to track down a root cause.",
-        tools: &["search_nodes", "get_node", "get_node_context", "create_node", "create_relationship", "route_clarify"],
+        tools: &["search_nodes", "get_node", "get_node_context", "create_node", "create_relationship", "create_task", "route_clarify"],
         max_iterations: 24,
         not_for: Some("File or record a bug report as a task."),
         applies_to: &[
@@ -2930,6 +2930,10 @@ mod tests {
         // `blocks` edge). The CLI form of the procedure gives those commands
         // one by one, so there is no single command to name.
         crate::local_agent::tools::Tool::CreateQuestionTask,
+        // Writes the task, its brief, its checklist and its project link in
+        // one call. The CLI form of the procedure gives those commands one
+        // by one, so there is no single command to name.
+        crate::local_agent::tools::Tool::CreateTask,
     ];
 
     /// Every built-in tool a seeded skill names, in its tool list or in its

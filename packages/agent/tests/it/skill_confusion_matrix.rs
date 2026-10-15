@@ -507,6 +507,67 @@ const CASES: &[Case] = &[
         "create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies",
         "Creating a Task",
     ),
+    // The task-procedure eval's scenarios, by owner. Each family is asked
+    // three ways, so a rank that holds for one wording and not the others
+    // shows here before a model is run.
+    window(
+        "Something is off in Query engine rewrite: Cut the release branch is marked done but one box on its checklist is still unticked. Get that tracked as work.",
+        "Creating a Task",
+    ),
+    window(
+        "The checklist on Cut the release branch still has an open box, yet the task says done. Raise that as a task in the Query engine rewrite project.",
+        "Creating a Task",
+    ),
+    window(
+        "File a bug: a task is marked done while one of its checklist items is unticked. It's Cut the release branch, part of Query engine rewrite.",
+        "Creating a Task",
+    ),
+    window(
+        "Cut the release branch is marked done but one box on its checklist is still unticked. I don't know how that happens. Find out why, and write up what you find as work in Query engine rewrite.",
+        "Diagnosing a Bug",
+    ),
+    window(
+        "Why can Cut the release branch be done with an unticked checklist box? Investigate, then record what you learn, the cause and a regression check, as a task under Query engine rewrite.",
+        "Diagnosing a Bug",
+    ),
+    window(
+        "Bug in Query engine rewrite: Review the index design has no assignee, so nobody ever sees it. Log it.",
+        "Creating a Task",
+    ),
+    window(
+        "In Query engine rewrite, Review the index design has nobody assigned, so it never reaches anyone. Please log a bug for it.",
+        "Creating a Task",
+    ),
+    window("Add a task to build a GraphQL API.", "Creating a Task"),
+    window("Make a ticket to implement a GraphQL API.", "Creating a Task"),
+    window(
+        "We should build a GraphQL API. Put it on the backlog.",
+        "Creating a Task",
+    ),
+    window(
+        "I can't carry on with Write the migration guide until Anoop says whether it covers the v1 export format or only v2. Put his question down so it waits for him, not for me.",
+        "Creating a Task",
+    ),
+    window(
+        "Ask Anoop whether the migration guide should cover the v1 export format or just v2. Write the migration guide can't go on until he replies.",
+        "Creating a Task",
+    ),
+    window(
+        "I need Anoop to decide between v1 exports and v2 only before Write the migration guide can move. Park that as his question so the guide waits on him.",
+        "Creating a Task",
+    ),
+    window(
+        "Take the question that's waiting on me and get it answered.",
+        "Answering a Question",
+    ),
+    window(
+        "What's waiting on me? Go ahead and resolve the open question.",
+        "Answering a Question",
+    ),
+    window(
+        "Pick up the question that's pending my reply and deal with it.",
+        "Answering a Question",
+    ),
     window("what is waiting on me?", "Answering a Question"),
     window(
         "show me the questions I still have to answer",
