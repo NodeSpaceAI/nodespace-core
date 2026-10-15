@@ -2288,6 +2288,12 @@ const SYSTEM_PROMPT_BUDGET: u32 = 4_000;
 /// comment), so a history-only comparison would never reflect what Metal
 /// actually decodes.
 ///
+/// The system prompt a turn is now sent is larger than that: Stage 2 adds the
+/// routed procedures and the tool declarations, about 63 KB of text before any
+/// history. It exceeds this ceiling on its own, so any tool loop of more than
+/// four messages summarises, and decodes at that size ran cleanly on the same
+/// class of machine.
+///
 /// A later attempt to reproduce that OOM on matching 16 GB hardware to
 /// measure the actual failure threshold (with `powermetrics` GPU telemetry)
 /// could not: three full eval-matrix runs, including prompts up to
@@ -6476,6 +6482,17 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         if summarizable == 0 {
             return Ok(());
         }
+        // A lone earlier summary is not history to condense: summarising it
+        // again spends a model call to make a lossy summary of a summary.
+        let lone = usize::from(request_index == Some(0));
+        let lone_summary = summarizable == 1
+            && matches!(session.messages[lone].role, Role::System)
+            && session.messages[lone]
+                .content
+                .starts_with(CONVERSATION_SUMMARY_PREFIX);
+        if lone_summary {
+            return Ok(());
+        }
 
         let mut older_messages: Vec<ChatMessage> = session.messages.drain(..split_point).collect();
         let request = request_index.map(|i| older_messages.remove(i));
@@ -8497,6 +8514,40 @@ mod tests {
 
         assert_eq!(session.messages.len(), before, "nothing should be drained");
         assert_eq!(session.messages[0].content, "the request");
+    }
+
+    /// After a summary the history is [summary, request, kept window]. When the
+    /// only thing older than the window is that summary, summarising again
+    /// condenses nothing new: it is one model call for a summary of a summary.
+    #[tokio::test]
+    async fn summarization_does_not_summarize_a_lone_earlier_summary() {
+        // No scripted response: a summarization call would fail the test.
+        let engine = Arc::new(MockEngine::new(vec![]));
+        let executor = Arc::new(MockToolExecutor::new());
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::System,
+            format!("{CONVERSATION_SUMMARY_PREFIX}: the task was found."),
+        ));
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, "the request".to_string()));
+        session.messages.extend(search_exchange("tc_1", 40_000));
+        session.messages.extend(search_exchange("tc_2", 40_000));
+        let before = session.messages.len();
+
+        agent_loop
+            .maybe_summarize_history(&mut session, "system")
+            .await
+            .unwrap();
+
+        assert_eq!(session.messages.len(), before, "nothing should be drained");
+        assert!(session.messages[0]
+            .content
+            .starts_with(CONVERSATION_SUMMARY_PREFIX));
+        assert_eq!(session.messages[1].content, "the request");
     }
 
     /// A tool-call assistant turn carries its signal in `tool_calls[].arguments_json`,

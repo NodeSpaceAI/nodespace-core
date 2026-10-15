@@ -4126,9 +4126,9 @@ async fn refuse_relationship_keys(
         let how = if tool == "create_node" {
             format!(
                 "so it cannot be set as a value and the '{node_type}' was not created. Call \
-                 create_node again without '{sent}', then call create_relationship with \
-                 {call}; the '{node_type}' id is in the create's result and the other id comes \
-                 from a search."
+                 create_node again without '{sent}' and with the other values unchanged, then \
+                 call create_relationship with {call}; the '{node_type}' id is in the create's \
+                 result and the other id comes from a search."
             )
         } else {
             format!(
