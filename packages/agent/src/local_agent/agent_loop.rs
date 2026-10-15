@@ -2983,6 +2983,14 @@ fn claims_a_record_was_created(text: &str) -> bool {
         .iter()
         .flat_map(|verb| lower.match_indices(verb))
         .any(|(at, verb)| {
+            // The verb as a whole word: not "recreated" or "homemade".
+            let word_before = lower[..at].chars().next_back();
+            let word_after = lower[at + verb.len()..].chars().next();
+            if word_before.is_some_and(char::is_alphanumeric)
+                || word_after.is_some_and(char::is_alphanumeric)
+            {
+                return false;
+            }
             let sentence_start = lower[..at]
                 .rfind(['.', '!', '?', '\n', ';'])
                 .map_or(0, |i| i + 1);
@@ -2990,19 +2998,41 @@ fn claims_a_record_was_created(text: &str) -> bool {
                 .find(['.', '!', '?', '\n', ';'])
                 .map_or(lower.len(), |i| at + i + 1);
             let sentence = &lower[sentence_start..sentence_end];
-            let padded = format!(" {} ", sentence.trim());
-            // A question, or a statement that nothing was made ("No task was
-            // created."), is not a claim.
+            // What comes before the verb in its sentence: negation counts only
+            // there ("No task was created" is not a claim; "created the task
+            // with no assignee" is one), and a passive's object is there.
+            let before_text = format!(" {}", &lower[sentence_start..at]);
+            let before: Vec<&str> = before_text.split_whitespace().collect();
+            // A question, or a statement that nothing was made, is not a claim.
             if sentence.trim_end().ends_with('?')
-                || padded.contains(" no ")
-                || padded.contains(" nothing ")
+                || before_text.contains(" no ")
+                || before_text.contains(" nothing ")
                 || !contains_action_claim(sentence)
             {
                 return false;
             }
-            // Passive: "the link was created" has its object before the verb.
-            let before: Vec<&str> = lower[sentence_start..at].split_whitespace().collect();
-            if let [.., subject, "was" | "were" | "been"] = before.as_slice() {
+            // Passive: "the link has been created" has its object before the
+            // verb, behind the auxiliaries.
+            const AUXILIARIES: &[&str] = &[
+                "was",
+                "were",
+                "been",
+                "being",
+                "be",
+                "is",
+                "are",
+                "has",
+                "have",
+                "had",
+                "also",
+                "now",
+                "successfully",
+            ];
+            let subject = before
+                .iter()
+                .rev()
+                .find(|w| !AUXILIARIES.contains(&w.trim_matches(|c: char| !c.is_alphanumeric())));
+            if let Some(subject) = subject {
                 let subject = subject.trim_matches(|c: char| !c.is_alphanumeric());
                 if LINK_WORDS.contains(&subject) {
                     return false;
@@ -11754,6 +11784,47 @@ mod tests {
         .await;
 
         assert_eq!(response, reply);
+    }
+
+    /// `claims_a_record_was_created` read directly, one line per shape.
+    #[test]
+    fn what_counts_as_a_claim_that_a_record_was_created() {
+        let claims = [
+            "I have successfully created the question task.",
+            "I created the question task and linked it to Anoop.",
+            "I created the question task with no assignee yet.",
+            "The question task has been created.",
+            "I added the task to the project.",
+            "I made a new task for Anoop.",
+            "Done. I couldn't set the status, but I created the task.",
+            // Not ASCII: offsets are taken on the lowercased copy.
+            "Ünïcode ✓ I created the task for Zoë.",
+        ];
+        for text in claims {
+            assert!(
+                claims_a_record_was_created(text),
+                "should be a claim: {text}"
+            );
+        }
+
+        let not_claims = [
+            "I couldn't create the task.",
+            "No task was created.",
+            "Nothing was created.",
+            "Did I create the task?",
+            "I created a link from Anoop to the guide.",
+            "The link has been created.",
+            "The relationship was created.",
+            "I recreated nothing and padded the list.",
+            "I can create the task if you like.",
+            "created",
+        ];
+        for text in not_claims {
+            assert!(
+                !claims_a_record_was_created(text),
+                "should not be a claim: {text}"
+            );
+        }
     }
 
     /// The claim is about the record even when a link is mentioned after it.
