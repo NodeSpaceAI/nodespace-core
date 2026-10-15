@@ -214,6 +214,25 @@ struct UpdateTaskStatusParams {
     pub version: Option<i64>,
 }
 
+/// Parameters for the create_question_task tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateQuestionTaskParams {
+    /// The question itself, as the task's title.
+    #[serde(alias = "content", alias = "title")]
+    pub question: String,
+    /// The person who owes the answer: their id, or their full name.
+    #[serde(alias = "owner_id", alias = "person_id", alias = "assignee_id")]
+    pub owner: String,
+    /// The task that cannot go on until the answer: its id, or its exact title.
+    #[serde(
+        alias = "stopped_task_id",
+        alias = "task_id",
+        alias = "blocked_task_id"
+    )]
+    pub stopped_task: String,
+}
+
 /// Parameters for the delete_node tool
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2887,6 +2906,131 @@ fn def_update_task_status() -> ToolDefinition {
     }
 }
 
+/// The node a write's argument names, by id or by its exact title.
+///
+/// A small model hands a write the name it has been given, not an id it would
+/// have to look up first, so a title is read as the node it names when exactly
+/// one node of the expected kind has it. Nothing matching is a missing node,
+/// which the loop turns into a question to the user; several matching is
+/// refused with their ids, and nothing is guessed between them.
+async fn resolve_node_reference(
+    ns: &NodeService,
+    tool: &str,
+    reference: &str,
+    parameter: &str,
+    expected: nodespace_core::models::CoreNodeType,
+    label: &str,
+) -> Result<String, ToolError> {
+    let failed = |e: nodespace_core::services::NodeServiceError| {
+        ToolError::ExecutionFailed(format!("{tool} failed: could not read {reference}: {e}"))
+    };
+    let is_expected = |node_type: String| async move {
+        Ok::<bool, ToolError>(
+            expected.is_exactly(&node_type)
+                || ns.type_is_a(&node_type, expected).await.map_err(failed)?,
+        )
+    };
+    let wrong_kind = |id: &str, node_type: &str| ToolError::InvalidArguments {
+        tool: tool.to_string(),
+        reason: format!(
+            "'{parameter}' must be {} node, but {id} is {}. Nothing was created. Find the \
+             {label} with search_nodes (node_type \"{label}\") and call {tool} again.",
+            nodespace_core::utils::with_indefinite_article(label),
+            nodespace_core::utils::with_indefinite_article(node_type),
+        ),
+    };
+
+    let by_id = node_id_arg(reference);
+    if uuid::Uuid::parse_str(&by_id).is_ok() {
+        let Some(node) = ns.get_node(&by_id).await.map_err(failed)? else {
+            return Err(ToolError::UnresolvedId {
+                tool: tool.to_string(),
+                id: reference.to_string(),
+            });
+        };
+        if !is_expected(node.node_type.clone()).await? {
+            return Err(wrong_kind(&by_id, &node.node_type));
+        }
+        return Ok(by_id);
+    }
+
+    let title = reference.trim();
+    let mut matches: Vec<String> = Vec::new();
+    if !title.is_empty() {
+        let candidates = ns
+            .query_nodes_simple(nodespace_core::models::NodeQuery {
+                title_contains: Some(title.to_string()),
+                limit: Some(50),
+                ..Default::default()
+            })
+            .await
+            .map_err(failed)?;
+        for node in candidates {
+            let same_title = node
+                .title
+                .as_deref()
+                .is_some_and(|t| t.trim().eq_ignore_ascii_case(title));
+            if same_title && is_expected(node.node_type.clone()).await? {
+                matches.push(node.id);
+            }
+        }
+    }
+    match matches.len() {
+        0 => Err(ToolError::UnresolvedId {
+            tool: tool.to_string(),
+            id: reference.to_string(),
+        }),
+        1 => Ok(matches.remove(0)),
+        _ => Err(ToolError::InvalidArguments {
+            tool: tool.to_string(),
+            reason: format!(
+                "'{parameter}' \"{title}\" matches more than one {label}: {}. Nothing was \
+                 created. Ask the user which one, or call {tool} again with that {label}'s id.",
+                matches
+                    .iter()
+                    .map(|id| node_uri(id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }),
+    }
+}
+
+fn def_create_question_task() -> ToolDefinition {
+    ToolDefinition {
+        name: "create_question_task".into(),
+        description: "Put a question down for a person so that a task waits for their answer. \
+             One call creates a task that holds the question, assigns it to the person who \
+             owes the answer, makes it block the stopped task, and puts it in the stopped \
+             task's project. The stopped task keeps its status and its assignee. Use it when \
+             work cannot go on until someone else answers. Name the person and the task by \
+             id or exact title; no search is needed first."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question, specific enough to answer without a \
+                         conversation. It becomes the task's title."
+                },
+                "owner": {
+                    "type": "string",
+                    "description": "The person who owes the answer: their ID, or their full \
+                         name as it is stored."
+                },
+                "stopped_task": {
+                    "type": "string",
+                    "description": "The task that cannot go on until the answer: its ID, or \
+                         its exact title. A title that matches more than one task is \
+                         refused with the candidates' ids."
+                }
+            },
+            "required": ["question", "owner", "stopped_task"]
+        }),
+    }
+}
+
 /// Stage-2-callable counterpart to Stage 1's `route_clarify` (see
 /// `routing::stage1_tool_definitions`) — same tool NAME
 /// (`routing::ROUTE_CLARIFY_TOOL`), a deliberately different ARGUMENT shape.
@@ -3028,6 +3172,7 @@ pub enum Tool {
     RunQuery,
     GetNodeContext,
     DeleteRelationship,
+    CreateQuestionTask,
 }
 
 impl Tool {
@@ -3066,6 +3211,7 @@ impl Tool {
         Tool::RunQuery,
         Tool::GetNodeContext,
         Tool::DeleteRelationship,
+        Tool::CreateQuestionTask,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -3108,7 +3254,8 @@ impl Tool {
                 Tool::UpdatePlay => Tool::RunQuery,
                 Tool::RunQuery => Tool::GetNodeContext,
                 Tool::GetNodeContext => Tool::DeleteRelationship,
-                Tool::DeleteRelationship => break,
+                Tool::DeleteRelationship => Tool::CreateQuestionTask,
+                Tool::CreateQuestionTask => break,
             };
         }
         n
@@ -3161,6 +3308,7 @@ impl Tool {
                 Tool::RunQuery => 23,
                 Tool::GetNodeContext => 24,
                 Tool::DeleteRelationship => 25,
+                Tool::CreateQuestionTask => 26,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -3200,6 +3348,7 @@ impl Tool {
             Tool::RunQuery => "run_query",
             Tool::GetNodeContext => "get_node_context",
             Tool::DeleteRelationship => "delete_relationship",
+            Tool::CreateQuestionTask => "create_question_task",
         }
     }
 
@@ -3235,6 +3384,7 @@ impl Tool {
             Tool::RunQuery => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9618",
             Tool::GetNodeContext => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9619",
             Tool::DeleteRelationship => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a961a",
+            Tool::CreateQuestionTask => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a961b",
         }
     }
 
@@ -3275,6 +3425,9 @@ impl Tool {
             Tool::RunQuery => Some("nodespace query run"),
             Tool::GetNodeContext => Some("nodespace node context"),
             Tool::DeleteRelationship => Some("nodespace relationship delete"),
+            // The CLI does it as the three commands the skill teaches: create
+            // the task, assign it, and make it block the stopped task.
+            Tool::CreateQuestionTask => None,
         }
     }
 
@@ -3321,6 +3474,7 @@ impl Tool {
             Tool::RunQuery => def_run_query(),
             Tool::GetNodeContext => def_get_node_context(),
             Tool::DeleteRelationship => def_delete_relationship(),
+            Tool::CreateQuestionTask => def_create_question_task(),
         }
     }
 
@@ -3357,6 +3511,7 @@ impl Tool {
             Tool::RunQuery => "saved query run",
             Tool::GetNodeContext => "node context lookup",
             Tool::DeleteRelationship => "relationship removal",
+            Tool::CreateQuestionTask => "question task creation",
         }
     }
 
@@ -3431,7 +3586,9 @@ impl Tool {
             | Tool::CreateRelationship
             | Tool::CreateNodesFromMarkdown
             | Tool::DeleteNode
-            | Tool::MergeConflict => WriteSemantics::DuplicableWrite,
+            | Tool::MergeConflict
+            // A repeat is a second question task for the same question.
+            | Tool::CreateQuestionTask => WriteSemantics::DuplicableWrite,
         }
     }
 
@@ -3446,9 +3603,11 @@ impl Tool {
     /// a write tool added later has to say here where its record goes.
     pub fn written_node(self) -> Option<WrittenNode> {
         match self {
-            Tool::CreateNode | Tool::UpdateNode | Tool::UpdateTaskStatus | Tool::UpdatePlay => {
-                Some(WrittenNode::Reported("id"))
-            }
+            Tool::CreateNode
+            | Tool::UpdateNode
+            | Tool::UpdateTaskStatus
+            | Tool::UpdatePlay
+            | Tool::CreateQuestionTask => Some(WrittenNode::Reported("id")),
             Tool::CreateSchema | Tool::UpdateSchema => Some(WrittenNode::Reported("schemaId")),
             Tool::CreateRelationship | Tool::DeleteRelationship => {
                 Some(WrittenNode::Anchor("from_id"))
@@ -3535,6 +3694,8 @@ impl Tool {
             // Removes one link and leaves both records as they were; the
             // same link is put back with one create_relationship call.
             Tool::DeleteRelationship => false,
+            // Adds a task and its links; the stopped task is left as it was.
+            Tool::CreateQuestionTask => false,
         }
     }
 
@@ -3584,7 +3745,8 @@ impl Tool {
             | Tool::AdoptExistingConflict
             | Tool::MergeConflict
             | Tool::UpdatePlay
-            | Tool::DeleteRelationship => false,
+            | Tool::DeleteRelationship
+            | Tool::CreateQuestionTask => false,
         }
     }
 
@@ -3631,7 +3793,8 @@ impl Tool {
             | Tool::UpdatePlay
             | Tool::RunQuery
             | Tool::GetNodeContext
-            | Tool::DeleteRelationship => false,
+            | Tool::DeleteRelationship
+            | Tool::CreateQuestionTask => false,
         }
     }
 
@@ -3676,6 +3839,8 @@ impl Tool {
             Tool::RunQuery => None,
             // Take node ids, and name relationships, not types.
             Tool::GetNodeContext | Tool::DeleteRelationship => None,
+            // Takes ids and always makes a task.
+            Tool::CreateQuestionTask => None,
         }
     }
 
@@ -3722,6 +3887,8 @@ impl Tool {
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
             | Tool::MergeConflict => None,
+            // Creates a task of its own; it changes no existing node's type.
+            Tool::CreateQuestionTask => None,
         }
     }
 }
@@ -5811,6 +5978,184 @@ impl GraphToolExecutor {
         ))
     }
 
+    /// Put a question down for a person: a task holding the question, assigned
+    /// to them, blocking the stopped task, in the stopped task's project.
+    ///
+    /// Both ends are read and checked before anything is written, so a bad id
+    /// refuses with nothing created. A link that then fails removes the task it
+    /// just made, so the call leaves the graph as it found it or as asked.
+    async fn exec_create_question_task(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        use nodespace_core::models::CoreNodeType;
+
+        const TOOL: &str = "create_question_task";
+        let params: CreateQuestionTaskParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: TOOL.to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let question = params.question.trim().to_string();
+        if question.is_empty() {
+            return Err(ToolError::InvalidArguments {
+                tool: TOOL.to_string(),
+                reason: "'question' is required: pass the question the person must answer."
+                    .to_string(),
+            });
+        }
+
+        let ns = self.node_service()?;
+        // Each end must exist and be the kind of node its argument names,
+        // checked before anything is written.
+        let owner_id = resolve_node_reference(
+            &ns,
+            TOOL,
+            &params.owner,
+            "owner",
+            CoreNodeType::Person,
+            "person",
+        )
+        .await?;
+        let stopped_id = resolve_node_reference(
+            &ns,
+            TOOL,
+            &params.stopped_task,
+            "stopped_task",
+            CoreNodeType::Task,
+            "task",
+        )
+        .await?;
+
+        // The stopped task's project, read before writing: the project is the
+        // node that holds the stopped task through `tasks`. A task with none
+        // is simply not put in one.
+        let project_id = {
+            let related = rel_ops::get_related_nodes(
+                &ns,
+                rel_ops::GetRelatedInput {
+                    node_id: stopped_id.clone(),
+                    relationship_name: "tasks".to_string(),
+                    direction: "in".to_string(),
+                },
+            )
+            .await
+            .map(|o| o.related_nodes)
+            .unwrap_or_default();
+            let mut found = None;
+            for node in &related {
+                let (Some(id), Some(node_type)) = (
+                    node.get("id").and_then(Value::as_str),
+                    node.get("nodeType")
+                        .or_else(|| node.get("type"))
+                        .and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                let is_project = CoreNodeType::Project.is_exactly(node_type)
+                    || ns
+                        .type_is_a(node_type, CoreNodeType::Project)
+                        .await
+                        .unwrap_or(false);
+                if is_project {
+                    found = Some(id.to_string());
+                    break;
+                }
+            }
+            found
+        };
+
+        let created = node_ops::create_node(
+            &ns,
+            node_ops::CreateNodeInput {
+                id: None,
+                node_type: CoreNodeType::Task.as_str().to_string(),
+                content: question,
+                parent_id: None,
+                position: nodespace_core::services::InsertPositionOwned::End,
+                properties: json!({}),
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+            },
+        )
+        .await
+        .map_err(|e| ops_error_to_tool(e, TOOL))?;
+        let question_id = created.node_id;
+
+        let mut links: Vec<(String, &'static str, String, &'static str)> = vec![
+            (
+                owner_id.clone(),
+                "tasks",
+                question_id.clone(),
+                "assigning it",
+            ),
+            (
+                question_id.clone(),
+                "blocks",
+                stopped_id.clone(),
+                "making it block the stopped task",
+            ),
+        ];
+        if let Some(project) = &project_id {
+            links.push((
+                project.clone(),
+                "tasks",
+                question_id.clone(),
+                "putting it in the project",
+            ));
+        }
+        for (source_id, relationship_name, target_id, step) in links {
+            let linked = rel_ops::create_relationship(
+                &ns,
+                rel_ops::CreateRelInput {
+                    source_id,
+                    relationship_name: relationship_name.to_string(),
+                    target_id,
+                    edge_data: None,
+                },
+            )
+            .await;
+            if let Err(e) = linked {
+                let removed = node_ops::delete_node(
+                    &ns,
+                    node_ops::DeleteNodeInput {
+                        node_id: question_id.clone(),
+                        version: None,
+                    },
+                )
+                .await
+                .is_ok();
+                let state = if removed {
+                    "Nothing was created.".to_string()
+                } else {
+                    format!(
+                        "The question task {} was created but is not linked as asked; remove \
+                         it with delete_node before trying again.",
+                        node_uri(&question_id)
+                    )
+                };
+                return Err(ToolError::ExecutionFailed(format!(
+                    "{TOOL} failed while {step}: {e}. {state}"
+                )));
+            }
+        }
+
+        Ok(ok_result(
+            tool_call_id,
+            TOOL,
+            json!({
+                "id": node_uri(&question_id),
+                "assigned_to": node_uri(&owner_id),
+                "blocks": node_uri(&stopped_id),
+                "project": project_id.as_deref().map(node_uri),
+                "created": true,
+            }),
+        ))
+    }
+
     async fn exec_list_conflicts(
         &self,
         tool_call_id: &str,
@@ -6863,6 +7208,7 @@ impl AgentToolExecutor for GraphToolExecutor {
             Tool::RunQuery => self.exec_run_query(&tool_call_id, args).await,
             Tool::GetNodeContext => self.exec_get_node_context(&tool_call_id, args).await,
             Tool::DeleteRelationship => self.exec_delete_relationship(&tool_call_id, args).await,
+            Tool::CreateQuestionTask => self.exec_create_question_task(&tool_call_id, args).await,
         }
     }
 
@@ -8128,7 +8474,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 26);
+        assert_eq!(all_tool_definitions().len(), 27);
     }
 
     #[test]

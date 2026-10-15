@@ -354,7 +354,8 @@ fn schema_scoped(tool_name: &str) -> bool {
             | Tool::UpdatePlay
             | Tool::RunQuery
             | Tool::GetNodeContext
-            | Tool::DeleteRelationship,
+            | Tool::DeleteRelationship
+            | Tool::CreateQuestionTask,
         ) => false,
         // An unrecognised name is not schema-scoped: it is either a malformed
         // generation or a tool this build does not register, and neither is a

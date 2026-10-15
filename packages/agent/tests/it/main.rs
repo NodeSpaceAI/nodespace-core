@@ -10,6 +10,7 @@
 //! `cargo test` runs the whole binary's tests as threads of one process.
 
 mod conflict_tools;
+mod create_question_task;
 mod decision_marker_golden;
 mod extends_chain_tool_results_test;
 mod get_related_nodes_both_direction;
