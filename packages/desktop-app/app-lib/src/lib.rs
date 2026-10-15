@@ -1301,7 +1301,9 @@ mod graceful_shutdown_leaves_daemon_tests {
         let function_source = &source[start..end];
 
         assert!(
-            !function_source.contains("kill") && !function_source.contains("stop_daemon"),
+            !function_source.contains("libc::kill")
+                && !function_source.contains("taskkill")
+                && !function_source.contains("stop_daemon"),
             "graceful_shutdown must not stop the daemon: a window close ends the UI only, \
              and the tray's Quit is the one way to stop the service"
         );

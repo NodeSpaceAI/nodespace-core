@@ -150,7 +150,11 @@
     }
   }
 
-  const pathIsConfigured = $derived(status?.pathAlreadyConfigured ?? false);
+  // Our own rc line counts too: this process's PATH probe cannot see a line
+  // written a moment ago until a new shell exists.
+  const pathIsConfigured = $derived(
+    (status?.pathAlreadyConfigured ?? false) || (status?.pathExportPresent ?? false)
+  );
   const skillIsInstalled = $derived(skillResult?.success ?? false);
   const detectedAgents = $derived(detected?.agents ?? []);
   // A detection failure must not present as "no agents installed" — the

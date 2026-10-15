@@ -195,18 +195,21 @@ fn target_rc_file(home: &Path, shell: LoginShell) -> PathBuf {
     match shell {
         LoginShell::Zsh => home.join(".zshrc"),
         LoginShell::Fish => home.join(".config").join("fish").join("config.fish"),
-        LoginShell::Bash => {
-            let bash_profile = home.join(".bash_profile");
-            let bashrc = home.join(".bashrc");
-            if bash_profile.exists() {
-                bash_profile
-            } else if bashrc.exists() || !cfg!(target_os = "macos") {
-                bashrc
-            } else {
-                bash_profile
-            }
-        }
+        LoginShell::Bash => bash_target(home, cfg!(target_os = "macos")),
         LoginShell::Other => home.join(".profile"),
+    }
+}
+
+/// Bash reads `~/.bash_profile` in a login shell and `~/.bashrc` otherwise.
+/// macOS terminals always open login shells, which never read `~/.bashrc`, so
+/// it is always `~/.bash_profile` there; elsewhere `~/.bashrc`, unless the
+/// user already keeps a `~/.bash_profile`.
+fn bash_target(home: &Path, macos: bool) -> PathBuf {
+    let bash_profile = home.join(".bash_profile");
+    if macos || bash_profile.exists() {
+        bash_profile
+    } else {
+        home.join(".bashrc")
     }
 }
 
@@ -380,15 +383,24 @@ async fn remove_path_from_file(path: &Path) -> Result<bool, String> {
 // ── commands ─────────────────────────────────────────────────────────────────
 
 /// Read persisted onboarding state and detect installed integrations.
+///
+/// The PATH probe runs the CLI, so the app shell's every-launch call pays for
+/// it only while onboarding is still incomplete (the wizard is the one reader
+/// of the field then); [`get_integrations_status`] always probes.
 #[tauri::command]
 pub async fn check_onboarding_status() -> Result<OnboardingStatus, String> {
+    onboarding_status(false).await
+}
+
+async fn onboarding_status(always_probe_cli: bool) -> Result<OnboardingStatus, String> {
     let cfg = read_config().await?;
 
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
     // The real question is whether `nodespace` resolves, not whether a file
     // mentions it: a Homebrew cask links it into place with no rc edit at all.
-    let path_already_configured = cli_resolves_on_path().await;
+    let path_already_configured =
+        (always_probe_cli || !cfg.onboarding_completed) && cli_resolves_on_path().await;
     let path_export_present = any_rc_file_has_path(&home).await;
 
     Ok(OnboardingStatus {
@@ -437,11 +449,17 @@ pub async fn configure_path() -> Result<PathConfigResult, String> {
 
     let result = configure_path_at(&home, shell, cli_on_path).await?;
 
-    update_config(|cfg| cfg.integrations.path_configured = true).await?;
+    // Recorded only when NodeSpace's own line is in place; a CLI that already
+    // resolves by other means (the cask) left nothing of ours configured.
+    if !result.already_on_path {
+        update_config(|cfg| cfg.integrations.path_configured = true).await?;
+    }
     Ok(result)
 }
 
-/// Whether `nodespace` resolves on the user's shell PATH. Runs the CLI, so it
+/// Whether `nodespace` resolves on a shell PATH approximated by
+/// [`skill_setup::check_cli_on_path`] (the system PATH plus the usual
+/// per-user bin directories, not the user's own rc files). Runs the CLI, so it
 /// is kept off the async worker threads.
 async fn cli_resolves_on_path() -> bool {
     tokio::task::spawn_blocking(skill_setup::check_cli_on_path)
@@ -521,7 +539,7 @@ pub async fn remove_from_path() -> Result<(), String> {
 /// Return live integration status (path + skill) without running any installer.
 #[tauri::command]
 pub async fn get_integrations_status() -> Result<OnboardingStatus, String> {
-    check_onboarding_status().await
+    onboarding_status(true).await
 }
 
 /// Remove the NodeSpace skill files from every installed-into agent's skill
@@ -891,6 +909,27 @@ mod tests {
         .await
         .expect("other");
         assert!(other_home.path().join(".profile").exists());
+    }
+
+    #[test]
+    fn bash_writes_bash_profile_on_macos_and_bashrc_elsewhere() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            bash_target(home.path(), true),
+            home.path().join(".bash_profile")
+        );
+        // A `.bashrc` alone must not win on macOS: login shells skip it.
+        std::fs::write(home.path().join(".bashrc"), "").expect("seed");
+        assert_eq!(
+            bash_target(home.path(), true),
+            home.path().join(".bash_profile")
+        );
+        assert_eq!(bash_target(home.path(), false), home.path().join(".bashrc"));
+        std::fs::write(home.path().join(".bash_profile"), "").expect("seed");
+        assert_eq!(
+            bash_target(home.path(), false),
+            home.path().join(".bash_profile")
+        );
     }
 
     #[test]
