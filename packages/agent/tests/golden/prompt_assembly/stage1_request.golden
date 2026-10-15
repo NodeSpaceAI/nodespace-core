@@ -15,7 +15,7 @@ parameters_schema:
 {
   "properties": {
     "query": {
-      "description": "A short description of the capability needed, in plain language, built around the exact noun(s) the user used for the subject (e.g. keep 'albums', 'venues', 'equipment' — do not substitute a different word for the same thing, like 'watchlist' or 'queue' for a category of item the user named directly) AND the specific action or detail that distinguishes what the user wants done — e.g. 'update the equipment record worth 2400 to returned', not just 'equipment items'; do not collapse an update/find-a-specific-item request into a generic listing description.",
+      "description": "A short description of the capability needed, in plain language, built around the exact noun(s) the user used for the subject (e.g. keep 'albums', 'venues', 'equipment' — do not substitute a different word for the same thing, like 'watchlist' or 'queue' for a category of item the user named directly) AND the specific action or detail that distinguishes what the user wants done — e.g. 'update the equipment record worth 2400 to returned', not just 'equipment items'; do not collapse an update/find-a-specific-item request into a generic listing description. When the request puts a question or request down for a person so it waits for them, name what is created and who it is for: 'create a task for Sam: which vendor signed the contract', not the subject the question is about.",
       "type": "string"
     }
   },

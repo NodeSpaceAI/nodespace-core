@@ -1043,7 +1043,11 @@ pub fn stage1_tool_definitions() -> Vec<ToolDefinition> {
                              specific action or detail that distinguishes what the user wants \
                              done — e.g. 'update the equipment record worth 2400 to returned', \
                              not just 'equipment items'; do not collapse an update/find-a-\
-                             specific-item request into a generic listing description."
+                             specific-item request into a generic listing description. When \
+                             the request puts a question or request down for a person so it \
+                             waits for them, name what is created and who it is for: \
+                             'create a task for Sam: which vendor signed the contract', not \
+                             the subject the question is about."
                     }
                 },
                 "required": ["query"]

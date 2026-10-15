@@ -1165,3 +1165,32 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
         }
     }
 }
+
+/// Requests to put a question down for a person so that it waits for them,
+/// with the task it blocks. Stage 1 must write a query that names the thing
+/// being created (a task, a question for someone), not the subject the
+/// question happens to be about. Printed, three times each, with two controls
+/// that must keep their wording.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_reformulation_for_a_question_put_down_for_someone() {
+    let engine = load_engine();
+    let messages = [
+        "I can't carry on with Write the migration guide until Anoop says whether it covers the v1 export format or only v2. Put his question down so it waits for him, not for me.",
+        "I need Priya to confirm the API rate limit before I can finish the SDK docs. Put her question where she'll see it.",
+        "Leave a question for Marcus about which database region we picked; the deploy checklist is stuck until he answers.",
+        "Ask Dana whether legal approved the launch copy. I'm blocked on the press release until she replies.",
+        "Write down a question for the design lead about the logo usage; it blocks the brand page.",
+        "File a bug: export fails on empty tables",
+        "Record a chore: rotate the staging keys",
+    ];
+    for message in messages {
+        for rep in 0..3 {
+            let decision = run_stage1(&engine, message).await;
+            println!(
+                "QTASK[{rep}] {:?} -> {decision:?}",
+                &message[..message.len().min(48)]
+            );
+        }
+    }
+}
