@@ -2407,6 +2407,8 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
         "create_nodes_from_markdown" => Some(&["markdown"]),
         // The question is what a repeat would put down a second time.
         "create_question_task" => Some(&["question", "content", "title"]),
+        // The title is what a repeat would create a second copy of.
+        "create_task" => Some(&["title", "content", "name"]),
         // The loser is the node a repeat would re-attack (already archived by
         // the first call), so it is the more informative evidence — but
         // `survivor_id` is also accepted since either argument identifies the
@@ -3157,6 +3159,12 @@ fn terse_write_fact(w: &CompletedWrite) -> Option<String> {
                     _ => format!("Fact: question task {id} was created."),
                 },
             )
+        }
+        "create_task" => {
+            let id = w.node_id.as_deref()?;
+            Some(format!(
+                "Fact: task {id} was created with its brief and checklist."
+            ))
         }
         "update_node" => {
             let id = w.node_id.as_deref()?;
