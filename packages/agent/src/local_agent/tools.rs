@@ -3676,6 +3676,44 @@ impl Tool {
         matches!(self.write_semantics(), WriteSemantics::DuplicableWrite)
     }
 
+    /// Whether a successful call makes a new record, which is what a reply
+    /// claims when it says something was created. A link or an update is not
+    /// one. The turn-end guard on such claims reads this.
+    ///
+    /// An exhaustive match, for the same reason [`Tool::write_semantics`] is:
+    /// a tool added later has to say whether it makes a record.
+    pub fn makes_a_record(self) -> bool {
+        match self {
+            Tool::CreateNode
+            | Tool::CreateNodesFromMarkdown
+            | Tool::CreateSchema
+            | Tool::CreateQuestionTask => true,
+            Tool::SearchNodes
+            | Tool::ResolveQuery
+            | Tool::SearchSemantic
+            | Tool::GetNode
+            | Tool::UpdateNode
+            | Tool::UpdateSchema
+            | Tool::UpdateTaskStatus
+            | Tool::CreateRelationship
+            | Tool::GetRelatedNodes
+            | Tool::SearchSkills
+            | Tool::DeleteNode
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetConflict
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict
+            | Tool::MergeConflict
+            | Tool::GetWorkflowState
+            | Tool::GetPlay
+            | Tool::UpdatePlay
+            | Tool::RunQuery
+            | Tool::GetNodeContext
+            | Tool::DeleteRelationship => false,
+        }
+    }
+
     /// Whether this tool irreversibly removes data the user already has.
     ///
     /// A strict subset of [`Tool::is_write`], and deliberately narrower:

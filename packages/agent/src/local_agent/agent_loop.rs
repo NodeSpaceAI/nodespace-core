@@ -2943,43 +2943,86 @@ fn contains_action_claim(text: &str) -> bool {
 /// Whether a tool makes a new record: the writes a reply may claim a record
 /// was created by. A link is not one, and neither is an update.
 fn creates_a_record(tool: &str) -> bool {
-    use crate::local_agent::tools::Tool;
-    matches!(
-        Tool::from_name(tool),
-        Some(
-            Tool::CreateNode
-                | Tool::CreateNodesFromMarkdown
-                | Tool::CreateSchema
-                | Tool::CreateQuestionTask
-        )
-    )
+    crate::local_agent::tools::Tool::from_name(tool).is_some_and(|t| t.makes_a_record())
 }
 
 /// Whether the text says a record was created, as opposed to a link between
 /// records: "I created a new task" is, "I created a link from Anoop to it" is
-/// not. Judged per mention of "creat…", on the words that follow it.
+/// not.
+///
+/// Judged per sentence that holds a claim, on what the verb takes as its
+/// object: the first words after it. "I created the question task and linked
+/// it to Anoop" creates a task; "I created a link from Anoop to it" creates a
+/// link. Only an object that is itself a link word shields the claim, so a
+/// link mentioned later in the sentence does not.
+///
+/// A limitation: the tools' results are the turn's, so a reply describing a
+/// record an earlier turn made, in a turn whose own create failed, is read as
+/// a claim about this turn.
 fn claims_a_record_was_created(text: &str) -> bool {
-    const LINK_WORDS: &[&str] = &["link", "relationship", "connection", "edge", "mention"];
+    // Past forms only: "couldn't create the task" is not a claim.
+    const VERBS: &[&str] = &["created", "added", "made"];
+    const LINK_WORDS: &[&str] = &[
+        "link",
+        "links",
+        "relationship",
+        "relationships",
+        "connection",
+        "connections",
+        "edge",
+        "edges",
+        "mention",
+        "mentions",
+    ];
+    // How many words after the verb may be its object: an article and a
+    // couple of adjectives before the noun.
+    const OBJECT_WORDS: usize = 4;
+
     let lower = text.to_ascii_lowercase();
-    lower.match_indices("creat").any(|(at, _)| {
-        let sentence_start = lower[..at]
-            .rfind(['.', '!', '?', '\n', ';'])
-            .map_or(0, |i| i + 1);
-        let sentence_end = lower[at..]
-            .find(['.', '!', '?', '\n', ';'])
-            .map_or(lower.len(), |i| at + i + 1);
-        let sentence = &lower[sentence_start..sentence_end];
-        // A question, or a statement that nothing was made, is not a claim.
-        if sentence.trim_end().ends_with('?') || !contains_action_claim(sentence) {
-            return false;
-        }
-        let mut after_end = (at + 40).min(lower.len());
-        while !lower.is_char_boundary(after_end) {
-            after_end -= 1;
-        }
-        let after = &lower[at..after_end];
-        !LINK_WORDS.iter().any(|w| after.contains(w))
-    })
+    VERBS
+        .iter()
+        .flat_map(|verb| lower.match_indices(verb))
+        .any(|(at, verb)| {
+            let sentence_start = lower[..at]
+                .rfind(['.', '!', '?', '\n', ';'])
+                .map_or(0, |i| i + 1);
+            let sentence_end = lower[at..]
+                .find(['.', '!', '?', '\n', ';'])
+                .map_or(lower.len(), |i| at + i + 1);
+            let sentence = &lower[sentence_start..sentence_end];
+            let padded = format!(" {} ", sentence.trim());
+            // A question, or a statement that nothing was made ("No task was
+            // created."), is not a claim.
+            if sentence.trim_end().ends_with('?')
+                || padded.contains(" no ")
+                || padded.contains(" nothing ")
+                || !contains_action_claim(sentence)
+            {
+                return false;
+            }
+            // Passive: "the link was created" has its object before the verb.
+            let before: Vec<&str> = lower[sentence_start..at].split_whitespace().collect();
+            if let [.., subject, "was" | "were" | "been"] = before.as_slice() {
+                let subject = subject.trim_matches(|c: char| !c.is_alphanumeric());
+                if LINK_WORDS.contains(&subject) {
+                    return false;
+                }
+            }
+            // The first token from the match is the verb word itself
+            // ("created"); the object follows it.
+            let first_noun = lower[at..]
+                .split_whitespace()
+                .skip(1)
+                .take(OBJECT_WORDS)
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+                .find(|w| {
+                    !matches!(
+                        *w,
+                        "a" | "an" | "the" | "new" | "this" | "that" | "one" | ""
+                    )
+                });
+            !first_noun.is_some_and(|w| LINK_WORDS.contains(&w))
+        })
 }
 
 /// Tools whose results report what they persisted, and are therefore the only
@@ -11704,6 +11747,62 @@ mod tests {
                     "create_relationship",
                     false,
                     json!({"created": true, "type": "mentions"}),
+                ),
+            ],
+            reply,
+        )
+        .await;
+
+        assert_eq!(response, reply);
+    }
+
+    /// The claim is about the record even when a link is mentioned after it.
+    /// This is the shape the question task's reply takes.
+    #[tokio::test]
+    async fn a_record_claim_that_also_mentions_a_link_is_still_a_record_claim() {
+        let response = run_claim_turn(
+            vec![
+                ("create_node", true, json!({"error": NOT_CREATED})),
+                (
+                    "create_relationship",
+                    false,
+                    json!({"created": true, "type": "tasks"}),
+                ),
+            ],
+            "I have successfully created the question task and linked it to Anoop, \
+             though I couldn't set the status.",
+        )
+        .await;
+
+        assert!(response.starts_with("⚠️ I couldn't"), "{response}");
+    }
+
+    /// "No task was created." says nothing was made; it is not a claim.
+    #[tokio::test]
+    async fn a_statement_that_no_record_was_created_is_left_alone() {
+        let reply = "No task was created: the call failed because the assignee must be linked \
+                     afterwards.";
+        let response = run_claim_turn(
+            vec![("create_node", true, json!({"error": NOT_CREATED}))],
+            reply,
+        )
+        .await;
+
+        assert_eq!(response, reply);
+    }
+
+    /// A create that failed and was then made again is not a failed create:
+    /// the retry grounds the claim.
+    #[tokio::test]
+    async fn a_create_retried_into_success_grounds_the_claim() {
+        let reply = "I couldn't set the assignee first, but I created the question task.";
+        let response = run_claim_turn(
+            vec![
+                ("create_node", true, json!({"error": NOT_CREATED})),
+                (
+                    "create_node",
+                    false,
+                    json!({"id": "nodespace://q1", "property_count": 1}),
                 ),
             ],
             reply,
