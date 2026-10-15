@@ -2940,6 +2940,48 @@ fn contains_action_claim(text: &str) -> bool {
     })
 }
 
+/// Whether a tool makes a new record: the writes a reply may claim a record
+/// was created by. A link is not one, and neither is an update.
+fn creates_a_record(tool: &str) -> bool {
+    use crate::local_agent::tools::Tool;
+    matches!(
+        Tool::from_name(tool),
+        Some(
+            Tool::CreateNode
+                | Tool::CreateNodesFromMarkdown
+                | Tool::CreateSchema
+                | Tool::CreateQuestionTask
+        )
+    )
+}
+
+/// Whether the text says a record was created, as opposed to a link between
+/// records: "I created a new task" is, "I created a link from Anoop to it" is
+/// not. Judged per mention of "creat…", on the words that follow it.
+fn claims_a_record_was_created(text: &str) -> bool {
+    const LINK_WORDS: &[&str] = &["link", "relationship", "connection", "edge", "mention"];
+    let lower = text.to_ascii_lowercase();
+    lower.match_indices("creat").any(|(at, _)| {
+        let sentence_start = lower[..at]
+            .rfind(['.', '!', '?', '\n', ';'])
+            .map_or(0, |i| i + 1);
+        let sentence_end = lower[at..]
+            .find(['.', '!', '?', '\n', ';'])
+            .map_or(lower.len(), |i| at + i + 1);
+        let sentence = &lower[sentence_start..sentence_end];
+        // A question, or a statement that nothing was made, is not a claim.
+        if sentence.trim_end().ends_with('?') || !contains_action_claim(sentence) {
+            return false;
+        }
+        let mut after_end = (at + 40).min(lower.len());
+        while !lower.is_char_boundary(after_end) {
+            after_end -= 1;
+        }
+        let after = &lower[at..after_end];
+        !LINK_WORDS.iter().any(|w| after.contains(w))
+    })
+}
+
 /// Tools whose results report what they persisted, and are therefore the only
 /// ones [`persisted_field_count`] may read a count from.
 ///
@@ -4694,10 +4736,24 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         || lower.contains("couldn't")
                         || lower.contains("could not")
                         || lower.contains("unable");
-                    if !mentions_error {
+                    // A reply that names an error can still claim the record
+                    // it was asked for: "I have created the question task"
+                    // beside "I couldn't assign it". Mentioning a failure does
+                    // not make the claim true. When every attempt to make a
+                    // record failed and none landed in the turn, a claim that
+                    // one was made is false whatever else the reply says.
+                    let record_claim_is_false =
+                        failed_tools.iter().any(|r| creates_a_record(&r.name))
+                            && !all_tool_executions.iter().any(|r| {
+                                creates_a_record(&r.name)
+                                    && super::deletion_confirmation::landed_write(r)
+                            })
+                            && claims_a_record_was_created(&normalized);
+                    if !mentions_error || record_claim_is_false {
                         tracing::warn!(
                             session_id = %session.id,
                             failed_tools = %failed_tools.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
+                            record_claim_is_false,
                             "Tool failures not surfaced in model response — replacing with error message"
                         );
                         describe_unsurfaced_failures(&failed_tools)
@@ -11488,6 +11544,186 @@ mod tests {
             result.response,
             "⚠️ I couldn't complete the node update: node not found."
         );
+    }
+
+    /// Run a turn whose tool calls and their results are scripted, ending in
+    /// `reply`, and return the response the user is shown.
+    async fn run_claim_turn(
+        calls: Vec<(&'static str, bool, serde_json::Value)>,
+        reply: &str,
+    ) -> String {
+        struct ScriptedExecutor {
+            results: Vec<(&'static str, bool, serde_json::Value)>,
+            next: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl AgentToolExecutor for ScriptedExecutor {
+            async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+                Ok(["create_node", "create_relationship"]
+                    .into_iter()
+                    .map(|name| ToolDefinition {
+                        name: name.into(),
+                        description: name.into(),
+                        parameters_schema: json!({"type": "object"}),
+                    })
+                    .collect())
+            }
+
+            async fn execute(
+                &self,
+                name: &str,
+                _args: serde_json::Value,
+            ) -> Result<ToolResult, ToolError> {
+                let i = self.next.fetch_add(1, Ordering::SeqCst);
+                let (_, is_error, result) = self.results[i].clone();
+                Ok(ToolResult {
+                    tool_call_id: format!("tc_{i}"),
+                    name: name.into(),
+                    result,
+                    is_error,
+                })
+            }
+        }
+
+        let mut rounds: Vec<Vec<StreamingChunk>> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _, _))| {
+                vec![
+                    StreamingChunk::ToolCallStart {
+                        id: format!("tc_{i}"),
+                        name: (*name).to_string(),
+                        provider_extra: None,
+                    },
+                    StreamingChunk::ToolCallArgs {
+                        id: format!("tc_{i}"),
+                        args_json: r#"{"content":"Does the guide cover v1?"}"#.to_string(),
+                    },
+                    StreamingChunk::Done {
+                        usage: InferenceUsage {
+                            prompt_tokens: 10,
+                            completion_tokens: 5,
+                        },
+                    },
+                ]
+            })
+            .collect();
+        rounds.push(vec![
+            StreamingChunk::Token {
+                text: reply.to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 20,
+                    completion_tokens: 10,
+                },
+            },
+        ]);
+
+        let engine = Arc::new(MockEngine::new(rounds));
+        let executor = Arc::new(ScriptedExecutor {
+            results: calls,
+            next: AtomicUsize::new(0),
+        });
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "put his question down",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .response
+    }
+
+    const NOT_CREATED: &str = "invalid arguments for tool create_node: 'assignee' is a \
+         relationship of 'task', so the 'task' was not created.";
+
+    /// The reply names an error and still claims the record: the claim is
+    /// false, because the create failed and nothing else made one. Linking is
+    /// not creating.
+    #[tokio::test]
+    async fn a_record_claimed_after_every_create_failed_is_replaced_though_it_names_an_error() {
+        let response = run_claim_turn(
+            vec![
+                ("create_node", true, json!({"error": NOT_CREATED})),
+                (
+                    "create_relationship",
+                    false,
+                    json!({"created": true, "type": "mentions"}),
+                ),
+            ],
+            "I couldn't assign it, but I have successfully created the question task.",
+        )
+        .await;
+
+        assert!(
+            response.starts_with("⚠️ I couldn't"),
+            "the false claim must not reach the user: {response}"
+        );
+        assert!(!response.contains("successfully created"), "{response}");
+    }
+
+    /// A create that landed grounds the claim, whatever else failed.
+    #[tokio::test]
+    async fn a_record_claim_stands_when_a_create_landed_and_a_link_failed() {
+        let reply = "I created the question task, but I couldn't assign it to Anoop.";
+        let response = run_claim_turn(
+            vec![
+                (
+                    "create_node",
+                    false,
+                    json!({"id": "nodespace://q1", "property_count": 1}),
+                ),
+                (
+                    "create_relationship",
+                    true,
+                    json!({"error": "no node has the id \"anoop\""}),
+                ),
+            ],
+            reply,
+        )
+        .await;
+
+        assert_eq!(response, reply);
+    }
+
+    /// A claim about a link is not a claim that a record was made.
+    #[tokio::test]
+    async fn a_claim_that_a_link_was_created_is_not_a_record_claim() {
+        let reply = "I couldn't create the task, but I created a link from Anoop to the guide.";
+        let response = run_claim_turn(
+            vec![
+                ("create_node", true, json!({"error": NOT_CREATED})),
+                (
+                    "create_relationship",
+                    false,
+                    json!({"created": true, "type": "mentions"}),
+                ),
+            ],
+            reply,
+        )
+        .await;
+
+        assert_eq!(response, reply);
+    }
+
+    /// An honest account of the failure is left as the model wrote it.
+    #[tokio::test]
+    async fn an_honest_failure_account_is_left_alone() {
+        let reply = "I couldn't create the question task: the assignee has to be linked after.";
+        let response = run_claim_turn(
+            vec![("create_node", true, json!({"error": NOT_CREATED}))],
+            reply,
+        )
+        .await;
+
+        assert_eq!(response, reply);
     }
 
     /// A same-turn retry that succeeds must clear the failure: the model
