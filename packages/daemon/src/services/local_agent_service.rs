@@ -2405,6 +2405,8 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
         "create_schema" => Some(&["name"]),
         "update_schema" => Some(&["schema_id"]),
         "create_nodes_from_markdown" => Some(&["markdown"]),
+        // The question is what a repeat would put down a second time.
+        "create_question_task" => Some(&["question", "content", "title"]),
         // The loser is the node a repeat would re-attack (already archived by
         // the first call), so it is the more informative evidence — but
         // `survivor_id` is also accepted since either argument identifies the
@@ -3131,6 +3133,30 @@ fn terse_write_fact(w: &CompletedWrite) -> Option<String> {
             }
             fact.push('.');
             Some(fact)
+        }
+        "create_question_task" => {
+            let id = w.node_id.as_deref()?;
+            let named = |keys: &[&str]| {
+                keys.iter()
+                    .find_map(|key| args.get(*key).and_then(|v| v.as_str()))
+            };
+            Some(
+                match (
+                    named(&["owner", "owner_id", "person_id", "assignee_id"]),
+                    named(&[
+                        "stopped_task",
+                        "stopped_task_id",
+                        "task_id",
+                        "blocked_task_id",
+                    ]),
+                ) {
+                    (Some(owner), Some(stopped)) => format!(
+                        "Fact: question task {id} was created, assigned to {owner} and blocking \
+                     task {stopped}."
+                    ),
+                    _ => format!("Fact: question task {id} was created."),
+                },
+            )
         }
         "update_node" => {
             let id = w.node_id.as_deref()?;

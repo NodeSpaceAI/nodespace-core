@@ -1033,7 +1033,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: CREATING_A_TASK_SKILL_ID,
         title: "Creating a Task",
         use_for: "Record newly found work that has no spec: a bug report, a chore, or a follow-up found in the middle of other work. Check it is not already built or declined, reproduce the bug, and write its brief and checklist so it is ready the moment it exists.",
-        tools: &["search_nodes", "get_node", "create_node", "update_node", "create_relationship", "update_task_status", "route_clarify"],
+        tools: &["search_nodes", "get_node", "create_node", "update_node", "create_relationship", "update_task_status", "create_question_task", "route_clarify"],
         // Two finds, the task, its brief and checklist, the project link, and
         // the question that settles its size.
         max_iterations: 14,
@@ -2366,6 +2366,12 @@ mod tests {
         // (read first, ask, write the list whole, repair), and no other skill
         // is a plausible home for it. The chat a play's Edit opens pins Play
         // Authoring, so there the tool does not depend on retrieval at all.
+        //
+        // `create_question_task`: the tool and the procedure that says when to
+        // use it are the same paragraph of Creating a Task. A second skill
+        // holding the tool would offer it without that guidance, and a model
+        // reaching for it there would have nothing saying which task is the
+        // stopped one or that the stopped task keeps its status.
         const SINGLE_OWNER_BY_DESIGN: &[&str] = &[
             "delete_node",
             "create_schema",
@@ -2373,6 +2379,7 @@ mod tests {
             "create_nodes_from_markdown",
             "merge_conflict",
             "update_play",
+            "create_question_task",
         ];
 
         // Enumerated from the REGISTRY, not from `owners`. Iterating the map
@@ -2919,6 +2926,10 @@ mod tests {
         // Hands a question back to the user. An agent outside the app asks
         // the user itself: there is nothing to run.
         crate::local_agent::tools::Tool::RouteClarify,
+        // Does three writes in one call (the task, its assignee link and its
+        // `blocks` edge). The CLI form of the procedure gives those commands
+        // one by one, so there is no single command to name.
+        crate::local_agent::tools::Tool::CreateQuestionTask,
     ];
 
     /// Every built-in tool a seeded skill names, in its tool list or in its
