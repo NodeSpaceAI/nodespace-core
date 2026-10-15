@@ -2284,11 +2284,17 @@ const SYSTEM_PROMPT_BUDGET: u32 = 4_000;
 ///
 /// It bounds history alone. The system prompt a Stage 2 turn is sent (routed
 /// procedures plus tool declarations, about 63 KB) is about 18k tokens before
-/// any history and decodes cleanly, so a ceiling that counted it would be
-/// exceeded by every turn and summarise every tool loop, thinning the state
-/// the model is working from. What this keeps of the hedge is that history
-/// stays bounded on a spacious window; the value is high enough that a normal
-/// tool loop's own results fit under it.
+/// any history and decoded cleanly in the live runs made with it, so a ceiling
+/// that counted it would be exceeded by every turn and summarise every tool
+/// loop, thinning the state the model is working from.
+///
+/// The total prompt is therefore no longer bounded: a turn may carry the
+/// system prompt plus this much history, about 22k tokens, well above the
+/// 8,518-token failure point. What stays of the hedge is that history cannot
+/// grow without bound on a spacious window. The value is a round number, not a
+/// measured boundary, and a single large search result can exceed it and
+/// trigger summarisation, which keeps the turn's request and the most recent
+/// messages verbatim.
 const HISTORY_STABILITY_CEILING: u32 = 4_000;
 
 /// Last-resort user-facing message when a turn produces nothing usable — no
@@ -6405,7 +6411,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // the window. A second check against a static
         // `total_budget - SYSTEM_PROMPT_BUDGET` budget used to sit here, but
         // SYSTEM_PROMPT_BUDGET (4,000) is well under the real tool-registered
-        // system prompt (~6,600 measured in nlp-engine). That let the second
+        // system prompt (~6,600 when this was measured; a Stage 2 turn's is now
+        // about 18k). That let the second
         // check pass — and skip summarization — in exactly the corridor where
         // this first check had already established the prompt overflows the
         // window, because it compared against a looser, wrong-headroom budget.
@@ -8236,8 +8243,8 @@ mod tests {
         // ~8.5K history tokens (@ ~4 chars/token: 20 * 1700 = 34,000 chars).
         // The test harness has no PromptAssembler wired in, so
         // `system_content` falls back to `EMERGENCY_FALLBACK_PROMPT` — a
-        // short, fixed string (tens of tokens), unlike production's ~6,600-
-        // token tool-registered prompt. The history clears
+        // short, fixed string (tens of tokens), unlike production's ~18k-
+        // token Stage 2 prompt. The history clears
         // HISTORY_STABILITY_CEILING (4,000) while staying far under a 32,768
         // window budget (~30K after MAX_RESPONSE_TOKENS) — gate 1 alone
         // would not trigger summarization here; only gate 2 does.
