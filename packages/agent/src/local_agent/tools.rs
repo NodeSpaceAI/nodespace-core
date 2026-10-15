@@ -4119,12 +4119,28 @@ async fn refuse_relationship_keys(
                 hop.relationship_type
             ),
         };
+        // A create stored nothing, so there is no '{node_type}' id yet: the
+        // edge is made after the record exists, from the id the create
+        // returns. Saying only "call create_relationship" left a model
+        // naming a placeholder for an id that did not exist.
+        let how = if tool == "create_node" {
+            format!(
+                "so it cannot be set as a value and the '{node_type}' was not created. Call \
+                 create_node again without '{sent}', then call create_relationship with \
+                 {call}; the '{node_type}' id is in the create's result and the other id comes \
+                 from a search."
+            )
+        } else {
+            format!(
+                "so it cannot be set as a value and nothing was stored. To set it, call \
+                 create_relationship with {call}; take the ids from a search."
+            )
+        };
         return Err(ToolError::InvalidArguments {
             tool: tool.to_string(),
             reason: format!(
-                "'{sent}': '{name}' is a relationship of '{node_type}'{reaches}, not a field, so it \
-                 cannot be set as a value and nothing was stored. To set it, call \
-                 create_relationship with {call}; take the ids from a search."
+                "'{sent}': '{name}' is a relationship of '{node_type}'{reaches}, not a field, \
+                 {how}"
             ),
         });
     }

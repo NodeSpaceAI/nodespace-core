@@ -440,6 +440,27 @@ async fn creating_a_node_refuses_a_relationship_key_and_a_built_in_inbound_name_
         .expect_err("a relationship is not a field")
         .to_string();
     assert!(refused.contains("is a relationship of 'task'"), "{refused}");
+    // A create stored nothing, so the refusal says the record does not exist
+    // and to create it again without the key. Sending the caller straight to
+    // create_relationship left it naming an id the task never had.
+    assert!(refused.contains("was not created"), "{refused}");
+    assert!(
+        refused.contains("create_node again without 'custom:assignee'"),
+        "{refused}"
+    );
+    assert!(refused.contains("in the create's result"), "{refused}");
+
+    // An update has the record: the caller is sent to the edge directly.
+    let updated = executor
+        .execute(
+            "update_node",
+            json!({ "id": TASK_C, "field_values": { "assignee": "Norbert Weber" } }),
+        )
+        .await
+        .expect_err("a relationship is not a field")
+        .to_string();
+    assert!(updated.contains("nothing was stored"), "{updated}");
+    assert!(!updated.contains("was not created"), "{updated}");
 
     let left = executor
         .execute(

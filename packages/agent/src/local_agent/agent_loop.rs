@@ -6453,15 +6453,32 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             split_point -= 1;
         }
 
-        // If the back-off consumed the whole prefix there is nothing older to
-        // summarize — skip the summarization inference entirely rather than
-        // spending a model call on empty input. (Rare: only when the entire
-        // over-budget history is one unbroken tool-call chain.)
-        if split_point == 0 {
+        // The request this turn is answering is never summarized away. The
+        // turn's own user message is the last `User` message (`run_turn` pushes
+        // it first and nothing in the loop adds another), and a tool loop of
+        // more than three messages leaves it before the kept window. A model's
+        // summary of it is not the request: it once rewrote "create a question
+        // task assigned to Anoop, blocking the migration guide" as "determine
+        // the scope of the migration guide", and the turn then had no request
+        // left to act on.
+        let request_index = session
+            .messages
+            .iter()
+            .rposition(|m| matches!(m.role, Role::User))
+            .filter(|&i| i < split_point);
+
+        // If the back-off consumed the whole prefix, or all that is older is
+        // the request itself, there is nothing to summarize — skip the
+        // summarization inference entirely rather than spending a model call
+        // on empty input. (Rare: only when the entire over-budget history is
+        // one unbroken tool-call chain.)
+        let summarizable = split_point - usize::from(request_index.is_some());
+        if summarizable == 0 {
             return Ok(());
         }
 
-        let older_messages: Vec<ChatMessage> = session.messages.drain(..split_point).collect();
+        let mut older_messages: Vec<ChatMessage> = session.messages.drain(..split_point).collect();
+        let request = request_index.map(|i| older_messages.remove(i));
 
         // Build summarization text from older messages. A tool-call assistant
         // turn carries its signal in `tool_calls`, not `content` (content is
@@ -6542,6 +6559,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         session
             .messages
             .insert(0, ChatMessage::text(Role::System, summary_content));
+        // The request follows the summary of what happened since, verbatim.
+        if let Some(request) = request {
+            session.messages.insert(1, request);
+        }
 
         Ok(())
     }
@@ -8366,6 +8387,116 @@ mod tests {
             retained_tool_call,
             "assistant tool-call turn was drained, orphaning its tool result — back-off did not fire"
         );
+    }
+
+    /// One search call and its (large) result, as a tool loop leaves them.
+    fn search_exchange(id: &str, result_chars: usize) -> [ChatMessage; 2] {
+        [
+            ChatMessage::assistant_with_tool_calls(
+                String::new(),
+                vec![ToolCallRaw {
+                    id: id.into(),
+                    function_name: "search_nodes".into(),
+                    arguments_json: r#"{"query":"q"}"#.into(),
+                    provider_extra: None,
+                }],
+            ),
+            ChatMessage::tool_result(
+                "r".repeat(result_chars),
+                id.to_string(),
+                "search_nodes".to_string(),
+            ),
+        ]
+    }
+
+    /// The request a turn is answering is the one message summarization must
+    /// not take. Three tool exchanges after it put it before the kept window,
+    /// and a model's summary of it had replaced it with a different goal.
+    #[tokio::test]
+    async fn summarization_keeps_the_turns_request_verbatim() {
+        let engine = Arc::new(MockEngine::new(vec![vec![
+            StreamingChunk::Token {
+                text: "Goal: determine the scope of the guide.".to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                },
+            },
+        ]]));
+        let executor = Arc::new(MockToolExecutor::new());
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let request = "Create a question task for Anoop, assigned to him, blocking the guide.";
+        let mut session = new_session();
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, "an earlier turn".to_string()));
+        session
+            .messages
+            .push(ChatMessage::text(Role::Assistant, "x".repeat(12_000)));
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, request.to_string()));
+        for id in ["tc_1", "tc_2", "tc_3"] {
+            session.messages.extend(search_exchange(id, 12_000));
+        }
+
+        agent_loop
+            .maybe_summarize_history(&mut session, "system")
+            .await
+            .unwrap();
+
+        assert!(
+            session.messages[0]
+                .content
+                .contains("[Conversation summary]"),
+            "the older turns were not summarized: {:?}",
+            session.messages[0].content
+        );
+        assert!(
+            matches!(session.messages[1].role, Role::User)
+                && session.messages[1].content == request,
+            "the request must follow the summary verbatim, got {:?}",
+            session.messages[1]
+        );
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|m| m.content == "an earlier turn"),
+            "an earlier turn was kept; only the current request is pinned"
+        );
+        // The summary, the request, and the kept window: the last three
+        // messages, widened by one so a tool result keeps its call.
+        assert_eq!(session.messages.len(), 2 + 4);
+    }
+
+    /// When the request is all that is older than the kept window there is
+    /// nothing to summarize, so no model call is made and nothing is drained.
+    #[tokio::test]
+    async fn summarization_skips_a_history_whose_only_older_message_is_the_request() {
+        // No scripted response: a summarization call would fail the test.
+        let engine = Arc::new(MockEngine::new(vec![]));
+        let executor = Arc::new(MockToolExecutor::new());
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, "the request".to_string()));
+        session.messages.extend(search_exchange("tc_1", 40_000));
+        session.messages.extend(search_exchange("tc_2", 40_000));
+        let before = session.messages.len();
+
+        agent_loop
+            .maybe_summarize_history(&mut session, "system")
+            .await
+            .unwrap();
+
+        assert_eq!(session.messages.len(), before, "nothing should be drained");
+        assert_eq!(session.messages[0].content, "the request");
     }
 
     /// A tool-call assistant turn carries its signal in `tool_calls[].arguments_json`,
