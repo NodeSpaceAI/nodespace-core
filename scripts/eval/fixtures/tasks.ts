@@ -18,6 +18,11 @@
  *   - a question waiting on the user is put to the user, never answered by the
  *     agent, so nothing is recorded as their answer.
  *
+ * Each intent is asked in more than one way (ids ending -b, -c): the first
+ * prompt of an intent is the one its procedure was first measured on, and the
+ * others share only the intent and the seeded records, so a pass that holds
+ * for the first alone is a result about that sentence and not the procedure.
+ *
  * The workspace is the entity tier: a project, three people (one of them the
  * database's owner, who "me" is), tasks assigned through `person.tasks`, and a
  * decision. The daemon seeds the queues and the skills itself, so the fixture
@@ -115,6 +120,84 @@ const FIXTURES: TaskScenario[] = [
     id: "answer-asks-user",
     scenario: "A question waiting on the user is put to them, never answered by the agent",
     prompt: "Take the question that's waiting on me and get it answered.",
+    expected: { kind: "asks-user" },
+  },
+  // Every intent above is asked again in other words, over the same seeded
+  // workspace. The five prompts above are the ones the procedures were first
+  // measured on; a change that helps only them is tuned to them, and these
+  // are how that shows. Each pair or triple differs in verb, order and what
+  // the user names, and shares nothing but the intent and the seeded records.
+  {
+    id: "bug-created-ready-b",
+    scenario: "A bug the agent can see becomes a ready task (asked as a filing request)",
+    prompt:
+      "The checklist on Cut the release branch still has an open box, yet the task " +
+      "says done. Raise that as a task in the Query engine rewrite project.",
+    expected: { kind: "ready-task" },
+  },
+  {
+    id: "bug-created-ready-c",
+    scenario: "A bug the agent can see becomes a ready task (asked as a bug report)",
+    prompt:
+      "File a bug: a task is marked done while one of its checklist items is " +
+      "unticked. It's Cut the release branch, part of Query engine rewrite.",
+    expected: { kind: "ready-task" },
+  },
+  {
+    id: "bug-diagnosed-b",
+    scenario: "A bug whose cause is asked for is written up (asked as an investigation)",
+    prompt:
+      "Why can Cut the release branch be done with an unticked checklist box? " +
+      "Investigate, then record what you learn, the cause and a regression check, " +
+      "as a task under Query engine rewrite.",
+    expected: { kind: "diagnosis" },
+  },
+  {
+    id: "bug-not-reproducible-b",
+    scenario: "A bug the agent cannot see is reported, and nothing is written (filing request)",
+    prompt:
+      "In Query engine rewrite, Review the index design has nobody assigned, so " +
+      "it never reaches anyone. Please log a bug for it.",
+    expected: { kind: "no-writes" },
+  },
+  {
+    id: "declined-request-b",
+    scenario: "A request an accepted decision declines creates no task (asked as a ticket)",
+    prompt: "Make a ticket to implement a GraphQL API.",
+    expected: { kind: "no-writes" },
+  },
+  {
+    id: "declined-request-c",
+    scenario: "A request an accepted decision declines creates no task (asked as backlog work)",
+    prompt: "We should build a GraphQL API. Put it on the backlog.",
+    expected: { kind: "no-writes" },
+  },
+  {
+    id: "question-blocks-task-b",
+    scenario: "A question that stops work is a task for its owner (asked as a question to put to him)",
+    prompt:
+      "Ask Anoop whether the migration guide should cover the v1 export format or " +
+      "just v2. Write the migration guide can't go on until he replies.",
+    expected: { kind: "question-task" },
+  },
+  {
+    id: "question-blocks-task-c",
+    scenario: "A question that stops work is a task for its owner (asked as parking the work)",
+    prompt:
+      "I need Anoop to decide between v1 exports and v2 only before Write the " +
+      "migration guide can move. Park that as his question so the guide waits on him.",
+    expected: { kind: "question-task" },
+  },
+  {
+    id: "answer-asks-user-b",
+    scenario: "A question waiting on the user is put to them (asked as what is waiting)",
+    prompt: "What's waiting on me? Go ahead and resolve the open question.",
+    expected: { kind: "asks-user" },
+  },
+  {
+    id: "answer-asks-user-c",
+    scenario: "A question waiting on the user is put to them (asked as picking it up)",
+    prompt: "Pick up the question that's pending my reply and deal with it.",
     expected: { kind: "asks-user" },
   },
 ];

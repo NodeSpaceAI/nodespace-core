@@ -5322,7 +5322,7 @@ impl GraphToolExecutor {
             ],
         );
 
-        let params: AgentCreateNodeParams =
+        let mut params: AgentCreateNodeParams =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
                 tool: "create_node".to_string(),
                 reason: e.to_string(),
@@ -5331,9 +5331,39 @@ impl GraphToolExecutor {
         // Merge explicit field_values with flat extras
         let mut props = params
             .field_values
+            .take()
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
         props.extend(flat_extras);
+        // `parent_id` is a parameter of this call, so a `parent_id` inside
+        // `field_values` is that parameter in the wrong place. Stored as given
+        // it became a `custom:parent_id` property on an unparented record, and
+        // the call still reported success: a brief or checklist item written
+        // that way was never under its task. It is used as the parent, as the
+        // model meant it, and never stored as a property.
+        if let Some(nested) = props.remove("parent_id") {
+            let Value::String(nested) = nested else {
+                return Err(ToolError::InvalidArguments {
+                    tool: "create_node".to_string(),
+                    reason: "'parent_id' inside field_values must be a node id string, and it is \
+                             a parameter of create_node: pass it as parent_id."
+                        .to_string(),
+                });
+            };
+            match &params.parent_id {
+                None => params.parent_id = Some(nested),
+                Some(top) if *top != nested => {
+                    return Err(ToolError::InvalidArguments {
+                        tool: "create_node".to_string(),
+                        reason: "parent_id was given twice with different values, as the \
+                                 parameter and inside field_values. Give it once, as the \
+                                 parent_id parameter."
+                            .to_string(),
+                    });
+                }
+                Some(_) => {}
+            }
+        }
         // Captured before `props` is moved into the input below. See the
         // `content_only` flag on the result for why this is needed.
         let requested_any_properties = !props.is_empty();
@@ -10276,6 +10306,136 @@ mod tests {
                 .unwrap()
                 .result["properties"]
                 .clone()
+        }
+
+        /// `parent_id` nested in `field_values` is the call's own parameter in
+        /// the wrong place: the record is created under that parent and holds
+        /// no `custom:parent_id` property.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_parent_id_inside_field_values_is_used_as_the_parent() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let parent = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": "task", "content": "Cut the release branch" }),
+                )
+                .await
+                .unwrap();
+            let parent_id = parent.result["id"].as_str().unwrap().to_string();
+
+            let child = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "text",
+                        "content": "The changelog box is unticked.",
+                        "field_values": { "parent_id": parent_id },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!child.is_error, "{child:?}");
+            let child_id = child.result["id"].as_str().unwrap();
+
+            let properties = stored(&executor, child_id).await;
+            assert!(
+                properties.get("custom:parent_id").is_none(),
+                "the parent must not be stored as a property: {properties}"
+            );
+            let parent_markdown = executor
+                .execute("get_node", json!({ "id": parent_id, "format": "markdown" }))
+                .await
+                .unwrap()
+                .result;
+            assert!(
+                parent_markdown
+                    .to_string()
+                    .contains("The changelog box is unticked."),
+                "the record is under its parent: {parent_markdown}"
+            );
+        }
+
+        /// How many `text` records the store holds, as `search_nodes` reports.
+        async fn note_count(executor: &GraphToolExecutor) -> u64 {
+            executor
+                .execute("search_nodes", json!({ "node_type": "text", "limit": 50 }))
+                .await
+                .unwrap()
+                .result["count"]
+                .as_u64()
+                .unwrap_or(0)
+        }
+
+        /// A `parent_id` inside `field_values` that is not an id, or that
+        /// disagrees with the parameter, is refused with nothing stored: a
+        /// silent drop would be the success-with-nothing the hoist fixes.
+        /// Two real parents, so the conflict is the only thing wrong with the
+        /// call; the same id given twice, or only nested, is accepted.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_nested_parent_id_that_is_not_an_id_or_disagrees_is_refused() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let mut parents = Vec::new();
+            for title in ["First parent", "Second parent"] {
+                let made = executor
+                    .execute(
+                        "create_node",
+                        json!({ "node_type": "task", "content": title }),
+                    )
+                    .await
+                    .unwrap();
+                parents.push(made.result["id"].as_str().unwrap().to_string());
+            }
+            let before = note_count(&executor).await;
+
+            let not_an_id = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "text",
+                        "content": "A note",
+                        "field_values": { "parent_id": 7 },
+                    }),
+                )
+                .await;
+            assert!(
+                matches!(not_an_id, Err(ToolError::InvalidArguments { .. })),
+                "{not_an_id:?}"
+            );
+
+            let twice = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "text",
+                        "content": "A note",
+                        "parent_id": parents[0],
+                        "field_values": { "parent_id": parents[1] },
+                    }),
+                )
+                .await;
+            assert!(
+                matches!(twice, Err(ToolError::InvalidArguments { .. })),
+                "{twice:?}"
+            );
+            assert_eq!(note_count(&executor).await, before, "nothing was stored");
+
+            let same = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "text",
+                        "content": "Same id twice",
+                        "parent_id": parents[0],
+                        "field_values": { "parent_id": parents[0] },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!same.is_error, "{same:?}");
         }
 
         /// The request that ended with no record: a task with a particular
