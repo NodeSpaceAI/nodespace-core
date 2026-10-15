@@ -345,3 +345,78 @@ async fn a_title_two_tasks_share_is_refused_with_their_ids() {
     );
     assert_eq!(task_count(&executor).await, before);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_archived_person_named_by_id_is_a_missing_node() {
+    let (executor, ns, _tmp) = executor().await;
+    const GONE: &str = "6c2d8b41-3f5e-4a79-8b24-8d1e9f7a2b07";
+    nodespace_core::ops::node_ops::create_node(
+        &ns,
+        nodespace_core::ops::node_ops::CreateNodeInput {
+            id: Some(GONE.to_string()),
+            node_type: "person".to_string(),
+            content: String::new(),
+            parent_id: None,
+            position: nodespace_core::services::InsertPositionOwned::End,
+            properties: json!({ "first_name": "Gone", "last_name": "Person" }),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: Some("archived".to_string()),
+        },
+    )
+    .await
+    .unwrap();
+    let before = task_count(&executor).await;
+
+    let error = executor
+        .execute(
+            "create_question_task",
+            json!({ "question": QUESTION, "owner": GONE, "stopped_task": STOPPED }),
+        )
+        .await
+        .expect_err("an archived owner must be refused");
+
+    assert!(
+        matches!(&error, ToolError::UnresolvedId { id, .. } if id == GONE),
+        "{error:?}"
+    );
+    assert_eq!(task_count(&executor).await, before);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_short_title_many_tasks_contain_still_finds_the_exact_one() {
+    let (executor, ns, _tmp) = executor().await;
+    // Sixty tasks whose titles contain the exact title: more than one page of
+    // substring matches, none of them the match.
+    for i in 0..60 {
+        ns.create_node(Node::new_with_id(
+            format!("7d3e9c52-4a6f-4b8a-9c35-9e2f0a8b3c{i:02}"),
+            "task".to_string(),
+            format!("Fix the Docs {i:02}"),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    }
+    ns.create_node(Node::new_with_id(
+        "7d3e9c52-4a6f-4b8a-9c35-9e2f0a8b3cff".to_string(),
+        "task".to_string(),
+        "Docs".to_string(),
+        json!({}),
+    ))
+    .await
+    .unwrap();
+
+    let result = executor
+        .execute(
+            "create_question_task",
+            json!({ "question": QUESTION, "owner": ANOOP, "stopped_task": "Docs" }),
+        )
+        .await
+        .expect("the exact title must be found among the substring matches");
+
+    assert_eq!(
+        bare(&result.result, "blocks"),
+        "7d3e9c52-4a6f-4b8a-9c35-9e2f0a8b3cff"
+    );
+}

@@ -2942,7 +2942,14 @@ async fn resolve_node_reference(
 
     let by_id = node_id_arg(reference);
     if uuid::Uuid::parse_str(&by_id).is_ok() {
-        let Some(node) = ns.get_node(&by_id).await.map_err(failed)? else {
+        // An archived node participates in nothing, so by id it is as missing
+        // as it is by title.
+        let found = ns
+            .get_node(&by_id)
+            .await
+            .map_err(failed)?
+            .filter(nodespace_core::governance::participates);
+        let Some(node) = found else {
             return Err(ToolError::UnresolvedId {
                 tool: tool.to_string(),
                 id: reference.to_string(),
@@ -2956,26 +2963,54 @@ async fn resolve_node_reference(
 
     let title = reference.trim();
     let mut matches: Vec<String> = Vec::new();
+    // A title is matched as a substring by the store, so a short one may be
+    // contained by many records. The query is held to the expected type and
+    // paged in a fixed order, so the exact match is not left off a page.
+    const PAGE: usize = 100;
+    const MAX_PAGES: usize = 20;
+    let mut exhausted = true;
     if !title.is_empty() {
-        let candidates = ns
-            .query_nodes_simple(nodespace_core::models::NodeQuery {
-                title_contains: Some(title.to_string()),
-                limit: Some(50),
-                ..Default::default()
-            })
-            .await
-            .map_err(failed)?;
-        for node in candidates {
-            let same_title = node
-                .title
-                .as_deref()
-                .is_some_and(|t| t.trim().eq_ignore_ascii_case(title));
-            if same_title && is_expected(node.node_type.clone()).await? {
-                matches.push(node.id);
+        for page in 0..MAX_PAGES {
+            let candidates = ns
+                .query_nodes_simple(nodespace_core::models::NodeQuery {
+                    title_contains: Some(title.to_string()),
+                    node_type: Some(expected.as_str().to_string()),
+                    order_by: Some(nodespace_core::models::OrderBy::CreatedAsc),
+                    limit: Some(PAGE),
+                    offset: Some(page * PAGE),
+                    ..Default::default()
+                })
+                .await
+                .map_err(failed)?;
+            let full_page = candidates.len() == PAGE;
+            for node in candidates {
+                let same_title = node
+                    .title
+                    .as_deref()
+                    .is_some_and(|t| t.trim().eq_ignore_ascii_case(title));
+                if same_title && is_expected(node.node_type.clone()).await? {
+                    matches.push(node.id);
+                }
+            }
+            if !full_page {
+                break;
+            }
+            if page + 1 == MAX_PAGES {
+                exhausted = false;
             }
         }
     }
     match matches.len() {
+        // Records were left unread: that is not the same as none having the
+        // title, so it is not reported as a missing node.
+        0 if !exhausted => Err(ToolError::InvalidArguments {
+            tool: tool.to_string(),
+            reason: format!(
+                "'{parameter}' \"{title}\" is contained in too many {label} titles to tell \
+                 which is meant. Nothing was created. Find the {label} with search_nodes and \
+                 call {tool} again with its id."
+            ),
+        }),
         0 => Err(ToolError::UnresolvedId {
             tool: tool.to_string(),
             id: reference.to_string(),
@@ -6030,8 +6065,10 @@ impl GraphToolExecutor {
         .await?;
 
         // The stopped task's project, read before writing: the project is the
-        // node that holds the stopped task through `tasks`. A task with none
-        // is simply not put in one.
+        // node that holds the stopped task through `tasks`, and a task has at
+        // most one. A task with none is simply not put in one; a read that
+        // fails is refused, since nothing is written yet and "no project"
+        // must not stand for "could not tell".
         let project_id = {
             let related = rel_ops::get_related_nodes(
                 &ns,
@@ -6042,8 +6079,8 @@ impl GraphToolExecutor {
                 },
             )
             .await
-            .map(|o| o.related_nodes)
-            .unwrap_or_default();
+            .map_err(|e| ops_error_to_tool(e, TOOL))?
+            .related_nodes;
             let mut found = None;
             for node in &related {
                 let (Some(id), Some(node_type)) = (

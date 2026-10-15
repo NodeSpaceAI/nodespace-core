@@ -3142,8 +3142,13 @@ fn terse_write_fact(w: &CompletedWrite) -> Option<String> {
             };
             Some(
                 match (
-                    named(&["owner", "owner_id"]),
-                    named(&["stopped_task", "stopped_task_id"]),
+                    named(&["owner", "owner_id", "person_id", "assignee_id"]),
+                    named(&[
+                        "stopped_task",
+                        "stopped_task_id",
+                        "task_id",
+                        "blocked_task_id",
+                    ]),
                 ) {
                     (Some(owner), Some(stopped)) => format!(
                         "Fact: question task {id} was created, assigned to {owner} and blocking \
