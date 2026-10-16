@@ -12,7 +12,7 @@ STEP 5, PUT THE USER IN THE LOOP WHEN THE FIX IS NOT YOURS TO CHOOSE: a cause th
 
 STEP 6, GUARD IT WITH A TEST SEEN TO FAIL: write the regression test from the minimal case, run it against the code as it is and keep the failing output, then make the fix and run it again and keep the passing output. A test that never failed shows nothing about the bug. A bug with no code to test, such as a record in the wrong state, is guarded by the check that finds it, and the evidence says why no test was written.
 
-STEP 7, WRITE WHAT YOU FOUND, WHERE THE WORK IS: when you were working a task, add a section to that task with the reproduction, the cause and the evidence. <!-- include: section-create --> When you were not, record it as work: <!-- include: task-create-node --> <!-- include: task-create-brief --> The brief is the reproduction, the cause and the evidence, and the checklist is the fix and its regression test, each unchecked. <!-- include: checkbox-item-create --> The bug is not written as fixed here: the work is done by Implementing a Task, which reads this record.
+STEP 7, WRITE WHAT YOU FOUND, WHERE THE WORK IS: when you were working a task, add a section to that task with the reproduction, the cause and the evidence. <!-- include: section-create --> When you were not, record it as work. The brief is the reproduction, the cause and the evidence, and the checklist is the fix and its regression test, each unchecked. <!-- include: task-create-whole --> The bug is not written as fixed here: the work is done by Implementing a Task, which reads this record.
 
 <!-- include: delivery-gates -->
 

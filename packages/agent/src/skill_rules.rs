@@ -858,9 +858,7 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("task-fix-resubmit"),
     // Creating a Task
     procedure_rule!("task-create-find-built"),
-    procedure_rule!("task-create-node"),
-    procedure_rule!("task-create-brief"),
-    procedure_rule!("task-create-project-link"),
+    procedure_rule!("task-create-whole"),
     procedure_rule!("task-question-create"),
     // Answering a Question
     procedure_rule!("task-question-take"),

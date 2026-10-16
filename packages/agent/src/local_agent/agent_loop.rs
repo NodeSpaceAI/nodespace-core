@@ -53,7 +53,16 @@ const MAX_CONSECUTIVE_MALFORMED_CALLS: usize = 2;
 /// Stage 1 emits one short tool call — a search query, or a question with a
 /// couple of options — and nothing else. A tight ceiling bounds the latency
 /// the extra turn adds and gives a runaway generation nowhere to go.
-pub const STAGE1_MAX_TOKENS: u32 = 256;
+///
+/// A model that reasons before it calls a tool spends this ceiling on the
+/// reasoning: if all of it goes there, no routing tool is called and the turn
+/// goes on with the raw message. The ceiling leaves room for that reasoning
+/// and then the call.
+pub const STAGE1_MAX_TOKENS: u32 = 1024;
+
+/// The score a procedure Stage 1 named is given at least, so it passes the
+/// score gate whatever the ranking made of it.
+const NAMED_PROCEDURE_MIN_SCORE: f32 = 1.0;
 
 /// The Stage-1 system prompt, naming the registry's skills.
 ///
@@ -120,7 +129,9 @@ pub fn stage1_system_prompt_in_chat(
         prompt.push('\n');
     }
     prompt.push_str(
-        "Call route_query with a short description of the capability the request needs.\n\
+        "Call route_query with a short description of the capability the request needs, and \
+        when the request is plainly one of the capabilities listed, also its exact name as \
+        capability.\n\
         Call route_multi ONLY if the request contains two or more distinct, unambiguous things to \
         do — not one thing phrased at length.\n\
         Call route_clarify ONLY if the request is too ambiguous to describe at all.\n\
@@ -6205,6 +6216,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             tool_calls,
             ..
         } = stage1;
+        // The capability Stage 1 named beside its query, if it named one.
+        let named_capability = tool_calls
+            .iter()
+            .find_map(|tc| routing::named_capability(&tc.function_name, &tc.arguments_json));
 
         let routing_decision_tag: &str;
         // A single query for Query/None/clarify-suppressed; two or more for
@@ -6353,11 +6368,61 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // place. It keeps the score retrieval gave it, when it gave one.
         let retrieved_scores: std::collections::HashMap<String, f32> =
             merged.iter().map(|c| (c.id.clone(), c.score)).collect();
-        let merged = routing::with_pinned_skills(
-            routing::select_candidates(merged),
-            &session.pinned_skills,
-            &retrieved_scores,
-        );
+        // A procedure Stage 1 named governs the turn alone: its own text and
+        // its own tools are what Stage 2 carries. Embedding the query ranks
+        // skills by the nouns they share with it, which is how a request about
+        // a done task's checklist finds Completing a Task instead of the
+        // procedure whose verb it asks for; the model reads the verb.
+        // Alone is deliberate: a procedure carries the tools its steps need
+        // (search included), and a second skill's rules beside it can
+        // contradict its steps.
+        // The name is a claim, so it is looked up: a name that matches no
+        // procedure leaves the ranked candidates as they were.
+        let named_procedure = match named_capability {
+            Some(name) => {
+                let wanted = name.to_lowercase();
+                let mut found = merged
+                    .iter()
+                    .find(|c| c.name.to_lowercase() == wanted)
+                    .cloned();
+                if found.is_none() {
+                    found = match self.tool_executor.retrieve_skills(&name, 8).await {
+                        Ok(r) => r
+                            .candidates
+                            .into_iter()
+                            .find(|c| c.name.to_lowercase() == wanted),
+                        Err(e) => {
+                            tracing::warn!(
+                                capability = %name,
+                                error = %e,
+                                "looking up the capability Stage 1 named failed"
+                            );
+                            None
+                        }
+                    };
+                }
+                found.filter(|c| c.role == nodespace_core::models::SkillRole::Procedure)
+            }
+            None => None,
+        };
+        let selected = match named_procedure {
+            Some(mut procedure) => {
+                tracing::info!(
+                    procedure = %procedure.name,
+                    retrieved_score = procedure.score,
+                    "stage 1 named a procedure; it governs the turn"
+                );
+                // Past the score gate whatever the ranking made of it.
+                procedure.score = procedure
+                    .score
+                    .max(top_score)
+                    .max(NAMED_PROCEDURE_MIN_SCORE);
+                vec![procedure]
+            }
+            None => routing::select_candidates(merged),
+        };
+        let merged =
+            routing::with_pinned_skills(selected, &session.pinned_skills, &retrieved_scores);
         // An option the chat offered belongs to the skill the chat pins,
         // whichever skill its few words retrieved first.
         let merged = if picked_an_option {

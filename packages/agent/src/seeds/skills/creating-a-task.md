@@ -12,11 +12,11 @@ STEP 4, ASK WHEN THE REQUEST IS UNCLEAR: what must be true, for whom, and what i
 
 STEP 5, DECIDE WHAT IT IS AND HOW BIG IT IS, WITH THE USER: a change to code is an `issue` in its software project, and anything else is a plain `task`. Small and clear goes straight to a brief and a checklist, with no spec. Big or risky gets a spec first, and its issues or tasks come from splitting its plan: follow Writing a Spec and do not create the work yet. When it is not plain which of the two this is, ask the user whether it needs a spec, with Asking the User.
 
-STEP 6, WRITE THE BRIEF: the task's title says what will exist when it is done. Its brief is the text under it: durable, so it stays true as the code changes, and behavioural, so it says what the result does and not how it is built. Name no file paths or line numbers. Say what is out of scope. <!-- include: task-create-node --> <!-- include: task-create-brief -->
+STEP 6, WRITE THE BRIEF: the task's title says what will exist when it is done. Its brief is the text under it: durable, so it stays true as the code changes, and behavioural, so it says what the result does and not how it is built. Name no file paths or line numbers. Say what is out of scope. Hold it: steps 6 to 8 are written together, in step 8.
 
-STEP 7, WRITE THE CHECKLIST: the checkboxes directly under the task define done. Each is one condition that can be tested, stated as behaviour. Leave every one unchecked. <!-- include: checkbox-item-create --> A task with no checklist is not ready and appears in Needs shaping.
+STEP 7, WRITE THE CHECKLIST: the checkboxes directly under the task define done. Each is one condition that can be tested, stated as behaviour. Leave every one unchecked. A task with no checklist is not ready and appears in Needs shaping. Hold it too.
 
-STEP 8, LINK ITS PROJECT: <!-- include: task-create-project-link -->
+STEP 8, NAME ITS PROJECT AND WRITE THE TASK: <!-- include: task-create-whole -->
 
 WHEN A REQUEST IS DECLINED: when the user decides this will not be done, leave no open task. Record a decision that says what will not be done and why, so STEP 2 finds it next time, and mark it accepted once they agree. <!-- include: decision-create --> <!-- include: decision-accept --> If a task was already created for it, cancel the task. <!-- include: task-status-dedicated-verb -->
 

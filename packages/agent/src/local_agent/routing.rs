@@ -987,6 +987,29 @@ fn with_the_best_match<E: std::fmt::Display>(
 #[serde(deny_unknown_fields)]
 struct RouteQueryParams {
     query: String,
+    /// The exact name of a listed capability, when the request is plainly
+    /// that one. Read apart from the query: see [`named_capability`]. Any
+    /// JSON value parses, so a malformed name never costs the query.
+    #[serde(default)]
+    capability: Option<serde_json::Value>,
+}
+
+/// The capability Stage 1 named beside its query, when it named one.
+///
+/// A query is embedded and ranked against every skill's description, so a
+/// request heavy with domain nouns ("done", "checklist", "migration guide")
+/// can rank a neighbour that shares the nouns above the procedure whose verb
+/// the request is about. The model reads the intent without that noise, so
+/// it is asked to name the capability when it is plainly one of the listed
+/// ones. The name is only a claim: the caller looks it up in the registry
+/// and ignores one that matches no skill.
+pub fn named_capability(tool_name: &str, arguments_json: &str) -> Option<String> {
+    if tool_name != ROUTE_QUERY_TOOL {
+        return None;
+    }
+    let p: RouteQueryParams = serde_json::from_str(arguments_json).ok()?;
+    let name = p.capability?.as_str()?.trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1048,6 +1071,12 @@ pub fn stage1_tool_definitions() -> Vec<ToolDefinition> {
                              waits for them, name what is created and who it is for: \
                              'create a task for Sam: which vendor signed the contract', not \
                              the subject the question is about."
+                    },
+                    "capability": {
+                        "type": "string",
+                        "description": "The exact name of one of the listed capabilities, \
+                             only when the request is plainly that capability. Leave it out \
+                             when none of them is plainly it."
                     }
                 },
                 "required": ["query"]
@@ -2151,6 +2180,43 @@ pub fn fail_open_surface(all: &[ToolDefinition]) -> Vec<ToolDefinition> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_named_capability_is_read_from_route_query_only() {
+        let named = |tool: &str, args: &str| named_capability(tool, args);
+        assert_eq!(
+            named(
+                ROUTE_QUERY_TOOL,
+                r#"{"query":"q","capability":"  Creating a Task "}"#
+            ),
+            Some("Creating a Task".to_string())
+        );
+        for args in [
+            r#"{"query":"q"}"#,
+            r#"{"query":"q","capability":null}"#,
+            r#"{"query":"q","capability":""}"#,
+            r#"{"query":"q","capability":"   "}"#,
+            r#"{"query":"q","capability":7}"#,
+            r#"{"query":"q","capability":["Creating a Task"]}"#,
+            "not json",
+        ] {
+            assert_eq!(named(ROUTE_QUERY_TOOL, args), None, "{args}");
+        }
+        assert_eq!(
+            named(
+                "route_clarify",
+                r#"{"query":"q","capability":"Creating a Task"}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_malformed_capability_does_not_cost_the_query() {
+        let parsed: RouteQueryParams =
+            serde_json::from_str(r#"{"query":"track this bug","capability":7}"#).expect("parses");
+        assert_eq!(parsed.query, "track this bug");
+    }
 
     fn candidate(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
         SkillCandidate {
