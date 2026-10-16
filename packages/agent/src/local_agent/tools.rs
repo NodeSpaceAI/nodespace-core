@@ -881,6 +881,29 @@ pub async fn pinned_skill_candidates(
         .collect())
 }
 
+/// The text of one checklist item, without a list marker or checkbox a model
+/// wrote in front of it: one `-`, `*` or `+` followed by whitespace, then one
+/// optional `[ ]`, `[x]` or `[X]`. Emphasis (`**bold**`) and a leading sign
+/// (`-1 rejected`) are text and stay.
+fn checklist_item_text(item: &str) -> &str {
+    let mut rest = item.trim();
+    for marker in ['-', '*', '+'] {
+        if let Some(after) = rest.strip_prefix(marker) {
+            if after.is_empty() || after.starts_with(char::is_whitespace) {
+                rest = after.trim_start();
+                break;
+            }
+        }
+    }
+    for checkbox in ["[ ]", "[x]", "[X]"] {
+        if let Some(after) = rest.strip_prefix(checkbox) {
+            rest = after.trim_start();
+            break;
+        }
+    }
+    rest.trim()
+}
+
 /// Prefix a bare node ID with `nodespace://` so the model sees the URI format
 /// it should use when referencing nodes in responses.
 pub(crate) fn node_uri(id: &str) -> String {
@@ -6380,9 +6403,10 @@ impl GraphToolExecutor {
     /// under it for each checklist item, and a link from its project.
     ///
     /// The project is read and checked before anything is written, so a bad
-    /// id refuses with nothing created. A write that then fails removes the
-    /// task with everything under it, so the call leaves the graph as it found
-    /// it or as asked.
+    /// id refuses with nothing created. The writes are not one transaction: a
+    /// reader can briefly see the task with part of its brief. A write that
+    /// fails removes the task with everything under it, so the call ends with
+    /// the graph as it found it or as asked.
     async fn exec_create_task(
         &self,
         tool_call_id: &str,
@@ -6429,16 +6453,9 @@ impl GraphToolExecutor {
             .checklist
             .entries(false)
             .into_iter()
-            .map(|item| {
-                let item = item
-                    .trim_start_matches(['-', '*', ' '])
-                    .trim_start_matches("[ ]")
-                    .trim_start_matches("[x]")
-                    .trim()
-                    .to_string();
-                format!("- [ ] {item}")
-            })
-            .filter(|item| item != "- [ ] ")
+            .map(|item| checklist_item_text(&item).to_string())
+            .filter(|text| !text.is_empty())
+            .map(|text| format!("- [ ] {text}"))
             .collect();
         if checklist.is_empty() {
             return Err(invalid(
@@ -13152,6 +13169,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("embedding service"));
+    }
+
+    #[test]
+    fn a_checklist_item_loses_a_marker_and_a_checkbox_and_nothing_else() {
+        for (written, text) in [
+            ("Exports keep order", "Exports keep order"),
+            ("- Exports keep order", "Exports keep order"),
+            ("* [ ] Exports keep order", "Exports keep order"),
+            ("- [x] Exports keep order", "Exports keep order"),
+            ("- [X] Exports keep order", "Exports keep order"),
+            ("[ ] Exports keep order", "Exports keep order"),
+            ("**Exports** keep order", "**Exports** keep order"),
+            ("-1 is rejected", "-1 is rejected"),
+            ("-", ""),
+        ] {
+            assert_eq!(checklist_item_text(written), text, "{written:?}");
+        }
     }
 
     // -- Helper: node_uri / strip_node_uri round-trip --

@@ -988,9 +988,10 @@ fn with_the_best_match<E: std::fmt::Display>(
 struct RouteQueryParams {
     query: String,
     /// The exact name of a listed capability, when the request is plainly
-    /// that one. Read apart from the query: see [`named_capability`].
+    /// that one. Read apart from the query: see [`named_capability`]. Any
+    /// JSON value parses, so a malformed name never costs the query.
     #[serde(default)]
-    capability: Option<String>,
+    capability: Option<serde_json::Value>,
 }
 
 /// The capability Stage 1 named beside its query, when it named one.
@@ -1007,7 +1008,7 @@ pub fn named_capability(tool_name: &str, arguments_json: &str) -> Option<String>
         return None;
     }
     let p: RouteQueryParams = serde_json::from_str(arguments_json).ok()?;
-    let name = p.capability?.trim().to_string();
+    let name = p.capability?.as_str()?.trim().to_string();
     (!name.is_empty()).then_some(name)
 }
 
@@ -2179,6 +2180,43 @@ pub fn fail_open_surface(all: &[ToolDefinition]) -> Vec<ToolDefinition> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_named_capability_is_read_from_route_query_only() {
+        let named = |tool: &str, args: &str| named_capability(tool, args);
+        assert_eq!(
+            named(
+                ROUTE_QUERY_TOOL,
+                r#"{"query":"q","capability":"  Creating a Task "}"#
+            ),
+            Some("Creating a Task".to_string())
+        );
+        for args in [
+            r#"{"query":"q"}"#,
+            r#"{"query":"q","capability":null}"#,
+            r#"{"query":"q","capability":""}"#,
+            r#"{"query":"q","capability":"   "}"#,
+            r#"{"query":"q","capability":7}"#,
+            r#"{"query":"q","capability":["Creating a Task"]}"#,
+            "not json",
+        ] {
+            assert_eq!(named(ROUTE_QUERY_TOOL, args), None, "{args}");
+        }
+        assert_eq!(
+            named(
+                "route_clarify",
+                r#"{"query":"q","capability":"Creating a Task"}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_malformed_capability_does_not_cost_the_query() {
+        let parsed: RouteQueryParams =
+            serde_json::from_str(r#"{"query":"track this bug","capability":7}"#).expect("parses");
+        assert_eq!(parsed.query, "track this bug");
+    }
 
     fn candidate(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
         SkillCandidate {

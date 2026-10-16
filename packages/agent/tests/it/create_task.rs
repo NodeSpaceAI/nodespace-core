@@ -268,10 +268,10 @@ async fn a_project_that_does_not_exist_or_is_not_one_refuses_with_nothing_create
     let (executor, ns, _tmp) = executor().await;
     let before = written_count(&ns).await;
 
-    for project in [
-        "7d3e9c52-4a6f-4b8a-9c35-ffffffffffff",
-        "No such project",
-        NOT_A_PROJECT,
+    for (project, names_nothing) in [
+        ("7d3e9c52-4a6f-4b8a-9c35-ffffffffffff", true),
+        ("No such project", true),
+        (NOT_A_PROJECT, false),
     ] {
         let error = executor
             .execute(
@@ -285,13 +285,19 @@ async fn a_project_that_does_not_exist_or_is_not_one_refuses_with_nothing_create
             )
             .await
             .expect_err("a bad project must be refused");
-        let ToolError::UnresolvedId { tool, .. } = &error else {
-            if matches!(&error, ToolError::InvalidArguments { tool, .. } if tool == "create_task") {
-                continue;
-            }
-            panic!("unexpected error for {project}: {error:?}");
-        };
-        assert_eq!(tool, "create_task");
+        // An id that names nothing is unresolved; a node of the wrong type is
+        // an invalid argument.
+        if names_nothing {
+            assert!(
+                matches!(&error, ToolError::UnresolvedId { tool, .. } if tool == "create_task"),
+                "{project}: {error:?}"
+            );
+        } else {
+            assert!(
+                matches!(&error, ToolError::InvalidArguments { tool, .. } if tool == "create_task"),
+                "{project}: {error:?}"
+            );
+        }
     }
     assert_eq!(written_count(&ns).await, before);
 }
