@@ -72,7 +72,11 @@ async fn children(ns: &NodeService, id: &str) -> Vec<(String, String)> {
 async fn written_count(ns: &NodeService) -> usize {
     let mut total = 0;
     for node_type in ["task", "issue", "text", "checkbox"] {
-        total += ns.query_nodes_by_type(node_type, false).await.unwrap().len();
+        total += ns
+            .query_nodes_by_type(node_type, false)
+            .await
+            .unwrap()
+            .len();
     }
     total
 }
@@ -161,7 +165,7 @@ async fn one_call_writes_the_task_its_brief_its_checklist_and_its_project_link()
                 .to_string()
         })
         .collect();
-    assert_eq!(ids, [task.clone()]);
+    assert_eq!(ids, std::slice::from_ref(&task));
 
     // One task, two paragraphs, two boxes: five new nodes.
     assert_eq!(written_count(&ns).await, before + 5);

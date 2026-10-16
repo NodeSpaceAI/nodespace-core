@@ -11,6 +11,7 @@
 
 mod conflict_tools;
 mod create_question_task;
+mod create_task;
 mod decision_marker_golden;
 mod extends_chain_tool_results_test;
 mod get_related_nodes_both_direction;
@@ -43,7 +44,6 @@ mod search_nodes_excludes_conversations;
 mod search_nodes_relationship_as_property;
 mod search_skills_latency;
 mod seed_tables;
-mod create_task;
 mod skill_confusion_matrix;
 mod skill_guidance_fetch_mechanism;
 mod skill_guidance_tool_commands;

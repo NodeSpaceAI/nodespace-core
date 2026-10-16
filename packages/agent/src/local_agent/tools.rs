@@ -6519,11 +6519,9 @@ impl GraphToolExecutor {
             }
         }
         for item in &checklist {
-            if let Err(e) = node_ops::create_node(
-                &ns,
-                create(item.clone(), "checkbox", Some(task_id.clone())),
-            )
-            .await
+            if let Err(e) =
+                node_ops::create_node(&ns, create(item.clone(), "checkbox", Some(task_id.clone())))
+                    .await
             {
                 return Err(rollback("writing the checklist".to_string(), e.to_string()).await);
             }
