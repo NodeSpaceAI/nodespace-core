@@ -1523,13 +1523,21 @@ mod tests {
 
     #[test]
     fn clean_cli_error_strips_the_termination_prefix_and_caused_by_chain() {
-        let raw = "Error: Could not connect to nodespaced at /tmp/x.sock.\nIs the daemon running? Start it with `nodespaced` in another terminal.\n\nCaused by:\n    0: transport error\n    1: No such file or directory (os error 2)";
+        let raw = "Error: Could not connect to nodespaced at /tmp/x.sock.\nIs the daemon running? Open the NodeSpace app (it starts the daemon), or run `nodespaced` in another terminal.\n\nCaused by:\n    0: transport error\n    1: No such file or directory (os error 2)";
         let cleaned = clean_cli_error(raw);
         assert_eq!(
             cleaned,
-            "Could not connect to nodespaced at /tmp/x.sock.\nIs the daemon running? Start it with `nodespaced` in another terminal."
+            "Could not connect to nodespaced at /tmp/x.sock.\nIs the daemon running? Open the NodeSpace app (it starts the daemon), or run `nodespaced` in another terminal."
         );
         assert!(!cleaned.to_lowercase().contains("os error"));
+    }
+
+    #[test]
+    fn clean_cli_error_keeps_the_incompatible_database_explanation() {
+        let raw = "Error: Could not connect to nodespaced at /tmp/x.sock.\nThe daemon refused the database at /h/nodespace.db because another version of NodeSpace created it: bad column\nTo start fresh, move it aside.\n\nCaused by:\n    0: transport error";
+        let cleaned = clean_cli_error(raw);
+        assert!(cleaned.contains("bad column") && cleaned.contains("move it aside"));
+        assert!(!cleaned.contains("transport error"));
     }
 
     #[test]
