@@ -88,9 +88,11 @@ jobs:
           brew install protobuf
           # The macos-latest image now ships Homebrew openssl@4, which cmake finds
           # for llama.cpp's vendored cpp-httplib; that httplib does not compile
-          # against OpenSSL 4 (X509_NAME const mismatch). Remove it so the
-          # llama-cpp-sys-2 build falls back to the system TLS / no-OpenSSL path.
-          brew uninstall --ignore-dependencies openssl@4 2>/dev/null || true
+          # against OpenSSL 4 (X509_NAME const mismatch). Point cmake's FindOpenSSL
+          # at openssl@3 for every later step. (Removing openssl@4 breaks tools
+          # linked against it, e.g. the esbuild postinstall aborts.)
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -779,9 +781,11 @@ jobs:
           brew install protobuf
           # The macos-latest image now ships Homebrew openssl@4, which cmake finds
           # for llama.cpp's vendored cpp-httplib; that httplib does not compile
-          # against OpenSSL 4 (X509_NAME const mismatch). Remove it so the
-          # llama-cpp-sys-2 build falls back to the system TLS / no-OpenSSL path.
-          brew uninstall --ignore-dependencies openssl@4 2>/dev/null || true
+          # against OpenSSL 4 (X509_NAME const mismatch). Point cmake's FindOpenSSL
+          # at openssl@3 for every later step. (Removing openssl@4 breaks tools
+          # linked against it, e.g. the esbuild postinstall aborts.)
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - name: Install Protobuf (Linux)
         if: steps.filter.outputs.skip != 'true' && matrix.os == 'ubuntu-22.04'
