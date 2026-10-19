@@ -96,7 +96,10 @@ pub type LocalAgentClient = LocalAgentServiceClient<Intercepted>;
     long_about = "nodespace is a stateless gRPC client that connects to the nodespaced daemon \
                   via Unix Domain Socket (macOS/Linux) or Named Pipe (Windows) and exposes the \
                   knowledge graph as shell commands.\n\n\
-                  Start the daemon with `nodespaced` before invoking subcommands."
+                  The daemon normally runs as the installed background service or is started by \
+                  the NodeSpace app; run `nodespaced` in a terminal only when neither is set up.\n\n\
+                  This CLI has no sync, account or sign-in commands: Sync is managed in the \
+                  NodeSpace app."
 )]
 pub struct Cli {
     /// Emit raw JSON instead of human-readable output.
@@ -1118,6 +1121,21 @@ mod connect_failure_tests {
             detail: "relationship: missing column".into(),
             detected_at: "2026-10-19T10:00:00Z".into(),
         }
+    }
+
+    #[test]
+    fn help_says_sync_is_managed_in_the_app_and_does_not_push_a_bare_daemon() {
+        use clap::CommandFactory;
+        let help = Cli::command().render_long_help().to_string();
+        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("Sync is managed in the NodeSpace app"),
+            "{flat}"
+        );
+        assert!(
+            !flat.contains("Start the daemon with `nodespaced` before"),
+            "{flat}"
+        );
     }
 
     #[test]
