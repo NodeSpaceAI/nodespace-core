@@ -158,10 +158,10 @@ impl PlaybookEngine {
         // The CronRunner exits via the shutdown_rx watch (already signalled).
         drop(queue_tx);
         if let Err(e) = processor_handle.await {
-            error!("RuleProcessor task panicked: {:?}", e);
+            log_task_join_error("RuleProcessor", &e);
         }
         if let Err(e) = cron_handle.await {
-            error!("CronRunner task panicked: {:?}", e);
+            log_task_join_error("CronRunner", &e);
         }
 
         result
@@ -1676,6 +1676,46 @@ pub(crate) fn relationship_source_id(event: &DomainEvent) -> Option<&str> {
             Some(crate::db::events::bare_node_id(from_id))
         }
         _ => None,
+    }
+}
+
+/// How a failed join of a background task is reported. A panic is a bug and
+/// stays at ERROR; a cancellation is what the runtime does to tasks still
+/// running when it shuts down, so it is routine.
+fn join_error_level(e: &tokio::task::JoinError) -> tracing::Level {
+    if e.is_panic() {
+        tracing::Level::ERROR
+    } else {
+        tracing::Level::DEBUG
+    }
+}
+
+fn log_task_join_error(task: &str, e: &tokio::task::JoinError) {
+    if join_error_level(e) == tracing::Level::ERROR {
+        error!("{} task panicked: {:?}", task, e);
+    } else {
+        debug!("{} task cancelled: {:?}", task, e);
+    }
+}
+
+#[cfg(test)]
+mod join_error_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn panicking_task_is_logged_at_error() {
+        let e = tokio::spawn(async { panic!("boom") })
+            .await
+            .expect_err("task panicked");
+        assert_eq!(join_error_level(&e), tracing::Level::ERROR);
+    }
+
+    #[tokio::test]
+    async fn cancelled_task_is_logged_at_debug() {
+        let handle = tokio::spawn(std::future::pending::<()>());
+        handle.abort();
+        let e = handle.await.expect_err("task cancelled");
+        assert_eq!(join_error_level(&e), tracing::Level::DEBUG);
     }
 }
 
