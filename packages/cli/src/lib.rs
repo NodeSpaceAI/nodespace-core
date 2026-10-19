@@ -426,23 +426,28 @@ fn connect_error_context(sock: &std::path::Path, failure: ConnectFailure) -> Str
         ConnectFailure::NotRunning => not_running_message(
             sock,
             read_incompatible_marker(sock).as_ref(),
-            service_restart_hint_here().as_deref(),
+            service_restart_hint_here(socket_is_dev(sock)).as_deref(),
         ),
     }
 }
 
+/// Whether `sock` is the dev build flavour's socket.
+fn socket_is_dev(sock: &std::path::Path) -> bool {
+    sock.file_name().and_then(|n| n.to_str())
+        == Some(nodespace_proto::socket::DAEMON_SOCKET_NAMES[1])
+}
+
 /// The incompatible-database marker the daemon left in the state directory the
 /// socket lives in, if any. The socket's own flavour (release or dev) is tried
-/// first. An unreadable or malformed marker counts as absent: the generic
+/// first. An unreadable or malformed marker, or one naming a database that no
+/// longer exists (moved aside since), counts as absent: the generic
 /// advice is the honest fallback.
 fn read_incompatible_marker(
     sock: &std::path::Path,
 ) -> Option<nodespace_types::IncompatibleDatabase> {
-    use nodespace_proto::socket::{
-        incompatible_database_name, DAEMON_SOCKET_NAMES, INCOMPATIBLE_DATABASE_NAMES,
-    };
+    use nodespace_proto::socket::{incompatible_database_name, INCOMPATIBLE_DATABASE_NAMES};
     let dir = sock.parent()?;
-    let dev_first = sock.file_name().and_then(|n| n.to_str()) == Some(DAEMON_SOCKET_NAMES[1]);
+    let dev_first = socket_is_dev(sock);
     let first = incompatible_database_name(dev_first);
     let second = INCOMPATIBLE_DATABASE_NAMES
         .iter()
@@ -450,28 +455,41 @@ fn read_incompatible_marker(
         .find(|n| *n != first)?;
     [first, second].into_iter().find_map(|name| {
         let bytes = std::fs::read(dir.join(name)).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        let marker: nodespace_types::IncompatibleDatabase = serde_json::from_slice(&bytes).ok()?;
+        // A database that has since been moved aside is no longer the problem.
+        std::path::Path::new(&marker.database_path)
+            .exists()
+            .then_some(marker)
     })
 }
 
 /// The command that restarts the installed background service, when one is
 /// registered for this user: a bare `nodespaced` would start a different
 /// daemon, without the configuration the service's registration carries.
+#[cfg(any(unix, test))]
 fn service_restart_hint(
     os: &str,
     home: &std::path::Path,
     system_launch_agents: &std::path::Path,
     uid: u32,
+    dev: bool,
 ) -> Option<String> {
     match os {
-        "macos" => ["app.nodespace.daemon", "app.nodespace.daemon.dev"]
-            .into_iter()
-            .find(|label| {
-                let plist = format!("{label}.plist");
-                system_launch_agents.join(&plist).exists()
-                    || home.join("Library/LaunchAgents").join(&plist).exists()
-            })
-            .map(|label| format!("launchctl kickstart -k gui/{uid}/{label}")),
+        "macos" => {
+            let labels = if dev {
+                ["app.nodespace.daemon.dev", "app.nodespace.daemon"]
+            } else {
+                ["app.nodespace.daemon", "app.nodespace.daemon.dev"]
+            };
+            labels
+                .into_iter()
+                .find(|label| {
+                    let plist = format!("{label}.plist");
+                    system_launch_agents.join(&plist).exists()
+                        || home.join("Library/LaunchAgents").join(&plist).exists()
+                })
+                .map(|label| format!("launchctl kickstart -k gui/{uid}/{label}"))
+        }
         "linux" => home
             .join(".config/systemd/user/nodespace.service")
             .exists()
@@ -481,7 +499,7 @@ fn service_restart_hint(
 }
 
 #[cfg(unix)]
-fn service_restart_hint_here() -> Option<String> {
+fn service_restart_hint_here(dev: bool) -> Option<String> {
     let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
     // Only the macOS hint uses the uid (`gui/<uid>`).
     #[cfg(target_os = "macos")]
@@ -494,11 +512,12 @@ fn service_restart_hint_here() -> Option<String> {
         &home,
         std::path::Path::new("/Library/LaunchAgents"),
         uid,
+        dev,
     )
 }
 
 #[cfg(not(unix))]
-fn service_restart_hint_here() -> Option<String> {
+fn service_restart_hint_here(_dev: bool) -> Option<String> {
     None
 }
 
@@ -1126,25 +1145,46 @@ mod connect_failure_tests {
     }
 
     #[test]
-    fn marker_is_read_for_the_sockets_flavour_and_ignores_garbage() {
+    fn marker_is_read_for_the_sockets_flavour_and_ignores_garbage_and_stale() {
         let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("nodespace.db");
+        std::fs::write(&db, b"").unwrap();
+        let mut m = marker();
+        m.database_path = db.display().to_string();
         let sock = dir.path().join("daemon.sock");
+        let file = dir.path().join("incompatible-database.json");
         assert!(read_incompatible_marker(&sock).is_none());
-        std::fs::write(dir.path().join("incompatible-database.json"), b"not json").unwrap();
+        std::fs::write(&file, b"not json").unwrap();
         assert!(read_incompatible_marker(&sock).is_none());
+        std::fs::write(&file, serde_json::to_vec(&m).unwrap()).unwrap();
+        assert_eq!(read_incompatible_marker(&sock), Some(m.clone()));
+        // A dev socket finds the dev marker first.
+        let mut dev = m.clone();
+        dev.detail = "dev".into();
         std::fs::write(
-            dir.path().join("incompatible-database.json"),
-            serde_json::to_vec(&marker()).unwrap(),
+            dir.path().join("incompatible-database-dev.json"),
+            serde_json::to_vec(&dev).unwrap(),
         )
         .unwrap();
-        assert_eq!(read_incompatible_marker(&sock), Some(marker()));
-        // A dev socket finds the dev marker first.
-        let dev = dir.path().join("incompatible-database-dev.json");
-        let mut m = marker();
-        m.detail = "dev".into();
-        std::fs::write(&dev, serde_json::to_vec(&m).unwrap()).unwrap();
         let dev_sock = dir.path().join("daemon-dev.sock");
         assert_eq!(read_incompatible_marker(&dev_sock).unwrap().detail, "dev");
+        // Once the database is moved aside the marker is stale.
+        std::fs::remove_file(&db).unwrap();
+        assert!(read_incompatible_marker(&sock).is_none());
+    }
+
+    #[test]
+    fn dev_socket_prefers_the_dev_service_label() {
+        let home = tempfile::tempdir().unwrap();
+        let agents = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&agents).unwrap();
+        for label in ["app.nodespace.daemon", "app.nodespace.daemon.dev"] {
+            std::fs::write(agents.join(format!("{label}.plist")), "").unwrap();
+        }
+        let sys = tempfile::tempdir().unwrap();
+        let hint = |dev| service_restart_hint("macos", home.path(), sys.path(), 5, dev).unwrap();
+        assert!(hint(true).ends_with("/app.nodespace.daemon.dev"));
+        assert!(hint(false).ends_with("/app.nodespace.daemon"));
     }
 
     #[test]
@@ -1152,28 +1192,28 @@ mod connect_failure_tests {
         let home = tempfile::tempdir().unwrap();
         let sys = tempfile::tempdir().unwrap();
         assert_eq!(
-            service_restart_hint("macos", home.path(), sys.path(), 501),
+            service_restart_hint("macos", home.path(), sys.path(), 501, false),
             None
         );
         let user = home.path().join("Library/LaunchAgents");
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(user.join("app.nodespace.daemon.plist"), "").unwrap();
         assert_eq!(
-            service_restart_hint("macos", home.path(), sys.path(), 501).as_deref(),
+            service_restart_hint("macos", home.path(), sys.path(), 501, false).as_deref(),
             Some("launchctl kickstart -k gui/501/app.nodespace.daemon")
         );
         let home2 = tempfile::tempdir().unwrap();
         std::fs::write(sys.path().join("app.nodespace.daemon.plist"), "").unwrap();
-        assert!(service_restart_hint("macos", home2.path(), sys.path(), 7).is_some());
+        assert!(service_restart_hint("macos", home2.path(), sys.path(), 7, false).is_some());
         let unit = home.path().join(".config/systemd/user");
         std::fs::create_dir_all(&unit).unwrap();
         std::fs::write(unit.join("nodespace.service"), "").unwrap();
         assert_eq!(
-            service_restart_hint("linux", home.path(), sys.path(), 1).as_deref(),
+            service_restart_hint("linux", home.path(), sys.path(), 1, false).as_deref(),
             Some("systemctl --user restart nodespace")
         );
         assert_eq!(
-            service_restart_hint("windows", home.path(), sys.path(), 1),
+            service_restart_hint("windows", home.path(), sys.path(), 1, false),
             None
         );
     }
