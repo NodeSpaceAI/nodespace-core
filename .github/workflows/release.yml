@@ -86,6 +86,13 @@ jobs:
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew untap aws/tap azure/bicep 2>/dev/null || true
           brew install protobuf
+          # The macos-latest image now ships Homebrew openssl@4, which cmake finds
+          # for llama.cpp's vendored cpp-httplib; that httplib does not compile
+          # against OpenSSL 4 (X509_NAME const mismatch). Point cmake's FindOpenSSL
+          # at openssl@3 for every later step. (Removing openssl@4 breaks tools
+          # linked against it, e.g. the esbuild postinstall aborts.)
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -772,6 +779,13 @@ jobs:
           export HOMEBREW_NO_REQUIRE_TAP_TRUST=1
           brew untap aws/tap azure/bicep 2>/dev/null || true
           brew install protobuf
+          # The macos-latest image now ships Homebrew openssl@4, which cmake finds
+          # for llama.cpp's vendored cpp-httplib; that httplib does not compile
+          # against OpenSSL 4 (X509_NAME const mismatch). Point cmake's FindOpenSSL
+          # at openssl@3 for every later step. (Removing openssl@4 breaks tools
+          # linked against it, e.g. the esbuild postinstall aborts.)
+          brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - name: Install Protobuf (Linux)
         if: steps.filter.outputs.skip != 'true' && matrix.os == 'ubuntu-22.04'
