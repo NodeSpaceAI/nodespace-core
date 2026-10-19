@@ -478,8 +478,8 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_ansi(log_uses_ansi(
-            std::io::stderr().is_terminal(),
-            std::env::var_os("NO_COLOR").is_some(),
+            std::io::stdout().is_terminal(),
+            std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
         ))
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -1237,15 +1237,15 @@ const VERSION_FLAG: &str = "--version";
 /// `main` answers them before [`first_unrecognized_arg`] runs.
 const HELP_FLAGS: &[&str] = &["--help", "-h"];
 
-/// What `nodespaced` accepts, printed for a help flag and after the complaint
-/// about an argument it does not recognise.
 /// Whether log lines carry ANSI colour codes. Only a terminal gets them: under
-/// a service manager stderr is a file, and escape sequences there make the log
+/// a service manager the output is a file, and escape sequences there make the log
 /// unreadable to a person sending it in. `NO_COLOR` turns them off everywhere.
-fn log_uses_ansi(stderr_is_terminal: bool, no_color: bool) -> bool {
-    stderr_is_terminal && !no_color
+fn log_uses_ansi(stdout_is_terminal: bool, no_color: bool) -> bool {
+    stdout_is_terminal && !no_color
 }
 
+/// What `nodespaced` accepts, printed for a help flag and after the complaint
+/// about an argument it does not recognise.
 fn usage() -> String {
     format!(
         "Usage: nodespaced [{TRAY_FLAG}]\n\
