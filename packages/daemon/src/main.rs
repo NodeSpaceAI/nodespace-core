@@ -36,6 +36,7 @@
 //! tonic server. Do not assume a peer-identity check exists anywhere in this
 //! file.
 
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -476,6 +477,10 @@ fn main() -> Result<()> {
     }
 
     tracing_subscriber::fmt()
+        .with_ansi(log_uses_ansi(
+            std::io::stderr().is_terminal(),
+            std::env::var_os("NO_COLOR").is_some(),
+        ))
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -1234,6 +1239,13 @@ const HELP_FLAGS: &[&str] = &["--help", "-h"];
 
 /// What `nodespaced` accepts, printed for a help flag and after the complaint
 /// about an argument it does not recognise.
+/// Whether log lines carry ANSI colour codes. Only a terminal gets them: under
+/// a service manager stderr is a file, and escape sequences there make the log
+/// unreadable to a person sending it in. `NO_COLOR` turns them off everywhere.
+fn log_uses_ansi(stderr_is_terminal: bool, no_color: bool) -> bool {
+    stderr_is_terminal && !no_color
+}
+
 fn usage() -> String {
     format!(
         "Usage: nodespaced [{TRAY_FLAG}]\n\
@@ -2583,5 +2595,20 @@ mod socket_fallback_flavour_tests {
             Some(v) => std::env::set_var("NODESPACED_SOCKET", v),
             None => std::env::remove_var("NODESPACED_SOCKET"),
         }
+    }
+}
+
+#[cfg(test)]
+mod log_ansi_tests {
+    use super::log_uses_ansi;
+
+    #[test]
+    fn colour_only_on_a_terminal_without_no_color() {
+        assert!(log_uses_ansi(true, false));
+        assert!(
+            !log_uses_ansi(false, false),
+            "a log file must be plain text"
+        );
+        assert!(!log_uses_ansi(true, true), "NO_COLOR wins");
     }
 }
