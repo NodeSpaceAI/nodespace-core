@@ -1800,6 +1800,97 @@ impl SqliteStore {
         Ok(Ok((true, nodes_to_delete)))
     }
 
+    /// Delete exactly one node, and only if it has no `has_child` children.
+    ///
+    /// The non-cascading counterpart of [`Self::delete_subtree_atomic`]. The node's own
+    /// relationship and embedding rows go with it (FK CASCADE); no other node is touched.
+    /// The children check runs inside the write transaction, after the writer lock is taken,
+    /// so a child attached after the caller collected its subtree is reported as
+    /// [`LeafDeleteOutcome::HasChildren`] instead of being orphaned.
+    ///
+    /// **OCC:** the node is version-checked at `expected_version` inside the transaction;
+    /// a mismatch is `Ok(Err(VersionConflict))` and nothing is written. The version check
+    /// precedes the children check.
+    ///
+    /// **Events:** one `NodeDeleted` notification after commit, only when a row was deleted.
+    pub async fn delete_leaf_atomic(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+        source: Option<String>,
+        write_context: WriteContext,
+    ) -> Result<std::result::Result<LeafDeleteOutcome, VersionConflict>> {
+        let node = match self.get_node(node_id).await? {
+            Some(n) => n,
+            None => return Ok(Ok(LeafDeleteOutcome::NotFound)),
+        };
+        self.assert_schema_deletable(&node).await?;
+        if node.version != expected_version {
+            return Ok(Err(VersionConflict {
+                node_id: node_id.to_string(),
+                expected: expected_version,
+                actual: node.version,
+            }));
+        }
+
+        // The authoritative checks run inside the write transaction: the writer lock
+        // serializes against any concurrent child insert.
+        let db = self.write().await;
+        let tx = db
+            .transaction()
+            .await
+            .context("Failed to begin leaf delete transaction")?;
+        let mut recheck = tx
+            .query(
+                "SELECT version, \
+                 (SELECT COUNT(*) FROM relationship \
+                  WHERE in_node = ?1 AND relationship_type = 'has_child') \
+                 FROM node WHERE id = ?1",
+                libsql::params![node_id.to_string()],
+            )
+            .await
+            .context("Failed to re-check leaf delete target")?;
+        let (actual_version, now_children): (i64, i64) = match recheck.next().await? {
+            Some(row) => (row.get(0)?, row.get(1)?),
+            None => return Ok(Ok(LeafDeleteOutcome::NotFound)),
+        };
+        drop(recheck);
+        if actual_version != expected_version {
+            return Ok(Err(VersionConflict {
+                node_id: node_id.to_string(),
+                expected: expected_version,
+                actual: actual_version,
+            }));
+        }
+        if now_children > 0 {
+            return Ok(Ok(LeafDeleteOutcome::HasChildren {
+                child_count: now_children as u64,
+            }));
+        }
+
+        tx.execute(
+            "DELETE FROM node WHERE id = ?1",
+            libsql::params![node_id.to_string()],
+        )
+        .await
+        .context("Failed to delete leaf node")?;
+        tx.commit()
+            .await
+            .context("Failed to commit leaf delete transaction")?;
+        drop(db);
+
+        self.notify(StoreChange {
+            operation: StoreOperation::Deleted,
+            node,
+            source,
+            previous_node: None,
+            playbook_context: None,
+            write_context,
+        });
+
+        Ok(Ok(LeafDeleteOutcome::Deleted))
+    }
+
     /// Delete all descendants of `parent_id` (the full child subtree) without touching the parent.
     ///
     /// Uses a recursive CTE to collect all descendant IDs, then deletes them in one statement.

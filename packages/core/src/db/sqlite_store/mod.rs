@@ -92,6 +92,21 @@ pub struct VersionConflict {
     pub actual: i64,
 }
 
+/// What [`SqliteStore::delete_leaf_atomic`] did.
+///
+/// A version mismatch is not an outcome here: it is the separate
+/// `Ok(Err(VersionConflict))` every OCC store write returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeafDeleteOutcome {
+    /// The node had no `has_child` children and was deleted (with its own edges).
+    Deleted,
+    /// The node was already gone; nothing was written (idempotent).
+    NotFound,
+    /// The node has `child_count` children as of the write; nothing was deleted.
+    /// The caller can re-collect the subtree and retry.
+    HasChildren { child_count: u64 },
+}
+
 impl std::fmt::Display for VersionConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

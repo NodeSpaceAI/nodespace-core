@@ -7737,6 +7737,170 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
+    // Non-cascading single-node delete (`delete_leaf_node`) and `is_persisted`
+    // ---------------------------------------------------------------------------
+
+    async fn make_text(service: &NodeService, content: &str) -> String {
+        service
+            .create_node(Node::new(
+                "text".to_string(),
+                content.to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_deletes_only_the_leaf_and_emits_one_event() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        let parent = make_text(&service, "parent").await;
+        let leaf = make_text(&service, "leaf").await;
+        let sibling = make_text(&service, "sibling").await;
+        for c in [&leaf, &sibling] {
+            service
+                .create_parent_edge(c, &parent, InsertPosition::End)
+                .await
+                .unwrap();
+        }
+        let mut rx = service.subscribe_to_events();
+        let v = service.get_node(&leaf).await.unwrap().unwrap().version;
+
+        let out = service.delete_leaf_node(&leaf, v).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::Deleted);
+        assert!(service.get_node(&leaf).await.unwrap().is_none());
+        assert!(service.get_node(&parent).await.unwrap().is_some());
+        assert!(service.get_node(&sibling).await.unwrap().is_some());
+        let kids = service.get_children(&parent).await.unwrap();
+        assert_eq!(kids.len(), 1, "the leaf's own edge went with it");
+
+        let mut deleted = Vec::new();
+        while let Ok(Ok(env)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await
+        {
+            if let DomainEvent::NodeDeleted { id, .. } = env.event {
+                deleted.push(id);
+            }
+        }
+        assert_eq!(deleted, vec![leaf]);
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_refuses_a_node_with_children_and_deletes_nothing() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        let parent = make_text(&service, "parent").await;
+        let child = make_text(&service, "child").await;
+        let grandchild = make_text(&service, "grandchild").await;
+        service
+            .create_parent_edge(&child, &parent, InsertPosition::End)
+            .await
+            .unwrap();
+        service
+            .create_parent_edge(&grandchild, &child, InsertPosition::End)
+            .await
+            .unwrap();
+        let v = service.get_node(&parent).await.unwrap().unwrap().version;
+
+        let out = service.delete_leaf_node(&parent, v).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::HasChildren { child_count: 1 });
+        for id in [&parent, &child, &grandchild] {
+            assert!(service.get_node(id).await.unwrap().is_some(), "{id} kept");
+        }
+        assert_eq!(service.get_children(&parent).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_sees_a_child_attached_after_the_version_was_read() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        let parent = make_text(&service, "parent").await;
+        let leaf = make_text(&service, "leaf").await;
+        service
+            .create_parent_edge(&leaf, &parent, InsertPosition::End)
+            .await
+            .unwrap();
+        let v = service.get_node(&leaf).await.unwrap().unwrap().version;
+        // A child appears under the leaf; attaching it does not bump the leaf's version.
+        let late = make_text(&service, "late").await;
+        service
+            .create_parent_edge(&late, &leaf, InsertPosition::End)
+            .await
+            .unwrap();
+        assert_eq!(service.get_node(&leaf).await.unwrap().unwrap().version, v);
+
+        let out = service.delete_leaf_node(&leaf, v).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::HasChildren { child_count: 1 });
+        assert!(service.get_node(&late).await.unwrap().is_some());
+        assert_eq!(
+            service.get_children(&leaf).await.unwrap().len(),
+            1,
+            "the late child is still attached, not orphaned"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_version_conflict_and_missing_node() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        let leaf = make_text(&service, "leaf").await;
+        let v = service.get_node(&leaf).await.unwrap().unwrap().version;
+
+        let err = service.delete_leaf_node(&leaf, v + 7).await.unwrap_err();
+        assert!(
+            matches!(err, NodeServiceError::VersionConflict { .. }),
+            "{err:?}"
+        );
+        assert!(service.get_node(&leaf).await.unwrap().is_some());
+
+        let out = service.delete_leaf_node("no-such-node", 1).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::NotFound);
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_is_refused_by_the_access_gate() {
+        let (service, _temp) = create_test_service().await;
+        let leaf = make_text(&service, "restricted").await;
+        service.set_subtree_access_gate(std::sync::Arc::new(DenyIfPresentGate {
+            restricted_id: leaf.clone(),
+        }));
+        let v = service.get_node(&leaf).await.unwrap().unwrap().version;
+
+        let err = service.delete_leaf_node(&leaf, v).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                NodeServiceError::SubtreeAccessDenied {
+                    inaccessible_count: 1
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(service.get_node(&leaf).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn is_persisted_tells_a_stored_date_node_from_a_virtual_one() {
+        let (service, _temp) = create_test_service().await;
+        let date = "2025-10-13";
+
+        // Virtual: get_node answers, but no row exists.
+        let virt = service.get_node(date).await.unwrap().unwrap();
+        assert_eq!(virt.version, 1);
+        assert!(!service.is_persisted(date).await.unwrap());
+        assert!(!service.is_persisted("2025-10-14").await.unwrap());
+        assert!(!service.is_persisted("no-such-node").await.unwrap());
+
+        // Persisting the date makes it a stored row.
+        service.ensure_date_exists(date).await.unwrap();
+        assert!(service.is_persisted(date).await.unwrap());
+        assert!(!service.is_persisted("2025-10-14").await.unwrap());
+        let child = make_text(&service, "entry").await;
+        assert!(service.is_persisted(&child).await.unwrap());
+    }
+
+    // ---------------------------------------------------------------------------
     // Access-gated cascade delete (ADR-041 "CASCADE requires read access across
     // the whole subtree"). Core's default is AlwaysAllowGate; these tests inject
     // a stub gate that denies part of a subtree, since core has no access model
