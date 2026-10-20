@@ -14,6 +14,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { tick } from 'svelte';
 import { render, fireEvent } from '@testing-library/svelte';
 
@@ -83,6 +85,40 @@ describe('OnboardingWizard (focus-trap)', () => {
 
     await fireEvent.keyDown(doc.activeElement!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes focus back from an editor that autofocuses after the wizard opens', async () => {
+    const { container } = render(OnboardingWizard, { props: { open: true, onClose } });
+    const { dialog, doc } = dialogOf(container);
+    await tick();
+
+    // The daily-journal editor's autofocus lands after the wizard's own.
+    const editor = doc.createElement('textarea');
+    doc.body.appendChild(editor);
+    editor.focus();
+
+    expect(dialog.contains(doc.activeElement)).toBe(true);
+    // Back on the step's primary action, never on the Close control.
+    expect(doc.activeElement).toBe(buttonByText(dialog, 'Add to PATH'));
+    expect(doc.activeElement?.closest('.close-button, [aria-label*="lose"]')).toBeNull();
+    await fireEvent.keyDown(doc.activeElement!, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    editor.remove();
+  });
+
+  // jsdom does not apply component <style> blocks, so the computed style cannot
+  // be read; assert on the rule itself instead. An open bits-ui dialog sets
+  // `pointer-events: none` on <body>, which an overlay without its own value
+  // inherits (the overlay then takes no click).
+  it.each([
+    ['onboarding-wizard.svelte', '.onboarding-backdrop', 'lib/components/onboarding'],
+    ['delete-confirmation-modal.svelte', '.overlay', 'lib/components'],
+    ['subtree-access-denied-modal.svelte', '.overlay', 'lib/components']
+  ])('%s backdrop keeps pointer-events: auto under a body pointer lock', (file, selector, dir) => {
+    const source = readFileSync(resolve(__dirname, '../../', dir, file), 'utf8');
+    const rule = source.slice(source.indexOf(`${selector} {`)).match(/\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toContain('position: fixed');
+    expect(rule).toMatch(/pointer-events:\s*auto/);
   });
 
   it('anchors focus to the step primary action on open', async () => {
