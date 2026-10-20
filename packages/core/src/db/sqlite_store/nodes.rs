@@ -1840,6 +1840,11 @@ impl SqliteStore {
             .transaction()
             .await
             .context("Failed to begin leaf delete transaction")?;
+        // Authoritative re-check under the writer lock. The pre-reads above run before the
+        // lock, so a writer that bumps the version or attaches a child between them and this
+        // transaction is only visible here. It cannot be hit deterministically from a test
+        // (the pre-check returns first for any stale version supplied up front); it stays to
+        // guard exactly that window.
         let mut recheck = tx
             .query(
                 "SELECT version, \

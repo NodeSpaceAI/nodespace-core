@@ -7880,6 +7880,161 @@ mod tests {
         assert!(service.get_node(&leaf).await.unwrap().is_some());
     }
 
+    struct DenyAllGate;
+
+    #[async_trait::async_trait]
+    impl crate::services::node_service::access_gate::SubtreeAccessGate for DenyAllGate {
+        async fn check_subtree_access(
+            &self,
+            node_ids: &[String],
+        ) -> crate::services::node_service::access_gate::SubtreeAccessDecision {
+            crate::services::node_service::access_gate::SubtreeAccessDecision::Denied {
+                inaccessible_count: node_ids.len().max(1) as u64,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_of_an_absent_node_is_not_found_even_under_a_denying_gate() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        service.set_subtree_access_gate(std::sync::Arc::new(DenyAllGate));
+
+        let out = service.delete_leaf_node("no-such-node", 1).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::NotFound);
+        // A virtual date has no row either.
+        let out = service.delete_leaf_node("2025-10-13", 1).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::NotFound);
+        // delete_node agrees.
+        let r = service.delete_node("no-such-node", 1).await.unwrap();
+        assert!(!r.existed);
+    }
+
+    tokio::task_local! {
+        static LEAF_TEST_BYPASS: bool;
+    }
+
+    /// Denies unless the calling task is inside `LEAF_TEST_BYPASS.scope(true, ..)`, like the
+    /// daemon's task-scoped reconcile-wipe bypass.
+    struct BypassableGate;
+
+    #[async_trait::async_trait]
+    impl crate::services::node_service::access_gate::SubtreeAccessGate for BypassableGate {
+        async fn check_subtree_access(
+            &self,
+            node_ids: &[String],
+        ) -> crate::services::node_service::access_gate::SubtreeAccessDecision {
+            if LEAF_TEST_BYPASS.try_with(|b| *b).unwrap_or(false) {
+                crate::services::node_service::access_gate::SubtreeAccessDecision::Allowed
+            } else {
+                crate::services::node_service::access_gate::SubtreeAccessDecision::Denied {
+                    inaccessible_count: node_ids.len() as u64,
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_honours_a_task_scoped_gate_bypass() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        let leaf = make_text(&service, "leaf").await;
+        service.set_subtree_access_gate(std::sync::Arc::new(BypassableGate));
+        let v = service.get_node(&leaf).await.unwrap().unwrap().version;
+
+        let err = service.delete_leaf_node(&leaf, v).await.unwrap_err();
+        assert!(
+            matches!(err, NodeServiceError::SubtreeAccessDenied { .. }),
+            "{err:?}"
+        );
+        assert!(service.get_node(&leaf).await.unwrap().is_some());
+
+        let out = LEAF_TEST_BYPASS
+            .scope(true, service.delete_leaf_node(&leaf, v))
+            .await
+            .unwrap();
+        assert_eq!(out, LeafDeleteOutcome::Deleted);
+        assert!(service.get_node(&leaf).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_removes_all_of_its_own_edges_and_nothing_else() {
+        use crate::db::LeafDeleteOutcome;
+        let (service, _temp) = create_test_service().await;
+        let leaf = make_text(&service, "leaf").await;
+        let other = make_text(&service, "other").await;
+        let mentioned = make_text(&service, "mentioned").await;
+        let coll = service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "coll".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        service.create_mention(&other, &leaf).await.unwrap(); // incoming
+        service.create_mention(&leaf, &mentioned).await.unwrap(); // outgoing
+        service
+            .create_relationship(&leaf, "member_of", &coll, json!({}))
+            .await
+            .unwrap();
+
+        async fn edges_touching(service: &NodeService, id: &str) -> i64 {
+            let mut rows = service
+                .store()
+                .read()
+                .await
+                .unwrap()
+                .query(
+                    "SELECT COUNT(*) FROM relationship WHERE in_node = ?1 OR out_node = ?1",
+                    libsql::params![id.to_string()],
+                )
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        }
+        assert!(edges_touching(&service, &leaf).await >= 3);
+
+        let v = service.get_node(&leaf).await.unwrap().unwrap().version;
+        let out = service.delete_leaf_node(&leaf, v).await.unwrap();
+        assert_eq!(out, LeafDeleteOutcome::Deleted);
+
+        assert_eq!(edges_touching(&service, &leaf).await, 0, "nothing dangling");
+        assert!(service
+            .get_mentioned_by(&mentioned)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(service.get_mentions(&other).await.unwrap().is_empty());
+        for id in [&other, &mentioned, &coll] {
+            assert!(service.get_node(id).await.unwrap().is_some(), "{id} kept");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_leaf_node_refuses_a_core_schema_like_delete_node() {
+        let (service, _temp) = create_test_service().await;
+        let schema = service.get_node("task").await.unwrap().unwrap();
+
+        let leaf_err = service
+            .delete_leaf_node("task", schema.version)
+            .await
+            .unwrap_err();
+        let node_err = service
+            .delete_node("task", schema.version)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{leaf_err:#}").contains("schema_is_core"),
+            "{leaf_err:#}"
+        );
+        assert!(
+            format!("{node_err:#}").contains("schema_is_core"),
+            "{node_err:#}"
+        );
+        assert!(service.get_node("task").await.unwrap().is_some());
+    }
+
     #[tokio::test]
     async fn is_persisted_tells_a_stored_date_node_from_a_virtual_one() {
         let (service, _temp) = create_test_service().await;

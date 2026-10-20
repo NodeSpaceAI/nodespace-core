@@ -369,6 +369,23 @@ mod former_embedding_root_tests {
     }
 
     #[tokio::test]
+    async fn delete_leaf_node_requeues_the_root_it_left() {
+        let (svc, _tmp) = two_trees().await;
+
+        let out = svc
+            .delete_leaf_node(LINE, version(&svc, LINE).await)
+            .await
+            .unwrap();
+
+        assert_eq!(out, crate::db::LeafDeleteOutcome::Deleted);
+        assert!(
+            is_stale(&svc, ROOT_A).await,
+            "the tree LINE was deleted from"
+        );
+        assert!(!is_stale(&svc, ROOT_B).await, "an uninvolved tree");
+    }
+
+    #[tokio::test]
     async fn unchecked_outdent_requeues_the_former_root() {
         let (svc, _tmp) = two_trees().await;
 

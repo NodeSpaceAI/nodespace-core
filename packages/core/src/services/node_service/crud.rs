@@ -2642,13 +2642,19 @@ impl NodeService {
     /// Same semantics as [`Self::delete_node`] otherwise: the node is version-checked at
     /// `expected_version` (a mismatch is `NodeServiceError::VersionConflict`), the access gate
     /// (ADR-041, including a caller-scoped bypass) is consulted for the node, an absent node is
-    /// `Ok(LeafDeleteOutcome::NotFound)`, and one `NodeDeleted` event is emitted on success.
+    /// `Ok(LeafDeleteOutcome::NotFound)` (checked before the gate, as in `delete_node`), and one `NodeDeleted` event is emitted on success.
     pub async fn delete_leaf_node(
         &self,
         node_id: &str,
         expected_version: i64,
     ) -> Result<crate::db::LeafDeleteOutcome, NodeServiceError> {
         let root_id_for_embedding = self.get_embedding_root_id(node_id).await.ok();
+
+        // An absent target is an idempotent no-op, answered before the access gate exactly as
+        // `delete_node` does, so deleting an unknown id never becomes a refusal.
+        if !self.is_persisted(node_id).await? {
+            return Ok(crate::db::LeafDeleteOutcome::NotFound);
+        }
 
         if let access_gate::SubtreeAccessDecision::Denied { inaccessible_count } = self
             .subtree_access_gate()
