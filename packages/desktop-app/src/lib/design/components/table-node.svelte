@@ -14,6 +14,7 @@
   import BaseNode from './base-node.svelte';
   import ViewModeRenderer from './view-mode-renderer.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
+  import { parseTable } from './table-markdown';
 
   let {
     nodeId,
@@ -41,47 +42,6 @@
 
   // Check if this node is being edited
   let isEditing = $derived(focusManager.editingNodeId === nodeId);
-
-  type Alignment = 'left' | 'center' | 'right';
-
-  interface ParsedTable {
-    headers: string[];
-    alignments: Alignment[];
-    rows: string[][];
-  }
-
-  /**
-   * Parse a GFM markdown table into structured data
-   */
-  function parseTable(raw: string): ParsedTable | null {
-    const lines = raw.split('\n').filter(l => l.trim().length > 0);
-    if (lines.length < 2) return null;
-
-    const parseCells = (line: string): string[] => {
-      // Remove leading/trailing pipes and split
-      const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-      return trimmed.split('|').map(cell => cell.trim());
-    };
-
-    const headers = parseCells(lines[0]);
-
-    // Parse alignment from delimiter row
-    const delimiterCells = parseCells(lines[1]);
-    const alignments: Alignment[] = delimiterCells.map(cell => {
-      const trimmed = cell.trim();
-      if (trimmed.startsWith(':') && trimmed.endsWith(':')) return 'center';
-      if (trimmed.endsWith(':')) return 'right';
-      return 'left';
-    });
-
-    // Parse body rows
-    const rows: string[][] = [];
-    for (let i = 2; i < lines.length; i++) {
-      rows.push(parseCells(lines[i]));
-    }
-
-    return { headers, alignments, rows };
-  }
 
   // Parse the table reactively
   let parsedTable = $derived(parseTable(content));
@@ -151,6 +111,9 @@
           {/each}
         </tbody>
     </table>
+  {:else}
+    <!-- Not (yet) a complete GFM table: show the source as plain text rather than nothing -->
+    <ViewModeRenderer {content} disableMarkdown={true} />
   {/if}
 {/snippet}
 

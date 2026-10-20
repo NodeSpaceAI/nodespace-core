@@ -16,6 +16,7 @@ import type { CoreTaskStatus } from '../types/task-node';
 import { declaredField } from '../types/core-node-types';
 import { enumValueAtScope } from '../utils/schema-enum-values';
 import { PatternRegistry } from '../patterns/registry';
+import { TABLE_DETECT_PATTERN } from '../design/components/table-markdown';
 import BaseNodeReference from '../components/base-node-reference.svelte';
 import { parseDateString, formatDateTitle } from '$lib/utils/date-formatting';
 import { createLogger } from '$lib/utils/logger';
@@ -490,7 +491,7 @@ export const tableNodePlugin: PluginDefinition = {
   description: 'GFM markdown table with alignment support',
   version: '1.0.0',
   pattern: {
-    detect: /^\|\s/,
+    detect: TABLE_DETECT_PATTERN,
     canRevert: true,
     revert: /^\|$/,
     onEnter: 'none',
