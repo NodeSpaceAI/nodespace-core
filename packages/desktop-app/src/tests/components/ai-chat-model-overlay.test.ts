@@ -46,6 +46,7 @@ function prepare(patch: Partial<ModelPreparation>): void {
   modelStore.preparations = {
     [MODEL_ID]: {
       modelId: MODEL_ID,
+      ownerId: CHAT_ID,
       phase: 'preparing',
       bytesDownloaded: 0,
       bytesTotal: 0,
@@ -123,6 +124,19 @@ describe('AI chat model overlay', () => {
     expect(second.getByRole('status').getAttribute('aria-label')).toBe(
       'Verifying model integrity…'
     );
+  });
+
+  it.each([
+    ['another chat', 'other-chat'],
+    ['a download started elsewhere', null]
+  ])('offers no cancel when the download belongs to %s', async (_name, ownerId) => {
+    prepare({ phase: 'downloading', bytesDownloaded: GB, bytesTotal: 4 * GB, ownerId });
+    const { getByRole, queryByRole } = render(AiChatNativeNodeViewer, {
+      props: { nodeId: CHAT_ID }
+    });
+    await tick();
+    expect(getByRole('status').getAttribute('aria-label')).toContain('Downloading');
+    expect(queryByRole('button', { name: 'Cancel' })).toBeNull();
   });
 
   it('offers cancel only while downloading and cancels through the store', async () => {

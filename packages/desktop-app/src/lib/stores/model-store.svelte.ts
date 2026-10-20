@@ -142,6 +142,11 @@ export type ModelPreparationPhase = 'preparing' | 'downloading' | 'verifying' | 
 /** One in-flight ensure-ready run for a model (download, then verify, then load). */
 export interface ModelPreparation {
   modelId: string;
+  /**
+   * The chat that started this run, or null when the download was already running
+   * elsewhere (Settings). Only the owner may cancel; the download is shared with the daemon.
+   */
+  ownerId: string | null;
   phase: ModelPreparationPhase;
   bytesDownloaded: number;
   bytesTotal: number;
@@ -167,6 +172,8 @@ class ModelStore {
   preparations = $state<Record<string, ModelPreparation>>({});
 
   private inFlightEnsure = new Map<string, Promise<void>>();
+  /** Identity of the current run per model, so a superseded run never touches a newer one. */
+  private runTokens = new Map<string, object>();
   private downloadAbortControllers = new Map<string, AbortController>();
   private eventUnlisteners: Array<() => void> = [];
 
@@ -426,22 +433,23 @@ class ModelStore {
   /**
    * Make a model ready to chat: download it if needed, verify it, load it. Progress is
    * published on `preparations[modelId]`. Concurrent calls for the same model share one
-   * run, so a remounted viewer can await the run already in flight.
+   * run, so a remounted viewer can await the run already in flight. `ownerId` identifies
+   * the caller (a chat id); only the run's owner may cancel its download.
    */
-  ensureReady(modelId: string): Promise<void> {
+  ensureReady(modelId: string, ownerId: string): Promise<void> {
     const existing = this.inFlightEnsure.get(modelId);
     if (existing) return existing;
-    const run = this.runEnsureReady(modelId).finally(() => {
-      this.inFlightEnsure.delete(modelId);
+    const run: Promise<void> = this.runEnsureReady(modelId, ownerId).finally(() => {
+      if (this.inFlightEnsure.get(modelId) === run) this.inFlightEnsure.delete(modelId);
     });
     this.inFlightEnsure.set(modelId, run);
     return run;
   }
 
-  /** Cancel the download of a model that `ensureReady` is preparing. */
-  async cancelPreparation(modelId: string): Promise<void> {
+  /** Cancel the download of a model that `ensureReady` is preparing, if `ownerId` started it. */
+  async cancelPreparation(modelId: string, ownerId: string): Promise<void> {
     const prep = this.preparations[modelId];
-    if (!prep || prep.phase !== 'downloading') return;
+    if (!prep || prep.phase !== 'downloading' || prep.ownerId !== ownerId) return;
     this.patchPreparation(modelId, { cancelRequested: true });
     try {
       await tauriCommands.chatModelCancelDownload(modelId);
@@ -451,11 +459,18 @@ class ModelStore {
     }
   }
 
-  private async runEnsureReady(modelId: string): Promise<void> {
+  private async runEnsureReady(modelId: string, ownerId: string): Promise<void> {
+    const token = {};
+    this.runTokens.set(modelId, token);
+    const isCurrent = () => this.runTokens.get(modelId) === token;
+    // A download already running (e.g. started from Settings) is not this chat's to cancel.
+    const startedElsewhere =
+      this.models.find((m) => m.id === modelId)?.status.status === 'downloading';
     this.preparations = {
       ...this.preparations,
       [modelId]: {
         modelId,
+        ownerId: startedElsewhere ? null : ownerId,
         phase: 'preparing',
         bytesDownloaded: 0,
         bytesTotal: 0,
@@ -466,10 +481,14 @@ class ModelStore {
     try {
       if (isTauri()) {
         const { listen } = await import('@tauri-apps/api/event');
+        // Each unlisten is recorded as soon as its listen resolves, so a failure of the
+        // second registration still releases the first.
         unlisteners.push(
           await listen<{ model_id: string; status: string }>(AGENT_EVENTS.MODEL_STATUS, (e) =>
             this.applyPreparationStatus(e.payload.model_id, e.payload.status)
-          ),
+          )
+        );
+        unlisteners.push(
           await listen<DownloadEvent>(AGENT_EVENTS.MODEL_DOWNLOAD_PROGRESS, (e) =>
             this.applyPreparationProgress(
               e.payload.model_id,
@@ -492,14 +511,20 @@ class ModelStore {
       }
       await tauriCommands.ensureModelReady(modelId);
     } catch (err) {
-      if (this.preparations[modelId]?.cancelRequested) {
+      // Only a failure while still downloading is the cancel; once the download had
+      // finished, a verify/load failure is a real error.
+      const prep = isCurrent() ? this.preparations[modelId] : undefined;
+      if (prep?.cancelRequested && prep.phase === 'downloading') {
         throw new Error(MODEL_DOWNLOAD_CANCELLED);
       }
       throw err;
     } finally {
       for (const unlisten of unlisteners) unlisten();
-      const { [modelId]: _done, ...remaining } = this.preparations;
-      this.preparations = remaining;
+      if (isCurrent()) {
+        this.runTokens.delete(modelId);
+        const { [modelId]: _done, ...remaining } = this.preparations;
+        this.preparations = remaining;
+      }
     }
   }
 
@@ -619,6 +644,7 @@ class ModelStore {
     this.downloadProgress = {};
     this.preparations = {};
     this.inFlightEnsure.clear();
+    this.runTokens.clear();
     this.loadedModelId = null;
     this.isLoading = false;
     this.systemRamGb = 0;

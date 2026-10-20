@@ -263,7 +263,7 @@
     // phase and progress, which the overlay shows instead of a frozen UI. A failed or
     // cancelled preparation lands in the catch below and leaves the chat usable.
     try {
-      await modelStore.ensureReady(model);
+      await modelStore.ensureReady(model, nodeId);
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : ((err as Record<string, unknown>)?.message as string) ?? String(err);
@@ -514,12 +514,12 @@
             <span class="ensure-model-sublabel">{preparationText.sublabel}</span>
           {/if}
         </div>
-        {#if preparation.phase === 'downloading'}
+        {#if preparation.phase === 'downloading' && preparation.ownerId === nodeId}
           <button
             type="button"
             class="ensure-model-cancel"
             disabled={preparation.cancelRequested}
-            onclick={() => modelStore.cancelPreparation(preparation.modelId)}
+            onclick={() => modelStore.cancelPreparation(preparation.modelId, nodeId)}
           >
             Cancel
           </button>

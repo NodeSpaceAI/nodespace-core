@@ -58,7 +58,7 @@ describe('ModelStore.ensureReady', () => {
   });
 
   it('moves through downloading, verifying and loading, then clears', async () => {
-    const run = modelStore.ensureReady('m1');
+    const run = modelStore.ensureReady('m1', 'chat-1');
     expect(modelStore.preparations['m1'].phase).toBe('preparing');
     await vi.waitFor(() => expect(listeners.size).toBe(2));
 
@@ -90,7 +90,7 @@ describe('ModelStore.ensureReady', () => {
   });
 
   it('skips the download phase for a cached model', async () => {
-    const run = modelStore.ensureReady('m1');
+    const run = modelStore.ensureReady('m1', 'chat-1');
     await vi.waitFor(() => expect(listeners.size).toBe(2));
     emit('model://status', { model_id: 'm1', status: 'verifying' });
     emit('model://status', { model_id: 'm1', status: 'loading' });
@@ -100,7 +100,7 @@ describe('ModelStore.ensureReady', () => {
   });
 
   it('ignores events for other models', async () => {
-    const run = modelStore.ensureReady('m1');
+    const run = modelStore.ensureReady('m1', 'chat-1');
     await vi.waitFor(() => expect(listeners.size).toBe(2));
     emit('model://status', { model_id: 'other', status: 'loading' });
     expect(modelStore.preparations['m1'].phase).toBe('preparing');
@@ -110,8 +110,8 @@ describe('ModelStore.ensureReady', () => {
   });
 
   it('shares one run between concurrent callers', async () => {
-    const a = modelStore.ensureReady('m1');
-    const b = modelStore.ensureReady('m1');
+    const a = modelStore.ensureReady('m1', 'chat-1');
+    const b = modelStore.ensureReady('m1', 'chat-1');
     expect(a).toBe(b);
     await vi.waitFor(() => expect(tauriCommands.ensureModelReady).toHaveBeenCalled());
     expect(tauriCommands.ensureModelReady).toHaveBeenCalledTimes(1);
@@ -120,7 +120,7 @@ describe('ModelStore.ensureReady', () => {
   });
 
   it('clears the state and rethrows when preparation fails', async () => {
-    const run = modelStore.ensureReady('m1');
+    const run = modelStore.ensureReady('m1', 'chat-1');
     await vi.waitFor(() => expect(listeners.size).toBe(2));
     fail(new Error('disk full'));
     await expect(run).rejects.toThrow('disk full');
@@ -128,11 +128,11 @@ describe('ModelStore.ensureReady', () => {
   });
 
   it('cancels a download and reports it as cancelled', async () => {
-    const run = modelStore.ensureReady('m1');
+    const run = modelStore.ensureReady('m1', 'chat-1');
     await vi.waitFor(() => expect(listeners.size).toBe(2));
     emit('model://download-progress', { model_id: 'm1', bytes_downloaded: 1, bytes_total: 10 });
 
-    await modelStore.cancelPreparation('m1');
+    await modelStore.cancelPreparation('m1', 'chat-1');
     expect(tauriCommands.chatModelCancelDownload).toHaveBeenCalledWith('m1');
     expect(modelStore.preparations['m1'].cancelRequested).toBe(true);
 
@@ -142,10 +142,88 @@ describe('ModelStore.ensureReady', () => {
     finish();
   });
 
-  it('does not cancel outside the downloading phase', async () => {
-    const run = modelStore.ensureReady('m1');
+  it('does not let another chat cancel a download it did not start', async () => {
+    const run = modelStore.ensureReady('m1', 'chat-1');
     await vi.waitFor(() => expect(listeners.size).toBe(2));
-    await modelStore.cancelPreparation('m1');
+    emit('model://download-progress', { model_id: 'm1', bytes_downloaded: 1, bytes_total: 10 });
+    await modelStore.cancelPreparation('m1', 'chat-2');
+    expect(tauriCommands.chatModelCancelDownload).not.toHaveBeenCalled();
+    expect(modelStore.preparations['m1'].cancelRequested).toBe(false);
+    finish();
+    await run;
+  });
+
+  it('has no owner when the download was already running elsewhere', async () => {
+    modelStore.models = [
+      {
+        id: 'm1',
+        family: 'gemma4',
+        name: 'M1',
+        filename: '',
+        size_bytes: 10,
+        quantization: 'Q4',
+        url: '',
+        sha256: '',
+        status: { status: 'downloading', progress_pct: 5, bytes_downloaded: 1, bytes_total: 10 },
+        min_memory_gb: 1
+      }
+    ];
+    const run = modelStore.ensureReady('m1', 'chat-1');
+    expect(modelStore.preparations['m1'].ownerId).toBeNull();
+    await vi.waitFor(() => expect(listeners.size).toBe(2));
+    emit('model://download-progress', { model_id: 'm1', bytes_downloaded: 1, bytes_total: 10 });
+    await modelStore.cancelPreparation('m1', 'chat-1');
+    expect(tauriCommands.chatModelCancelDownload).not.toHaveBeenCalled();
+    finish();
+    await run;
+  });
+
+  it('releases the first listener when registering the second fails', async () => {
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlistenFirst = vi.fn();
+    vi.mocked(listen)
+      .mockResolvedValueOnce(unlistenFirst)
+      .mockRejectedValueOnce(new Error('listen failed'));
+    await expect(modelStore.ensureReady('m1', 'chat-1')).rejects.toThrow('listen failed');
+    expect(unlistenFirst).toHaveBeenCalledTimes(1);
+    expect(modelStore.preparations['m1']).toBeUndefined();
+  });
+
+  it('does not let a superseded run delete a newer run after reset', async () => {
+    const runA = modelStore.ensureReady('m1', 'chat-1');
+    await vi.waitFor(() => expect(tauriCommands.ensureModelReady).toHaveBeenCalledTimes(1));
+    const finishA = finish;
+
+    modelStore.reset();
+    const runB = modelStore.ensureReady('m1', 'chat-1');
+    await vi.waitFor(() => expect(tauriCommands.ensureModelReady).toHaveBeenCalledTimes(2));
+    const finishB = finish;
+
+    finishA();
+    await runA;
+    expect(modelStore.preparations['m1']).toBeDefined();
+    expect(modelStore.ensureReady('m1', 'chat-1')).toBe(runB);
+
+    finishB();
+    await runB;
+    expect(modelStore.preparations['m1']).toBeUndefined();
+  });
+
+  it('reports a real error, not a cancel, when verify fails after a late cancel', async () => {
+    const run = modelStore.ensureReady('m1', 'chat-1');
+    await vi.waitFor(() => expect(listeners.size).toBe(2));
+    emit('model://download-progress', { model_id: 'm1', bytes_downloaded: 1, bytes_total: 10 });
+    await modelStore.cancelPreparation('m1', 'chat-1');
+    // the download had already finished: the daemon moved on to verifying
+    emit('model://status', { model_id: 'm1', status: 'verifying' });
+    fail(new Error('checksum mismatch'));
+    await expect(run).rejects.toThrow('checksum mismatch');
+  });
+
+  it('does not cancel outside the downloading phase', async () => {
+    const run = modelStore.ensureReady('m1', 'chat-1');
+    await vi.waitFor(() => expect(listeners.size).toBe(2));
+    await modelStore.cancelPreparation('m1', 'chat-1');
     expect(tauriCommands.chatModelCancelDownload).not.toHaveBeenCalled();
     finish();
     await run;
@@ -158,6 +236,7 @@ describe('describePreparation', () => {
     phase: 'preparing',
     bytesDownloaded: 0,
     bytesTotal: 0,
+    ownerId: 'chat-1',
     cancelRequested: false,
     ...patch
   });
