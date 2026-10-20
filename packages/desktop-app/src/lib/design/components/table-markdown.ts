@@ -31,6 +31,7 @@ export function splitTableRow(line: string): string[] {
       current += '|';
       i++;
     } else if (ch === '`') {
+      // Deliberately keeps pipes inside code spans in the cell; GFM would split there unless escaped.
       inCode = !inCode;
       current += ch;
     } else if (ch === '|' && !inCode) {
@@ -75,10 +76,36 @@ export function parseTable(raw: string): ParsedTable | null {
 }
 
 /**
- * Pattern for the table plugin's `detect`: either the `| ` shortcut typed at the start
- * of a node, or a complete GFM header plus delimiter row (e.g. a pasted `a | b` table
- * or `|a|b|` with no space after the pipe). The header line may not look like another
- * block (quote, heading, fence, list item).
+ * Linear-time prefilter: the header's first pipe is matched by `[^\n|]*\|` (no overlap
+ * with the `[^\n]*` that follows), so nothing backtracks on a very long single line.
  */
-export const TABLE_DETECT_PATTERN =
-  /^(?:\|[ \t]|(?![>#`]|[-*+][ \t]|\d+\.[ \t])[^\n]*\|[^\n]*\n[ \t]*(?=[^\n]*\|)\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*(?:\n|$))/;
+const TABLE_PREFILTER =
+  /^(?:\|[ \t]|(?![>#`]|[-*+][ \t]|\d+\.[ \t])[^\n|]*\|[^\n]*\n[ \t]*(?=[^\n]*\|)\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*(?:\n|$))/;
+
+/**
+ * RegExp whose match additionally requires the header and delimiter rows to have the
+ * same number of cells, which a regular expression cannot count. Because `match`,
+ * `test` and `exec` all go through `exec`, it works wherever a `detect` regex is used.
+ */
+class TableDetectPattern extends RegExp {
+  exec(text: string): RegExpExecArray | null {
+    const result = super.exec(text);
+    if (!result || /^\|[ \t]/.test(text)) return result;
+    const first = text.indexOf('\n');
+    const second = text.indexOf('\n', first + 1);
+    const header = text.slice(0, first);
+    const delimiter = text.slice(first + 1, second === -1 ? undefined : second);
+    return isDelimiterRow(delimiter) &&
+      splitTableRow(header).length === splitTableRow(delimiter).length
+      ? result
+      : null;
+  }
+}
+
+/**
+ * Pattern for the table plugin's `detect`: either the `| ` shortcut typed at the start
+ * of a node, or a complete GFM header plus delimiter row with the same number of cells
+ * (e.g. a pasted `a | b` table or `|a|b|` with no space after the pipe). The header line
+ * may not look like another block (quote, heading, fence, list item).
+ */
+export const TABLE_DETECT_PATTERN: RegExp = new TableDetectPattern(TABLE_PREFILTER);

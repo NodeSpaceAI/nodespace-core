@@ -60,6 +60,22 @@ describe('table detection', () => {
     expect(detects('```\na | b\n--- | ---\n```')).toBe(false);
   });
 
+  it.each(['a | b\n---|', 'a | b\n-|', 'a | b\n:-|', 'a | b | c\n--- | ---'])(
+    'does not detect a header and delimiter with different cell counts: %j',
+    (content) => {
+      expect(detects(content)).toBe(false);
+    }
+  );
+
+  it('stays fast on a very long single line (runs on every keystroke)', () => {
+    const start = performance.now();
+    for (const line of ['a'.repeat(200_000), 'a|'.repeat(100_000), '|'.repeat(200_000)]) {
+      detects(line);
+      detects(line + '\n---');
+    }
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
+
   it('exports the pattern the plugin registers', () => {
     expect(TABLE_DETECT_PATTERN.test(TABLE)).toBe(true);
   });
