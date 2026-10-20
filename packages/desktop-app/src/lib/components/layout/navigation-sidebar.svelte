@@ -73,7 +73,7 @@
 
   // Collections expanded state from layout store (persisted)
   let collectionsExpanded = $derived(layoutStore.state.collectionsExpanded);
-  // Node Types expanded state from layout store (persisted)
+  // Types and Views expanded state from layout store (persisted)
   let nodeTypesExpanded = $derived(layoutStore.state.nodeTypesExpanded);
   // AI Chats expanded state from layout store (persisted)
   let aiChatsExpanded = $derived(layoutStore.state.aiChatsExpanded);
@@ -570,12 +570,12 @@
       </button>
     {/if}
 
-    <!-- Node Types section (after Collections) - accordion toggle -->
+    <!-- Types and Views section (after Collections) - accordion toggle -->
     {#if !isCollapsed}
       <Collapsible.Root open={nodeTypesExpanded} onOpenChange={(open) => setNodeTypesExpanded(open)}>
         <Collapsible.Trigger
           class="nav-item"
-          aria-label={nodeTypesExpanded ? 'Collapse Node Types' : 'Expand Node Types'}
+          aria-label={nodeTypesExpanded ? 'Collapse Types and Views' : 'Expand Types and Views'}
         >
           <svg
             class="nav-icon"
@@ -592,7 +592,7 @@
             <rect x="3" y="13" width="6" height="6" />
             <path d="M14 13 L17 16 L14 19 L11 16 Z" />
           </svg>
-          <span class="nav-label">Node Types</span>
+          <span class="nav-label">Types and Views</span>
         </Collapsible.Trigger>
 
         <Collapsible.Content>
@@ -620,7 +620,7 @@
       <!-- Collapsed state: just show icon -->
       <button
         class="nav-item"
-        title="Node Types"
+        title="Types and Views"
         onclick={() => {
           toggleSidebar();
           setNodeTypesExpanded(true);
@@ -643,7 +643,7 @@
       </button>
     {/if}
 
-    <!-- AI Chats section (after Node Types) - accordion toggle -->
+    <!-- AI Chats section (after Types and Views) - accordion toggle -->
     <!-- Gated behind the Labs "AI Chat" toggle (default OFF) -->
     {#if labsFlags.aiChatEnabled}
     {#if !isCollapsed}

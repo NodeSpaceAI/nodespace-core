@@ -93,9 +93,9 @@ describe('QueryNodeViewer — Ask', () => {
     const { getByRole } = render(QueryNodeViewer, {
       props: { nodeId: 'task', onNodeIdChange: () => {} }
     });
-    await waitFor(() => expect(getByRole('button', { name: 'Ask' })).toBeTruthy());
+    await waitFor(() => expect(getByRole('button', { name: 'Ask about Task type...' })).toBeTruthy());
 
-    await fireEvent.click(getByRole('button', { name: 'Ask' }));
+    await fireEvent.click(getByRole('button', { name: 'Ask about Task type...' }));
 
     await waitFor(() => expect(navigateToNodeInOtherPane).toHaveBeenCalledWith('chat-2'));
     expect(open).toHaveBeenCalledWith('task');
@@ -106,7 +106,7 @@ describe('QueryNodeViewer — Ask', () => {
       props: { nodeId: 'not-yet-a-type', onNodeIdChange: () => {} }
     });
     await waitFor(() => expect(getByRole('button', { name: 'List' })).toBeTruthy());
-    expect(queryByRole('button', { name: 'Ask' })).toBeNull();
+    expect(queryByRole('button', { name: /^Ask/ })).toBeNull();
   });
 
   it('keeps the view controls beside it', async () => {

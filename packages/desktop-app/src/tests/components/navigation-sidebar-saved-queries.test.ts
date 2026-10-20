@@ -60,14 +60,14 @@ function expandNodeTypes() {
   };
 }
 
-/** Text of every row in the Node Types list, in DOM order. */
+/** Text of every row in the Types and Views list, in DOM order. */
 function rows(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('.schema-type-list .schema-type-item')).map(
     (el) => el.textContent?.trim() ?? ''
   );
 }
 
-describe('NavigationSidebar — saved queries under Node Types', () => {
+describe('NavigationSidebar — saved queries under Types and Views', () => {
   beforeEach(() => {
     focusOrOpenNode.mockClear();
     backend.schemas = [makeSchema('spec', 'Spec'), makeSchema('plan', 'Plan')];
@@ -100,6 +100,19 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
       'Plan',
       'Plans by Status'
     ]);
+  });
+
+  it('does not list the seeded agent-helper queries but lists a user query on the same type', async () => {
+    setBackendQueries([
+      ['138b68c6-9a67-4fed-8fa5-993953158f59', 'Ready tasks', 'task'],
+      ['bb611c45-2b82-47dd-ad53-560ec9b5447f', 'Needs shaping', 'task'],
+      ['user-q', 'My tasks', 'task']
+    ]);
+    backend.schemas = [makeSchema('task', 'Task', true)];
+
+    const { container } = render(NavigationSidebar);
+
+    await waitFor(() => expect(rows(container)).toEqual(['Task', 'My tasks']));
   });
 
   it('opens the query when a saved query is clicked, and the type Default view when the type is clicked', async () => {

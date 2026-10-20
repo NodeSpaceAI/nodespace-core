@@ -1,6 +1,6 @@
 /**
  * Saved Queries store — grouping of saved query nodes by target type for the
- * sidebar's Node Types list.
+ * sidebar's Types and Views list.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -17,7 +17,9 @@ vi.mock('$lib/services/backend-adapter', () => ({
   }
 }));
 
-import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { savedQueriesData, SEEDED_AGENT_QUERY_IDS } from '$lib/stores/saved-queries.svelte';
 
 function makeQuery(id: string, name: string, targetType?: string): Node {
   return {
@@ -122,5 +124,52 @@ describe('savedQueriesData', () => {
     await pending;
 
     expect(savedQueriesData.queries).toEqual([]);
+  });
+
+  it('hides the seeded agent-helper queries but lists a user-created query on the same type', async () => {
+    const readyTasks = '138b68c6-9a67-4fed-8fa5-993953158f59'; // Ready tasks
+    const needsShaping = 'bb611c45-2b82-47dd-ad53-560ec9b5447f'; // Needs shaping
+    expect(SEEDED_AGENT_QUERY_IDS.has(readyTasks)).toBe(true);
+    expect(SEEDED_AGENT_QUERY_IDS.has(needsShaping)).toBe(true);
+    mockQueryNodes.mockResolvedValue([
+      makeQuery(readyTasks, 'Ready tasks', 'task'),
+      makeQuery(needsShaping, 'Needs shaping', 'task'),
+      makeQuery('user-q', 'My tasks', 'task')
+    ]);
+
+    await savedQueriesData.loadSavedQueries();
+
+    expect(savedQueriesData.forType('task').map((q) => q.id)).toEqual(['user-q']);
+    expect(savedQueriesData.has(readyTasks)).toBe(false);
+  });
+
+  it('keeps SEEDED_AGENT_QUERY_IDS equal to the Rust CORE_QUERY_IDS', () => {
+    const rust = readFileSync(
+      resolve(__dirname, '../../../../core/src/services/query_service/core_queries.rs'),
+      'utf8'
+    );
+    const fix =
+      'Update SEEDED_AGENT_QUERY_IDS in src/lib/stores/saved-queries.svelte.ts to match CORE_QUERY_IDS in core_queries.rs.';
+    const block = rust.match(/pub const CORE_QUERY_IDS: &\[&str\] = &\[([^\]]*)\]/)?.[1];
+    if (block === undefined) {
+      throw new Error(
+        `Could not find "pub const CORE_QUERY_IDS: &[&str] = &[...]" in core_queries.rs; the declaration changed shape. Fix this parser, then: ${fix}`
+      );
+    }
+    const constNames = block.match(/[A-Z_]+_QUERY_ID/g) ?? [];
+    const ids = constNames.map((name) => {
+      const m = rust.match(new RegExp(`pub const ${name}: &str = "([0-9a-f-]+)"`));
+      if (!m)
+        throw new Error(`Could not parse the literal id of ${name} in core_queries.rs. ${fix}`);
+      return m[1];
+    });
+    expect(
+      ids.length,
+      `core_queries.rs lists ${ids.length} core queries, so this parser found ${ids.length} ids; ${fix}`
+    ).toBeGreaterThan(0);
+    expect(
+      [...SEEDED_AGENT_QUERY_IDS].sort(),
+      `SEEDED_AGENT_QUERY_IDS differs from CORE_QUERY_IDS (${ids.length} in Rust). ${fix}`
+    ).toEqual([...ids].sort());
   });
 });
