@@ -1276,6 +1276,22 @@ describe('Navigation Store - Tab Management', () => {
         expect(tab.expandedNodeIds).toEqual(['old-day-node']);
       });
 
+      it('does not rewrite a Daily Journal tab navigated in place to a non-date node', () => {
+        const tab = {
+          ...dateTab(DAILY_JOURNAL_TAB_ID, 'some-text-node'),
+          title: 'My note',
+          content: { nodeId: 'some-text-node', nodeType: 'text' }
+        };
+        mockLoad.mockReturnValue(persistedWith([tab]));
+
+        loadPersistedState();
+
+        const restored = navigationStore.state.tabs[0];
+        expect(restored.content?.nodeId).toBe('some-text-node');
+        expect(restored.title).toBe('My note');
+        expect(restored.expandedNodeIds).toEqual(['old-day-node']);
+      });
+
       it('leaves a date tab that is not the Daily Journal untouched', () => {
         mockLoad.mockReturnValue(
           persistedWith([

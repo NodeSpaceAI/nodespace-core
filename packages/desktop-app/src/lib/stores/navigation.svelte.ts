@@ -63,15 +63,16 @@ const PERSISTENCE_DEBOUNCE_MS = 500;
  * drops its saved expansion state, which belongs to the other day's nodes.
  */
 function withDailyJournalOnToday(tab: Tab): Tab {
-  if (tab.id !== DAILY_JOURNAL_TAB_ID || !isA(tab.content?.nodeType, 'date')) {
+  const content = tab.content;
+  if (tab.id !== DAILY_JOURNAL_TAB_ID || !content || !isA(content.nodeType, 'date')) {
     return tab;
   }
   const today = getTodayDateId();
-  if (tab.content.nodeId === today) {
+  if (content.nodeId === today) {
     return tab;
   }
   const { expandedNodeIds: _staleExpansion, ...rest } = tab;
-  return { ...rest, title: today, content: { ...tab.content, nodeId: today } };
+  return { ...rest, title: today, content: { ...content, nodeId: today } };
 }
 
 // Tab state store — initial state
@@ -180,12 +181,9 @@ class NavigationStore {
     if (persisted) {
       // The Daily Journal tab always opens on the current date, whatever date
       // it showed when the state was saved.
-      
-      // The Daily Journal tab always opens on the current date, whatever date
-      // it showed when the state was saved.
-      persisted.tabs = persisted.tabs.map(withDailyJournalOnToday);
+      const tabs = persisted.tabs.map(withDailyJournalOnToday);
       this.state = {
-        tabs: persisted.tabs,
+        tabs,
         panes: persisted.panes,
         activePaneId: persisted.activePaneId,
         activeTabIds: persisted.activeTabIds,
@@ -193,7 +191,7 @@ class NavigationStore {
 
       // Schedule expansion state restoration for each tab
       // This will be applied when viewers register (deferred restoration pattern)
-      for (const tab of persisted.tabs) {
+      for (const tab of tabs) {
         // Validate expandedNodeIds before scheduling restoration
         if (
           tab.expandedNodeIds &&
