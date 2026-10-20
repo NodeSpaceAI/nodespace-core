@@ -193,9 +193,9 @@ pub fn kill_stale_daemon_sync() {
     // Kill only nodespaced processes using the socket (not gRPC clients like nodespace-app).
     // Verify each PID holding the socket is actually nodespaced (by installed
     // binary path) before SIGKILLing.
-    let installed_str = installed.to_string_lossy().into_owned();
+    let programs = daemon_program_paths(&bin_dir, &real_launchctl_print);
     for pid in pids_holding_unix_socket(&socket_path) {
-        if process_argv0_matches(pid, &installed_str) {
+        if process_is_ours_running_one_of(pid, &programs) {
             unsafe { libc::kill(pid, libc::SIGKILL) };
             tracing::info!(pid, "Sent SIGKILL to stale nodespaced");
         }
@@ -278,26 +278,97 @@ fn pids_holding_unix_socket(socket_path: &Path) -> HashSet<i32> {
     pids
 }
 
-/// True when `pid`'s argv[0], as reported by `ps -o args=`, is exactly
-/// `expected_path`. A full match rather than a trailing-substring heuristic,
-/// so a coincidentally similar path can't be mistaken for ours.
-///
-/// Guards every signal this file sends against a PID that coincidentally got
-/// reused by an unrelated process for a number a real nodespaced instance
-/// used to hold.
+/// Where a daemon this app may signal can be running from: the app's own copy
+/// in `bin_dir`, the machine-wide install location a `.pkg` writes to
+/// (`/usr/local/bin`), and the `program` of the loaded launchd job, which is
+/// whatever the registration in effect runs. `launchctl_print` returns the
+/// output of `launchctl print <service-target>` (a parameter so tests can fake
+/// it).
 #[cfg(unix)]
-fn process_argv0_matches(pid: i32, expected_path: &str) -> bool {
-    if expected_path.is_empty() {
-        return false;
+fn daemon_program_paths(
+    bin_dir: &Path,
+    launchctl_print: &dyn Fn() -> Option<String>,
+) -> Vec<String> {
+    let name = daemon_binary_name();
+    let mut paths = vec![
+        bin_dir.join(name).to_string_lossy().into_owned(),
+        Path::new("/usr/local/bin")
+            .join(name)
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    if let Some(program) = launchctl_print().as_deref().and_then(loaded_job_program) {
+        if !paths.contains(&program) {
+            paths.push(program);
+        }
     }
+    paths
+}
+
+/// The `program = <path>` line of `launchctl print` output for a service.
+#[cfg(unix)]
+fn loaded_job_program(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("program = ")?.trim();
+        (value.starts_with('/')).then(|| value.to_string())
+    })
+}
+
+/// `launchctl print gui/<uid>/<label>` for this build's launch agent; `None`
+/// off macOS or when the job is not loaded.
+#[cfg(unix)]
+fn real_launchctl_print() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = format!("gui/{}/{}", get_uid(), launch_agent_label());
+        let out = std::process::Command::new("launchctl")
+            .args(["print", &target])
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Pure decision behind every signal sent to a daemon: the process must belong
+/// to the current user (`owner_uid == my_uid`) and its executable path
+/// (`argv0`) must equal one of `programs` exactly. A name match alone, a
+/// similarly named binary elsewhere, or another user's process never passes.
+#[cfg(unix)]
+fn may_signal(
+    argv0: Option<&str>,
+    owner_uid: Option<u32>,
+    my_uid: u32,
+    programs: &[String],
+) -> bool {
+    match (argv0, owner_uid) {
+        (Some(argv0), Some(uid)) => {
+            uid == my_uid && !argv0.is_empty() && programs.iter().any(|p| p == argv0)
+        }
+        _ => false,
+    }
+}
+
+/// [`may_signal`] for a live pid, reading its owner and argv[0] from `ps`.
+#[cfg(unix)]
+fn process_is_ours_running_one_of(pid: i32, programs: &[String]) -> bool {
     let Ok(out) = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "args="])
+        .args(["-p", &pid.to_string(), "-o", "uid=,args="])
         .output()
     else {
         return false;
     };
-    let args = String::from_utf8_lossy(&out.stdout);
-    args.split_whitespace().next() == Some(expected_path)
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace();
+    let uid = parts.next().and_then(|u| u.parse::<u32>().ok());
+    let argv0 = parts.next();
+    // SAFETY: geteuid() is always safe to call.
+    may_signal(argv0, uid, unsafe { libc::geteuid() }, programs)
 }
 
 /// Keep a helper process from opening a console window of its own.
@@ -1173,12 +1244,11 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
     // daemon was started by launchd, a previous app launch, or manually.
     // Verify each PID holding the socket against our installed binary path
     // before sending SIGTERM.
-    let installed = home_dir()
-        .map(|h| h.join(DAEMON_BIN_DIR).join(daemon_binary_name()))
-        .map(|p| p.to_string_lossy().into_owned())
+    let programs = home_dir()
+        .map(|h| daemon_program_paths(&h.join(DAEMON_BIN_DIR), &real_launchctl_print))
         .unwrap_or_default();
     for pid in pids_holding_unix_socket(socket_path) {
-        if process_argv0_matches(pid, &installed) {
+        if process_is_ours_running_one_of(pid, &programs) {
             // Compiled out under `cfg(test)`: it is an irreversible action
             // against whichever process holds the socket on the machine
             // `cargo test` runs on.
@@ -3595,12 +3665,12 @@ mod sidecar_path_tests {
 }
 
 /// Coverage for the shared [`pids_holding_unix_socket`] /
-/// [`process_argv0_matches`] helpers that [`kill_stale_daemon_sync`] and
+/// [`process_is_ours_running_one_of`] helpers that [`kill_stale_daemon_sync`] and
 /// [`kill_running_daemon`] use: real, read-only OS queries against this test
 /// binary's own process, never an actual signal.
 #[cfg(all(test, unix))]
 mod unix_quit_signal_tests {
-    use super::{process_argv0_matches, write_pid_file};
+    use super::write_pid_file;
     use std::os::unix::net::UnixListener;
 
     /// A real UDS this test process itself holds open, so
@@ -3647,37 +3717,6 @@ mod unix_quit_signal_tests {
         let sock_path = dir.path().join("nothing-listens-here.sock");
 
         assert!(super::pids_holding_unix_socket(&sock_path).is_empty());
-    }
-
-    #[test]
-    fn process_argv0_matches_this_process_against_its_own_exe_path() {
-        let pid = std::process::id() as i32;
-        let exe = std::env::current_exe()
-            .expect("current_exe")
-            .to_string_lossy()
-            .into_owned();
-
-        assert!(
-            process_argv0_matches(pid, &exe),
-            "this test binary's own pid must match its own current_exe() path"
-        );
-    }
-
-    #[test]
-    fn process_argv0_matches_rejects_a_different_expected_path() {
-        let pid = std::process::id() as i32;
-
-        assert!(!process_argv0_matches(
-            pid,
-            "/definitely/not/the/test/binary"
-        ));
-    }
-
-    #[test]
-    fn process_argv0_matches_rejects_an_empty_expected_path() {
-        let pid = std::process::id() as i32;
-
-        assert!(!process_argv0_matches(pid, ""));
     }
 
     #[test]
@@ -4713,5 +4752,98 @@ mod sidecar_source_stamp_tests {
         assert!(!installed_matches_source(&src, &dest, &stamp));
         assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
         assert!(installed_matches_source(&src, &dest, &stamp));
+    }
+}
+
+/// Which processes a daemon stop or stale-daemon kill may signal. Pure
+/// decisions only: nothing here spawns or signals a process.
+#[cfg(all(test, unix))]
+mod daemon_signal_target_tests {
+    use super::{daemon_program_paths, loaded_job_program, may_signal};
+    use std::path::Path;
+
+    const MINE: u32 = 501;
+    const OTHER_USER: u32 = 502;
+
+    fn programs(job: Option<&str>) -> Vec<String> {
+        let job = job.map(|j| format!("service = x\n\tprogram = {j}\n"));
+        daemon_program_paths(Path::new("/Users/me/.nodespace/bin"), &move || job.clone())
+    }
+
+    #[test]
+    fn both_install_locations_match_for_this_user() {
+        let programs = programs(None);
+        let name = super::daemon_binary_name();
+        for dir in ["/Users/me/.nodespace/bin", "/usr/local/bin"] {
+            let argv0 = format!("{dir}/{name}");
+            assert!(
+                may_signal(Some(&argv0), Some(MINE), MINE, &programs),
+                "{argv0}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_loaded_jobs_program_matches() {
+        let programs = programs(Some("/opt/custom/nodespaced"));
+        assert!(may_signal(
+            Some("/opt/custom/nodespaced"),
+            Some(MINE),
+            MINE,
+            &programs
+        ));
+    }
+
+    #[test]
+    fn a_similarly_named_binary_elsewhere_does_not_match() {
+        let programs = programs(None);
+        let name = super::daemon_binary_name();
+        for argv0 in [
+            format!("/tmp/{name}"),
+            format!("/usr/local/bin/{name}-old"),
+            format!("/usr/local/sbin/{name}"),
+            format!("/Users/me/.nodespace/bin/{name}/x"),
+            format!("/Users/other/.nodespace/bin/{name}"),
+            name.to_string(),
+            String::new(),
+        ] {
+            assert!(
+                !may_signal(Some(&argv0), Some(MINE), MINE, &programs),
+                "{argv0}"
+            );
+        }
+    }
+
+    #[test]
+    fn another_users_process_at_a_matching_path_does_not_match() {
+        let programs = programs(None);
+        let argv0 = format!("/usr/local/bin/{}", super::daemon_binary_name());
+        assert!(!may_signal(Some(&argv0), Some(OTHER_USER), MINE, &programs));
+    }
+
+    #[test]
+    fn an_unreadable_process_does_not_match() {
+        let programs = programs(None);
+        let argv0 = format!("/usr/local/bin/{}", super::daemon_binary_name());
+        assert!(!may_signal(None, Some(MINE), MINE, &programs));
+        assert!(!may_signal(Some(&argv0), None, MINE, &programs));
+    }
+
+    #[test]
+    fn the_job_program_is_read_from_launchctl_print_output() {
+        let out = "gui/501/app.nodespace.daemon = {\n\tstate = running\n\tprogram = /usr/local/bin/nodespaced\n\targuments = {\n\t\t/usr/local/bin/nodespaced\n\t}\n}";
+        assert_eq!(
+            loaded_job_program(out).as_deref(),
+            Some("/usr/local/bin/nodespaced")
+        );
+        assert_eq!(loaded_job_program("state = running"), None);
+        assert_eq!(loaded_job_program("program = relative/path"), None);
+    }
+
+    #[test]
+    fn the_job_program_is_not_listed_twice() {
+        let name = super::daemon_binary_name();
+        let programs = programs(Some(&format!("/usr/local/bin/{name}")));
+        assert_eq!(programs.len(), 2);
     }
 }
