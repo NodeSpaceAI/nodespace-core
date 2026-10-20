@@ -3,6 +3,7 @@ import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { isA } from '$lib/types/core-node-types';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('Navigation');
@@ -62,7 +63,7 @@ const PERSISTENCE_DEBOUNCE_MS = 500;
  * drops its saved expansion state, which belongs to the other day's nodes.
  */
 function withDailyJournalOnToday(tab: Tab): Tab {
-  if (tab.id !== DAILY_JOURNAL_TAB_ID || tab.content?.nodeType !== 'date') {
+  if (tab.id !== DAILY_JOURNAL_TAB_ID || !isA(tab.content?.nodeType, 'date')) {
     return tab;
   }
   const today = getTodayDateId();
