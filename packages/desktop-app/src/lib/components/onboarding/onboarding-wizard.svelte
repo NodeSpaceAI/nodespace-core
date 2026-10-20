@@ -672,6 +672,9 @@
 <style>
   .onboarding-backdrop {
     position: fixed;
+    /* An open modal dialog (bits-ui) sets pointer-events: none on <body>;
+       without this the overlay inherits it and takes no click. */
+    pointer-events: auto;
     inset: 0;
     background: hsl(0 0% 0% / 0.5);
     display: flex;

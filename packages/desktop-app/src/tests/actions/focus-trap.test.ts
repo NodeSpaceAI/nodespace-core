@@ -120,4 +120,45 @@ describe('focusTrap action', () => {
     expect(ancestorEscape).not.toHaveBeenCalled();
     trap.destroy();
   });
+
+  describe('focus taken from outside the dialog', () => {
+    it('returns focus to the dialog when an outside element grabs it', () => {
+      const { node, buttons } = makeDialog(2);
+      const editor = document.createElement('textarea');
+      document.body.appendChild(editor);
+      const trap = focusTrap(node, {});
+
+      editor.focus();
+
+      expect(document.activeElement).toBe(buttons[0]);
+      trap.destroy();
+    });
+
+    it('lets focus stay inside another aria-modal element', () => {
+      const { node } = makeDialog(2);
+      const other = document.createElement('div');
+      other.setAttribute('aria-modal', 'true');
+      const input = document.createElement('input');
+      other.appendChild(input);
+      document.body.appendChild(other);
+      const trap = focusTrap(node, {});
+
+      input.focus();
+
+      expect(document.activeElement).toBe(input);
+      trap.destroy();
+    });
+
+    it('stops reclaiming focus once destroyed', () => {
+      const { node } = makeDialog(2);
+      const editor = document.createElement('textarea');
+      document.body.appendChild(editor);
+      const trap = focusTrap(node, {});
+      trap.destroy();
+
+      editor.focus();
+
+      expect(document.activeElement).toBe(editor);
+    });
+  });
 });

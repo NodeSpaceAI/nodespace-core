@@ -12,6 +12,9 @@
  *  - it keeps Tab / Shift+Tab cycling within the dialog;
  *  - it invokes `onEscape` when Escape is pressed (caught on the container, so
  *    `stopPropagation` on inner content can't hide it);
+ *  - it takes focus back when something outside the dialog grabs it (an
+ *    editor's autofocus, say), unless that element sits inside another modal
+ *    (`aria-modal="true"`), which legitimately holds focus while it is on top;
  *  - on destroy (the modal closing) it restores focus to where it was.
  *
  * Apply to the dialog content element, which must be focusable (e.g.
@@ -67,7 +70,18 @@ export function focusTrap(node: HTMLElement, params: FocusTrapParams = {}) {
     }
   }
 
+  function handleFocusIn(event: FocusEvent) {
+    const target = event.target;
+    if (!(target instanceof Element) || node.contains(target)) return;
+    // Another modal on top (an extension dialog, say) owns focus; contesting it
+    // would leave the two scopes pulling focus back and forth.
+    const otherModal = target.closest('[aria-modal="true"]');
+    if (otherModal && !node.contains(otherModal)) return;
+    (focusable()[0] ?? node).focus();
+  }
+
   node.addEventListener('keydown', handleKeydown);
+  document.addEventListener('focusin', handleFocusIn);
 
   // Move focus into the dialog on open so keyboard users start inside it and the
   // Escape/Tab handling above actually receives their key presses.
@@ -79,6 +93,7 @@ export function focusTrap(node: HTMLElement, params: FocusTrapParams = {}) {
     },
     destroy() {
       node.removeEventListener('keydown', handleKeydown);
+      document.removeEventListener('focusin', handleFocusIn);
       // Return focus to whatever had it before the dialog opened.
       previouslyFocused?.focus?.();
     }
