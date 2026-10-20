@@ -1262,7 +1262,19 @@ fn compiled_installer_beside(exe: &Path) -> Option<Installer> {
 /// The not-found message: the directories searched on this machine and what
 /// to do. `source_script` is the dev-checkout script path, mentioned only
 /// when it exists or in a debug build -- never a build-time path in release.
-fn installer_not_found_message(searched: &[PathBuf], source_script: Option<&Path>) -> String {
+/// Every directory [`compiled_installer_beside`] looks in for `exe`: the exe
+/// directories and the app-bundle resource roots.
+fn searched_locations(exe: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in exe_dirs(exe) {
+        let extra = resource_root_candidates(&dir).into_iter().skip(1);
+        out.push(dir);
+        out.extend(extra);
+    }
+    out
+}
+
+fn installer_not_found_message(searched: &[PathBuf], source_script: &Path, debug: bool) -> String {
     let dirs = if searched.is_empty() {
         "(could not determine the executable's location)".to_string()
     } else {
@@ -1277,10 +1289,10 @@ fn installer_not_found_message(searched: &[PathBuf], source_script: Option<&Path
          resources in: {dirs}. Reinstall NodeSpace, or run the NodeSpace app once to set the \
          skill up."
     );
-    if let Some(path) = source_script {
+    if debug || source_script.exists() {
         msg.push_str(&format!(
             " From a source checkout, run `bun run build:skill` to build {}.",
-            path.display()
+            source_script.display()
         ));
     }
     msg
@@ -1298,10 +1310,12 @@ fn resolve_script_installer() -> Result<Installer> {
         .join("install.js");
     if !path.exists() {
         let searched = std::env::current_exe()
-            .map(|exe| exe_dirs(&exe))
+            .map(|exe| searched_locations(&exe))
             .unwrap_or_default();
-        let hint = (cfg!(debug_assertions)).then_some(path.as_path());
-        anyhow::bail!("{}", installer_not_found_message(&searched, hint));
+        anyhow::bail!(
+            "{}",
+            installer_not_found_message(&searched, &path, cfg!(debug_assertions))
+        );
     }
     Ok(Installer::Script { path })
 }
@@ -2291,16 +2305,38 @@ mod tests {
     }
 
     #[test]
-    fn installer_not_found_message_lists_searched_dirs_and_no_build_path() {
+    fn installer_not_found_message_lists_searched_dirs() {
         let dirs = vec![PathBuf::from("/opt/x/bin"), PathBuf::from("/real/bin")];
-        let msg = installer_not_found_message(&dirs, None);
+        let msg = installer_not_found_message(&dirs, Path::new("/nonexistent/install.js"), false);
         assert!(msg.contains("/opt/x/bin") && msg.contains("/real/bin"));
         assert!(msg.contains("Reinstall NodeSpace"));
-        assert!(!msg.contains("build:skill"));
-        assert!(!msg.contains(env!("CARGO_MANIFEST_DIR")));
+    }
 
-        let with_hint = installer_not_found_message(&dirs, Some(Path::new("/src/install.js")));
-        assert!(with_hint.contains("build:skill") && with_hint.contains("/src/install.js"));
+    #[test]
+    fn build_path_hint_appears_only_in_debug_builds() {
+        let script = Path::new("/ci/runner/skill/dist/install.js");
+        let release = installer_not_found_message(&[], script, false);
+        assert!(!release.contains("build:skill") && !release.contains("/ci/runner"));
+        let debug = installer_not_found_message(&[], script, true);
+        assert!(debug.contains("build:skill") && debug.contains("/ci/runner"));
+    }
+
+    #[test]
+    fn build_path_hint_appears_in_release_when_the_script_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("install.js");
+        std::fs::write(&script, b"").expect("write");
+        assert!(installer_not_found_message(&[], &script, false).contains("build:skill"));
+    }
+
+    #[test]
+    fn searched_locations_include_the_bundle_resources_root() {
+        let exe = Path::new("/Applications/NodeSpace.app/Contents/MacOS/nodespace");
+        let found = searched_locations(exe);
+        assert!(found.contains(&PathBuf::from("/Applications/NodeSpace.app/Contents/MacOS")));
+        assert!(found.contains(&PathBuf::from(
+            "/Applications/NodeSpace.app/Contents/Resources/resources/skill"
+        )));
     }
 
     /// Runs a throwaway shell script (the only way to get a real
