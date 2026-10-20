@@ -3,6 +3,7 @@ import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { isA } from '$lib/types/core-node-types';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('Navigation');
@@ -55,6 +56,24 @@ export const DEFAULT_PANE_ID = 'pane-1';
 export const LOADING_TAB_TITLE = 'Loading...';
 
 const PERSISTENCE_DEBOUNCE_MS = 500;
+
+/**
+ * Re-point a restored Daily Journal tab at today's date. Any other tab, and a
+ * Daily Journal tab already on today, is returned unchanged. A rewritten tab
+ * drops its saved expansion state, which belongs to the other day's nodes.
+ */
+function withDailyJournalOnToday(tab: Tab): Tab {
+  const content = tab.content;
+  if (tab.id !== DAILY_JOURNAL_TAB_ID || !content || !isA(content.nodeType, 'date')) {
+    return tab;
+  }
+  const today = getTodayDateId();
+  if (content.nodeId === today) {
+    return tab;
+  }
+  const { expandedNodeIds: _staleExpansion, ...rest } = tab;
+  return { ...rest, title: today, content: { ...content, nodeId: today } };
+}
 
 // Tab state store — initial state
 function createInitialTabState(): TabState {
@@ -160,8 +179,11 @@ class NavigationStore {
     const persisted = TabPersistenceService.load();
 
     if (persisted) {
+      // The Daily Journal tab always opens on the current date, whatever date
+      // it showed when the state was saved.
+      const tabs = persisted.tabs.map(withDailyJournalOnToday);
       this.state = {
-        tabs: persisted.tabs,
+        tabs,
         panes: persisted.panes,
         activePaneId: persisted.activePaneId,
         activeTabIds: persisted.activeTabIds,
@@ -169,7 +191,7 @@ class NavigationStore {
 
       // Schedule expansion state restoration for each tab
       // This will be applied when viewers register (deferred restoration pattern)
-      for (const tab of persisted.tabs) {
+      for (const tab of tabs) {
         // Validate expandedNodeIds before scheduling restoration
         if (
           tab.expandedNodeIds &&
