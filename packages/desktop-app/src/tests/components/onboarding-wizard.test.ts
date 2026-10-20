@@ -98,6 +98,9 @@ describe('OnboardingWizard (focus-trap)', () => {
     editor.focus();
 
     expect(dialog.contains(doc.activeElement)).toBe(true);
+    // Back on the step's primary action, never on the Close control.
+    expect(doc.activeElement).toBe(buttonByText(dialog, 'Add to PATH'));
+    expect(doc.activeElement?.closest('.close-button, [aria-label*="lose"]')).toBeNull();
     await fireEvent.keyDown(doc.activeElement!, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
     editor.remove();
