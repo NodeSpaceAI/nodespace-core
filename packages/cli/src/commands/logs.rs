@@ -112,6 +112,9 @@ fn resolve_log_path() -> Option<PathBuf> {
     candidate_paths().into_iter().find(|p| p.exists())
 }
 
+/// Tail of the pkg LaunchAgent's log path.
+const LAUNCH_AGENT_LOG_SUFFIX: &str = "Library/Logs/com.nodespace/nodespaced.log";
+
 /// The state-directory log, the one a desktop-app daemon writes: any other
 /// candidate chosen is a fallback.
 fn primary_log_path() -> Option<PathBuf> {
@@ -132,16 +135,37 @@ fn fallback_notice(
     }
     let when = modified
         .map(|t| {
-            chrono::DateTime::<chrono::Local>::from(t)
-                .format("%Y-%m-%d %H:%M:%S %z")
+            chrono::DateTime::<chrono::Utc>::from(t)
+                .format("%Y-%m-%d %H:%M:%S UTC")
                 .to_string()
         })
         .unwrap_or_else(|| "unknown".to_string());
+    if chosen.ends_with(LAUNCH_AGENT_LOG_SUFFIX) {
+        // The pkg LaunchAgent writes this file for the daemon itself.
+        return Some(format!(
+            "note: using {} (last modified {when}), the log of the machine-wide (.pkg) install.",
+            chosen.display()
+        ));
+    }
     Some(format!(
         "note: using {} (last modified {when}). This is a fallback location and may belong to \
          another install, not the running daemon.",
         chosen.display()
     ))
+}
+
+/// [`fallback_notice`] for `path`, reading its modification time from disk.
+fn notice_for(path: &Path, primary: Option<&Path>) -> Option<String> {
+    fallback_notice(
+        path,
+        primary,
+        std::fs::metadata(path).and_then(|m| m.modified()).ok(),
+    )
+}
+
+/// The `--path-only --json` payload.
+fn path_only_json(path: &Path, notice: Option<&str>) -> serde_json::Value {
+    serde_json::json!({ "path": path.display().to_string(), "notice": notice })
 }
 
 /// Whether `line` satisfies `filter` — a literal substring match, or every
@@ -304,21 +328,14 @@ pub fn run(args: LogsArgs, json: bool) -> Result<()> {
         );
     };
 
-    let notice = fallback_notice(
-        &path,
-        primary_log_path().as_deref(),
-        std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
-    );
+    let notice = notice_for(&path, primary_log_path().as_deref());
     if let Some(notice) = &notice {
         eprintln!("{notice}");
     }
 
     if args.path_only {
         if json {
-            println!(
-                "{}",
-                serde_json::json!({ "path": path.display().to_string() })
-            );
+            println!("{}", path_only_json(&path, notice.as_deref()));
         } else {
             println!("{}", path.display());
         }
@@ -400,12 +417,46 @@ mod tests {
     fn fallback_notice_names_path_mtime_and_foreign_install() {
         let primary = PathBuf::from("/h/.nodespace/logs/nodespaced.log");
         let chosen = PathBuf::from("/opt/homebrew/var/log/nodespace/nodespaced.log");
-        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400 * 365);
+        // 2021-06-15 12:00:00 UTC: the same calendar date in every timezone,
+        // and the note is UTC-formatted so it cannot vary by TZ anyway.
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_623_758_400);
         let n = fallback_notice(&chosen, Some(&primary), Some(when)).expect("fallback");
         assert!(n.contains("/opt/homebrew/var/log/nodespace/nodespaced.log"));
         assert!(n.contains("another install"));
-        assert!(n.contains("1971"));
+        assert!(n.contains("2021-06-15 12:00:00 UTC"), "{n}");
         assert!(fallback_notice(&primary, Some(&primary), Some(when)).is_none());
+    }
+
+    #[test]
+    fn fallback_notice_says_unknown_when_mtime_is_unavailable() {
+        let n = fallback_notice(Path::new("/opt/x/nodespaced.log"), None, None).expect("fallback");
+        assert!(n.contains("last modified unknown"), "{n}");
+    }
+
+    #[test]
+    fn launch_agent_log_is_not_called_another_install() {
+        let chosen = PathBuf::from("/Users/u/Library/Logs/com.nodespace/nodespaced.log");
+        let primary = PathBuf::from("/Users/u/.nodespace/logs/nodespaced.log");
+        let n = fallback_notice(&chosen, Some(&primary), None).expect("note");
+        assert!(n.contains(".pkg"), "{n}");
+        assert!(!n.contains("another install"), "{n}");
+    }
+
+    /// The wiring `run` uses: the notice reads the file's real mtime, and
+    /// `--path-only --json` carries it.
+    #[test]
+    fn notice_for_reads_disk_mtime_and_path_only_json_carries_it() {
+        let (_dir, file) = write_temp_log("x\n");
+        let primary = PathBuf::from("/nonexistent/primary.log");
+        let notice = notice_for(&file, Some(&primary)).expect("fallback notice");
+        assert!(notice.contains(&file.display().to_string()));
+        assert!(!notice.contains("unknown"), "{notice}");
+        assert!(notice_for(&file, Some(&file)).is_none());
+
+        let json = path_only_json(&file, Some(&notice));
+        assert_eq!(json["notice"], notice);
+        assert_eq!(json["path"], file.display().to_string());
+        assert!(path_only_json(&file, None)["notice"].is_null());
     }
 
     /// A redirected NodeSpace home has one log, its own: no Homebrew prefix
