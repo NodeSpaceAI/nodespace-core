@@ -71,6 +71,10 @@ fn candidate_paths() -> Vec<PathBuf> {
 /// [`candidate_paths`] for the given state directory (`None` when no home can
 /// be found), `redirected` when `NODESPACE_HOME` chose it.
 fn candidate_paths_for(state_dir: Option<PathBuf>, redirected: bool) -> Vec<PathBuf> {
+    let home_of_state_dir = state_dir
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
     let mut candidates: Vec<PathBuf> = state_dir
         .into_iter()
         .map(|dir| dir.join("logs").join("nodespaced.log"))
@@ -90,11 +94,54 @@ fn candidate_paths_for(state_dir: Option<PathBuf>, redirected: bool) -> Vec<Path
         );
     }
 
+    // The pkg LaunchAgent (`scripts/pkg-resources/app.nodespace.daemon.plist`)
+    // names this path for the daemon's stdout/stderr; checked last.
+    if let Some(home) = home_of_state_dir.as_deref() {
+        candidates.push(
+            home.join("Library")
+                .join("Logs")
+                .join("com.nodespace")
+                .join("nodespaced.log"),
+        );
+    }
+
     candidates
 }
 
 fn resolve_log_path() -> Option<PathBuf> {
     candidate_paths().into_iter().find(|p| p.exists())
+}
+
+/// The state-directory log, the one a desktop-app daemon writes: any other
+/// candidate chosen is a fallback.
+fn primary_log_path() -> Option<PathBuf> {
+    nodespace_daemon::nodespace_dir()
+        .ok()
+        .map(|dir| dir.join("logs").join("nodespaced.log"))
+}
+
+/// A warning for stderr when `chosen` is not the primary log, naming the path
+/// and its last-modified time; `None` when it is the primary log.
+fn fallback_notice(
+    chosen: &Path,
+    primary: Option<&Path>,
+    modified: Option<std::time::SystemTime>,
+) -> Option<String> {
+    if primary == Some(chosen) {
+        return None;
+    }
+    let when = modified
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%Y-%m-%d %H:%M:%S %z")
+                .to_string()
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    Some(format!(
+        "note: using {} (last modified {when}). This is a fallback location and may belong to \
+         another install, not the running daemon.",
+        chosen.display()
+    ))
 }
 
 /// Whether `line` satisfies `filter` — a literal substring match, or every
@@ -257,6 +304,15 @@ pub fn run(args: LogsArgs, json: bool) -> Result<()> {
         );
     };
 
+    let notice = fallback_notice(
+        &path,
+        primary_log_path().as_deref(),
+        std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
+    );
+    if let Some(notice) = &notice {
+        eprintln!("{notice}");
+    }
+
     if args.path_only {
         if json {
             println!(
@@ -282,6 +338,7 @@ pub fn run(args: LogsArgs, json: bool) -> Result<()> {
                 "matched": matched_total,
                 "shown": shown.len(),
                 "lines": shown,
+                "notice": notice,
             })
         );
     } else {
@@ -324,6 +381,31 @@ mod tests {
             joined.contains("var/log/nodespace/nodespaced.log"),
             "a Homebrew service's log path must be a candidate: {joined}"
         );
+    }
+
+    /// The pkg LaunchAgent's log is the last candidate, after Homebrew.
+    #[test]
+    fn the_launch_agent_log_is_the_last_candidate() {
+        let paths = candidate_paths_for(Some(PathBuf::from("/home/user/.nodespace")), false);
+        assert_eq!(
+            paths.last(),
+            Some(&PathBuf::from(
+                "/home/user/Library/Logs/com.nodespace/nodespaced.log"
+            ))
+        );
+        assert_eq!(paths.len(), 4);
+    }
+
+    #[test]
+    fn fallback_notice_names_path_mtime_and_foreign_install() {
+        let primary = PathBuf::from("/h/.nodespace/logs/nodespaced.log");
+        let chosen = PathBuf::from("/opt/homebrew/var/log/nodespace/nodespaced.log");
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400 * 365);
+        let n = fallback_notice(&chosen, Some(&primary), Some(when)).expect("fallback");
+        assert!(n.contains("/opt/homebrew/var/log/nodespace/nodespaced.log"));
+        assert!(n.contains("another install"));
+        assert!(n.contains("1971"));
+        assert!(fallback_notice(&primary, Some(&primary), Some(when)).is_none());
     }
 
     /// A redirected NodeSpace home has one log, its own: no Homebrew prefix
