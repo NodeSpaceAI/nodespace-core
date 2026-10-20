@@ -15,6 +15,9 @@
  *  - it takes focus back when something outside the dialog grabs it (an
  *    editor's autofocus, say), unless that element sits inside another modal
  *    (`aria-modal="true"`), which legitimately holds focus while it is on top;
+ *    Content portalled outside the dialog that is not `aria-modal` (popovers,
+ *    selects) would be pulled back too; callers that need that must mark it
+ *    `aria-modal="true"` or not use the trap;
  *  - on destroy (the modal closing) it restores focus to where it was.
  *
  * Apply to the dialog content element, which must be focusable (e.g.
@@ -99,7 +102,9 @@ export function focusTrap(node: HTMLElement, params: FocusTrapParams = {}) {
     try {
       if (lastFocusedInside && node.contains(lastFocusedInside) && lastFocusedInside.isConnected) {
         lastFocusedInside.focus();
-      } else {
+      }
+      // Nothing to return to, or it refused focus (disabled or hidden since).
+      if (!lastFocusedInside || document.activeElement !== lastFocusedInside) {
         if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
         node.focus();
       }

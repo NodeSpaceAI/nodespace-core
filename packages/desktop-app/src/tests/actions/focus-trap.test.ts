@@ -226,6 +226,35 @@ describe('focusTrap action', () => {
       trapA.destroy();
     });
 
+    it('falls back to the container when the last-focused element became disabled', () => {
+      const { node, buttons } = makeDialog(2);
+      const editor = document.createElement('textarea');
+      document.body.appendChild(editor);
+      const trap = focusTrap(node, {});
+      buttons[1].focus();
+      (buttons[1] as HTMLButtonElement).disabled = true;
+
+      editor.focus();
+
+      expect(document.activeElement).toBe(node);
+      trap.destroy();
+    });
+
+    it('keeps the higher trap reclaiming when a lower trap is destroyed', () => {
+      const a = makeDialog(2);
+      const trapA = focusTrap(a.node, {});
+      const b = makeDialog(2);
+      const trapB = focusTrap(b.node, {});
+      trapA.destroy();
+      const editor = document.createElement('textarea');
+      document.body.appendChild(editor);
+
+      editor.focus();
+
+      expect(b.node.contains(document.activeElement)).toBe(true);
+      trapB.destroy();
+    });
+
     it('stops reclaiming focus once destroyed', () => {
       const { node } = makeDialog(2);
       const editor = document.createElement('textarea');
