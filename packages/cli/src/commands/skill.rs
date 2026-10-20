@@ -1197,25 +1197,105 @@ fn resolve_compiled_installer() -> Option<Installer> {
     compiled_installer_beside(&exe)
 }
 
+/// Directories holding the executable: its own, then (when different) the
+/// canonicalized one, so a symlinked CLI also finds the real binary's
+/// neighbours. The plain sibling directory stays first.
+fn exe_dirs(exe: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = exe.parent() {
+        dirs.push(dir.to_path_buf());
+    }
+    if let Some(real) = exe
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        if !dirs.contains(&real) {
+            dirs.push(real);
+        }
+    }
+    dirs
+}
+
+/// Resource-root candidates for a directory holding the sidecar: the sibling
+/// `skill/` first, then the macOS app-bundle layout
+/// (`<..>.app/Contents/MacOS` -> `../Resources/resources/skill`).
+fn resource_root_candidates(dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![dir.join("skill")];
+    if dir.file_name().is_some_and(|n| n == "MacOS")
+        && dir
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|n| n == "Contents")
+    {
+        if let Some(contents) = dir.parent() {
+            roots.push(contents.join("Resources").join("resources").join("skill"));
+        }
+    }
+    roots
+}
+
 /// Pure form of [`resolve_compiled_installer`]: takes the executable path as
 /// a parameter (rather than calling `current_exe()` itself) so this is
 /// exercisable against a synthetic directory in a unit test, independent of
 /// where cargo actually places the test binary -- the same seam
 /// `daemon_setup::sidecar_path_from_exe` uses for the identical reason.
 fn compiled_installer_beside(exe: &Path) -> Option<Installer> {
-    let dir = exe.parent()?;
-    let binary = dir.join(bundled_sidecar_name("nodespace-skill-installer"));
-    if !binary.exists() {
-        return None;
+    for dir in exe_dirs(exe) {
+        let binary = dir.join(bundled_sidecar_name("nodespace-skill-installer"));
+        if !binary.exists() {
+            continue;
+        }
+        if let Some(resource_root) = resource_root_candidates(&dir)
+            .into_iter()
+            .find(|root| root.join("SKILL.md").exists())
+        {
+            return Some(Installer::Compiled {
+                binary,
+                resource_root,
+            });
+        }
     }
-    let resource_root = dir.join("skill");
-    if !resource_root.join("SKILL.md").exists() {
-        return None;
+    None
+}
+
+/// The not-found message: the directories searched on this machine and what
+/// to do. `source_script` is the dev-checkout script path, mentioned only
+/// when it exists or in a debug build -- never a build-time path in release.
+/// Every directory [`compiled_installer_beside`] looks in for `exe`: the exe
+/// directories and the app-bundle resource roots.
+fn searched_locations(exe: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for dir in exe_dirs(exe) {
+        let extra = resource_root_candidates(&dir).into_iter().skip(1);
+        out.push(dir);
+        out.extend(extra);
     }
-    Some(Installer::Compiled {
-        binary,
-        resource_root,
-    })
+    out
+}
+
+fn installer_not_found_message(searched: &[PathBuf], source_script: &Path, debug: bool) -> String {
+    let dirs = if searched.is_empty() {
+        "(could not determine the executable's location)".to_string()
+    } else {
+        searched
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut msg = format!(
+        "Skill installer not found. Looked for `nodespace-skill-installer` and its `skill/` \
+         resources in: {dirs}. Reinstall NodeSpace, or run the NodeSpace app once to set the \
+         skill up."
+    );
+    if debug || source_script.exists() {
+        msg.push_str(&format!(
+            " From a source checkout, run `bun run build:skill` to build {}.",
+            source_script.display()
+        ));
+    }
+    msg
 }
 
 /// The plain JS installer script (`dist/install.js`), resolved relative to
@@ -1229,10 +1309,12 @@ fn resolve_script_installer() -> Result<Installer> {
         .join("dist")
         .join("install.js");
     if !path.exists() {
+        let searched = std::env::current_exe()
+            .map(|exe| searched_locations(&exe))
+            .unwrap_or_default();
         anyhow::bail!(
-            "Skill installer not found. Expected a compiled `nodespace-skill-installer` sidecar \
-             beside this binary, or a built {} (run `bun run build:skill` from a source checkout).",
-            path.display()
+            "{}",
+            installer_not_found_message(&searched, &path, cfg!(debug_assertions))
         );
     }
     Ok(Installer::Script { path })
@@ -2173,6 +2255,88 @@ mod tests {
             }
             Installer::Script { .. } => panic!("expected a compiled installer to resolve"),
         }
+    }
+
+    fn stage_sidecar(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        std::fs::write(
+            dir.join(bundled_sidecar_name("nodespace-skill-installer")),
+            b"",
+        )
+        .expect("write sidecar");
+    }
+
+    fn stage_skill(root: &Path) {
+        std::fs::create_dir_all(root).expect("mkdir skill");
+        std::fs::write(root.join("SKILL.md"), b"").expect("write SKILL.md");
+    }
+
+    #[test]
+    fn compiled_installer_beside_finds_resources_in_an_app_bundle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let macos = tmp.path().join("NodeSpace.app/Contents/MacOS");
+        stage_sidecar(&macos);
+        std::fs::write(macos.join("nodespace"), b"").expect("exe");
+        let root = tmp
+            .path()
+            .join("NodeSpace.app/Contents/Resources/resources/skill");
+        stage_skill(&root);
+
+        match compiled_installer_beside(&macos.join("nodespace")).expect("bundle layout") {
+            Installer::Compiled { resource_root, .. } => assert_eq!(resource_root, root),
+            Installer::Script { .. } => panic!("expected compiled"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compiled_installer_beside_follows_a_symlinked_cli_to_the_real_directory() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        stage_sidecar(&real);
+        stage_skill(&real.join("skill"));
+        std::fs::write(real.join("nodespace"), b"").expect("exe");
+        let link = tmp.path().join("link");
+        std::fs::create_dir_all(&link).expect("mkdir link");
+        std::os::unix::fs::symlink(real.join("nodespace"), link.join("nodespace"))
+            .expect("symlink");
+
+        assert!(compiled_installer_beside(&link.join("nodespace")).is_some());
+    }
+
+    #[test]
+    fn installer_not_found_message_lists_searched_dirs() {
+        let dirs = vec![PathBuf::from("/opt/x/bin"), PathBuf::from("/real/bin")];
+        let msg = installer_not_found_message(&dirs, Path::new("/nonexistent/install.js"), false);
+        assert!(msg.contains("/opt/x/bin") && msg.contains("/real/bin"));
+        assert!(msg.contains("Reinstall NodeSpace"));
+    }
+
+    #[test]
+    fn build_path_hint_appears_only_in_debug_builds() {
+        let script = Path::new("/ci/runner/skill/dist/install.js");
+        let release = installer_not_found_message(&[], script, false);
+        assert!(!release.contains("build:skill") && !release.contains("/ci/runner"));
+        let debug = installer_not_found_message(&[], script, true);
+        assert!(debug.contains("build:skill") && debug.contains("/ci/runner"));
+    }
+
+    #[test]
+    fn build_path_hint_appears_in_release_when_the_script_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("install.js");
+        std::fs::write(&script, b"").expect("write");
+        assert!(installer_not_found_message(&[], &script, false).contains("build:skill"));
+    }
+
+    #[test]
+    fn searched_locations_include_the_bundle_resources_root() {
+        let exe = Path::new("/Applications/NodeSpace.app/Contents/MacOS/nodespace");
+        let found = searched_locations(exe);
+        assert!(found.contains(&PathBuf::from("/Applications/NodeSpace.app/Contents/MacOS")));
+        assert!(found.contains(&PathBuf::from(
+            "/Applications/NodeSpace.app/Contents/Resources/resources/skill"
+        )));
     }
 
     /// Runs a throwaway shell script (the only way to get a real
