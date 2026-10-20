@@ -35,7 +35,7 @@ vi.mock('$lib/services/daemon-status', () => ({
 
 import { schemasStore } from '$lib/stores/schemas.svelte';
 
-function makeSchema(id: string, isCore: boolean): SchemaNode {
+function makeSchema(id: string, isCore: boolean, extendsType?: string): SchemaNode {
   return {
     nodeType: 'schema' as const,
     lifecycleStatus: 'active' as const,
@@ -48,7 +48,8 @@ function makeSchema(id: string, isCore: boolean): SchemaNode {
     isCore,
     schemaVersion: 1,
     relationships: [],
-    fields: []
+    fields: [],
+    ...(extendsType === undefined ? {} : { extends: extendsType })
   };
 }
 
@@ -121,6 +122,59 @@ describe('schemasStore.builtInSchemas — sidenav core types', () => {
       ])
     );
     expect(ids).toHaveLength(8);
+  });
+});
+
+describe('schemasStore.customSchemas — extension-owned system subtypes', () => {
+  beforeEach(() => {
+    schemasStore.schemas = [];
+  });
+
+  it('hides a subtype of a non-browsable core type (sync-database-settings-like)', () => {
+    schemasStore.schemas = [
+      makeSchema('database-settings', true),
+      makeSchema('ext-database-settings', false, 'database-settings')
+    ];
+
+    expect(schemasStore.customSchemas.map((s) => s.id)).not.toContain('ext-database-settings');
+  });
+
+  it('hides a subtype whose chain passes through another custom type to a hidden base', () => {
+    schemasStore.schemas = [
+      makeSchema('database-settings', true),
+      makeSchema('mid', false, 'database-settings'),
+      makeSchema('leaf', false, 'mid')
+    ];
+
+    expect(schemasStore.customSchemas).toEqual([]);
+  });
+
+  it('shows an ordinary custom type with no extends', () => {
+    schemasStore.schemas = [makeSchema('recipe', false)];
+
+    expect(schemasStore.customSchemas.map((s) => s.id)).toEqual(['recipe']);
+  });
+
+  it('shows a custom type that extends a browsable core type, directly or through a custom parent', () => {
+    schemasStore.schemas = [
+      makeSchema('task', true),
+      makeSchema('chore', false, 'task'),
+      makeSchema('weekly-chore', false, 'chore')
+    ];
+
+    expect(schemasStore.customSchemas.map((s) => s.id)).toEqual(['chore', 'weekly-chore']);
+  });
+
+  it('documents the known risk: a USER type extending a hidden base is hidden too', () => {
+    // The rule cannot tell a user's subtype of `database-settings` from an
+    // extension's. To show it, add the base to SIDENAV_CORE_TYPES
+    // (see the comment on SchemasStore.#extendsHiddenBase).
+    schemasStore.schemas = [
+      makeSchema('database-settings', true),
+      makeSchema('my-settings-type', false, 'database-settings')
+    ];
+
+    expect(schemasStore.customSchemas.map((s) => s.id)).not.toContain('my-settings-type');
   });
 });
 

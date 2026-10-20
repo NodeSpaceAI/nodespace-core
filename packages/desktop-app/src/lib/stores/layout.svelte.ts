@@ -50,7 +50,7 @@ const initialNavigationItems: NavigationItem[] = [
   // "AI Chat" nav item is temporarily removed. The old item opened a single
   // ephemeral chat tab backed by the now-deleted chatStore singleton (pre-ADR-034).
   // Every conversation is now an `ai-chat` node, so this item will be reintroduced
-  // as an expandable list of recent ai-chat nodes (like Collections / Node Types)
+  // as an expandable list of recent ai-chat nodes (like Collections / Types and Views)
   // in a follow-up. Until then it is omitted rather than left inert.
   {
     id: 'search',

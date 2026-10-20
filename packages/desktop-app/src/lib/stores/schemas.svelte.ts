@@ -15,7 +15,7 @@ import { backendAdapter } from '$lib/services/backend-adapter';
 import { createLogger } from '$lib/utils/logger';
 import { onDaemonReconnect } from '$lib/services/daemon-status';
 import type { SchemaNode } from '$lib/types/schema-node';
-import { setTypeResolver } from '$lib/types/core-node-types';
+import { nearestCoreType, setTypeResolver } from '$lib/types/core-node-types';
 
 const log = createLogger('SchemasStore');
 
@@ -61,9 +61,45 @@ class SchemasStore {
     return this.schemas.filter((s) => s.isCore && SIDENAV_CORE_TYPES.has(s.id));
   }
 
-  /** User-created custom schemas */
+  /** User-created custom schemas, minus subtypes of non-browsable core types. */
   get customSchemas(): SchemaNode[] {
-    return this.schemas.filter((s) => !s.isCore);
+    return this.schemas.filter((s) => !s.isCore && !this.#extendsHiddenBase(s));
+  }
+
+  /**
+   * Whether a non-core schema is an extension-owned system subtype that the
+   * types list must not show.
+   *
+   * HOW THE RULE WORKS: the types list shows only types a user can create and
+   * browse. A schema is hidden BY WHAT IT EXTENDS: walk its `extends` chain to
+   * the nearest core type (`nearestCoreType`); if that core type is not in
+   * `SIDENAV_CORE_TYPES` (the browsable allowlist above), the schema is hidden.
+   * Example: a subtype of `database-settings` that an extension registers to
+   * hold per-database state. The singleton is retyped to it in place, and a
+   * user never creates or browses it. A type with no `extends`, or one whose
+   * chain reaches a browsable core type (`task`, `person`, ...), is shown.
+   *
+   * WHY THIS AND NOT A DECLARED FLAG: a `hidden`/`system` field on the schema
+   * envelope would be more explicit, but a schema-field change follows the
+   * node-type sequence (generated types, storage, MCP/CLI params, probably an
+   * ADR) and every extension would have to remember to set it. Deriving it from
+   * `extends` needs no new field, keeps core free of any extension's naming,
+   * and also covers other extension-owned subtypes of system types.
+   *
+   * KNOWN RISK: a type a USER creates that extends a non-browsable core type
+   * (for example a custom subtype of `database-settings`, `collection` or
+   * `text`) is hidden from the list too, because the rule cannot tell it from
+   * an extension's. It still exists and its nodes still work; it just has no
+   * sidebar row.
+   *
+   * TO MAKE A HIDDEN TYPE VISIBLE AGAIN: add its nearest core base type's id to
+   * `SIDENAV_CORE_TYPES` (this also lists that core type itself in
+   * `builtInSchemas`), or, to show one subtype only, replace this rule with an
+   * explicit allow/deny list or a declared schema flag (option 2 in #3851).
+   */
+  #extendsHiddenBase(schema: SchemaNode): boolean {
+    const base = nearestCoreType(schema.id);
+    return base !== undefined && !SIDENAV_CORE_TYPES.has(base);
   }
 
   /** Load all schemas from the backend and update the store. */

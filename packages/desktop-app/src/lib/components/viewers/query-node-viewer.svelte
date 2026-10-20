@@ -666,7 +666,7 @@
       <BoundChatButton class="query-ask" {nodeId} label="Ask" bind:error={askError} />
     {:else if schemaNode}
       <!-- The type's own page: its chat is bound to the schema (ADR-100 §5). -->
-      <BoundChatButton class="query-ask" nodeId={schemaNode.id} label="Ask" bind:error={askError} />
+      <BoundChatButton class="query-ask" nodeId={schemaNode.id} label="Ask about {schemaNode.content} type..." bind:error={askError} />
     {/if}
     {#if schemaNode && queryState === 'success'}
       <button
