@@ -2628,6 +2628,80 @@ impl NodeService {
         })
     }
 
+    /// Delete exactly one node, refusing instead of cascading when it has children.
+    ///
+    /// The non-cascading counterpart of [`Self::delete_node`], for a caller that holds a leaf
+    /// (typically the last step of a subtree it already collected) and must not orphan a child
+    /// created under it in the meantime. Only `node_id` and its own relationships/embeddings are
+    /// removed; no descendant is ever touched.
+    ///
+    /// The children check is made inside the write transaction, so it is exact at commit time:
+    /// [`LeafDeleteOutcome::HasChildren`] means nothing was deleted and the caller should
+    /// re-collect the subtree and retry.
+    ///
+    /// Same semantics as [`Self::delete_node`] otherwise: the node is version-checked at
+    /// `expected_version` (a mismatch is `NodeServiceError::VersionConflict`), the access gate
+    /// (ADR-041, including a caller-scoped bypass) is consulted for the node, an absent node is
+    /// `Ok(LeafDeleteOutcome::NotFound)` (checked before the gate, as in `delete_node`), and one `NodeDeleted` event is emitted on success.
+    pub async fn delete_leaf_node(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+    ) -> Result<crate::db::LeafDeleteOutcome, NodeServiceError> {
+        let root_id_for_embedding = self.get_embedding_root_id(node_id).await.ok();
+
+        // An absent target is an idempotent no-op, answered before the access gate exactly as
+        // `delete_node` does, so deleting an unknown id never becomes a refusal.
+        if !self.is_persisted(node_id).await? {
+            return Ok(crate::db::LeafDeleteOutcome::NotFound);
+        }
+
+        if let access_gate::SubtreeAccessDecision::Denied { inaccessible_count } = self
+            .subtree_access_gate()
+            .check_subtree_access(&[node_id.to_string()])
+            .await
+        {
+            return Err(NodeServiceError::subtree_access_denied(inaccessible_count));
+        }
+
+        let outcome = self
+            .store
+            .delete_leaf_atomic(
+                node_id,
+                expected_version,
+                self.client_id.clone(),
+                self.write_context,
+            )
+            .await
+            .map_err(NodeServiceError::from_store)??;
+
+        #[cfg(feature = "nlp")]
+        if outcome == crate::db::LeafDeleteOutcome::Deleted {
+            if let Some(root_id) = root_id_for_embedding {
+                if root_id != node_id {
+                    self.queue_root_for_embedding(&root_id).await;
+                }
+            }
+        }
+        #[cfg(not(feature = "nlp"))]
+        let _ = root_id_for_embedding;
+
+        Ok(outcome)
+    }
+
+    /// Whether `id` is a stored row, as opposed to absent or a virtual date node.
+    ///
+    /// [`Self::get_node`] returns a computed placeholder for any `YYYY-MM-DD` id that has no
+    /// row (version 1, fresh timestamps), so a returned date node does not say whether it is
+    /// stored. This answers that directly from the node table, without the virtual fallback
+    /// and without loading the node. Non-date ids simply report whether they exist.
+    pub async fn is_persisted(&self, id: &str) -> Result<bool, NodeServiceError> {
+        self.store
+            .node_exists(id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(format!("Failed to check node: {}", e)))
+    }
+
     /// Bump a node's version without changing any content.
     ///
     /// Used by operations like reorder that need OCC (optimistic concurrency control)
