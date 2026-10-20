@@ -290,6 +290,10 @@ fn daemon_program_paths(
     launchctl_print: &dyn Fn() -> Option<String>,
 ) -> Vec<String> {
     let name = daemon_binary_name();
+    // `/usr/local/bin/<name>` is always an allowed target, whether or not the
+    // job is loaded (a `.pkg` install runs the daemon from there). The checks
+    // in `may_signal` (current user's process, exact path, holding this
+    // user's socket) are what keep that safe.
     let mut paths = vec![
         bin_dir.join(name).to_string_lossy().into_owned(),
         Path::new("/usr/local/bin")
@@ -1156,9 +1160,26 @@ fn machine_wide_plist_path() -> PathBuf {
     Path::new("/Library/LaunchAgents").join(plist_filename())
 }
 
+/// What a `launchctl` invocation reported.
+#[cfg(target_os = "macos")]
+struct LaunchctlResult {
+    success: bool,
+    stderr: String,
+}
+
+#[cfg(target_os = "macos")]
+fn real_launchctl(args: &[String]) -> std::io::Result<LaunchctlResult> {
+    let out = std::process::Command::new("launchctl")
+        .args(args)
+        .output()?;
+    Ok(LaunchctlResult {
+        success: out.status.success(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
 /// Brings up the daemon registered by [`machine_wide_plist_path`]: nothing when
-/// it answers, otherwise `launchctl kickstart` when the job is loaded and
-/// `launchctl bootstrap` of the machine-wide plist when it is not.
+/// it answers; otherwise [`start_machine_wide_job`].
 #[cfg(target_os = "macos")]
 async fn bring_up_machine_wide_daemon(socket_path: &Path) -> Result<()> {
     let mut status = check_daemon_socket(socket_path).await;
@@ -1169,34 +1190,85 @@ async fn bring_up_machine_wide_daemon(socket_path: &Path) -> Result<()> {
         tracing::info!("nodespaced (machine-wide registration) is already running and healthy");
         return Ok(());
     }
+    start_machine_wide_job(
+        &real_launchctl,
+        &crate::incompatible_database::clear_stale_marker,
+        get_uid(),
+        launch_agent_label(),
+        &machine_wide_plist_path(),
+        // A socket that exists but never answered is a wedged job.
+        status != DaemonStatus::NotRunning,
+        socket_path,
+        Duration::from_secs(5),
+    )
+    .await
+}
 
-    let gui_target = format!("gui/{}", get_uid());
-    let service_target = format!("{}/{}", gui_target, launch_agent_label());
-    let loaded = std::process::Command::new("launchctl")
-        .args(["print", &service_target])
-        .output()
-        .map(|o| o.status.success())
+/// Starts the machine-wide launchd job. A loaded job is `kickstart`ed, with
+/// `-k` (kill the running instance first) only when it is `wedged`, i.e. the
+/// daemon did not answer; an unloaded one is enabled and bootstrapped from
+/// `plist`. A bootstrap that fails is still a success if the daemon then
+/// answers within `race_wait`: a concurrent launch bootstrapped it first.
+///
+/// `clear_marker` runs before anything is started, so a refusal marker left by
+/// an earlier start does not end the caller's wait for the daemon at once.
+/// `launchctl` is a parameter so tests can fake it.
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+async fn start_machine_wide_job(
+    launchctl: &(dyn Fn(&[String]) -> std::io::Result<LaunchctlResult> + Sync),
+    clear_marker: &(dyn Fn() + Sync),
+    uid: u32,
+    label: &str,
+    plist: &Path,
+    wedged: bool,
+    socket_path: &Path,
+    race_wait: Duration,
+) -> Result<()> {
+    let args = |parts: &[&str]| -> Vec<String> { parts.iter().map(|p| p.to_string()).collect() };
+    let gui_target = format!("gui/{uid}");
+    let service_target = format!("{gui_target}/{label}");
+
+    clear_marker();
+
+    let loaded = launchctl(&args(&["print", &service_target]))
+        .map(|r| r.success)
         .unwrap_or(false);
-    let plist = machine_wide_plist_path();
-    let output = if loaded {
+    if loaded {
         tracing::info!("Kickstarting machine-wide launchd job {}", service_target);
-        std::process::Command::new("launchctl")
-            .args(["kickstart", &service_target])
-            .output()
-    } else {
-        tracing::info!("Bootstrapping machine-wide launchd job {}", plist.display());
-        std::process::Command::new("launchctl")
-            .args(["bootstrap", &gui_target])
-            .arg(&plist)
-            .output()
+        let result = if wedged {
+            launchctl(&args(&["kickstart", "-k", &service_target]))
+        } else {
+            launchctl(&args(&["kickstart", &service_target]))
+        }
+        .context("Failed to run launchctl kickstart")?;
+        anyhow::ensure!(
+            result.success,
+            "launchctl kickstart failed for the machine-wide daemon: {}",
+            result.stderr.trim()
+        );
+        return Ok(());
     }
-    .context("Failed to run launchctl")?;
-    anyhow::ensure!(
-        output.status.success(),
-        "launchctl failed to start the machine-wide daemon: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    Ok(())
+
+    tracing::info!("Bootstrapping machine-wide launchd job {}", plist.display());
+    // A disabled-label override would make bootstrap fail.
+    if let Err(e) = launchctl(&args(&["enable", &service_target])) {
+        tracing::warn!("launchctl enable failed: {e}");
+    }
+    let plist_str = plist.to_string_lossy().into_owned();
+    let result = launchctl(&args(&["bootstrap", &gui_target, &plist_str]))
+        .context("Failed to run launchctl bootstrap")?;
+    if result.success {
+        return Ok(());
+    }
+    if wait_for_daemon(socket_path, race_wait).await == DaemonStatus::Healthy {
+        tracing::info!("machine-wide job was bootstrapped concurrently; daemon is answering");
+        return Ok(());
+    }
+    anyhow::bail!(
+        "launchctl bootstrap failed for the machine-wide daemon: {}",
+        result.stderr.trim()
+    )
 }
 
 /// Starts the daemon as [`ensure_daemon_running`] does, then emits the result
@@ -1431,25 +1503,27 @@ async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path)
 }
 
 /// File recording which bundled sidecar an extracted copy came from:
-/// `<bin_dir>/.<installed name>.source`, holding [`source_stamp`] of the
-/// bundled file at extraction time.
+/// `<bin_dir>/.<installed name>.source`, in the format of [`SidecarStamp`].
 fn sidecar_stamp_path(bin_dir: &Path, installed_name: &str) -> PathBuf {
     bin_dir.join(format!(".{installed_name}.source"))
 }
 
-/// Identity of a bundled sidecar: its size and SHA-256, as `"<size> <hex>"`.
-///
-/// The installed copy cannot be compared with the bundle by size, because it is
-/// re-signed ad hoc (replacing, for a Developer ID signed bundle, a larger
-/// signature), so the copy and its source differ in size even when nothing
-/// changed. The stamp is computed from the bundled file, which is what
-/// changes between releases.
-fn source_stamp(src: &Path) -> std::io::Result<String> {
+/// Size and modification time (nanoseconds since the epoch) of a file.
+fn file_signature(path: &Path) -> std::io::Result<(u64, u128)> {
+    let meta = std::fs::metadata(path)?;
+    let mtime = meta
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Ok((meta.len(), mtime))
+}
+
+fn sha256_hex(path: &Path) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let mut file = std::fs::File::open(src)?;
-    let size = file.metadata()?.len();
+    let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -1459,79 +1533,173 @@ fn source_stamp(src: &Path) -> std::io::Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    let hex: String = hasher
+    Ok(hasher
         .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect();
-    Ok(format!("{size} {hex}"))
+        .collect())
 }
 
-/// True when `installed` is an extraction of the current `bundled` file: it
-/// exists and the stamp recorded at extraction equals the bundled file's
-/// stamp. A missing or unreadable stamp (an install from before stamps
-/// existed) counts as not matching, so such a copy is replaced once.
+/// What was extracted, and what it was extracted into, recorded right after an
+/// extraction.
 ///
-/// The size recorded in the stamp is compared first, so a changed bundle of a
-/// different size is detected without hashing it.
+/// The installed copy cannot be compared with the bundle by size, because it
+/// is re-signed ad hoc (replacing, for a Developer ID signed bundle, a larger
+/// signature), so the copy and its source differ in size even when nothing
+/// changed. Instead the stamp holds the bundled file's identity (size, mtime,
+/// SHA-256) and the installed copy's own size and mtime: the copy is current
+/// only while the bundle is the same *and* the file in `~/.nodespace/bin` is
+/// still the one that was written, so a foreign binary or an older app's
+/// overwrite is replaced.
+///
+/// Two lines: `source <size> <mtime_ns> <sha256>` and `installed <size> <mtime_ns>`.
+#[derive(Debug, PartialEq, Eq)]
+struct SidecarStamp {
+    source_size: u64,
+    source_mtime: u128,
+    source_sha256: String,
+    installed_size: u64,
+    installed_mtime: u128,
+}
+
+impl SidecarStamp {
+    fn render(&self) -> String {
+        format!(
+            "source {} {} {}\ninstalled {} {}\n",
+            self.source_size,
+            self.source_mtime,
+            self.source_sha256,
+            self.installed_size,
+            self.installed_mtime
+        )
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let mut lines = text.lines();
+        let source: Vec<&str> = lines.next()?.split(' ').collect();
+        let installed: Vec<&str> = lines.next()?.split(' ').collect();
+        if source.len() != 4 || source[0] != "source" || installed.len() != 3 {
+            return None;
+        }
+        if installed[0] != "installed" {
+            return None;
+        }
+        Some(Self {
+            source_size: source[1].parse().ok()?,
+            source_mtime: source[2].parse().ok()?,
+            source_sha256: source[3].to_string(),
+            installed_size: installed[1].parse().ok()?,
+            installed_mtime: installed[2].parse().ok()?,
+        })
+    }
+
+    fn read(stamp_path: &Path) -> Option<Self> {
+        Self::parse(&std::fs::read_to_string(stamp_path).ok()?)
+    }
+}
+
+/// True when `installed` is the extraction of the current `bundled` file that
+/// `stamp_path` records: the installed copy's size and mtime are what was
+/// recorded after extraction, and the bundled file is the recorded one. The
+/// bundle is hashed only when its size or mtime differ from the stamp. A
+/// missing or unreadable stamp (an install from before stamps existed) counts
+/// as not matching, so such a copy is replaced once.
 fn installed_matches_source(bundled: &Path, installed: &Path, stamp_path: &Path) -> bool {
+    let Some(stamp) = SidecarStamp::read(stamp_path) else {
+        return false;
+    };
     if !installed.is_file() {
         return false;
     }
-    let Ok(recorded) = std::fs::read_to_string(stamp_path) else {
+    let Ok(installed_sig) = file_signature(installed) else {
         return false;
     };
-    let recorded = recorded.trim();
-    let Ok(bundled_size) = std::fs::metadata(bundled).map(|m| m.len()) else {
-        return false;
-    };
-    if recorded.split(' ').next() != Some(bundled_size.to_string().as_str()) {
+    if installed_sig != (stamp.installed_size, stamp.installed_mtime) {
         return false;
     }
-    source_stamp(bundled).is_ok_and(|current| current == recorded)
+    let Ok(source_sig) = file_signature(bundled) else {
+        return false;
+    };
+    if source_sig == (stamp.source_size, stamp.source_mtime) {
+        return true;
+    }
+    source_sig.0 == stamp.source_size
+        && sha256_hex(bundled).is_ok_and(|sha| sha == stamp.source_sha256)
+}
+
+/// Writes the stamp for a just-installed `installed` copy of `bundled`,
+/// atomically: a temp file in the same directory, then a rename.
+fn write_sidecar_stamp(
+    bundled: &Path,
+    installed: &Path,
+    source_sha256: String,
+    stamp_path: &Path,
+) -> Result<()> {
+    let (source_size, source_mtime) = file_signature(bundled)
+        .with_context(|| format!("Cannot stat bundled sidecar {}", bundled.display()))?;
+    let (installed_size, installed_mtime) = file_signature(installed)
+        .with_context(|| format!("Cannot stat installed sidecar {}", installed.display()))?;
+    let stamp = SidecarStamp {
+        source_size,
+        source_mtime,
+        source_sha256,
+        installed_size,
+        installed_mtime,
+    };
+    let mut tmp_name = stamp_path.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp_name);
+    std::fs::write(&tmp, stamp.render())
+        .with_context(|| format!("Failed to write {}", tmp.display()))?;
+    std::fs::rename(&tmp, stamp_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::Error::new(e).context(format!(
+            "Failed to record source of {}",
+            installed.display()
+        ))
+    })
 }
 
 /// Installs `src` as sidecar `name` under `bin_dir` unless the copy already
-/// there is an extraction of the same bundled file and verifies. Returns
-/// whether the installed binary was replaced.
+/// there is the recorded extraction of the same bundled file and verifies.
+/// Returns whether the installed binary was replaced.
 fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> {
     let dest = sidecar_install_path(bin_dir, name);
     let installed_name = bundled_sidecar_name(name);
     let stamp_path = sidecar_stamp_path(bin_dir, &installed_name);
 
-    let stamp = source_stamp(src)
-        .with_context(|| format!("Cannot read bundled sidecar {}", src.display()))?;
-
-    if dest.is_file() {
-        let stamp_matches = std::fs::read_to_string(&stamp_path)
-            .map(|recorded| recorded.trim() == stamp)
-            .unwrap_or(false);
-        if stamp_matches && verify_signature(&dest) {
-            // A signature check alone doesn't rule out a lingering quarantine
-            // flag: an ad-hoc signature stays valid regardless of quarantine
-            // state, so a binary extracted before this fix existed can sit
-            // here indefinitely — unchanged, validly signed, still killed by
-            // syspolicyd — and every upgrade whose bundled daemon binary
-            // happens not to change would otherwise skip extraction and
-            // never reach the one call that clears it. Always clear it here
-            // too, not just on the extraction path below.
-            clear_quarantine(&dest)?;
-            tracing::debug!(
-                "{} is up-to-date (source {}) and validly signed, skipping extraction",
-                name,
-                stamp
-            );
-            return Ok(false);
-        }
-        if stamp_matches {
-            tracing::warn!(
-                "{} matches the bundled sidecar but has an invalid code signature — re-extracting",
-                name
-            );
-        }
+    let current = installed_matches_source(src, &dest, &stamp_path);
+    if current && verify_signature(&dest) {
+        // A signature check alone doesn't rule out a lingering quarantine
+        // flag: an ad-hoc signature stays valid regardless of quarantine
+        // state, so a binary extracted before this fix existed can sit
+        // here indefinitely — unchanged, validly signed, still killed by
+        // syspolicyd — and every upgrade whose bundled daemon binary
+        // happens not to change would otherwise skip extraction and
+        // never reach the one call that clears it. Always clear it here
+        // too, not just on the extraction path below.
+        clear_quarantine(&dest)?;
+        tracing::debug!(
+            "{} is up-to-date and validly signed, skipping extraction",
+            name
+        );
+        return Ok(false);
+    }
+    if current {
+        tracing::warn!(
+            "{} matches the bundled sidecar but has an invalid code signature — re-extracting",
+            name
+        );
     }
 
-    tracing::info!("Extracting {} ({}) to {}", name, stamp, dest.display());
+    let source_sha256 = sha256_hex(src)
+        .with_context(|| format!("Cannot read bundled sidecar {}", src.display()))?;
+    tracing::info!(
+        "Extracting {} ({}) to {}",
+        name,
+        source_sha256,
+        dest.display()
+    );
 
     let tmp_dest = bin_dir.join(format!("{}.tmp-{}", installed_name, std::process::id()));
 
@@ -1551,12 +1719,19 @@ fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> 
 
     // Drop the old stamp first: a crash between the rename and the new stamp
     // then leaves "no stamp" (re-extract next launch), never a stale stamp
-    // vouching for a different binary.
-    let _ = std::fs::remove_file(&stamp_path);
+    // vouching for a different binary. A stamp that cannot be removed is an
+    // error, since it could go on vouching for the old binary.
+    match std::fs::remove_file(&stamp_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_dest);
+            return Err(e).with_context(|| format!("Cannot remove {}", stamp_path.display()));
+        }
+    }
     std::fs::rename(&tmp_dest, &dest)
         .with_context(|| format!("Failed to install {} to {}", name, dest.display()))?;
-    std::fs::write(&stamp_path, &stamp)
-        .with_context(|| format!("Failed to record source of {}", dest.display()))?;
+    write_sidecar_stamp(src, &dest, source_sha256, &stamp_path)?;
 
     Ok(true)
 }
@@ -4592,29 +4767,39 @@ mod product_eviction_tests {
 #[cfg(test)]
 mod sidecar_source_stamp_tests {
     use super::{
-        extract_sidecar_from, installed_matches_source, sidecar_install_path, sidecar_stamp_path,
-        source_stamp,
+        extract_sidecar_from, installed_matches_source, sha256_hex, sidecar_install_path,
+        sidecar_stamp_path, write_sidecar_stamp, SidecarStamp,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     const NAME: &str = "nodespaced";
 
-    fn stamp_path(bin_dir: &Path) -> std::path::PathBuf {
+    fn stamp_path(bin_dir: &Path) -> PathBuf {
         sidecar_stamp_path(bin_dir, &super::bundled_sidecar_name(NAME))
     }
 
     /// An installed copy that is smaller than its source, with the stamp the
     /// extraction would have recorded: the state a re-signed Developer ID
     /// bundle leaves behind.
-    fn smaller_copy_with_stamp(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    fn smaller_copy_with_stamp(dir: &Path) -> (PathBuf, PathBuf) {
         let src = dir.join("bundled");
         std::fs::write(&src, vec![7u8; 2000]).unwrap();
         let bin_dir = dir.join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
         let dest = sidecar_install_path(&bin_dir, NAME);
         std::fs::write(&dest, vec![7u8; 1500]).unwrap();
-        std::fs::write(stamp_path(&bin_dir), source_stamp(&src).unwrap()).unwrap();
+        write_sidecar_stamp(
+            &src,
+            &dest,
+            sha256_hex(&src).unwrap(),
+            &stamp_path(&bin_dir),
+        )
+        .unwrap();
         (src, dest)
+    }
+
+    fn current(src: &Path, dest: &Path, dir: &Path) -> bool {
+        installed_matches_source(src, dest, &stamp_path(&dir.join("bin")))
     }
 
     #[test]
@@ -4623,11 +4808,21 @@ mod sidecar_source_stamp_tests {
         let (src, dest) = smaller_copy_with_stamp(dir.path());
         assert!(std::fs::metadata(&dest).unwrap().len() < std::fs::metadata(&src).unwrap().len());
 
-        assert!(installed_matches_source(
-            &src,
-            &dest,
-            &stamp_path(&dir.path().join("bin"))
-        ));
+        assert!(current(&src, &dest, dir.path()));
+    }
+
+    #[test]
+    fn the_stamp_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_src, _dest) = smaller_copy_with_stamp(dir.path());
+        let text = std::fs::read_to_string(stamp_path(&dir.path().join("bin"))).unwrap();
+
+        let stamp = SidecarStamp::parse(&text).expect("parses");
+
+        assert_eq!(stamp.render(), text);
+        assert_eq!(stamp.source_size, 2000);
+        assert_eq!(stamp.installed_size, 1500);
+        assert!(SidecarStamp::parse("garbage").is_none());
     }
 
     #[test]
@@ -4636,11 +4831,7 @@ mod sidecar_source_stamp_tests {
         let (src, dest) = smaller_copy_with_stamp(dir.path());
         std::fs::write(&src, vec![9u8; 2000]).unwrap();
 
-        assert!(!installed_matches_source(
-            &src,
-            &dest,
-            &stamp_path(&dir.path().join("bin"))
-        ));
+        assert!(!current(&src, &dest, dir.path()));
     }
 
     #[test]
@@ -4649,11 +4840,40 @@ mod sidecar_source_stamp_tests {
         let (src, dest) = smaller_copy_with_stamp(dir.path());
         std::fs::write(&src, vec![7u8; 2100]).unwrap();
 
-        assert!(!installed_matches_source(
-            &src,
-            &dest,
-            &stamp_path(&dir.path().join("bin"))
-        ));
+        assert!(!current(&src, &dest, dir.path()));
+    }
+
+    #[test]
+    fn a_source_touched_without_changing_is_still_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&src, vec![7u8; 2000]).unwrap(); // same bytes, new mtime
+
+        assert!(current(&src, &dest, dir.path()));
+    }
+
+    #[test]
+    fn an_unchanged_source_size_and_mtime_is_not_rehashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        let stamp_file = stamp_path(&dir.path().join("bin"));
+        let text = std::fs::read_to_string(&stamp_file).unwrap();
+        let mut stamp = SidecarStamp::parse(&text).unwrap();
+        stamp.source_sha256 = "0".repeat(64); // would mismatch if the source were hashed
+        std::fs::write(&stamp_file, stamp.render()).unwrap();
+
+        assert!(current(&src, &dest, dir.path()));
+    }
+
+    #[test]
+    fn a_copy_replaced_behind_the_stamps_back_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&dest, vec![1u8; 1500]).unwrap(); // foreign binary, same size
+
+        assert!(!current(&src, &dest, dir.path()));
     }
 
     #[test]
@@ -4662,11 +4882,7 @@ mod sidecar_source_stamp_tests {
         let (src, dest) = smaller_copy_with_stamp(dir.path());
         std::fs::remove_file(stamp_path(&dir.path().join("bin"))).unwrap();
 
-        assert!(!installed_matches_source(
-            &src,
-            &dest,
-            &stamp_path(&dir.path().join("bin"))
-        ));
+        assert!(!current(&src, &dest, dir.path()));
     }
 
     #[test]
@@ -4675,11 +4891,7 @@ mod sidecar_source_stamp_tests {
         let (src, dest) = smaller_copy_with_stamp(dir.path());
         std::fs::remove_file(&dest).unwrap();
 
-        assert!(!installed_matches_source(
-            &src,
-            &dest,
-            &stamp_path(&dir.path().join("bin"))
-        ));
+        assert!(!current(&src, &dest, dir.path()));
     }
 
     /// Non-macOS only: `resign_binary` and `verify_signature` are real on
@@ -4695,10 +4907,20 @@ mod sidecar_source_stamp_tests {
         assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
 
         assert_eq!(std::fs::read(&dest).unwrap(), vec![9u8; 2000]);
-        assert_eq!(
-            std::fs::read_to_string(stamp_path(&bin_dir)).unwrap(),
-            source_stamp(&src).unwrap()
-        );
+        assert!(installed_matches_source(&src, &dest, &stamp_path(&bin_dir)));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn extraction_replaces_a_copy_overwritten_behind_the_stamps_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&dest, vec![1u8; 1500]).unwrap();
+
+        assert!(extract_sidecar_from(&src, NAME, &dir.path().join("bin")).unwrap());
+
+        assert_eq!(std::fs::read(&dest).unwrap(), vec![7u8; 2000]);
     }
 
     #[test]
@@ -4747,11 +4969,164 @@ mod sidecar_source_stamp_tests {
             installed_at
         );
 
+        // A different binary dropped over the copy behind the stamp's back is replaced.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::copy("/bin/echo", &dest).unwrap();
+        assert!(!installed_matches_source(&src, &dest, &stamp));
+        assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
+        assert_eq!(
+            sha256_hex(&dest).unwrap().len(),
+            64,
+            "the replaced copy is a readable file"
+        );
+        assert!(installed_matches_source(&src, &dest, &stamp));
+
         // A different bundled binary replaces the copy.
         std::fs::copy("/bin/echo", &src).unwrap();
         assert!(!installed_matches_source(&src, &dest, &stamp));
         assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
         assert!(installed_matches_source(&src, &dest, &stamp));
+    }
+}
+
+/// The machine-wide (`.pkg`) start path, through a faked `launchctl`.
+#[cfg(all(test, target_os = "macos"))]
+mod machine_wide_start_tests {
+    use super::{start_machine_wide_job, LaunchctlResult};
+    use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    const LABEL: &str = "app.nodespace.test";
+
+    /// Runs `start_machine_wide_job` against a fake launchctl and returns the
+    /// calls it saw (marker clearing shows up as "clear-marker").
+    async fn run(
+        loaded: bool,
+        bootstrap_ok: bool,
+        wedged: bool,
+        socket: &Path,
+    ) -> (anyhow::Result<()>, Vec<String>) {
+        let calls = Mutex::new(Vec::<String>::new());
+        let launchctl = |args: &[String]| -> std::io::Result<LaunchctlResult> {
+            calls.lock().unwrap().push(args.join(" "));
+            let success = match args[0].as_str() {
+                "print" => loaded,
+                "bootstrap" => bootstrap_ok,
+                _ => true,
+            };
+            Ok(LaunchctlResult {
+                success,
+                stderr: "boom".into(),
+            })
+        };
+        let clear = || calls.lock().unwrap().push("clear-marker".into());
+        let result = start_machine_wide_job(
+            &launchctl,
+            &clear,
+            501,
+            LABEL,
+            Path::new("/Library/LaunchAgents/x.plist"),
+            wedged,
+            socket,
+            Duration::from_millis(100),
+        )
+        .await;
+        let calls = calls.into_inner().unwrap();
+        (result, calls)
+    }
+
+    #[tokio::test]
+    async fn an_unloaded_job_is_enabled_then_bootstrapped_after_the_marker_is_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let (result, calls) = run(false, true, false, &dir.path().join("s.sock")).await;
+
+        result.unwrap();
+        assert_eq!(
+            calls,
+            vec![
+                "clear-marker".to_string(),
+                format!("print gui/501/{LABEL}"),
+                format!("enable gui/501/{LABEL}"),
+                "bootstrap gui/501 /Library/LaunchAgents/x.plist".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loaded_job_that_is_not_wedged_is_kickstarted_without_k() {
+        let dir = tempfile::tempdir().unwrap();
+        let (result, calls) = run(true, true, false, &dir.path().join("s.sock")).await;
+
+        result.unwrap();
+        assert_eq!(calls.last().unwrap(), &format!("kickstart gui/501/{LABEL}"));
+    }
+
+    #[tokio::test]
+    async fn a_wedged_loaded_job_is_kickstarted_with_k() {
+        let dir = tempfile::tempdir().unwrap();
+        let (result, calls) = run(true, true, true, &dir.path().join("s.sock")).await;
+
+        result.unwrap();
+        assert_eq!(
+            calls.last().unwrap(),
+            &format!("kickstart -k gui/501/{LABEL}")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_bootstrap_is_success_when_the_daemon_then_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("s.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        let (result, _calls) = run(false, false, false, &socket).await;
+
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_bootstrap_with_nobody_answering_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let (result, _calls) = run(false, false, false, &dir.path().join("s.sock")).await;
+
+        assert!(format!("{:#}", result.unwrap_err()).contains("boom"));
+    }
+
+    /// A refusal marker left by an earlier start ends `answering_daemon`'s
+    /// wait at once; the start path clears it first, so it does not.
+    #[tokio::test]
+    async fn a_stale_refusal_marker_is_cleared_before_the_start_so_it_cannot_end_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        std::fs::write(&marker, "{}").unwrap();
+        let launchctl = |_: &[String]| -> std::io::Result<LaunchctlResult> {
+            Ok(LaunchctlResult {
+                success: true,
+                stderr: String::new(),
+            })
+        };
+        let clear = || {
+            let _ = std::fs::remove_file(&marker);
+        };
+
+        start_machine_wide_job(
+            &launchctl,
+            &clear,
+            501,
+            LABEL,
+            Path::new("/x.plist"),
+            false,
+            &dir.path().join("s.sock"),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap();
+
+        // The caller's wait polls this: with the marker gone it keeps waiting.
+        let refused = || marker.exists();
+        assert!(!refused());
     }
 }
 
