@@ -4,7 +4,7 @@
 //!   1. Locate sidecar binaries bundled beside the app's own executable (Tauri's
 //!      `externalBin` convention — see `resolve_sidecar_path`'s doc comment for
 //!      why this is NOT the `Resources`/resource-resolver tree).
-//!   2. Copy them to ~/.nodespace/bin/ (skipped if dest already matches bundled size).
+//!   2. Copy them to ~/.nodespace/bin/ (skipped if the copy was extracted from the same bundled file).
 //!   3. Register the daemon as a user service:
 //!      - macOS: write ~/Library/LaunchAgents/<plist_filename()> and bootstrap it.
 //!        The filename and launchd label vary by build flavour (debug or release) so dev
@@ -144,14 +144,16 @@ pub(crate) fn plist_filename() -> String {
     format!("{}.plist", launch_agent_label())
 }
 
-/// Synchronously kill the running daemon if the installed binary differs in size
-/// from the bundled sidecar. Called before the gRPC client is managed so the
-/// frontend never connects to a stale daemon.
+/// Synchronously kill the running daemon if the installed binary no longer
+/// corresponds to the bundled sidecar. Called before the gRPC client is managed
+/// so the frontend never connects to a stale daemon.
 ///
-/// This is intentionally synchronous and cheap (two stat calls + maybe lsof) —
-/// it is a size-only pre-check, not a signature-aware gate. It does not call
-/// `codesign --verify`, so a same-size install with a corrupted signature is
-/// left running here; that self-heal happens moments later in the async
+/// "Corresponds" is decided by the source stamp recorded when the copy was
+/// extracted (see [`installed_matches_source`]), never by comparing file sizes:
+/// the installed copy is re-signed ad hoc, so for a Developer ID signed bundle
+/// it is always smaller than the bundled file. It does not call
+/// `codesign --verify`, so an install with a corrupted signature is left
+/// running here; that self-heal happens moments later in the async
 /// `extract_sidecar_if_changed`, which re-extracts and kills the daemon via
 /// `binary_updated` once verification fails. `ensure_daemon_running` handles
 /// extraction and restart afterward.
@@ -161,32 +163,32 @@ pub fn kill_stale_daemon_sync() {
         Some(h) => h,
         None => return,
     };
+    // A machine-wide registration (.pkg install) is authoritative: the app
+    // keeps no daemon copy of its own and must not signal that daemon.
+    #[cfg(target_os = "macos")]
+    if machine_wide_plist_path().exists() {
+        return;
+    }
     let bin_dir = home.join(DAEMON_BIN_DIR);
     let socket_path = home.join(daemon_socket_relative());
     let installed = bin_dir.join(daemon_binary_name());
 
-    let bundled_size = match resolve_sidecar_path_sync() {
-        Some(p) => match std::fs::metadata(&p) {
-            Ok(m) => m.len(),
-            Err(_) => return,
-        },
-        None => return,
+    let Some(bundled) = resolve_sidecar_path_sync() else {
+        return;
     };
+    if std::fs::metadata(&bundled).is_err() {
+        return;
+    }
+    if std::fs::metadata(&installed).is_err() {
+        return; // not installed yet — ensure_daemon_running handles this
+    }
 
-    let installed_size = match std::fs::metadata(&installed) {
-        Ok(m) => m.len(),
-        Err(_) => return, // not installed yet — ensure_daemon_running handles this
-    };
-
-    if bundled_size == installed_size {
+    let stamp_path = sidecar_stamp_path(&bin_dir, &bundled_sidecar_name(daemon_binary_name()));
+    if installed_matches_source(&bundled, &installed, &stamp_path) {
         return; // up to date
     }
 
-    tracing::info!(
-        bundled = bundled_size,
-        installed = installed_size,
-        "Installed daemon binary is stale — killing before gRPC client connects"
-    );
+    tracing::info!("Installed daemon binary is stale — killing before gRPC client connects");
 
     // Kill only nodespaced processes using the socket (not gRPC clients like nodespace-app).
     // Verify each PID holding the socket is actually nodespaced (by installed
@@ -948,6 +950,14 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     #[cfg(not(unix))]
     let evicted = false;
 
+    // A `.pkg` install registers the daemon machine-wide. That registration is
+    // authoritative: the app keeps no daemon copy of its own and writes no
+    // per-user plist beside it.
+    #[cfg(target_os = "macos")]
+    if machine_wide_plist_path().exists() {
+        return bring_up_machine_wide_daemon(&socket_path).await;
+    }
+
     // Ensure all directories exist before any binary checks.
     tokio::fs::create_dir_all(&bin_dir)
         .await
@@ -1066,6 +1076,55 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
         register_autorun_windows(&daemon_bin);
     }
 
+    Ok(())
+}
+
+/// Machine-wide launch agent a `.pkg` install writes for this build's label.
+#[cfg(target_os = "macos")]
+fn machine_wide_plist_path() -> PathBuf {
+    Path::new("/Library/LaunchAgents").join(plist_filename())
+}
+
+/// Brings up the daemon registered by [`machine_wide_plist_path`]: nothing when
+/// it answers, otherwise `launchctl kickstart` when the job is loaded and
+/// `launchctl bootstrap` of the machine-wide plist when it is not.
+#[cfg(target_os = "macos")]
+async fn bring_up_machine_wide_daemon(socket_path: &Path) -> Result<()> {
+    let mut status = check_daemon_socket(socket_path).await;
+    if should_retry_before_spawn(&status) {
+        status = wait_for_daemon(socket_path, Duration::from_secs(5)).await;
+    }
+    if status == DaemonStatus::Healthy {
+        tracing::info!("nodespaced (machine-wide registration) is already running and healthy");
+        return Ok(());
+    }
+
+    let gui_target = format!("gui/{}", get_uid());
+    let service_target = format!("{}/{}", gui_target, launch_agent_label());
+    let loaded = std::process::Command::new("launchctl")
+        .args(["print", &service_target])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let plist = machine_wide_plist_path();
+    let output = if loaded {
+        tracing::info!("Kickstarting machine-wide launchd job {}", service_target);
+        std::process::Command::new("launchctl")
+            .args(["kickstart", &service_target])
+            .output()
+    } else {
+        tracing::info!("Bootstrapping machine-wide launchd job {}", plist.display());
+        std::process::Command::new("launchctl")
+            .args(["bootstrap", &gui_target])
+            .arg(&plist)
+            .output()
+    }
+    .context("Failed to run launchctl")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "launchctl failed to start the machine-wide daemon: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
     Ok(())
 }
 
@@ -1294,51 +1353,119 @@ pub async fn wait_for_daemon(socket_path: &Path, max_wait: Duration) -> DaemonSt
 /// `name` unchanged).
 async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path) -> Result<bool> {
     let src = resolve_sidecar_path(app, name)?;
+    let bin_dir = bin_dir.to_path_buf();
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || extract_sidecar_from(&src, &name, &bin_dir))
+        .await
+        .context("Sidecar extraction task panicked")?
+}
+
+/// File recording which bundled sidecar an extracted copy came from:
+/// `<bin_dir>/.<installed name>.source`, holding [`source_stamp`] of the
+/// bundled file at extraction time.
+fn sidecar_stamp_path(bin_dir: &Path, installed_name: &str) -> PathBuf {
+    bin_dir.join(format!(".{installed_name}.source"))
+}
+
+/// Identity of a bundled sidecar: its size and SHA-256, as `"<size> <hex>"`.
+///
+/// The installed copy cannot be compared with the bundle by size, because it is
+/// re-signed ad hoc (replacing, for a Developer ID signed bundle, a larger
+/// signature), so the copy and its source differ in size even when nothing
+/// changed. The stamp is computed from the bundled file, which is what
+/// changes between releases.
+fn source_stamp(src: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(src)?;
+    let size = file.metadata()?.len();
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let hex: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok(format!("{size} {hex}"))
+}
+
+/// True when `installed` is an extraction of the current `bundled` file: it
+/// exists and the stamp recorded at extraction equals the bundled file's
+/// stamp. A missing or unreadable stamp (an install from before stamps
+/// existed) counts as not matching, so such a copy is replaced once.
+///
+/// The size recorded in the stamp is compared first, so a changed bundle of a
+/// different size is detected without hashing it.
+fn installed_matches_source(bundled: &Path, installed: &Path, stamp_path: &Path) -> bool {
+    if !installed.is_file() {
+        return false;
+    }
+    let Ok(recorded) = std::fs::read_to_string(stamp_path) else {
+        return false;
+    };
+    let recorded = recorded.trim();
+    let Ok(bundled_size) = std::fs::metadata(bundled).map(|m| m.len()) else {
+        return false;
+    };
+    if recorded.split(' ').next() != Some(bundled_size.to_string().as_str()) {
+        return false;
+    }
+    source_stamp(bundled).is_ok_and(|current| current == recorded)
+}
+
+/// Installs `src` as sidecar `name` under `bin_dir` unless the copy already
+/// there is an extraction of the same bundled file and verifies. Returns
+/// whether the installed binary was replaced.
+fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> {
     let dest = sidecar_install_path(bin_dir, name);
     let installed_name = bundled_sidecar_name(name);
+    let stamp_path = sidecar_stamp_path(bin_dir, &installed_name);
 
-    let src_size = tokio::fs::metadata(&src)
-        .await
-        .with_context(|| format!("Cannot stat bundled sidecar {}", src.display()))?
-        .len();
+    let stamp = source_stamp(src)
+        .with_context(|| format!("Cannot read bundled sidecar {}", src.display()))?;
 
-    if let Ok(dest_meta) = tokio::fs::metadata(&dest).await {
-        if dest_meta.len() == src_size && verify_signature(&dest) {
+    if dest.is_file() {
+        let stamp_matches = std::fs::read_to_string(&stamp_path)
+            .map(|recorded| recorded.trim() == stamp)
+            .unwrap_or(false);
+        if stamp_matches && verify_signature(&dest) {
             // A signature check alone doesn't rule out a lingering quarantine
             // flag: an ad-hoc signature stays valid regardless of quarantine
             // state, so a binary extracted before this fix existed can sit
-            // here indefinitely — same size, validly signed, still killed by
+            // here indefinitely — unchanged, validly signed, still killed by
             // syspolicyd — and every upgrade whose bundled daemon binary
-            // happens not to change size would otherwise skip extraction and
+            // happens not to change would otherwise skip extraction and
             // never reach the one call that clears it. Always clear it here
             // too, not just on the extraction path below.
             clear_quarantine(&dest)?;
             tracing::debug!(
-                "{} is up-to-date (size={}) and validly signed, skipping extraction",
+                "{} is up-to-date (source {}) and validly signed, skipping extraction",
                 name,
-                src_size
+                stamp
             );
             return Ok(false);
         }
-        if dest_meta.len() == src_size {
+        if stamp_matches {
             tracing::warn!(
-                "{} matches bundled size but has an invalid code signature — re-extracting",
+                "{} matches the bundled sidecar but has an invalid code signature — re-extracting",
                 name
             );
         }
     }
 
-    tracing::info!(
-        "Extracting {} ({} bytes) to {}",
-        name,
-        src_size,
-        dest.display()
-    );
+    tracing::info!("Extracting {} ({}) to {}", name, stamp, dest.display());
 
     let tmp_dest = bin_dir.join(format!("{}.tmp-{}", installed_name, std::process::id()));
 
-    tokio::fs::copy(&src, &tmp_dest)
-        .await
+    std::fs::copy(src, &tmp_dest)
         .with_context(|| format!("Failed to copy {} to {}", src.display(), tmp_dest.display()))?;
 
     // If anything below fails, remove the temp file rather than leaving a stray
@@ -1352,9 +1479,14 @@ async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path)
         return Err(e);
     }
 
-    tokio::fs::rename(&tmp_dest, &dest)
-        .await
+    // Drop the old stamp first: a crash between the rename and the new stamp
+    // then leaves "no stamp" (re-extract next launch), never a stale stamp
+    // vouching for a different binary.
+    let _ = std::fs::remove_file(&stamp_path);
+    std::fs::rename(&tmp_dest, &dest)
         .with_context(|| format!("Failed to install {} to {}", name, dest.display()))?;
+    std::fs::write(&stamp_path, &stamp)
+        .with_context(|| format!("Failed to record source of {}", dest.display()))?;
 
     Ok(true)
 }
@@ -4412,5 +4544,174 @@ mod product_eviction_tests {
 
         assert_eq!(program, "systemctl");
         assert_eq!(args, ["--user", "stop", "nodespace.service"]);
+    }
+}
+
+/// The up-to-date test for an extracted sidecar must not depend on file size:
+/// the copy is re-signed ad hoc, so for a Developer ID signed bundle it is
+/// always smaller than the bundled source even when nothing changed.
+#[cfg(test)]
+mod sidecar_source_stamp_tests {
+    use super::{
+        extract_sidecar_from, installed_matches_source, sidecar_install_path, sidecar_stamp_path,
+        source_stamp,
+    };
+    use std::path::Path;
+
+    const NAME: &str = "nodespaced";
+
+    fn stamp_path(bin_dir: &Path) -> std::path::PathBuf {
+        sidecar_stamp_path(bin_dir, &super::bundled_sidecar_name(NAME))
+    }
+
+    /// An installed copy that is smaller than its source, with the stamp the
+    /// extraction would have recorded: the state a re-signed Developer ID
+    /// bundle leaves behind.
+    fn smaller_copy_with_stamp(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let src = dir.join("bundled");
+        std::fs::write(&src, vec![7u8; 2000]).unwrap();
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let dest = sidecar_install_path(&bin_dir, NAME);
+        std::fs::write(&dest, vec![7u8; 1500]).unwrap();
+        std::fs::write(stamp_path(&bin_dir), source_stamp(&src).unwrap()).unwrap();
+        (src, dest)
+    }
+
+    #[test]
+    fn a_smaller_copy_of_an_unchanged_source_is_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        assert!(std::fs::metadata(&dest).unwrap().len() < std::fs::metadata(&src).unwrap().len());
+
+        assert!(installed_matches_source(
+            &src,
+            &dest,
+            &stamp_path(&dir.path().join("bin"))
+        ));
+    }
+
+    #[test]
+    fn a_changed_source_of_the_same_size_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::fs::write(&src, vec![9u8; 2000]).unwrap();
+
+        assert!(!installed_matches_source(
+            &src,
+            &dest,
+            &stamp_path(&dir.path().join("bin"))
+        ));
+    }
+
+    #[test]
+    fn a_changed_source_of_another_size_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::fs::write(&src, vec![7u8; 2100]).unwrap();
+
+        assert!(!installed_matches_source(
+            &src,
+            &dest,
+            &stamp_path(&dir.path().join("bin"))
+        ));
+    }
+
+    #[test]
+    fn a_copy_without_a_stamp_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::fs::remove_file(stamp_path(&dir.path().join("bin"))).unwrap();
+
+        assert!(!installed_matches_source(
+            &src,
+            &dest,
+            &stamp_path(&dir.path().join("bin"))
+        ));
+    }
+
+    #[test]
+    fn a_missing_copy_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        std::fs::remove_file(&dest).unwrap();
+
+        assert!(!installed_matches_source(
+            &src,
+            &dest,
+            &stamp_path(&dir.path().join("bin"))
+        ));
+    }
+
+    /// Non-macOS only: `resign_binary` and `verify_signature` are real on
+    /// macOS, where the codesign test below covers replacement instead.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn extraction_replaces_a_copy_whose_source_changed_and_records_the_new_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        let bin_dir = dir.path().join("bin");
+        std::fs::write(&src, vec![9u8; 2000]).unwrap();
+
+        assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
+
+        assert_eq!(std::fs::read(&dest).unwrap(), vec![9u8; 2000]);
+        assert_eq!(
+            std::fs::read_to_string(stamp_path(&bin_dir)).unwrap(),
+            source_stamp(&src).unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn extraction_leaves_an_unchanged_smaller_copy_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        let before = std::fs::read(&dest).unwrap();
+        let mtime = std::fs::metadata(&dest).unwrap().modified().unwrap();
+
+        let replaced = extract_sidecar_from(&src, NAME, &dir.path().join("bin")).unwrap();
+
+        assert!(!replaced);
+        assert_eq!(std::fs::read(&dest).unwrap(), before);
+        assert_eq!(std::fs::metadata(&dest).unwrap().modified().unwrap(), mtime);
+    }
+
+    /// Real code signing: copying a signed Mach-O and re-signing it ad hoc
+    /// changes its size, and the next launch must still call it current.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_resigned_copy_smaller_than_its_signed_source_is_not_replaced_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        // /bin/sleep carries an Apple signature, as a Developer ID bundle does.
+        let src = dir.path().join("bundled-sleep");
+        std::fs::copy("/bin/sleep", &src).unwrap();
+        let dest = sidecar_install_path(&bin_dir, NAME);
+
+        assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
+        let src_len = std::fs::metadata(&src).unwrap().len();
+        let dest_len = std::fs::metadata(&dest).unwrap().len();
+        assert_ne!(
+            dest_len, src_len,
+            "fixture must reproduce the ad-hoc re-sign size change"
+        );
+        let installed_at = std::fs::metadata(&dest).unwrap().modified().unwrap();
+        let stamp = stamp_path(&bin_dir);
+        assert!(installed_matches_source(&src, &dest, &stamp));
+
+        // Second launch: nothing changed, nothing is replaced.
+        assert!(!extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
+        assert_eq!(
+            std::fs::metadata(&dest).unwrap().modified().unwrap(),
+            installed_at
+        );
+
+        // A different bundled binary replaces the copy.
+        std::fs::copy("/bin/echo", &src).unwrap();
+        assert!(!installed_matches_source(&src, &dest, &stamp));
+        assert!(extract_sidecar_from(&src, NAME, &bin_dir).unwrap());
+        assert!(installed_matches_source(&src, &dest, &stamp));
     }
 }
