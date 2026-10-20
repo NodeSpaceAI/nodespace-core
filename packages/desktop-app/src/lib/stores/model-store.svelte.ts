@@ -69,6 +69,43 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+/** "1.2 of 4.5 GB": the downloaded amount in the unit of the total. */
+export function formatDownloadSize(downloaded: number, total: number): string {
+  const units: Array<[string, number]> = [
+    ['GB', 1024 ** 3],
+    ['MB', 1024 ** 2],
+    ['KB', 1024],
+  ];
+  const [unit, size] = units.find(([, bytes]) => total >= bytes) ?? ['B', 1];
+  const fmt = (n: number) => (unit === 'B' ? `${n}` : (n / size).toFixed(1));
+  return `${fmt(downloaded)} of ${fmt(total)} ${unit}`;
+}
+
+/** Overlay text for a model preparation: the label and an optional explanatory line. */
+export function describePreparation(
+  prep: ModelPreparation,
+  modelName: string
+): { label: string; sublabel?: string } {
+  switch (prep.phase) {
+    case 'downloading': {
+      if (prep.bytesTotal <= 0) return { label: `Downloading ${modelName}…` };
+      const pct = Math.min(100, Math.floor((prep.bytesDownloaded / prep.bytesTotal) * 100));
+      return {
+        label: `Downloading ${modelName}… ${pct}% (${formatDownloadSize(prep.bytesDownloaded, prep.bytesTotal)})`,
+      };
+    }
+    case 'verifying':
+      return {
+        label: 'Verifying model integrity…',
+        sublabel: "This can take a few minutes on a large model's first check.",
+      };
+    case 'loading':
+      return { label: 'Loading model…' };
+    default:
+      return { label: 'Preparing model…' };
+  }
+}
+
 /** Mock model catalog (used when Tauri is not available). Matches daemon catalog IDs. */
 function createMockModels(): ModelInfo[] {
   return [
@@ -99,6 +136,22 @@ function createMockModels(): ModelInfo[] {
   ];
 }
 
+/** Phase of an in-flight "make this model ready to chat" run. */
+export type ModelPreparationPhase = 'preparing' | 'downloading' | 'verifying' | 'loading';
+
+/** One in-flight ensure-ready run for a model (download, then verify, then load). */
+export interface ModelPreparation {
+  modelId: string;
+  phase: ModelPreparationPhase;
+  bytesDownloaded: number;
+  bytesTotal: number;
+  /** True once the user asked to cancel; the run then fails with a cancelled error. */
+  cancelRequested: boolean;
+}
+
+/** Message of the error `ensureReady` throws after a user-requested cancel. */
+export const MODEL_DOWNLOAD_CANCELLED = 'Download cancelled';
+
 class ModelStore {
   models = $state<ModelInfo[]>([]);
   downloadProgress = $state<Record<string, number>>({});
@@ -107,6 +160,13 @@ class ModelStore {
   /** Total system RAM in GiB. 0 means unknown (non-Tauri or not yet loaded). */
   systemRamGb = $state(0);
 
+  /**
+   * Models currently being made ready for chat, keyed by model id. Lives here (not in
+   * a viewer) so the state outlives a chat tab being deactivated and reactivated.
+   */
+  preparations = $state<Record<string, ModelPreparation>>({});
+
+  private inFlightEnsure = new Map<string, Promise<void>>();
   private downloadAbortControllers = new Map<string, AbortController>();
   private eventUnlisteners: Array<() => void> = [];
 
@@ -363,6 +423,110 @@ class ModelStore {
     }
   }
 
+  /**
+   * Make a model ready to chat: download it if needed, verify it, load it. Progress is
+   * published on `preparations[modelId]`. Concurrent calls for the same model share one
+   * run, so a remounted viewer can await the run already in flight.
+   */
+  ensureReady(modelId: string): Promise<void> {
+    const existing = this.inFlightEnsure.get(modelId);
+    if (existing) return existing;
+    const run = this.runEnsureReady(modelId).finally(() => {
+      this.inFlightEnsure.delete(modelId);
+    });
+    this.inFlightEnsure.set(modelId, run);
+    return run;
+  }
+
+  /** Cancel the download of a model that `ensureReady` is preparing. */
+  async cancelPreparation(modelId: string): Promise<void> {
+    const prep = this.preparations[modelId];
+    if (!prep || prep.phase !== 'downloading') return;
+    this.patchPreparation(modelId, { cancelRequested: true });
+    try {
+      await tauriCommands.chatModelCancelDownload(modelId);
+    } catch (err) {
+      log.error('Failed to cancel download', { modelId, error: toError(err).message });
+      this.patchPreparation(modelId, { cancelRequested: false });
+    }
+  }
+
+  private async runEnsureReady(modelId: string): Promise<void> {
+    this.preparations = {
+      ...this.preparations,
+      [modelId]: {
+        modelId,
+        phase: 'preparing',
+        bytesDownloaded: 0,
+        bytesTotal: 0,
+        cancelRequested: false,
+      },
+    };
+    const unlisteners: Array<() => void> = [];
+    try {
+      if (isTauri()) {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisteners.push(
+          await listen<{ model_id: string; status: string }>(AGENT_EVENTS.MODEL_STATUS, (e) =>
+            this.applyPreparationStatus(e.payload.model_id, e.payload.status)
+          ),
+          await listen<DownloadEvent>(AGENT_EVENTS.MODEL_DOWNLOAD_PROGRESS, (e) =>
+            this.applyPreparationProgress(
+              e.payload.model_id,
+              e.payload.bytes_downloaded,
+              e.payload.bytes_total
+            )
+          )
+        );
+      } else {
+        // Browser mode: the dev-proxy relays the same daemon progress over SSE.
+        const { browserSyncService } = await import('$lib/services/browser-sync-service');
+        unlisteners.push(
+          browserSyncService.onModelLoadProgress((e) => {
+            this.applyPreparationStatus(e.modelId, e.status);
+            if (e.bytesDownloaded !== undefined && e.bytesTotal !== undefined) {
+              this.applyPreparationProgress(e.modelId, e.bytesDownloaded, e.bytesTotal);
+            }
+          })
+        );
+      }
+      await tauriCommands.ensureModelReady(modelId);
+    } catch (err) {
+      if (this.preparations[modelId]?.cancelRequested) {
+        throw new Error(MODEL_DOWNLOAD_CANCELLED);
+      }
+      throw err;
+    } finally {
+      for (const unlisten of unlisteners) unlisten();
+      const { [modelId]: _done, ...remaining } = this.preparations;
+      this.preparations = remaining;
+    }
+  }
+
+  private applyPreparationStatus(modelId: string, status: string): void {
+    const prep = this.preparations[modelId];
+    if (!prep) return;
+    if (status === 'downloading' || status === 'verifying' || status === 'loading') {
+      this.patchPreparation(modelId, { phase: status });
+    }
+  }
+
+  private applyPreparationProgress(modelId: string, downloaded: number, total: number): void {
+    const prep = this.preparations[modelId];
+    if (!prep || (prep.phase !== 'preparing' && prep.phase !== 'downloading')) return;
+    this.patchPreparation(modelId, {
+      phase: 'downloading',
+      bytesDownloaded: downloaded,
+      bytesTotal: total,
+    });
+  }
+
+  private patchPreparation(modelId: string, patch: Partial<ModelPreparation>): void {
+    const prep = this.preparations[modelId];
+    if (!prep) return;
+    this.preparations = { ...this.preparations, [modelId]: { ...prep, ...patch } };
+  }
+
   /** Load a downloaded model into memory (real or mock). */
   async loadModel(modelId: string): Promise<void> {
     const model = this.models.find((m) => m.id === modelId);
@@ -453,6 +617,8 @@ class ModelStore {
     this.cleanupEventListeners();
     this.models = [];
     this.downloadProgress = {};
+    this.preparations = {};
+    this.inFlightEnsure.clear();
     this.loadedModelId = null;
     this.isLoading = false;
     this.systemRamGb = 0;

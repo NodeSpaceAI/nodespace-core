@@ -55,12 +55,10 @@
   import { AGENT_EVENTS } from '$lib/types/agent-types';
   import type { AiChatMessageNode, AiChatNativeNode } from '$lib/types/ai-chat-node';
   import { isAiChatMessageNode, nodeToAiChatMessageNode } from '$lib/types/ai-chat-node';
-  import {
-    localAgentCancelTurn,
-    ensureModelReady,
-  } from '$lib/services/tauri-commands';
+  import { localAgentCancelTurn } from '$lib/services/tauri-commands';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { browserSyncService } from '$lib/services/browser-sync-service';
+  import { modelStore, describePreparation } from '$lib/stores/model-store.svelte';
   import { statusBar } from '$lib/stores/status-bar.svelte';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
@@ -81,25 +79,25 @@
   let sendError = $state<string | null>(null);
   let nodeReady = $state(false);
   let eventUnlisteners: Array<() => void> = [];
-  /** True while ensureModelReady is running (may include download time for local models). */
-  let isEnsuringModel = $state(false);
   /** True from Send until the turn is requested: the message is being stored. */
   let isSending = $state(false);
-  /**
-   * Current phase reported by the daemon while ensureModelReady is running.
-   * `null` until the first `model://status` event of a given run arrives, so
-   * the overlay shows a generic label rather than falsely claiming a phase
-   * before it is confirmed. Distinguishing "verifying" from "loading" matters
-   * because a cache-miss integrity check can take minutes on a multi-GB
-   * model — a flat "preparing model" spinner over that reads as a hang.
-   */
-  let ensuringModelPhase = $state<'verifying' | 'loading' | null>(null);
 
   // --- Reactive node lookup ---
   const node = $derived(sharedNodeStore.getNode(nodeId) as AiChatNativeNode | undefined);
 
   const provider = $derived(node?.provider);
   const model = $derived(node?.model ?? '');
+
+  /**
+   * The model's in-flight download/verify/load run, read from the model store rather
+   * than held here: the store outlives this viewer, so the overlay is still shown at the
+   * current phase when the tab is deactivated and reactivated mid-preparation.
+   */
+  const preparation = $derived(model ? modelStore.preparations[model] : undefined);
+  const modelName = $derived(modelStore.models.find((m) => m.id === model)?.name ?? model);
+  const preparationText = $derived(
+    preparation ? describePreparation(preparation, modelName) : null
+  );
 
   /** True while the daemon is processing an inference turn for this node. */
   const isProcessing = $derived(node?.turnStatus === 'processing');
@@ -261,21 +259,17 @@
   async function sendMessage(trimmed: string): Promise<void> {
 
     // Ensure the model is loaded before writing turn_status:processing to the node.
-    // For local models this may trigger a download — isEnsuringModel shows an
-    // overlay so the user sees progress rather than a frozen UI.
-    isEnsuringModel = true;
-    ensuringModelPhase = null;
+    // For local models this may trigger a download — the model store publishes the
+    // phase and progress, which the overlay shows instead of a frozen UI. A failed or
+    // cancelled preparation lands in the catch below and leaves the chat usable.
     try {
-      await ensureModelReady(model);
+      await modelStore.ensureReady(model);
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : ((err as Record<string, unknown>)?.message as string) ?? String(err);
       sendError = msg;
       statusBar.error(`Model error: ${msg}`);
       return;
-    } finally {
-      isEnsuringModel = false;
-      ensuringModelPhase = null;
     }
 
     // The message first. It shows at once; the turn is requested only once it
@@ -321,19 +315,6 @@
 
   let destroyed = false;
 
-  /**
-   * Phase update for the in-flight ensureModelReady call (see isEnsuringModel).
-   * Filtered by model id so a stale or cross-talk event for a different model
-   * (e.g. another view's ensureModelReady call) can't flip this viewer's label.
-   */
-  function applyModelPhase(eventModelId: string, status: string): void {
-    if (destroyed || !isEnsuringModel) return;
-    if (eventModelId !== model) return;
-    if (status === 'verifying' || status === 'loading') {
-      ensuringModelPhase = status;
-    }
-  }
-
   onMount(async () => {
     log.debug('AiChatNativeNodeViewer mounted', { nodeId });
 
@@ -376,23 +357,6 @@
           streamingContent = '';
         });
         eventUnlisteners.push(unlistenError);
-
-        const unlistenModelStatus = await listen<{
-          model_id: string;
-          status: string;
-          message?: string;
-        }>(AGENT_EVENTS.MODEL_STATUS, (event) => {
-          applyModelPhase(event.payload.model_id, event.payload.status);
-        });
-        eventUnlisteners.push(unlistenModelStatus);
-      } else {
-        // Browser mode: the dev-proxy relays the same daemon progress stream
-        // over SSE while its /ensure-model-ready request is in flight.
-        eventUnlisteners.push(
-          browserSyncService.onModelLoadProgress((event) => {
-            applyModelPhase(event.modelId, event.status);
-          })
-        );
       }
     } finally {
       await messagesLoaded;
@@ -539,23 +503,27 @@
     />
   {/if}
 
-  <!-- Model-load overlay: shown while ensureModelReady is running (covers downloads too). -->
-  {#if isEnsuringModel}
-    {@const label =
-      ensuringModelPhase === 'verifying'
-        ? 'Verifying model integrity…'
-        : ensuringModelPhase === 'loading'
-          ? 'Loading model…'
-          : 'Preparing model…'}
-    <div class="ensure-model-overlay" role="status" aria-label={label}>
+  <!-- Model-preparation overlay: derived from the model store (download, verify, load). -->
+  {#if preparation && preparationText}
+    <div class="ensure-model-overlay" role="status" aria-label={preparationText.label}>
       <div class="ensure-model-box">
         <span class="ensure-model-spinner" aria-hidden="true"></span>
         <div class="ensure-model-text">
-          <span class="ensure-model-label">{label}</span>
-          {#if ensuringModelPhase === 'verifying'}
-            <span class="ensure-model-sublabel">This can take a few minutes on a large model's first check.</span>
+          <span class="ensure-model-label">{preparationText.label}</span>
+          {#if preparationText.sublabel}
+            <span class="ensure-model-sublabel">{preparationText.sublabel}</span>
           {/if}
         </div>
+        {#if preparation.phase === 'downloading'}
+          <button
+            type="button"
+            class="ensure-model-cancel"
+            disabled={preparation.cancelRequested}
+            onclick={() => modelStore.cancelPreparation(preparation.modelId)}
+          >
+            Cancel
+          </button>
+        {/if}
       </div>
     </div>
   {/if}
@@ -709,6 +677,22 @@
     font-size: 0.9375rem;
     font-weight: 500;
     color: hsl(var(--foreground));
+  }
+
+  .ensure-model-cancel {
+    margin-left: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--foreground));
+    background: transparent;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    cursor: pointer;
+  }
+
+  .ensure-model-cancel:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .ensure-model-sublabel {
