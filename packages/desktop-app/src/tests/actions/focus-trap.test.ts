@@ -232,7 +232,7 @@ describe('focusTrap action', () => {
       document.body.appendChild(editor);
       const trap = focusTrap(node, {});
       buttons[1].focus();
-      (buttons[1] as HTMLButtonElement).disabled = true;
+      buttons[1].setAttribute('disabled', '');
 
       editor.focus();
 
