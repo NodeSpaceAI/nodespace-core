@@ -1230,6 +1230,69 @@ describe('Navigation Store - Tab Management', () => {
       expect(state.activePaneId).toBe(DEFAULT_PANE_ID);
     });
 
+    describe('Daily Journal date', () => {
+      const dateTab = (id: string, nodeId: string) => ({
+        id,
+        title: nodeId,
+        type: 'node' as const,
+        content: { nodeId, nodeType: 'date' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID,
+        expandedNodeIds: ['old-day-node']
+      });
+      const persistedWith = (tabs: ReturnType<typeof dateTab>[]) => ({
+        tabs,
+        panes: [{ id: DEFAULT_PANE_ID, width: 100, tabIds: tabs.map((t) => t.id) }],
+        activePaneId: DEFAULT_PANE_ID,
+        activeTabIds: { [DEFAULT_PANE_ID]: tabs[0].id }
+      });
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 9, 13, 9, 0, 0));
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('re-points a persisted Daily Journal tab dated in the past at today', () => {
+        mockLoad.mockReturnValue(persistedWith([dateTab(DAILY_JOURNAL_TAB_ID, '2026-08-24')]));
+
+        loadPersistedState();
+
+        const tab = navigationStore.state.tabs[0];
+        expect(tab.content?.nodeId).toBe('2026-10-13');
+        expect(tab.title).toBe('2026-10-13');
+        expect(tab.expandedNodeIds).toBeUndefined();
+      });
+
+      it('keeps a Daily Journal tab that is already on today', () => {
+        mockLoad.mockReturnValue(persistedWith([dateTab(DAILY_JOURNAL_TAB_ID, '2026-10-13')]));
+
+        loadPersistedState();
+
+        const tab = navigationStore.state.tabs[0];
+        expect(tab.content?.nodeId).toBe('2026-10-13');
+        expect(tab.expandedNodeIds).toEqual(['old-day-node']);
+      });
+
+      it('leaves a date tab that is not the Daily Journal untouched', () => {
+        mockLoad.mockReturnValue(
+          persistedWith([
+            dateTab(DAILY_JOURNAL_TAB_ID, '2026-08-24'),
+            dateTab('other-date-tab', '2026-06-01')
+          ])
+        );
+
+        loadPersistedState();
+
+        const other = navigationStore.state.tabs[1];
+        expect(other.content?.nodeId).toBe('2026-06-01');
+        expect(other.title).toBe('2026-06-01');
+        expect(other.expandedNodeIds).toEqual(['old-day-node']);
+      });
+    });
+
     it('schedules expansion state restoration for valid expandedNodeIds', () => {
       const persistedState = {
         tabs: [

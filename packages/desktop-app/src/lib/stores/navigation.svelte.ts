@@ -56,6 +56,23 @@ export const LOADING_TAB_TITLE = 'Loading...';
 
 const PERSISTENCE_DEBOUNCE_MS = 500;
 
+/**
+ * Re-point a restored Daily Journal tab at today's date. Any other tab, and a
+ * Daily Journal tab already on today, is returned unchanged. A rewritten tab
+ * drops its saved expansion state, which belongs to the other day's nodes.
+ */
+function withDailyJournalOnToday(tab: Tab): Tab {
+  if (tab.id !== DAILY_JOURNAL_TAB_ID || tab.content?.nodeType !== 'date') {
+    return tab;
+  }
+  const today = getTodayDateId();
+  if (tab.content.nodeId === today) {
+    return tab;
+  }
+  const { expandedNodeIds: _staleExpansion, ...rest } = tab;
+  return { ...rest, title: today, content: { ...tab.content, nodeId: today } };
+}
+
 // Tab state store — initial state
 function createInitialTabState(): TabState {
   return {
@@ -160,6 +177,12 @@ class NavigationStore {
     const persisted = TabPersistenceService.load();
 
     if (persisted) {
+      // The Daily Journal tab always opens on the current date, whatever date
+      // it showed when the state was saved.
+      
+      // The Daily Journal tab always opens on the current date, whatever date
+      // it showed when the state was saved.
+      persisted.tabs = persisted.tabs.map(withDailyJournalOnToday);
       this.state = {
         tabs: persisted.tabs,
         panes: persisted.panes,
