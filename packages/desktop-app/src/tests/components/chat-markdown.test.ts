@@ -5,6 +5,7 @@
  * for hydration by NodeCardInline components.
  */
 
+import { isSafeLinkHref } from '$lib/utils/safe-link';
 import { describe, it, expect, vi } from 'vitest';
 import { marked, Renderer, type Tokens } from 'marked';
 
@@ -39,7 +40,8 @@ function createChatRenderer(): Renderer {
     }
 
     const text = this.parser.parseInline(token.tokens);
-    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    if (!isSafeLinkHref(href)) return text;
+    return `<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
   return renderer;
 }
@@ -64,6 +66,26 @@ function renderMarkdown(md: string): string {
 }
 
 describe('ChatMarkdown Rendering', () => {
+  it('should drop entity-encoded unsafe schemes', () => {
+    for (const u of ['javascript&#58;alert(1)', 'javascript&colon;alert(1)', 'javascript&#x3A;alert(1)', 'java&#9;script:alert(1)', 'java&Tab;script:alert(1)', 'data&colon;text/html,x', 'javascript&#58alert(1)', 'javascript&amp;#58;alert(1)', 'jav&#x61;script:alert(1)', 'javascript&unknownref;:alert(1)']) {
+      const result = renderMarkdown(`[click](${u})`);
+      expect(result, u).not.toContain('<a');
+    }
+  });
+
+  it('should attribute-escape the href', () => {
+    const result = renderMarkdown('[x](<https://a.test/"onmouseover=alert(1)>)');
+    expect(result).not.toContain('"onmouseover');
+  });
+
+  it('should render links with unsafe schemes as plain text', () => {
+    for (const u of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'vbscript:x']) {
+      const result = renderMarkdown(`[click](<${u}>)`);
+      expect(result, u).not.toContain('<a');
+      expect(result, u).toContain('click');
+    }
+  });
+
   it('should render nodespace:// URIs as placeholder spans, not links', () => {
     const result = renderMarkdown('Check this: nodespace://abc-123-def');
     expect(result).toContain('ns-node-card-placeholder');

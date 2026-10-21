@@ -104,3 +104,20 @@ describe('flattenToText', () => {
     expect(r.kinds.has('list')).toBe(false);
   });
 });
+
+describe('view-mode-parser link scheme allow-list', () => {
+  const unsafe = ['javascript&#58;alert(1)', 'javascript&colon;alert(1)', 'javascript&#x3A;alert(1)', 'java&#9;script:alert(1)', 'java&Tab;script:alert(1)', 'data&colon;text/html,x', 'javascript&#58alert(1)', 'javascript&amp;#58;alert(1)', 'jav&#x61;script:alert(1)', 'javascript&unknownref;:alert(1)'].concat(['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'vbscript:x', '//evil.test']);
+
+  it('emits no link node for an unsafe href and keeps the label text', () => {
+    for (const u of unsafe) {
+      const r = collect(parseContent(`[click](<${u}>)`, true, false));
+      expect(r.kinds.has('link'), u).toBe(false);
+      expect(r.text, u).toContain('click');
+    }
+  });
+
+  it('keeps a safe link as a link node', () => {
+    const nodes = parseContent('[ok](https://a.test)', true, false);
+    expect(collect(nodes).kinds.has('link')).toBe(true);
+  });
+});

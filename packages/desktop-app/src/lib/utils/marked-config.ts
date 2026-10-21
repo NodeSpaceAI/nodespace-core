@@ -32,6 +32,7 @@
 
 import { marked } from 'marked';
 import type { Tokens } from 'marked';
+import { isSafeLinkHref } from '$lib/utils/safe-link';
 
 // Configure marked with custom renderer that uses NodeSpace CSS classes
 marked.use({
@@ -53,6 +54,13 @@ marked.use({
     // Override inline code (codespan) rendering to match code block styling
     codespan(token: Tokens.Codespan): string {
       return `<code class="markdown-code-inline">${token.text}</code>`;
+    },
+
+    // Links with a scheme outside the allow-list (javascript:, data:, ...)
+    // render as their label only; node content is synced between members.
+    link(token: Tokens.Link): string | false {
+      if (isSafeLinkHref(token.href)) return false; // marked's default anchor
+      return this.parser.parseInline(token.tokens);
     },
 
     // Override paragraph to avoid wrapping inline content in <p> tags

@@ -6,6 +6,8 @@
 -->
 
 <script lang="ts">
+  import { isSafeLinkHref } from '$lib/utils/safe-link';
+
   interface MarkdownNode {
     type: 'paragraph' | 'heading' | 'text' | 'bold' | 'italic' | 'code' | 'link' | 'br';
     content?: string;
@@ -194,14 +196,18 @@
   {:else if node.type === 'code'}
     <code class={node.className || ''}>{node.content || ''}</code>
   {:else if node.type === 'link'}
-    <a
-      href={node.href || ''}
-      class={node.className || ''}
-      target="_blank"
-      rel="noopener noreferrer"
-    >
+    {#if isSafeLinkHref(node.href)}
+      <a
+        href={node.href || ''}
+        class={node.className || ''}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <svelte:self nodes={node.children || []} />
+      </a>
+    {:else}
       <svelte:self nodes={node.children || []} />
-    </a>
+    {/if}
   {:else if node.type === 'br'}
     <br />
   {:else if node.type === 'text'}

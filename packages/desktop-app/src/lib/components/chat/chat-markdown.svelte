@@ -11,8 +11,9 @@
 
 <script lang="ts">
   import { Marked, Renderer, type Tokens } from 'marked';
-  import createDOMPurify from 'dompurify';
   import { mount, unmount } from 'svelte';
+  import { isSafeLinkHref } from '$lib/utils/safe-link';
+  import { sanitizeChatHtml } from '$lib/utils/sanitize-chat-html';
   import NodeCardInline from './node-card-inline.svelte';
 
   let { content = '' }: { content: string } = $props();
@@ -22,17 +23,6 @@
   // (for the node editor's inline-only rendering), which would otherwise
   // leak into and corrupt this component's full-markdown chat rendering.
   const chatMarked = new Marked();
-
-  /**
-   * DOMPurify's default export is a singleton bound to whatever `window`
-   * existed the first time the module was imported anywhere in the process
-   * (see dompurify's createDOMPurify()). Binding explicitly to the live
-   * `window` on every call avoids depending on that import-order-sensitive
-   * global state.
-   */
-  function getDOMPurify() {
-    return createDOMPurify(document.defaultView ?? undefined);
-  }
 
   /** Escape text for use inside a double-quoted HTML attribute value. */
   function escapeAttribute(value: string): string {
@@ -58,7 +48,8 @@
     }
 
     const text = this.parser.parseInline(token.tokens);
-    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    if (!isSafeLinkHref(href)) return text;
+    return `<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
 
   const rendered = $derived(renderMarkdown(content));
@@ -82,11 +73,9 @@
         gfm: true,
       });
       if (typeof raw !== 'string') return md;
-      // Allow nodespace:// protocol and data attributes for node card placeholders
-      return getDOMPurify().sanitize(raw, {
-        ADD_ATTR: ['data-node-id', 'data-display-text'],
-        ALLOW_UNKNOWN_PROTOCOLS: true,
-      });
+      // Raw HTML in the message is sanitized too, with every URL attribute
+      // held to the link allow-list (see sanitize-chat-html.ts).
+      return sanitizeChatHtml(raw);
     } catch {
       return md;
     }

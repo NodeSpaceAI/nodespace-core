@@ -118,3 +118,35 @@ describe('marked-config custom renderers', () => {
     expect(text).toContain('2. Second');
   });
 });
+
+describe('marked-config link scheme allow-list', () => {
+  it('keeps safe links as anchors', () => {
+    for (const url of ['https://a.test/x', 'http://a.test', 'mailto:a@b.test', 'nodespace://abc', 'rel/path', '#frag']) {
+      expect(marked.parseInline(`[t](${url})`) as string).toContain('<a href=');
+    }
+  });
+
+  it('renders unsafe schemes as plain label text', () => {
+    for (const url of [
+      'javascript:alert(1)',
+      'JaVaScRiPt:alert(1)',
+      ' javascript:alert(1)',
+      'java%0Ascript:alert(1)',
+      'data:text/html,x',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd'
+    ]) {
+      const html = marked.parseInline(`[click](<${url}>)`) as string;
+      expect(html, url).not.toContain('<a');
+      expect(html, url).toContain('click');
+    }
+  });
+
+  it('renders entity-encoded and protocol-relative hrefs as plain label text', () => {
+    for (const url of ['javascript&#58;alert(1)', 'javascript&colon;alert(1)', 'javascript&#x3A;alert(1)', 'java&#9;script:alert(1)', 'java&Tab;script:alert(1)', 'data&colon;text/html,x', 'javascript&#58alert(1)', 'javascript&amp;#58;alert(1)', 'jav&#x61;script:alert(1)', 'javascript&unknownref;:alert(1)'].concat(['//evil.test/x'])) {
+      const html = marked.parseInline(`[click](${url})`) as string;
+      expect(html, url).not.toContain('<a');
+      expect(html, url).toContain('click');
+    }
+  });
+});
