@@ -29,6 +29,7 @@
 <script lang="ts">
   import { parseContent, type ViewNode } from './view-mode-parser';
   import NodeRefInline from './node-ref-inline.svelte';
+  import { isSafeLinkHref } from '$lib/utils/safe-link';
 
   // Props using Svelte 5 $props() rune
   interface Props {
@@ -64,8 +65,10 @@
     <span class="markdown-bold markdown-italic">{#each node.children as child}{@render renderNode(child)}{/each}</span>
   {:else if node.type === 'code'}
     <code class="markdown-code-inline">{node.content}</code>
-  {:else if node.type === 'link'}
+  {:else if node.type === 'link' && isSafeLinkHref(node.href)}
     <a href={node.href} class="ns-noderef">{#each node.children as child}{@render renderNode(child)}{/each}</a>
+  {:else if node.type === 'link'}
+    {#each node.children as child}{@render renderNode(child)}{/each}
   {:else if node.type === 'noderef'}
     <NodeRefInline id={node.id} />
   {:else if node.type === 'heading'}

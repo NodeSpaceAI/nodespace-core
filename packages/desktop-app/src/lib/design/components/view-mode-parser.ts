@@ -6,6 +6,7 @@
  * `[[node-id]]` wikilinks routed to `noderef` nodes (see wikilink-refs), and
  * inline emphasis/code preserved. Pure — no component state.
  */
+import { isSafeLinkHref } from '$lib/utils/safe-link';
 import { marked } from "marked";
 import type { Token, Tokens } from "marked";
 import { splitTextIntoRefSegments } from "./wikilink-refs";
@@ -336,6 +337,11 @@ export function processInlineTokens(tokens: Token[], blankPlaceholder: string): 
           ? processInlineTokens(link.tokens, blankPlaceholder)
           : [{ type: 'text' as const, content: link.text }];
 
+        if (!isSafeLinkHref(link.href)) {
+          // Unsafe scheme (javascript:, data:, ...): show the label only.
+          nodes.push(...children);
+          break;
+        }
         nodes.push({
           type: 'link',
           href: link.href,

@@ -141,4 +141,12 @@ describe('marked-config link scheme allow-list', () => {
       expect(html, url).toContain('click');
     }
   });
+
+  it('renders entity-encoded and protocol-relative hrefs as plain label text', () => {
+    for (const url of ['javascript&#58;alert(1)', 'javascript&colon;alert(1)', 'javascript&#x3A;alert(1)', 'java&#9;script:alert(1)', 'java&Tab;script:alert(1)', 'data&colon;text/html,x', 'javascript&#58alert(1)', 'javascript&amp;#58;alert(1)', 'jav&#x61;script:alert(1)', 'javascript&unknownref;:alert(1)'].concat(['//evil.test/x'])) {
+      const html = marked.parseInline(`[click](${url})`) as string;
+      expect(html, url).not.toContain('<a');
+      expect(html, url).toContain('click');
+    }
+  });
 });

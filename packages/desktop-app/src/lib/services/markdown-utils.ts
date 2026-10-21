@@ -127,7 +127,7 @@ function processInlineCode(html: string): string {
 function processLinks(html: string): string {
   return html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) =>
     isSafeLinkHref(url)
-      ? `<a href="${url}" class="ns-markdown-link" target="_blank" rel="noopener noreferrer">${text}</a>`
+      ? `<a href="${url.replace(/"/g, '&quot;')}" class="ns-markdown-link" target="_blank" rel="noopener noreferrer">${text}</a>`
       : text
   );
 }

@@ -60,7 +60,7 @@
 
     const text = this.parser.parseInline(token.tokens);
     if (!isSafeLinkHref(href)) return text;
-    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    return `<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
 
   const rendered = $derived(renderMarkdown(content));
@@ -84,7 +84,9 @@
         gfm: true,
       });
       if (typeof raw !== 'string') return md;
-      // Allow nodespace:// protocol and data attributes for node card placeholders
+      // Data attributes for node card placeholders. Unknown protocols stay
+      // allowed (DOMPurify still strips javascript:/data: under this flag);
+      // unsafe schemes are already dropped by the link renderer above.
       return getDOMPurify().sanitize(raw, {
         ADD_ATTR: ['data-node-id', 'data-display-text'],
         ALLOW_UNKNOWN_PROTOCOLS: true,

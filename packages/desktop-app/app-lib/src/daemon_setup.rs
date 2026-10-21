@@ -1635,24 +1635,27 @@ fn installed_matches_source(bundled: &Path, installed: &Path, stamp_path: &Path)
         return false;
     }
     // Same content under a new mtime (an app update shipping an unchanged
-    // daemon): record the new mtime so later launches skip the hash. Best
-    // effort; a failed write only means hashing again next time.
-    let _ = write_sidecar_stamp(bundled, installed, sha, stamp_path);
+    // daemon): record the new mtime so later launches skip the hash. The
+    // stamp takes the signatures read before hashing, and is skipped if the
+    // bundle changed while it was hashed, so it never vouches for content it
+    // did not hash. Best effort; a failed write only means hashing again.
+    if file_signature(bundled).is_ok_and(|after| after == source_sig) {
+        let _ = write_sidecar_stamp(source_sig, installed_sig, sha, stamp_path);
+    }
     true
 }
 
-/// Writes the stamp for a just-installed `installed` copy of `bundled`,
-/// atomically: a temp file in the same directory, then a rename.
+/// Writes the stamp for an installed copy of a bundled file, atomically: a
+/// temp file in the same directory, then a rename. The signatures are the
+/// caller's, taken BEFORE the source was hashed and from the file that was
+/// installed, so the stamp cannot describe content other than what the hash
+/// and the copy were of.
 fn write_sidecar_stamp(
-    bundled: &Path,
-    installed: &Path,
+    (source_size, source_mtime): (u64, u128),
+    (installed_size, installed_mtime): (u64, u128),
     source_sha256: String,
     stamp_path: &Path,
 ) -> Result<()> {
-    let (source_size, source_mtime) = file_signature(bundled)
-        .with_context(|| format!("Cannot stat bundled sidecar {}", bundled.display()))?;
-    let (installed_size, installed_mtime) = file_signature(installed)
-        .with_context(|| format!("Cannot stat installed sidecar {}", installed.display()))?;
     let stamp = SidecarStamp {
         source_size,
         source_mtime,
@@ -1663,15 +1666,17 @@ fn write_sidecar_stamp(
     let mut tmp_name = stamp_path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp-{}", std::process::id()));
     let tmp = PathBuf::from(tmp_name);
-    std::fs::write(&tmp, stamp.render())
-        .with_context(|| format!("Failed to write {}", tmp.display()))?;
-    std::fs::rename(&tmp, stamp_path).map_err(|e| {
+    let result = std::fs::write(&tmp, stamp.render())
+        .with_context(|| format!("Failed to write {}", tmp.display()))
+        .and_then(|()| {
+            std::fs::rename(&tmp, stamp_path)
+                .with_context(|| format!("Failed to record {}", stamp_path.display()))
+        });
+    if result.is_err() {
+        // Neither a partial write nor a failed rename leaves a temp file.
         let _ = std::fs::remove_file(&tmp);
-        anyhow::Error::new(e).context(format!(
-            "Failed to record source of {}",
-            installed.display()
-        ))
-    })
+    }
+    result
 }
 
 /// Installs `src` as sidecar `name` under `bin_dir` unless the copy already
@@ -1706,6 +1711,9 @@ fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> 
         );
     }
 
+    // Read before hashing, so the stamp describes the file that was hashed.
+    let source_sig = file_signature(src)
+        .with_context(|| format!("Cannot stat bundled sidecar {}", src.display()))?;
     let source_sha256 = sha256_hex(src)
         .with_context(|| format!("Cannot read bundled sidecar {}", src.display()))?;
     tracing::info!(
@@ -1731,6 +1739,14 @@ fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> 
         return Err(e);
     }
 
+    // The renamed file keeps the temp file's size and mtime; read them here,
+    // before it is visible at `dest`, rather than re-reading `dest` after.
+    let installed_sig = file_signature(&tmp_dest)
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp_dest);
+        })
+        .with_context(|| format!("Cannot stat {}", tmp_dest.display()))?;
+
     // Drop the old stamp first: a crash between the rename and the new stamp
     // then leaves "no stamp" (re-extract next launch), never a stale stamp
     // vouching for a different binary. A stamp that cannot be removed is an
@@ -1745,7 +1761,7 @@ fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> 
     }
     std::fs::rename(&tmp_dest, &dest)
         .with_context(|| format!("Failed to install {} to {}", name, dest.display()))?;
-    write_sidecar_stamp(src, &dest, source_sha256, &stamp_path)?;
+    write_sidecar_stamp(source_sig, installed_sig, source_sha256, &stamp_path)?;
 
     Ok(true)
 }
@@ -4803,8 +4819,8 @@ mod sidecar_source_stamp_tests {
         let dest = sidecar_install_path(&bin_dir, NAME);
         std::fs::write(&dest, vec![7u8; 1500]).unwrap();
         write_sidecar_stamp(
-            &src,
-            &dest,
+            super::file_signature(&src).unwrap(),
+            super::file_signature(&dest).unwrap(),
             sha256_hex(&src).unwrap(),
             &stamp_path(&bin_dir),
         )
@@ -4851,6 +4867,47 @@ mod sidecar_source_stamp_tests {
         );
         assert_eq!(after.source_sha256, before.source_sha256);
         assert_eq!(after.installed_mtime, before.installed_mtime);
+    }
+
+    #[test]
+    fn the_stamp_records_the_signatures_it_is_given_not_a_fresh_stat() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        let stamp = stamp_path(&dir.path().join("bin"));
+        // The file changed after the caller read its signature and hashed it.
+        let read_before_hashing = (1u64, 2u128);
+        write_sidecar_stamp(
+            read_before_hashing,
+            super::file_signature(&dest).unwrap(),
+            sha256_hex(&src).unwrap(),
+            &stamp,
+        )
+        .unwrap();
+        let written = SidecarStamp::read(&stamp).unwrap();
+        assert_eq!(
+            (written.source_size, written.source_mtime),
+            read_before_hashing
+        );
+    }
+
+    #[test]
+    fn a_failed_stamp_write_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let stamp = dir.path().join("stamp");
+        let mut tmp_name = stamp.as_os_str().to_os_string();
+        tmp_name.push(format!(".tmp-{}", std::process::id()));
+        let tmp = PathBuf::from(tmp_name);
+        // A read-only file at the temp name makes the write fail.
+        std::fs::write(&tmp, b"old").unwrap();
+        let mut perms = std::fs::metadata(&tmp).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&tmp, perms).unwrap();
+
+        let res = write_sidecar_stamp((1, 1), (1, 1), "0".repeat(64), &stamp);
+
+        assert!(res.is_err());
+        assert!(!tmp.exists(), "the temp file is removed on failure");
+        assert!(!stamp.exists());
     }
 
     #[test]
