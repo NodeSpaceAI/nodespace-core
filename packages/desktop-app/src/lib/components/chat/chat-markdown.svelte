@@ -13,6 +13,7 @@
   import { Marked, Renderer, type Tokens } from 'marked';
   import createDOMPurify from 'dompurify';
   import { mount, unmount } from 'svelte';
+  import { isSafeLinkHref } from '$lib/utils/safe-link';
   import NodeCardInline from './node-card-inline.svelte';
 
   let { content = '' }: { content: string } = $props();
@@ -58,6 +59,7 @@
     }
 
     const text = this.parser.parseInline(token.tokens);
+    if (!isSafeLinkHref(href)) return text;
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
 

@@ -6,6 +6,8 @@
  * Lightweight implementation focused on essential features.
  */
 
+import { isSafeLinkHref } from '$lib/utils/safe-link';
+
 export interface MarkdownOptions {
   allowHeadings: boolean;
   allowBold: boolean;
@@ -123,9 +125,10 @@ function processInlineCode(html: string): string {
  * Process simple links [text](url)
  */
 function processLinks(html: string): string {
-  return html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" class="ns-markdown-link" target="_blank" rel="noopener noreferrer">$1</a>'
+  return html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) =>
+    isSafeLinkHref(url)
+      ? `<a href="${url}" class="ns-markdown-link" target="_blank" rel="noopener noreferrer">${text}</a>`
+      : text
   );
 }
 

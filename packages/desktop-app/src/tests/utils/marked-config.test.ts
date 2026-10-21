@@ -118,3 +118,27 @@ describe('marked-config custom renderers', () => {
     expect(text).toContain('2. Second');
   });
 });
+
+describe('marked-config link scheme allow-list', () => {
+  it('keeps safe links as anchors', () => {
+    for (const url of ['https://a.test/x', 'http://a.test', 'mailto:a@b.test', 'nodespace://abc', 'rel/path', '#frag']) {
+      expect(marked.parseInline(`[t](${url})`) as string).toContain('<a href=');
+    }
+  });
+
+  it('renders unsafe schemes as plain label text', () => {
+    for (const url of [
+      'javascript:alert(1)',
+      'JaVaScRiPt:alert(1)',
+      ' javascript:alert(1)',
+      'java%0Ascript:alert(1)',
+      'data:text/html,x',
+      'vbscript:msgbox(1)',
+      'file:///etc/passwd'
+    ]) {
+      const html = marked.parseInline(`[click](<${url}>)`) as string;
+      expect(html, url).not.toContain('<a');
+      expect(html, url).toContain('click');
+    }
+  });
+});

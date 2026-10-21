@@ -5,6 +5,7 @@
  * for hydration by NodeCardInline components.
  */
 
+import { isSafeLinkHref } from '$lib/utils/safe-link';
 import { describe, it, expect, vi } from 'vitest';
 import { marked, Renderer, type Tokens } from 'marked';
 
@@ -39,6 +40,7 @@ function createChatRenderer(): Renderer {
     }
 
     const text = this.parser.parseInline(token.tokens);
+    if (!isSafeLinkHref(href)) return text;
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
   return renderer;
@@ -64,6 +66,14 @@ function renderMarkdown(md: string): string {
 }
 
 describe('ChatMarkdown Rendering', () => {
+  it('should render links with unsafe schemes as plain text', () => {
+    for (const u of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'vbscript:x']) {
+      const result = renderMarkdown(`[click](<${u}>)`);
+      expect(result, u).not.toContain('<a');
+      expect(result, u).toContain('click');
+    }
+  });
+
   it('should render nodespace:// URIs as placeholder spans, not links', () => {
     const result = renderMarkdown('Check this: nodespace://abc-123-def');
     expect(result).toContain('ns-node-card-placeholder');

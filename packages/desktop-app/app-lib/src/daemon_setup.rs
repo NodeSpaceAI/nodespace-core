@@ -1601,7 +1601,9 @@ impl SidecarStamp {
 /// True when `installed` is the extraction of the current `bundled` file that
 /// `stamp_path` records: the installed copy's size and mtime are what was
 /// recorded after extraction, and the bundled file is the recorded one. The
-/// bundle is hashed only when its size or mtime differ from the stamp. A
+/// bundle is hashed only when its size or mtime differ from the stamp; a bundle
+/// replaced by different content with the same size and mtime is therefore
+/// trusted (a build tool or installer that preserves both defeats the check). A
 /// missing or unreadable stamp (an install from before stamps existed) counts
 /// as not matching, so such a copy is replaced once.
 fn installed_matches_source(bundled: &Path, installed: &Path, stamp_path: &Path) -> bool {
@@ -1623,8 +1625,20 @@ fn installed_matches_source(bundled: &Path, installed: &Path, stamp_path: &Path)
     if source_sig == (stamp.source_size, stamp.source_mtime) {
         return true;
     }
-    source_sig.0 == stamp.source_size
-        && sha256_hex(bundled).is_ok_and(|sha| sha == stamp.source_sha256)
+    if source_sig.0 != stamp.source_size {
+        return false;
+    }
+    let Ok(sha) = sha256_hex(bundled) else {
+        return false;
+    };
+    if sha != stamp.source_sha256 {
+        return false;
+    }
+    // Same content under a new mtime (an app update shipping an unchanged
+    // daemon): record the new mtime so later launches skip the hash. Best
+    // effort; a failed write only means hashing again next time.
+    let _ = write_sidecar_stamp(bundled, installed, sha, stamp_path);
+    true
 }
 
 /// Writes the stamp for a just-installed `installed` copy of `bundled`,
@@ -4809,6 +4823,34 @@ mod sidecar_source_stamp_tests {
         assert!(std::fs::metadata(&dest).unwrap().len() < std::fs::metadata(&src).unwrap().len());
 
         assert!(current(&src, &dest, dir.path()));
+    }
+
+    #[test]
+    fn a_bundle_with_a_new_mtime_and_the_same_content_refreshes_the_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, dest) = smaller_copy_with_stamp(dir.path());
+        let stamp = stamp_path(&dir.path().join("bin"));
+        let before = SidecarStamp::read(&stamp).unwrap();
+
+        // An app update ships the same daemon under a new mtime.
+        let newer = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&src)
+            .unwrap()
+            .set_modified(newer)
+            .unwrap();
+
+        assert!(current(&src, &dest, dir.path()));
+        let after = SidecarStamp::read(&stamp).unwrap();
+        assert_ne!(after.source_mtime, before.source_mtime);
+        assert_eq!(
+            after.source_mtime,
+            super::file_signature(&src).unwrap().1,
+            "the stamp records the bundle's new mtime, so the next launch skips the hash"
+        );
+        assert_eq!(after.source_sha256, before.source_sha256);
+        assert_eq!(after.installed_mtime, before.installed_mtime);
     }
 
     #[test]
