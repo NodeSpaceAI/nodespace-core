@@ -1759,8 +1759,18 @@ fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> 
             return Err(e).with_context(|| format!("Cannot remove {}", stamp_path.display()));
         }
     }
-    std::fs::rename(&tmp_dest, &dest)
-        .with_context(|| format!("Failed to install {} to {}", name, dest.display()))?;
+    if let Err(e) = std::fs::rename(&tmp_dest, &dest) {
+        let _ = std::fs::remove_file(&tmp_dest);
+        return Err(e).with_context(|| format!("Failed to install {} to {}", name, dest.display()));
+    }
+    // The bundle must still be what was hashed and copied; if it changed in
+    // the meantime, leave no stamp so the next launch extracts again.
+    if file_signature(src).ok() != Some(source_sig) {
+        anyhow::bail!(
+            "Bundled sidecar {} changed while it was being installed",
+            src.display()
+        );
+    }
     write_sidecar_stamp(source_sig, installed_sig, source_sha256, &stamp_path)?;
 
     Ok(true)
@@ -4897,17 +4907,15 @@ mod sidecar_source_stamp_tests {
         let mut tmp_name = stamp.as_os_str().to_os_string();
         tmp_name.push(format!(".tmp-{}", std::process::id()));
         let tmp = PathBuf::from(tmp_name);
-        // A read-only file at the temp name makes the write fail.
-        std::fs::write(&tmp, b"old").unwrap();
-        let mut perms = std::fs::metadata(&tmp).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&tmp, perms).unwrap();
+        // A non-empty directory at the stamp path: the temp file is written,
+        // then the rename onto it fails on every platform.
+        std::fs::create_dir(&stamp).unwrap();
+        std::fs::write(stamp.join("keep"), b"x").unwrap();
 
         let res = write_sidecar_stamp((1, 1), (1, 1), "0".repeat(64), &stamp);
 
         assert!(res.is_err());
         assert!(!tmp.exists(), "the temp file is removed on failure");
-        assert!(!stamp.exists());
     }
 
     #[test]
