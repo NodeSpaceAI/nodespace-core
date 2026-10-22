@@ -1059,7 +1059,13 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     match resolve_sidecar_path(app, CLI_BINARY_NAME) {
         Ok(bundled_cli) => {
             if let Err(e) = record_bundle_marker(&bin_dir, &bundled_cli) {
-                tracing::warn!("Could not record the app bundle beside the staged CLI: {e:#}");
+                // Not being inside an .app (dev builds, Windows, Linux) is
+                // expected; only a real failure on an app bundle is a warning.
+                if is_app_bundle_exe(&bundled_cli) {
+                    tracing::warn!("Could not record the app bundle beside the staged CLI: {e:#}");
+                } else {
+                    tracing::debug!("Not recording an app bundle beside the staged CLI: {e:#}");
+                }
             }
         }
         Err(e) => tracing::warn!("Could not resolve the bundled CLI: {e:#}"),

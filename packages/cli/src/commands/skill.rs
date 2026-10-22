@@ -2362,14 +2362,14 @@ mod tests {
     #[test]
     fn staged_copy_finds_the_installer_in_the_recorded_app_bundle() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let macos = tmp.path().join("NodeSpace.app/Contents/MacOS");
+        // The reader canonicalizes (/var -> /private/var on macOS).
+        let tmp_root = tmp.path().canonicalize().expect("canonicalize");
+        let macos = tmp_root.join("NodeSpace.app/Contents/MacOS");
         stage_sidecar(&macos);
         std::fs::write(macos.join("nodespace"), b"").expect("bundled exe");
-        let root = tmp
-            .path()
-            .join("NodeSpace.app/Contents/Resources/resources/skill");
+        let root = tmp_root.join("NodeSpace.app/Contents/Resources/resources/skill");
         stage_skill(&root);
-        let bin = tmp.path().join("home/.nodespace/bin");
+        let bin = tmp_root.join("home/.nodespace/bin");
         std::fs::create_dir_all(&bin).expect("mkdir bin");
         std::fs::write(bin.join("nodespace"), b"").expect("staged exe");
         std::fs::write(
