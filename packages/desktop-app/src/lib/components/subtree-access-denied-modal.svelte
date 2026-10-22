@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getSubtreeAccessDeniedState } from '$lib/services/subtree-access-denied.svelte';
   import { focusTrap } from '$lib/actions/focus-trap';
+  import { coreModal } from '$lib/actions/core-modal';
 
   const refusal = getSubtreeAccessDeniedState();
 </script>
@@ -13,6 +14,7 @@
       aria-modal="true"
       aria-labelledby="subtree-access-denied-title"
       aria-describedby="subtree-access-denied-desc"
+      use:coreModal
       use:focusTrap={{ onEscape: refusal.dismiss }}
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}

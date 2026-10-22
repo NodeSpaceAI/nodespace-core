@@ -21,6 +21,7 @@ import type { CreatedNode, CreateNodeInput } from '$lib/services/backend-adapter
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { collectionsData } from '$lib/stores/collections.svelte';
+import { isCoreModalOpen } from '$lib/stores/core-modal-presence.svelte';
 import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
 import { schemasData } from '$lib/stores/schemas.svelte';
 import type { Node } from '$lib/types';
@@ -150,6 +151,26 @@ export const nodes: ExtensionNodes = {
       },
       EXTENSION_UPDATE_SOURCE
     )
+};
+
+// --- Shell ----------------------------------------------------------------------
+
+/** State of the app shell that extension chrome can react to. */
+export interface ExtensionShell {
+  /**
+   * True while one of core's own modals (the first-launch wizard, the delete
+   * confirmation, ...) is on screen. A reactive read, usable in a contribution's
+   * `when()`. An `app-shell-modal` contribution shares the screen with these
+   * modals and should not open while this is true. It does not cover dialogs
+   * that extensions open themselves.
+   */
+  readonly modalOpen: boolean;
+}
+
+export const shell: ExtensionShell = {
+  get modalOpen() {
+    return isCoreModalOpen();
+  }
 };
 
 // --- Collections and schemas ----------------------------------------------------

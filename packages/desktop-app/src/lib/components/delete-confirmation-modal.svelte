@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getDeleteConfirmationState } from '$lib/services/delete-confirmation.svelte';
   import { focusTrap } from '$lib/actions/focus-trap';
+  import { coreModal } from '$lib/actions/core-modal';
 
   const confirmation = getDeleteConfirmationState();
   // Keyboard handling lives elsewhere: focusTrap owns Escape + Tab and lands
@@ -23,6 +24,7 @@
       aria-modal="true"
       aria-labelledby="delete-modal-title"
       aria-describedby="delete-modal-desc"
+      use:coreModal
       use:focusTrap={{ onEscape: confirmation.cancel }}
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}

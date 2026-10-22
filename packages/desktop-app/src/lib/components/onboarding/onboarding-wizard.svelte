@@ -4,6 +4,7 @@
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
   import { focusTrap } from '$lib/actions/focus-trap';
+  import { coreModal } from '$lib/actions/core-modal';
   import { splitFullName } from '$lib/utils/split-full-name';
   import { displayAgentName, formatAgentList } from '$lib/utils/agent-names';
 
@@ -379,6 +380,7 @@
     <div
       class="onboarding-dialog"
       bind:this={dialogEl}
+      use:coreModal
       use:focusTrap={{ onEscape: onClose }}
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
