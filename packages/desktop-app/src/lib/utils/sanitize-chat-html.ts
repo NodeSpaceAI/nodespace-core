@@ -13,7 +13,13 @@
 import createDOMPurify from 'dompurify';
 import { isSafeLinkHref } from '$lib/utils/safe-link';
 
-const LINK_ATTRS = ['href', 'xlink:href', 'action', 'formaction', 'cite'];
+const LINK_ATTRS = ['href', 'xlink:href', 'cite'];
+// Form submission targets: chat has no use for them, so they are dropped.
+const DROPPED_ATTRS = ['action', 'formaction'];
+// Elements whose href is a click target. On any other element (svg image,
+// feImage, use, ...) href is fetched by the browser, so it follows
+// FETCHED_ATTRS' rule instead of the link allow-list.
+const LINK_TAGS = new Set(['a', 'area']);
 // Attributes the browser fetches on its own (no click needed). Outside the
 // link allow-list on purpose: an absolute http(s) URL would be a tracking
 // pixel / IP leak, so only a relative reference qualifies (img and the
@@ -36,9 +42,16 @@ export function sanitizeChatHtml(html: string): string {
   // whichever window existed at first import (import-order sensitive).
   const purify = createDOMPurify(document.defaultView ?? undefined);
   purify.addHook('afterSanitizeAttributes', (node) => {
+    const isLinkTag = LINK_TAGS.has(node.nodeName.toLowerCase());
+    for (const attr of DROPPED_ATTRS) node.removeAttribute?.(attr);
     for (const attr of LINK_ATTRS) {
       const value = node.getAttribute?.(attr);
-      if (value != null && !isSafeLinkHref(value)) node.removeAttribute(attr);
+      if (value == null) continue;
+      const clickOnly = attr === 'cite' || isLinkTag;
+      if (clickOnly && !isSafeLinkHref(value)) node.removeAttribute(attr);
+      else if (!clickOnly && !isRelativeRef(value) && !DATA_IMAGE.test(value.trim())) {
+        node.removeAttribute(attr);
+      }
     }
     const allowsDataImage = IMAGE_TAGS.has(node.nodeName);
     for (const attr of FETCHED_ATTRS) {
@@ -58,6 +71,10 @@ export function sanitizeChatHtml(html: string): string {
     // Inline style can fetch (background:url(), image-set()) and overlay the
     // app UI (position:fixed). Chat markdown never needs it, so it is dropped
     // rather than filtered.
-    FORBID_ATTR: ['style']
+    FORBID_ATTR: ['style'],
+    // A <style> element restyles the whole app and can @import/url() remote
+    // CSS, sidestepping the style attribute removal. App styles live in the
+    // Svelte component, never in sanitised message HTML.
+    FORBID_TAGS: ['style']
   });
 }
