@@ -1242,13 +1242,36 @@ fn resource_root_candidates(dir: &Path) -> Vec<PathBuf> {
 /// `BUNDLE_MARKER_NAME` in the desktop app's `daemon_setup`.
 const BUNDLE_MARKER_NAME: &str = ".nodespace.bundle";
 
+/// Whether `exe` sits at `<name>.app/Contents/MacOS/<file>`, the only layout
+/// a recorded bundle path is trusted in.
+fn is_app_bundle_exe(exe: &Path) -> bool {
+    let Some(macos) = exe.parent() else {
+        return false;
+    };
+    let Some(contents) = macos.parent() else {
+        return false;
+    };
+    let Some(app) = contents.parent() else {
+        return false;
+    };
+    macos.file_name().is_some_and(|n| n == "MacOS")
+        && contents.file_name().is_some_and(|n| n == "Contents")
+        && app.extension().is_some_and(|e| e == "app")
+}
+
 /// The bundled `nodespace` recorded beside `exe` by the desktop app, if any.
-/// Only an absolute path is honoured.
+/// Only an absolute path that resolves (symlinks followed) to a file inside
+/// an `.app/Contents/MacOS` directory is honoured; anything else in the
+/// marker is ignored rather than followed.
 fn recorded_bundle_exe(exe: &Path) -> Option<PathBuf> {
     let marker = exe.parent()?.join(BUNDLE_MARKER_NAME);
     let text = std::fs::read_to_string(marker).ok()?;
     let recorded = PathBuf::from(text.trim());
-    recorded.is_absolute().then_some(recorded)
+    if !recorded.is_absolute() {
+        return None;
+    }
+    let resolved = recorded.canonicalize().ok()?;
+    is_app_bundle_exe(&resolved).then_some(resolved)
 }
 
 /// The compiled installer and its resource root in `dir`, if both are there.
@@ -2399,12 +2422,73 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let bin = tmp.path().join("bin");
         std::fs::create_dir_all(&bin).expect("mkdir bin");
-        let recorded = tmp.path().join("X.app/Contents/MacOS/nodespace");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        let recorded = root.join("X.app/Contents/MacOS/nodespace");
+        std::fs::create_dir_all(recorded.parent().unwrap()).expect("mkdir macos");
+        std::fs::write(&recorded, b"").expect("cli");
         std::fs::write(bin.join(BUNDLE_MARKER_NAME), recorded.display().to_string())
             .expect("marker");
         let searched = searched_locations(&bin.join("nodespace"));
-        assert!(searched.contains(&tmp.path().join("X.app/Contents/MacOS")));
-        assert!(searched.contains(&tmp.path().join("X.app/Contents/Resources/resources/skill")));
+        assert!(searched.contains(&root.join("X.app/Contents/MacOS")));
+        assert!(searched.contains(&root.join("X.app/Contents/Resources/resources/skill")));
+    }
+
+    #[test]
+    fn a_recorded_path_outside_an_app_bundle_is_not_trusted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        let evil = root.join("evil");
+        std::fs::create_dir_all(&evil).expect("mkdir evil");
+        std::fs::write(evil.join("nodespace"), b"").expect("cli");
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            evil.join("nodespace").display().to_string(),
+        )
+        .expect("marker");
+        assert!(recorded_bundle_exe(&bin.join("nodespace")).is_none());
+        assert!(!searched_locations(&bin.join("nodespace")).contains(&evil));
+    }
+
+    #[test]
+    fn a_recorded_path_is_canonicalized_so_symlinks_cannot_escape_the_bundle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        // A file inside `.app/Contents/MacOS` that is a symlink to a file
+        // outside any bundle must not pass.
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::write(outside.join("nodespace"), b"").expect("cli");
+        let macos = root.join("Y.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).expect("mkdir macos");
+        std::os::unix::fs::symlink(outside.join("nodespace"), macos.join("nodespace"))
+            .expect("symlink");
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            macos.join("nodespace").display().to_string(),
+        )
+        .expect("marker");
+        assert!(recorded_bundle_exe(&bin.join("nodespace")).is_none());
+
+        // A symlinked bundle directory resolves to its real location.
+        let real = root.join("Real.app/Contents/MacOS");
+        std::fs::create_dir_all(&real).expect("mkdir real");
+        std::fs::write(real.join("nodespace"), b"").expect("cli");
+        std::os::unix::fs::symlink(root.join("Real.app"), root.join("Link.app")).expect("symlink");
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            root.join("Link.app/Contents/MacOS/nodespace")
+                .display()
+                .to_string(),
+        )
+        .expect("marker");
+        assert_eq!(
+            recorded_bundle_exe(&bin.join("nodespace")),
+            Some(real.join("nodespace"))
+        );
     }
 
     #[test]

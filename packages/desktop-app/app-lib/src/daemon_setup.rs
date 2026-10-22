@@ -1523,13 +1523,23 @@ async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path)
 /// an unchanged sidecar look changed.
 fn record_bundle_marker(bin_dir: &Path, bundled_cli: &Path) -> Result<()> {
     let marker = bin_dir.join(BUNDLE_MARKER_NAME);
+    sweep_stale_marker_tmp(bin_dir);
+    // Only a CLI inside an `.app/Contents/MacOS` is recorded; the reader
+    // applies the same rule, so anything else would never be followed.
+    let bundled_cli = bundled_cli
+        .canonicalize()
+        .unwrap_or_else(|_| bundled_cli.to_path_buf());
+    if !is_app_bundle_exe(&bundled_cli) {
+        anyhow::bail!(
+            "Not recording {}: it is not inside an .app/Contents/MacOS directory",
+            bundled_cli.display()
+        );
+    }
     let text = bundled_cli.display().to_string();
     if std::fs::read_to_string(&marker).is_ok_and(|current| current == text) {
         return Ok(());
     }
-    let mut tmp_name = marker.as_os_str().to_os_string();
-    tmp_name.push(format!(".tmp-{}", std::process::id()));
-    let tmp = PathBuf::from(tmp_name);
+    let tmp = marker_tmp_path(bin_dir, std::process::id());
     let result = std::fs::write(&tmp, &text)
         .with_context(|| format!("Failed to write {}", tmp.display()))
         .and_then(|()| {
@@ -1540,6 +1550,41 @@ fn record_bundle_marker(bin_dir: &Path, bundled_cli: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+fn marker_tmp_path(bin_dir: &Path, pid: u32) -> PathBuf {
+    bin_dir.join(format!("{BUNDLE_MARKER_NAME}.tmp-{pid}"))
+}
+
+/// Whether `exe` sits at `<name>.app/Contents/MacOS/<file>`.
+fn is_app_bundle_exe(exe: &Path) -> bool {
+    let Some(macos) = exe.parent() else {
+        return false;
+    };
+    let Some(contents) = macos.parent() else {
+        return false;
+    };
+    let Some(app) = contents.parent() else {
+        return false;
+    };
+    macos.file_name().is_some_and(|n| n == "MacOS")
+        && contents.file_name().is_some_and(|n| n == "Contents")
+        && app.extension().is_some_and(|e| e == "app")
+}
+
+/// Removes `.nodespace.bundle.tmp-<pid>` files left by an earlier run that
+/// died between the write and the rename (this process's own is excluded).
+fn sweep_stale_marker_tmp(bin_dir: &Path) {
+    let prefix = format!("{BUNDLE_MARKER_NAME}.tmp-");
+    let own = marker_tmp_path(bin_dir, std::process::id());
+    let Ok(entries) = std::fs::read_dir(bin_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) && entry.path() != own {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// File recording which bundled sidecar an extracted copy came from:
@@ -5443,7 +5488,11 @@ mod bundle_marker_tests {
             std::fs::metadata(&stamp).unwrap().modified().unwrap(),
         );
 
-        record_bundle_marker(dir.path(), &dir.path().join("b/nodespace")).unwrap();
+        record_bundle_marker(
+            dir.path(),
+            &dir.path().join("B.app/Contents/MacOS/nodespace"),
+        )
+        .unwrap();
 
         assert_eq!(std::fs::read(&staged).unwrap(), b"cli");
         assert_eq!(std::fs::read(&stamp).unwrap(), b"stamp");
@@ -5460,6 +5509,47 @@ mod bundle_marker_tests {
             .filter(|n| n.contains(".tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn a_cli_outside_an_app_bundle_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = record_bundle_marker(dir.path(), &dir.path().join("b/nodespace")).unwrap_err();
+        assert!(err.to_string().contains("Not recording"), "{err}");
+        assert!(!dir.path().join(BUNDLE_MARKER_NAME).exists());
+        let wrong_dir = dir.path().join("A.app/Contents/Resources/nodespace");
+        assert!(record_bundle_marker(dir.path(), &wrong_dir).is_err());
+    }
+
+    #[test]
+    fn the_recorded_path_is_canonicalized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let macos = root.join("Real.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("nodespace"), b"").unwrap();
+        std::os::unix::fs::symlink(root.join("Real.app"), root.join("Link.app")).unwrap();
+        record_bundle_marker(&root, &root.join("Link.app/Contents/MacOS/nodespace")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(BUNDLE_MARKER_NAME)).unwrap(),
+            macos.join("nodespace").display().to_string()
+        );
+    }
+
+    #[test]
+    fn stale_marker_temp_files_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale = dir.path().join(format!("{BUNDLE_MARKER_NAME}.tmp-1"));
+        std::fs::write(&stale, b"x").unwrap();
+        let other = dir.path().join("nodespace.tmp-1");
+        std::fs::write(&other, b"x").unwrap();
+        let bundled = dir.path().join("A.app/Contents/MacOS/nodespace");
+        // Swept even when the marker is already current.
+        record_bundle_marker(dir.path(), &bundled).unwrap();
+        std::fs::write(&stale, b"x").unwrap();
+        record_bundle_marker(dir.path(), &bundled).unwrap();
+        assert!(!stale.exists());
+        assert!(other.exists(), "unrelated files are left alone");
     }
 
     /// The CLI cannot be depended on from here, so pin the shared file name
