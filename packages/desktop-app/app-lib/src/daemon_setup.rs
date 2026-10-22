@@ -1679,6 +1679,19 @@ fn write_sidecar_stamp(
     result
 }
 
+/// Fails when the bundled file no longer has the signature read before it was
+/// hashed and copied (or cannot be stat'ed): the installed copy may then not
+/// be what the stamp would claim, so no stamp is written.
+fn ensure_bundle_unchanged(src: &Path, source_sig: (u64, u128)) -> Result<()> {
+    if file_signature(src).ok() != Some(source_sig) {
+        anyhow::bail!(
+            "Bundled sidecar {} changed while it was being installed",
+            src.display()
+        );
+    }
+    Ok(())
+}
+
 /// Installs `src` as sidecar `name` under `bin_dir` unless the copy already
 /// there is the recorded extraction of the same bundled file and verifies.
 /// Returns whether the installed binary was replaced.
@@ -1765,12 +1778,7 @@ fn extract_sidecar_from(src: &Path, name: &str, bin_dir: &Path) -> Result<bool> 
     }
     // The bundle must still be what was hashed and copied; if it changed in
     // the meantime, leave no stamp so the next launch extracts again.
-    if file_signature(src).ok() != Some(source_sig) {
-        anyhow::bail!(
-            "Bundled sidecar {} changed while it was being installed",
-            src.display()
-        );
-    }
+    ensure_bundle_unchanged(src, source_sig)?;
     write_sidecar_stamp(source_sig, installed_sig, source_sha256, &stamp_path)?;
 
     Ok(true)
@@ -4807,8 +4815,8 @@ mod product_eviction_tests {
 #[cfg(test)]
 mod sidecar_source_stamp_tests {
     use super::{
-        extract_sidecar_from, installed_matches_source, sha256_hex, sidecar_install_path,
-        sidecar_stamp_path, write_sidecar_stamp, SidecarStamp,
+        ensure_bundle_unchanged, extract_sidecar_from, file_signature, installed_matches_source,
+        sha256_hex, sidecar_install_path, sidecar_stamp_path, write_sidecar_stamp, SidecarStamp,
     };
     use std::path::{Path, PathBuf};
 
@@ -4990,6 +4998,26 @@ mod sidecar_source_stamp_tests {
         std::fs::remove_file(stamp_path(&dir.path().join("bin"))).unwrap();
 
         assert!(!current(&src, &dest, dir.path()));
+    }
+
+    #[test]
+    fn a_bundle_that_changed_after_it_was_hashed_fails_the_post_install_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("bundled");
+        std::fs::write(&src, vec![7u8; 2000]).unwrap();
+        let sig = file_signature(&src).unwrap();
+        assert!(ensure_bundle_unchanged(&src, sig).is_ok());
+
+        // Replaced with another size after the signature was read.
+        std::fs::write(&src, vec![7u8; 2500]).unwrap();
+        let err = ensure_bundle_unchanged(&src, sig).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("changed while it was being installed"));
+
+        // A bundle that vanished cannot vouch for anything either.
+        std::fs::remove_file(&src).unwrap();
+        assert!(ensure_bundle_unchanged(&src, sig).is_err());
     }
 
     #[test]
