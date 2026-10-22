@@ -89,6 +89,11 @@ const DAEMON_DB_DIR: &str = ".nodespace/database";
 const DAEMON_LOG_DIR: &str = ".nodespace/logs";
 pub(crate) const DAEMON_BINARY_NAME: &str = "nodespaced";
 const CLI_BINARY_NAME: &str = "nodespace";
+/// File beside the staged CLI naming the bundled CLI it was copied from, so the
+/// staged copy can find the skill installer and resources that only the bundle
+/// has. The CLI reads it under the same name (`BUNDLE_MARKER_NAME` in
+/// `packages/cli/src/commands/skill.rs`).
+const BUNDLE_MARKER_NAME: &str = ".nodespace.bundle";
 
 #[cfg(target_os = "linux")]
 const SYSTEMD_SERVICE_NAME: &str = "nodespace.service";
@@ -1049,6 +1054,16 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     // kill it so the updated binary gets launched below.
     let binary_updated = extract_sidecar_if_changed(app, daemon_binary_name(), &bin_dir).await?;
     extract_sidecar_if_changed(app, CLI_BINARY_NAME, &bin_dir).await?;
+    // Best effort: a missing marker only leaves `nodespace skill ...` from the
+    // staged copy unable to find the installer, and must not stop the daemon.
+    match resolve_sidecar_path(app, CLI_BINARY_NAME) {
+        Ok(bundled_cli) => {
+            if let Err(e) = record_bundle_marker(&bin_dir, &bundled_cli) {
+                tracing::warn!("Could not record the app bundle beside the staged CLI: {e:#}");
+            }
+        }
+        Err(e) => tracing::warn!("Could not resolve the bundled CLI: {e:#}"),
+    }
 
     if evicted {
         // Its registration is gone and the socket has been given time to clear:
@@ -1500,6 +1515,31 @@ async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path)
     tokio::task::spawn_blocking(move || extract_sidecar_from(&src, &name, &bin_dir))
         .await
         .context("Sidecar extraction task panicked")?
+}
+
+/// Records `bundled_cli` (the bundled `nodespace` sidecar) in the marker file
+/// beside the staged CLI, rewriting it only when its content differs. It
+/// touches neither the staged binary nor its source stamp, so it cannot make
+/// an unchanged sidecar look changed.
+fn record_bundle_marker(bin_dir: &Path, bundled_cli: &Path) -> Result<()> {
+    let marker = bin_dir.join(BUNDLE_MARKER_NAME);
+    let text = bundled_cli.display().to_string();
+    if std::fs::read_to_string(&marker).is_ok_and(|current| current == text) {
+        return Ok(());
+    }
+    let mut tmp_name = marker.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = PathBuf::from(tmp_name);
+    let result = std::fs::write(&tmp, &text)
+        .with_context(|| format!("Failed to write {}", tmp.display()))
+        .and_then(|()| {
+            std::fs::rename(&tmp, &marker)
+                .with_context(|| format!("Failed to record {}", marker.display()))
+        });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// File recording which bundled sidecar an extracted copy came from:
@@ -5355,5 +5395,80 @@ mod daemon_signal_target_tests {
         let name = super::daemon_binary_name();
         let programs = programs(Some(&format!("/usr/local/bin/{name}")));
         assert_eq!(programs.len(), 2);
+    }
+}
+
+/// The staged CLI finds the skill installer through a marker naming the
+/// bundled CLI; writing it must leave the staged binary and its stamp alone.
+#[cfg(test)]
+mod bundle_marker_tests {
+    use super::{record_bundle_marker, BUNDLE_MARKER_NAME};
+
+    #[test]
+    fn the_marker_names_the_bundled_cli_and_is_not_rewritten_when_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundled = dir.path().join("NodeSpace.app/Contents/MacOS/nodespace");
+        record_bundle_marker(dir.path(), &bundled).unwrap();
+        let marker = dir.path().join(BUNDLE_MARKER_NAME);
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            bundled.display().to_string()
+        );
+
+        let before = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        record_bundle_marker(dir.path(), &bundled).unwrap();
+        assert_eq!(
+            std::fs::metadata(&marker).unwrap().modified().unwrap(),
+            before
+        );
+
+        let moved = dir.path().join("Moved.app/Contents/MacOS/nodespace");
+        record_bundle_marker(dir.path(), &moved).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            moved.display().to_string()
+        );
+    }
+
+    #[test]
+    fn recording_the_marker_leaves_the_staged_cli_and_its_stamp_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = dir.path().join("nodespace");
+        let stamp = super::sidecar_stamp_path(dir.path(), "nodespace");
+        std::fs::write(&staged, b"cli").unwrap();
+        std::fs::write(&stamp, b"stamp").unwrap();
+        let before = (
+            std::fs::metadata(&staged).unwrap().modified().unwrap(),
+            std::fs::metadata(&stamp).unwrap().modified().unwrap(),
+        );
+
+        record_bundle_marker(dir.path(), &dir.path().join("b/nodespace")).unwrap();
+
+        assert_eq!(std::fs::read(&staged).unwrap(), b"cli");
+        assert_eq!(std::fs::read(&stamp).unwrap(), b"stamp");
+        assert_eq!(
+            before,
+            (
+                std::fs::metadata(&staged).unwrap().modified().unwrap(),
+                std::fs::metadata(&stamp).unwrap().modified().unwrap()
+            )
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// The CLI cannot be depended on from here, so pin the shared file name
+    /// against its definition there.
+    #[test]
+    fn the_marker_name_matches_the_one_the_cli_reads() {
+        let cli = include_str!("../../../cli/src/commands/skill.rs");
+        assert!(cli.contains(&format!(
+            "BUNDLE_MARKER_NAME: &str = \"{BUNDLE_MARKER_NAME}\";"
+        )));
     }
 }

@@ -1235,28 +1235,53 @@ fn resource_root_candidates(dir: &Path) -> Vec<PathBuf> {
     roots
 }
 
+/// Name of the file the desktop app writes beside the `nodespace` copy it
+/// stages in `~/.nodespace/bin`: the path of the bundled `nodespace` the copy
+/// was made from. The staged copy has no installer or `skill/` beside it, so
+/// it follows this path to the bundle that has them. Must match
+/// `BUNDLE_MARKER_NAME` in the desktop app's `daemon_setup`.
+const BUNDLE_MARKER_NAME: &str = ".nodespace.bundle";
+
+/// The bundled `nodespace` recorded beside `exe` by the desktop app, if any.
+/// Only an absolute path is honoured.
+fn recorded_bundle_exe(exe: &Path) -> Option<PathBuf> {
+    let marker = exe.parent()?.join(BUNDLE_MARKER_NAME);
+    let text = std::fs::read_to_string(marker).ok()?;
+    let recorded = PathBuf::from(text.trim());
+    recorded.is_absolute().then_some(recorded)
+}
+
+/// The compiled installer and its resource root in `dir`, if both are there.
+fn installer_in_dir(dir: &Path) -> Option<Installer> {
+    let binary = dir.join(bundled_sidecar_name("nodespace-skill-installer"));
+    if !binary.exists() {
+        return None;
+    }
+    let resource_root = resource_root_candidates(dir)
+        .into_iter()
+        .find(|root| root.join("SKILL.md").exists())?;
+    Some(Installer::Compiled {
+        binary,
+        resource_root,
+    })
+}
+
 /// Pure form of [`resolve_compiled_installer`]: takes the executable path as
 /// a parameter (rather than calling `current_exe()` itself) so this is
 /// exercisable against a synthetic directory in a unit test, independent of
 /// where cargo actually places the test binary -- the same seam
 /// `daemon_setup::sidecar_path_from_exe` uses for the identical reason.
+///
+/// The directories holding `exe` come first; then the bundle recorded beside
+/// it (the staged copy in `~/.nodespace/bin`).
 fn compiled_installer_beside(exe: &Path) -> Option<Installer> {
     for dir in exe_dirs(exe) {
-        let binary = dir.join(bundled_sidecar_name("nodespace-skill-installer"));
-        if !binary.exists() {
-            continue;
-        }
-        if let Some(resource_root) = resource_root_candidates(&dir)
-            .into_iter()
-            .find(|root| root.join("SKILL.md").exists())
-        {
-            return Some(Installer::Compiled {
-                binary,
-                resource_root,
-            });
+        if let Some(installer) = installer_in_dir(&dir) {
+            return Some(installer);
         }
     }
-    None
+    let bundle_dir = recorded_bundle_exe(exe)?.parent()?.to_path_buf();
+    installer_in_dir(&bundle_dir)
 }
 
 /// The not-found message: the directories searched on this machine and what
@@ -1269,6 +1294,13 @@ fn searched_locations(exe: &Path) -> Vec<PathBuf> {
     for dir in exe_dirs(exe) {
         let extra = resource_root_candidates(&dir).into_iter().skip(1);
         out.push(dir);
+        out.extend(extra);
+    }
+    if let Some(bundle_dir) =
+        recorded_bundle_exe(exe).and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        let extra = resource_root_candidates(&bundle_dir).into_iter().skip(1);
+        out.push(bundle_dir);
         out.extend(extra);
     }
     out
@@ -2302,6 +2334,77 @@ mod tests {
             .expect("symlink");
 
         assert!(compiled_installer_beside(&link.join("nodespace")).is_some());
+    }
+
+    #[test]
+    fn staged_copy_finds_the_installer_in_the_recorded_app_bundle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let macos = tmp.path().join("NodeSpace.app/Contents/MacOS");
+        stage_sidecar(&macos);
+        std::fs::write(macos.join("nodespace"), b"").expect("bundled exe");
+        let root = tmp
+            .path()
+            .join("NodeSpace.app/Contents/Resources/resources/skill");
+        stage_skill(&root);
+        let bin = tmp.path().join("home/.nodespace/bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        std::fs::write(bin.join("nodespace"), b"").expect("staged exe");
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            macos.join("nodespace").display().to_string(),
+        )
+        .expect("marker");
+
+        match compiled_installer_beside(&bin.join("nodespace")).expect("recorded bundle") {
+            Installer::Compiled {
+                binary,
+                resource_root,
+            } => {
+                assert_eq!(
+                    binary,
+                    macos.join(bundled_sidecar_name("nodespace-skill-installer"))
+                );
+                assert_eq!(resource_root, root);
+            }
+            Installer::Script { .. } => panic!("expected compiled"),
+        }
+    }
+
+    #[test]
+    fn staged_copy_without_a_marker_or_with_a_dangling_one_finds_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        std::fs::write(bin.join("nodespace"), b"").expect("staged exe");
+        assert!(compiled_installer_beside(&bin.join("nodespace")).is_none());
+
+        // The recorded bundle was moved or deleted.
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            tmp.path()
+                .join("Gone.app/Contents/MacOS/nodespace")
+                .display()
+                .to_string(),
+        )
+        .expect("marker");
+        assert!(compiled_installer_beside(&bin.join("nodespace")).is_none());
+
+        // A relative recorded path is ignored.
+        std::fs::write(bin.join(BUNDLE_MARKER_NAME), "MacOS/nodespace").expect("marker");
+        assert!(compiled_installer_beside(&bin.join("nodespace")).is_none());
+    }
+
+    #[test]
+    fn searched_locations_include_the_recorded_bundle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bin = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        let recorded = tmp.path().join("X.app/Contents/MacOS/nodespace");
+        std::fs::write(bin.join(BUNDLE_MARKER_NAME), recorded.display().to_string())
+            .expect("marker");
+        let searched = searched_locations(&bin.join("nodespace"));
+        assert!(searched.contains(&tmp.path().join("X.app/Contents/MacOS")));
+        assert!(searched.contains(&tmp.path().join("X.app/Contents/Resources/resources/skill")));
     }
 
     #[test]
