@@ -344,26 +344,56 @@ fn real_launchctl_print() -> Option<String> {
     }
 }
 
+/// True when the process command line `args` is exactly one of `programs`, or
+/// one of them followed by a space and its arguments. `ps` prints the command
+/// line as one space-joined string, so an executable path containing a space
+/// (`/Users/Mary Ann/.nodespace/bin/nodespaced`) cannot be recovered by
+/// splitting on whitespace; matching the known path as a prefix, which must
+/// end at the end of the string or at a space, does not depend on it.
+/// `.../nodespaced-old` or `.../nodespaced/x` never match `.../nodespaced`.
+#[cfg(unix)]
+fn args_start_with_program(args: &str, programs: &[String]) -> bool {
+    programs.iter().any(|p| {
+        !p.is_empty()
+            && args
+                .strip_prefix(p.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+    })
+}
+
 /// Pure decision behind every signal sent to a daemon: the process must belong
-/// to the current user (`owner_uid == my_uid`) and its executable path
-/// (`argv0`) must equal one of `programs` exactly. A name match alone, a
-/// similarly named binary elsewhere, or another user's process never passes.
+/// to the current user (`owner_uid == my_uid`) and its command line (`args`,
+/// as printed by `ps -o args=`) must start with one of `programs` exactly (see
+/// [`args_start_with_program`]). A name match alone, a similarly named binary
+/// elsewhere, or another user's process never passes.
 #[cfg(unix)]
 fn may_signal(
-    argv0: Option<&str>,
+    args: Option<&str>,
     owner_uid: Option<u32>,
     my_uid: u32,
     programs: &[String],
 ) -> bool {
-    match (argv0, owner_uid) {
-        (Some(argv0), Some(uid)) => {
-            uid == my_uid && !argv0.is_empty() && programs.iter().any(|p| p == argv0)
-        }
+    match (args, owner_uid) {
+        (Some(args), Some(uid)) => uid == my_uid && args_start_with_program(args, programs),
         _ => false,
     }
 }
 
-/// [`may_signal`] for a live pid, reading its owner and argv[0] from `ps`.
+/// Split one line of `ps -p <pid> -o uid=,args=` output into the owner uid and
+/// the untouched command line. Only the uid column is whitespace-delimited;
+/// everything after it is returned verbatim (minus the padding), spaces and
+/// all.
+#[cfg(unix)]
+fn parse_ps_uid_args(text: &str) -> (Option<u32>, Option<&str>) {
+    let text = text.trim();
+    let (uid, args) = match text.split_once(char::is_whitespace) {
+        Some((uid, rest)) => (uid, rest.trim_start()),
+        None => (text, ""),
+    };
+    (uid.parse::<u32>().ok(), (!args.is_empty()).then_some(args))
+}
+
+/// [`may_signal`] for a live pid, reading its owner and command line from `ps`.
 #[cfg(unix)]
 fn process_is_ours_running_one_of(pid: i32, programs: &[String]) -> bool {
     let Ok(out) = std::process::Command::new("ps")
@@ -373,11 +403,9 @@ fn process_is_ours_running_one_of(pid: i32, programs: &[String]) -> bool {
         return false;
     };
     let text = String::from_utf8_lossy(&out.stdout);
-    let mut parts = text.split_whitespace();
-    let uid = parts.next().and_then(|u| u.parse::<u32>().ok());
-    let argv0 = parts.next();
+    let (uid, args) = parse_ps_uid_args(&text);
     // SAFETY: geteuid() is always safe to call.
-    may_signal(argv0, uid, unsafe { libc::geteuid() }, programs)
+    may_signal(args, uid, unsafe { libc::geteuid() }, programs)
 }
 
 /// Keep a helper process from opening a console window of its own.
@@ -5360,7 +5388,7 @@ mod machine_wide_start_tests {
 /// decisions only: nothing here spawns or signals a process.
 #[cfg(all(test, unix))]
 mod daemon_signal_target_tests {
-    use super::{daemon_program_paths, loaded_job_program, may_signal};
+    use super::{daemon_program_paths, loaded_job_program, may_signal, parse_ps_uid_args};
     use std::path::Path;
 
     const MINE: u32 = 501;
@@ -5413,6 +5441,49 @@ mod daemon_signal_target_tests {
                 "{argv0}"
             );
         }
+    }
+
+    #[test]
+    fn a_daemon_whose_install_path_contains_spaces_matches() {
+        let dir = "/Users/Mary Ann/.nodespace/bin";
+        let name = super::daemon_binary_name();
+        let programs = daemon_program_paths(Path::new(dir), &|| None);
+        // Bare path, and path followed by arguments, exactly as `ps` prints them.
+        for line in [
+            format!("  501 {dir}/{name}\n"),
+            format!("501 {dir}/{name} --headless --flag value\n"),
+        ] {
+            let (uid, args) = parse_ps_uid_args(&line);
+            assert_eq!(uid, Some(501), "{line}");
+            assert!(may_signal(args, uid, MINE, &programs), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_spaced_path_prefix_lookalike_does_not_match() {
+        let dir = "/Users/Mary Ann/.nodespace/bin";
+        let name = super::daemon_binary_name();
+        let programs = daemon_program_paths(Path::new(dir), &|| None);
+        for line in [
+            format!("501 {dir}/{name}-old"),
+            format!("501 {dir}/{name}/x --flag"),
+            format!("501 /Users/Mary/{name}"),
+            "501 ".to_string(),
+            String::new(),
+        ] {
+            let (uid, args) = parse_ps_uid_args(&line);
+            assert!(!may_signal(args, uid, MINE, &programs), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn ps_output_is_split_into_uid_and_verbatim_args() {
+        assert_eq!(
+            parse_ps_uid_args("  501 /a b/c --x y\n"),
+            (Some(501), Some("/a b/c --x y"))
+        );
+        assert_eq!(parse_ps_uid_args("501\n"), (Some(501), None));
+        assert_eq!(parse_ps_uid_args(""), (None, None));
     }
 
     #[test]
