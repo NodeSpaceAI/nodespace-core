@@ -68,9 +68,40 @@ resolve_installing_user() {
 create_user_log_dir() {
     [[ -n "${INSTALLING_USER}" && -d "${INSTALLING_USER_HOME}" ]] || return 0
     local dir="${INSTALLING_USER_HOME}/Library/Logs/com.nodespace"
-    if ! sudo -n -u "#${INSTALLING_USER_UID}" mkdir -p -- "${dir}" 2>/dev/null; then
-        echo "Warning: could not create ${dir} for ${INSTALLING_USER}; daemon logs may be unavailable." >&2
+    if sudo -n -u "#${INSTALLING_USER_UID}" mkdir -p -- "${dir}" 2>/dev/null; then
+        return 0
     fi
+
+    # Fallback for locked-down sudoers/MDM setups where dropping privileges
+    # fails: create the missing components as root and hand each one to the
+    # user by numeric uid. Refuse if the home or any component is a symlink, so
+    # a link planted in the user's tree cannot redirect a root-privileged write
+    # or chown. `chown -h` never follows a link. (A residual race between the
+    # check and the mkdir remains; this path is only the degraded case.)
+    local part path="${INSTALLING_USER_HOME}"
+    local -a created=()
+    if [[ -L "${path}" ]]; then
+        echo "Warning: ${path} is a symlink; not creating the daemon log directory." >&2
+        return 0
+    fi
+    for part in Library Logs com.nodespace; do
+        path="${path}/${part}"
+        if [[ -L "${path}" ]]; then
+            echo "Warning: ${path} is a symlink; not creating the daemon log directory." >&2
+            return 0
+        fi
+        if [[ ! -e "${path}" ]]; then
+            if ! mkdir -- "${path}" 2>/dev/null; then
+                echo "Warning: could not create ${dir} for ${INSTALLING_USER}; daemon logs may be unavailable." >&2
+                return 0
+            fi
+            created+=("${path}")
+        fi
+    done
+    for path in ${created[@]+"${created[@]}"}; do
+        chown -h "${INSTALLING_USER_UID}" "${path}" 2>/dev/null || true
+    done
+    echo "Warning: created ${dir} as root and set its owner to uid ${INSTALLING_USER_UID} (could not run mkdir as the user)." >&2
 }
 # --- END log-dir ---
 
