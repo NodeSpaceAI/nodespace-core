@@ -203,7 +203,7 @@ async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
 /// order reflecting BOTH operations, not just that each RPC individually
 /// succeeded.
 ///
-/// `#[ignore]`d: it fails every time. The write itself is transactional now
+/// `#[ignore]`d: it failed 10 of 10 runs locally (reproducibly under concurrent Beginning/End reorders). The write itself is transactional now
 /// (the old `reorder_lock` race is gone), but `NodeService::reorder_node`
 /// resolves `End` to "after the last sibling" with a pooled read BEFORE its
 /// transaction starts. A concurrent `Beginning` reorder of that last sibling

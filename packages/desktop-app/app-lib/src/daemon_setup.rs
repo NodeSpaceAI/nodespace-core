@@ -1607,12 +1607,13 @@ fn sweep_marker_tmp_older_than(bin_dir: &Path, min_age: std::time::Duration) {
         if !entry.file_name().to_string_lossy().starts_with(&prefix) || entry.path() == own {
             continue;
         }
+        // An mtime in the future (clock change) cannot belong to a live
+        // write in progress, so it counts as old enough.
         let old_enough = entry
             .metadata()
             .and_then(|m| m.modified())
             .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age >= min_age);
+            .is_some_and(|t| t.elapsed().map_or(true, |age| age >= min_age));
         if old_enough {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -5627,5 +5628,14 @@ mod bundle_marker_tests {
         super::sweep_marker_tmp_older_than(dir.path(), Duration::ZERO);
         assert!(!stale.exists());
         assert!(other.exists(), "unrelated files are left alone");
+
+        // A temp file stamped in the future is swept too.
+        let future = dir.path().join(format!("{BUNDLE_MARKER_NAME}.tmp-2"));
+        let f = std::fs::File::create(&future).unwrap();
+        f.set_modified(std::time::SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
+        drop(f);
+        super::sweep_marker_tmp_older_than(dir.path(), Duration::from_secs(60));
+        assert!(!future.exists(), "a future-dated temp file is swept");
     }
 }
