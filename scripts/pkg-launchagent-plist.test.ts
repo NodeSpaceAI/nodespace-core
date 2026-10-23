@@ -7,7 +7,7 @@
 // These tests read the shipped plist (macOS `plutil`), assert it holds no
 // unexpanded path, and run its actual shell command against a stub daemon.
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, statSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -65,6 +65,8 @@ describe("pkg LaunchAgent plist", () => {
     const [shell, flag, script] = readPlist().ProgramArguments;
     expect(shell).toBe("/bin/sh");
     expect(flag).toBe("-c");
+    expect(script).toContain('mkdir -p -m 700 "$HOME/.nodespace"');
+    expect(script).not.toContain("umask");
     expect(script).toContain('"$HOME/.nodespace/logs"');
     expect(script).toContain('"$HOME/.nodespace/logs/nodespaced.log"');
     expect(script).toContain(`exec ${DAEMON} --tray`);
@@ -122,6 +124,35 @@ echo "pid: $$" >> "${stubDir}/argv"
       }
     });
   }
+
+  macTest("a new ~/.nodespace is owner-only; an existing one keeps its mode", () => {
+    const root = mkdtempSync(join(tmpdir(), "pkg-agent-"));
+    try {
+      const script = readPlist().ProgramArguments[2];
+      const stubDir = join(root, "stub");
+      mkdirSync(stubDir);
+      const stub = join(stubDir, "nodespaced");
+      writeFileSync(stub, "#!/bin/sh\ntrue\n");
+      chmodSync(stub, 0o755);
+      const run = (home: string) =>
+        Bun.spawnSync(["/bin/sh", "-c", script.replace(DAEMON, stub)], {
+          env: { PATH: "/usr/bin:/bin", HOME: home },
+        });
+
+      const fresh = join(root, "fresh");
+      mkdirSync(fresh);
+      expect(run(fresh).exitCode).toBe(0);
+      expect(statSync(join(fresh, ".nodespace")).mode & 0o777).toBe(0o700);
+
+      const existing = join(root, "existing");
+      mkdirSync(join(existing, ".nodespace"), { recursive: true });
+      chmodSync(join(existing, ".nodespace"), 0o755);
+      expect(run(existing).exitCode).toBe(0);
+      expect(statSync(join(existing, ".nodespace")).mode & 0o777).toBe(0o755);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   macTest("appends to an existing log and runs the daemon in place of the shell", () => {
     const root = mkdtempSync(join(tmpdir(), "pkg-agent-"));
