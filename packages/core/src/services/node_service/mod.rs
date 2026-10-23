@@ -6402,10 +6402,14 @@ mod tests {
                     service_for_tx
                         .update_node_with_version_bump_in_tx(tx, &node_id, version)
                         .await?;
-                    NodeService::reorder_child_in_tx(tx, &node_id, None)
-                        .await?
-                        .map(|_| ())
-                        .ok_or_else(|| NodeServiceError::hierarchy_violation("the node is a root"))
+                    NodeService::reorder_child_in_tx(
+                        tx,
+                        &node_id,
+                        crate::services::InsertPosition::Beginning,
+                    )
+                    .await?
+                    .map(|_| ())
+                    .ok_or_else(|| NodeServiceError::hierarchy_violation("the node is a root"))
                 })
             })
             .await;
@@ -6532,6 +6536,71 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_reorder_node_loses_to_concurrent_move_to_root_with_version_conflict() {
         race_reorder_against_versioned_writer(true).await;
+    }
+
+    /// `End` is resolved inside the reorder's transaction. A writer holds the
+    /// write guard with the last sibling already moved to the front; the
+    /// reorder of the first sibling to `End` passes its pooled checks, queues
+    /// on the guard, and must then land after the sibling that is last NOW
+    /// (the middle one), not after the one that was last when it was called.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_reorder_node_end_resolves_against_order_committed_ahead_of_it() {
+        let (service, _temp) = create_test_service().await;
+        let (first_id, last_id) = reorder_fixture(&service).await;
+        let version = service.get_node(&first_id).await.unwrap().unwrap().version;
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let front_id = last_id.clone();
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        let parent = SqliteStore::get_parent_id_in_tx(tx, &front_id)
+                            .await?
+                            .expect("the fixture node has a parent");
+                        SqliteStore::move_node_in_tx(tx, &front_id, Some(&parent), None).await?;
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let reorderer = service.clone();
+        let node_id = first_id.clone();
+        let reorder_task = tokio::spawn(async move {
+            reorderer
+                .reorder_node(&node_id, version, crate::services::InsertPosition::End)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !reorder_task.is_finished(),
+            "the reorder must pass its pooled checks and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        reorder_task.await.unwrap().unwrap();
+
+        let parent_id = service.get_parent(&first_id).await.unwrap().unwrap().id;
+        let order: Vec<String> = service
+            .get_children(&parent_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(order.first(), Some(&last_id), "the front move must survive");
+        assert_eq!(
+            order.last(),
+            Some(&first_id),
+            "End must land after the sibling that is last at write time"
+        );
+        assert_eq!(order.len(), 3);
     }
 
     #[tokio::test]
