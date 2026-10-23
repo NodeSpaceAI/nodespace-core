@@ -186,9 +186,23 @@ pub struct Registry {
 
 impl Registry {
     /// Load the registry from `path`. A missing file yields an empty registry
-    /// rather than an error — first boot has no registry yet.
+    /// rather than an error — first boot has no registry yet. An empty or
+    /// whitespace-only file is NOT a first boot: `save` never writes one
+    /// (even an empty registry serializes to `databases = []`), so it is what
+    /// power loss between the rename and the data flush leaves behind. Loading
+    /// it as "no databases" would make the next save erase every registration.
+    ///
+    /// Decision: `save` keeps no `.bak` of the previous registry. A silent
+    /// restore could resurrect removed databases, and failing loudly leaves
+    /// the user's files and the broken registry in place for manual repair.
     pub async fn load(path: &Path) -> Result<Self> {
         match tokio::fs::read_to_string(path).await {
+            Ok(contents) if contents.trim().is_empty() => Err(anyhow!(
+                "database registry {} is empty (likely truncated by a crash or power loss); \
+                 refusing to start with no databases. Restore it from a backup or delete it \
+                 to start fresh; your database files are untouched",
+                path.display()
+            )),
             Ok(contents) => toml::from_str(&contents)
                 .with_context(|| format!("parsing database registry {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -211,9 +225,12 @@ impl Registry {
     /// the pid suffix keeps two daemon instances that raced to save the same
     /// registry from colliding on the same temp path.
     ///
-    /// Known residual gap: `tokio::fs::write` and `tokio::fs::rename` below
-    /// both persist via `spawn_blocking` under the hood, dispatching the
-    /// actual syscall to a blocking-pool thread. Tokio does not retract an
+    /// The temp file is `sync_all`ed before the rename and the directory is
+    /// synced after it (see [`crate::durable_write`]), so the guarantee also
+    /// holds across power loss, not just a process kill.
+    ///
+    /// Known residual gap: the write below runs via `spawn_blocking`,
+    /// dispatching the actual syscalls to a blocking-pool thread. Tokio does not retract an
     /// already-dispatched blocking closure when the task polling this
     /// `.await` is aborted or dropped — so if a caller (e.g.
     /// [`DatabaseManager::mutate_and_save`]) is cancelled while parked
@@ -248,22 +265,19 @@ impl Registry {
         );
         let tmp_path = path.with_file_name(tmp_file_name);
 
-        if let Err(e) = tokio::fs::write(&tmp_path, &contents).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(e)
-                .with_context(|| format!("writing database registry {}", tmp_path.display()));
-        }
-
-        if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(e).with_context(|| {
-                format!(
-                    "finalizing database registry {} (staged at {})",
-                    path.display(),
-                    tmp_path.display()
-                )
-            });
-        }
+        let (stage, target) = (tmp_path.clone(), path.to_path_buf());
+        tokio::task::spawn_blocking(move || {
+            crate::durable_write::write_durably(&stage, &target, contents.as_bytes())
+        })
+        .await
+        .context("database registry write task panicked")?
+        .with_context(|| {
+            format!(
+                "saving database registry {} (staged at {})",
+                path.display(),
+                tmp_path.display()
+            )
+        })?;
 
         Ok(())
     }
@@ -1653,6 +1667,55 @@ plugin_label = "blue"
 
         reloaded.save(&path).await.unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// `Registry::save` persists through the durable helper: file sync, then
+    /// rename, then directory sync.
+    #[tokio::test]
+    async fn registry_save_syncs_the_file_then_renames_then_syncs_the_directory() {
+        use crate::durable_write::tests::{record_writes_to, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+        let log = record_writes_to(&path);
+        Registry::default().save(&path).await.unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [Step::SyncTemp, Step::Rename, Step::SyncDir]
+        );
+    }
+
+    /// A zero-length or whitespace-only registry is what a crash leaves behind;
+    /// it must not load as "no databases" (the next save would erase every
+    /// registration). A genuinely absent file is still a first boot.
+    #[tokio::test]
+    async fn an_empty_registry_file_is_corrupt_but_an_absent_one_is_first_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+
+        let first_boot = Registry::load(&path).await.unwrap();
+        assert!(first_boot.databases.is_empty() && first_boot.default_database.is_none());
+
+        for body in ["", "   \n\t\n"] {
+            std::fs::write(&path, body).unwrap();
+            let err = format!("{:#}", Registry::load(&path).await.unwrap_err());
+            assert!(err.contains("is empty"), "got: {err}");
+            assert!(DatabaseManager::load(path.clone(), test_context())
+                .await
+                .is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "left alone");
+        }
+    }
+
+    /// An empty registry that `save` itself wrote must load back (it is not
+    /// zero-length), so the corruption check never rejects our own output.
+    #[tokio::test]
+    async fn a_saved_empty_registry_loads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+        Registry::default().save(&path).await.unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().trim().is_empty());
+        let loaded = Registry::load(&path).await.unwrap();
+        assert!(loaded.databases.is_empty());
     }
 
     /// A value that is not a string is never carried: the registry fails to

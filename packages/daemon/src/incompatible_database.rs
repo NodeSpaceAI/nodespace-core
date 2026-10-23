@@ -123,12 +123,13 @@ pub async fn record(marker: &Path, database_path: &Path, mismatch: &SchemaMismat
             .with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = marker.with_extension("json.tmp");
-    tokio::fs::write(&tmp, json)
-        .await
-        .with_context(|| format!("write {}", tmp.display()))?;
-    tokio::fs::rename(&tmp, marker)
-        .await
-        .with_context(|| format!("rename {} into place", marker.display()))?;
+    let marker_owned = marker.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::durable_write::write_durably(&tmp, &marker_owned, &json)
+    })
+    .await
+    .context("incompatible-database marker write task panicked")?
+    .with_context(|| format!("write {}", marker.display()))?;
     Ok(())
 }
 
@@ -199,6 +200,21 @@ mod tests {
         assert!(!marker.exists());
         // Clearing an absent marker is a no-op, not an error.
         clear(&marker).await;
+    }
+
+    #[tokio::test]
+    async fn record_goes_through_the_durable_write_helper() {
+        use crate::durable_write::tests::{record_writes_to, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("incompatible-database.json");
+        let log = record_writes_to(&marker);
+        record(&marker, &dir.path().join("nodespace.db"), &mismatch())
+            .await
+            .unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [Step::SyncTemp, Step::Rename, Step::SyncDir]
+        );
     }
 
     /// The heart of the crash-loop fix: an incompatible database must end

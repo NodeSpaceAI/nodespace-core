@@ -138,12 +138,123 @@ async fn update_config_at(
     atomic_file::write_json(dir, CONFIG_FILE, &cfg).await
 }
 
-/// Text every NodeSpace PATH line carries, in any shell's syntax. Detection,
-/// writing and removal all key on it.
-const PATH_MARKER: &str = "$HOME/.nodespace/bin";
+/// The comment line that opens the block NodeSpace writes into an rc file.
+const BLOCK_COMMENT: &str = "# NodeSpace CLI";
+/// The one line that follows [`BLOCK_COMMENT`], per shell family.
+const POSIX_EXPORT: &str = "export PATH=\"$HOME/.nodespace/bin:$PATH\"";
+const FISH_EXPORT: &str = "fish_add_path $HOME/.nodespace/bin";
 
 const POSIX_EXPORT_LINE: &str = "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
 const FISH_EXPORT_LINE: &str = "\n# NodeSpace CLI\nfish_add_path $HOME/.nodespace/bin\n";
+
+/// Byte ranges of every block NodeSpace wrote into `content`: the
+/// [`BLOCK_COMMENT`] line immediately followed by one of the exact export
+/// lines (line endings and trailing blanks ignored), plus the single blank
+/// separator line written before it. Anything else mentioning the path (a
+/// commented-out line, the user's own export, a line inside an `if`) is not
+/// ours and is never matched.
+fn nodespace_blocks(content: &str) -> Vec<std::ops::Range<usize>> {
+    let mut lines = Vec::new();
+    let mut offset = 0;
+    for raw in content.split_inclusive('\n') {
+        lines.push((offset, raw.len(), raw.trim_end()));
+        offset += raw.len();
+    }
+    let mut blocks = Vec::new();
+    let mut i = 0;
+    while i + 1 < lines.len() {
+        let (start, _, text) = lines[i];
+        let (next_start, next_len, next) = lines[i + 1];
+        if text == BLOCK_COMMENT && (next == POSIX_EXPORT || next == FISH_EXPORT) {
+            let mut from = start;
+            if i > 0
+                && lines[i - 1].2.is_empty()
+                && !blocks
+                    .iter()
+                    .any(|b: &std::ops::Range<usize>| b.end > lines[i - 1].0)
+            {
+                from = lines[i - 1].0;
+            }
+            blocks.push(from..next_start + next_len);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    blocks
+}
+
+/// True when the file has at least one newline and every one is `\r\n`; a
+/// mixed or LF file gets LF.
+fn all_newlines_are_crlf(content: &str) -> bool {
+    let newlines = content.matches('\n').count();
+    newlines > 0 && newlines == content.matches("\r\n").count()
+}
+
+/// Resolve a symlinked dotfile to the file it points at, so an edit lands on
+/// the real target instead of replacing the link with a regular file.
+fn resolve_symlink(path: &Path) -> std::path::PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    // A dangling link: follow it one hop at a time, without requiring the end
+    // to exist.
+    let mut current = path.to_path_buf();
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => match std::fs::read_link(&current) {
+                Ok(target) => {
+                    current = current
+                        .parent()
+                        .map_or(target.clone(), |parent| parent.join(&target));
+                }
+                Err(_) => break,
+            },
+            _ => break,
+        }
+    }
+    current
+}
+
+/// Replace `path`'s content atomically: write a temp file in the same
+/// directory, flush it, copy the original's permissions, and rename it over
+/// the target (following a symlink). A failure at any step leaves the
+/// original file untouched and removes the temp file.
+fn write_rc_atomically(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let target = resolve_symlink(path);
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rc".to_string());
+    let tmp = target.with_file_name(format!(".{name}.nodespace-tmp-{}", std::process::id()));
+    let staged = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(content)?;
+        if let Ok(meta) = std::fs::metadata(&target) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.sync_all()
+    })();
+    if let Err(e) = staged.and_then(|()| std::fs::rename(&tmp, &target)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    #[cfg(unix)]
+    if let Some(dir) = target.parent() {
+        // Best effort: the content is already in place.
+        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+    }
+    Ok(())
+}
+
+async fn write_rc_file(path: &Path, content: String) -> Result<(), String> {
+    let owned = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_rc_atomically(&owned, content.as_bytes()))
+        .await
+        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?
+        .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+}
 
 /// The user's login shell, as far as PATH setup needs to tell them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,7 +359,7 @@ pub struct PathConfigResult {
 /// Return true if the PATH export line is already present in the given file.
 async fn file_contains_nodespace_path(path: &Path) -> bool {
     match tokio::fs::read_to_string(path).await {
-        Ok(content) => content.contains(PATH_MARKER),
+        Ok(content) => !nodespace_blocks(&content).is_empty(),
         Err(_) => false,
     }
 }
@@ -273,7 +384,7 @@ async fn append_path_to_file(path: &Path, line: &str) -> Result<PathFileOutcome,
     };
     if existing
         .as_deref()
-        .is_some_and(|content| content.contains(PATH_MARKER))
+        .is_some_and(|content| !nodespace_blocks(content).is_empty())
     {
         return Ok(PathFileOutcome::Unchanged);
     }
@@ -286,12 +397,12 @@ async fn append_path_to_file(path: &Path, line: &str) -> Result<PathFileOutcome,
                 .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
         }
         content.push_str(line.trim_start_matches('\n'));
+    } else if all_newlines_are_crlf(&content) {
+        content.push_str(&line.replace('\n', "\r\n"));
     } else {
         content.push_str(line);
     }
-    tokio::fs::write(path, content)
-        .await
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    write_rc_file(path, content).await?;
     Ok(if created {
         PathFileOutcome::Created
     } else {
@@ -345,38 +456,27 @@ async fn configure_path_at(
     })
 }
 
-/// Remove all NodeSpace PATH lines from a shell file. Returns `true` if modified.
+/// Remove the blocks NodeSpace wrote from a shell file (see
+/// [`nodespace_blocks`]); every other line, including its line endings, is
+/// kept byte for byte. Returns `true` if modified.
 async fn remove_path_from_file(path: &Path) -> Result<bool, String> {
-    if !path.exists() {
+    let content = match tokio::fs::read_to_string(path).await {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("Failed to read {}: {e}", path.display())),
+    };
+    let blocks = nodespace_blocks(&content);
+    if blocks.is_empty() {
         return Ok(false);
     }
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    if !content.contains(PATH_MARKER) {
-        return Ok(false);
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for block in blocks {
+        result.push_str(&content[cursor..block.start]);
+        cursor = block.end;
     }
-    let filtered: Vec<&str> = content
-        .lines()
-        .filter(|l| !l.contains(PATH_MARKER) && !l.trim_start().starts_with("# NodeSpace CLI"))
-        .collect();
-    // Strip trailing blank lines left by the separator we wrote, then restore final newline.
-    let trimmed: Vec<&str> = filtered
-        .iter()
-        .copied()
-        .rev()
-        .skip_while(|l| l.trim().is_empty())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    let mut result = trimmed.join("\n");
-    if !result.is_empty() {
-        result.push('\n');
-    }
-    tokio::fs::write(path, result)
-        .await
-        .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+    result.push_str(&content[cursor..]);
+    write_rc_file(path, result).await?;
     Ok(true)
 }
 
@@ -806,7 +906,7 @@ mod tests {
     }
 
     fn export_count(content: &str) -> usize {
-        content.matches(PATH_MARKER).count()
+        content.matches("$HOME/.nodespace/bin").count()
     }
 
     #[tokio::test]
@@ -944,6 +1044,149 @@ mod tests {
             LoginShell::Fish
         );
         assert_eq!(LoginShell::from_env(None), LoginShell::Other);
+    }
+
+    #[tokio::test]
+    async fn commented_or_user_written_lines_are_not_a_nodespace_block() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let rc = home.path().join(".zshrc");
+        let user = "# export PATH=\"$HOME/.nodespace/bin:$PATH\"\n\
+                    export PATH=\"$HOME/.nodespace/bin:$HOME/bin:$PATH\"\n\
+                    if [ -d \"$HOME/.nodespace/bin\" ]; then\n  echo $HOME/.nodespace/bin\nfi\n";
+        std::fs::write(&rc, user).expect("seed");
+        assert!(!file_contains_nodespace_path(&rc).await);
+        assert!(!remove_path_from_file(&rc).await.expect("remove"));
+        assert_eq!(std::fs::read_to_string(&rc).expect("read"), user);
+
+        // The wizard now writes its own block instead of reporting success.
+        let outcome = append_path_to_file(&rc, POSIX_EXPORT_LINE)
+            .await
+            .expect("append");
+        assert_eq!(outcome, PathFileOutcome::Written);
+        assert!(file_contains_nodespace_path(&rc).await);
+
+        // Removal takes only that block and restores the user's content.
+        assert!(remove_path_from_file(&rc).await.expect("remove"));
+        assert_eq!(std::fs::read_to_string(&rc).expect("read"), user);
+    }
+
+    #[tokio::test]
+    async fn crlf_files_keep_their_line_endings() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let rc = home.path().join(".bashrc");
+        std::fs::write(&rc, "keep one\r\nkeep two\r\n").expect("seed");
+        append_path_to_file(&rc, POSIX_EXPORT_LINE)
+            .await
+            .expect("append");
+        let written = std::fs::read_to_string(&rc).expect("read");
+        assert!(
+            written.contains("\r\n# NodeSpace CLI\r\nexport PATH"),
+            "{written:?}"
+        );
+        assert!(!written.replace("\r\n", "").contains('\n'));
+        assert!(file_contains_nodespace_path(&rc).await);
+
+        assert!(remove_path_from_file(&rc).await.expect("remove"));
+        assert_eq!(
+            std::fs::read_to_string(&rc).expect("read"),
+            "keep one\r\nkeep two\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mixed_line_ending_file_gets_lf() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let rc = home.path().join(".bashrc");
+        std::fs::write(&rc, "one\r\ntwo\n").expect("seed");
+        append_path_to_file(&rc, POSIX_EXPORT_LINE)
+            .await
+            .expect("append");
+        let written = std::fs::read_to_string(&rc).expect("read");
+        assert!(
+            written.ends_with("\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n")
+        );
+        assert!(!written.ends_with("\r\n"));
+    }
+
+    #[tokio::test]
+    async fn fish_block_and_duplicates_are_removed_exactly() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let rc = home.path().join("rc");
+        std::fs::write(
+            &rc,
+            format!(
+                "a\n{FISH_EXPORT_LINE}b\n{POSIX_EXPORT_LINE}c\n# NodeSpace CLI\nsomething else\n"
+            ),
+        )
+        .expect("seed");
+        assert!(remove_path_from_file(&rc).await.expect("remove"));
+        // A lone "# NodeSpace CLI" comment not followed by our export is kept.
+        assert_eq!(
+            std::fs::read_to_string(&rc).expect("read"),
+            "a\nb\nc\n# NodeSpace CLI\nsomething else\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_rc_file_is_edited_at_its_target_and_keeps_its_mode() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let home = tempfile::tempdir().expect("tempdir");
+        let dotfiles = home.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).expect("mkdir");
+        let real = dotfiles.join("zshrc");
+        std::fs::write(&real, "keep\n").expect("seed");
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let link = home.path().join(".zshrc");
+        symlink(&real, &link).expect("symlink");
+
+        append_path_to_file(&link, POSIX_EXPORT_LINE)
+            .await
+            .expect("append");
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("meta")
+            .file_type()
+            .is_symlink());
+        assert!(std::fs::read_to_string(&real)
+            .expect("read")
+            .contains(POSIX_EXPORT));
+        let mode = std::fs::metadata(&real).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        assert!(remove_path_from_file(&link).await.expect("remove"));
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("meta")
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).expect("read"), "keep\n");
+        let leftovers: Vec<_> = std::fs::read_dir(&dotfiles).expect("ls").collect();
+        assert_eq!(leftovers.len(), 1, "no temp file left behind");
+    }
+
+    /// A write that cannot complete (here: the directory refuses a new temp
+    /// file) must leave the original rc file untouched, not truncated.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_write_leaves_the_original_file_intact() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().expect("tempdir");
+        let rc = home.path().join(".zshrc");
+        let original = format!("keep\n{POSIX_EXPORT_LINE}");
+        std::fs::write(&rc, &original).expect("seed");
+        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o555))
+            .expect("chmod dir");
+        let probe = std::fs::File::create(home.path().join("probe"));
+        let can_write_anyway = probe.is_ok();
+
+        let removed = remove_path_from_file(&rc).await;
+
+        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("restore");
+        if can_write_anyway {
+            return; // running as root: directory modes are not enforced
+        }
+        assert!(removed.is_err(), "removal must report the failed write");
+        assert_eq!(std::fs::read_to_string(&rc).expect("read"), original);
     }
 
     #[tokio::test]
