@@ -153,9 +153,8 @@ async fn rapid_sibling_creation_preserves_insertion_order() {
 /// for distinct nodes concurrently (Tokio join, not sequential awaits) and
 /// confirm every call itself succeeds (no RPC error, no OCC conflict — the
 /// two nodes being reordered are distinct, so there's no version conflict
-/// between them). Does NOT assert the final sibling order matches both
-/// reorders: that assertion is `concurrent_reorders_produce_correct_final_order`
-/// below, which is `#[ignore]`d for a known, reproducible ordering bug.
+/// between them). The final sibling order is asserted by
+/// `concurrent_reorders_produce_correct_final_order` below.
 #[tokio::test]
 async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
     let daemon = SpawnedDaemon::spawn();
@@ -203,15 +202,10 @@ async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
 /// order reflecting BOTH operations, not just that each RPC individually
 /// succeeded.
 ///
-/// `#[ignore]`d: it failed 10 of 10 runs locally (reproducibly under concurrent Beginning/End reorders). The write itself is transactional now
-/// (the old `reorder_lock` race is gone), but `NodeService::reorder_node`
-/// resolves `End` to "after the last sibling" with a pooled read BEFORE its
-/// transaction starts. A concurrent `Beginning` reorder of that last sibling
-/// commits in between, so the `End` node lands after a sibling that is now
-/// first and ends up second-to-last. Fix by resolving the position inside the
-/// transaction, then remove the ignore.
+/// `NodeService::reorder_node` resolves `End` inside its transaction, so the
+/// `End` reorder lands after the sibling that is last once the concurrent
+/// `Beginning` reorder has committed, whichever of the two runs first.
 #[tokio::test]
-#[ignore = "reorder_node resolves End/After from a pre-transaction read; see the doc comment above"]
 async fn concurrent_reorders_produce_correct_final_order() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;

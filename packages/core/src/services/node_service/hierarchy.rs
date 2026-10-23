@@ -677,7 +677,7 @@ impl NodeService {
             ));
         }
 
-        let insert_after = self.resolve_reorder_position(node_id, position).await?;
+        self.validate_reorder_position(node_id, &position).await?;
 
         // The reorder, any sibling re-spread and the version bump are one
         // unit of work (ADR-069 §1a). The checks above read through pooled
@@ -691,6 +691,15 @@ impl NodeService {
         // bump's `NodeUpdated` is unaffected by running first. Events are
         // buffered and flushed only after commit (ADR-069 §2).
         let node_id = node_id.to_string();
+        let position = match position {
+            crate::services::InsertPosition::Beginning => {
+                crate::services::InsertPositionOwned::Beginning
+            }
+            crate::services::InsertPosition::End => crate::services::InsertPositionOwned::End,
+            crate::services::InsertPosition::After(id) => {
+                crate::services::InsertPositionOwned::After(id.to_string())
+            }
+        };
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
@@ -702,7 +711,7 @@ impl NodeService {
                     .await?;
 
                 let Some((parent_id, placement)) =
-                    Self::reorder_child_in_tx(tx, &node_id, insert_after.as_deref()).await?
+                    Self::reorder_child_in_tx(tx, &node_id, position.as_ref()).await?
                 else {
                     return Err(root_reorder_violation(&node_id));
                 };
@@ -1078,16 +1087,16 @@ impl NodeService {
         Ok(created.len())
     }
 
-    /// [`Self::reorder_node`]'s fast-fail checks and position resolution, run
-    /// before its transaction: the node must not be a root and any `After`
-    /// sibling must be another child of its parent. Resolves the position
-    /// against the node's current parent and returns the sibling to insert
-    /// after (`None` = first).
-    async fn resolve_reorder_position(
+    /// [`Self::reorder_node`]'s fast-fail checks, run before its transaction:
+    /// the node must not be a root and any `After` sibling must be another
+    /// child of its parent. The position itself is resolved inside the
+    /// transaction (see [`Self::reorder_child_in_tx`]), not here, so it cannot
+    /// go stale against a concurrent reorder.
+    async fn validate_reorder_position(
         &self,
         node_id: &str,
-        position: crate::services::InsertPosition<'_>,
-    ) -> Result<Option<String>, NodeServiceError> {
+        position: &crate::services::InsertPosition<'_>,
+    ) -> Result<(), NodeServiceError> {
         let Some(parent_id) = self
             .store
             .get_parent_id(node_id)
@@ -1097,10 +1106,7 @@ impl NodeService {
             return Err(root_reorder_violation(node_id));
         };
 
-        self.require_sibling_under(node_id, &position, &parent_id)
-            .await?;
-
-        self.resolve_insert_position(position, Some(&parent_id))
+        self.require_sibling_under(node_id, position, &parent_id)
             .await
     }
 
@@ -1145,26 +1151,40 @@ impl NodeService {
         Ok(())
     }
 
-    /// Reposition `node_id` among its siblings inside `tx`, after
-    /// `insert_after` (`None` = first). Returns the parent and the placement,
-    /// or `None` without writing if the node is a root.
+    /// Reposition `node_id` among its siblings inside `tx` at `position`.
+    /// Returns the parent and the placement, or `None` without writing if the
+    /// node is a root.
     ///
-    /// The parent is read inside the transaction, so the write is always a
-    /// same-parent reorder, never a move back to the parent `insert_after`
-    /// was resolved against. If a concurrent move reparented the node after
-    /// that resolution, an `insert_after` sibling is no longer among its
-    /// children and the store places the node last under its new parent; a
-    /// `None` (first) position still places it first.
+    /// The parent and the position are both resolved inside the transaction,
+    /// under the write guard: `End` becomes "after the last other child" of the
+    /// current sibling order, so a reorder that committed ahead of this one is
+    /// seen rather than overwritten from a stale snapshot. The write is always
+    /// a same-parent reorder, never a move back to a parent the position was
+    /// resolved against. If a concurrent move reparented the node, an `After`
+    /// sibling is no longer among its children and the store places the node
+    /// last under its new parent; `Beginning` still places it first.
     pub(crate) async fn reorder_child_in_tx(
         tx: &NodeServiceTx<'_>,
         node_id: &str,
-        insert_after: Option<&str>,
+        position: crate::services::InsertPosition<'_>,
     ) -> Result<Option<(String, crate::db::ChildPlacement)>, NodeServiceError> {
         let Some(parent_id) = crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), node_id)
             .await
             .map_err(NodeServiceError::from_store)?
         else {
             return Ok(None);
+        };
+        let last_sibling;
+        let insert_after = match position {
+            crate::services::InsertPosition::Beginning => None,
+            crate::services::InsertPosition::After(id) => Some(id),
+            crate::services::InsertPosition::End => {
+                last_sibling =
+                    crate::db::SqliteStore::last_child_id_in_tx(tx.store_tx(), &parent_id, node_id)
+                        .await
+                        .map_err(NodeServiceError::from_store)?;
+                last_sibling.as_deref()
+            }
         };
         let moved = crate::db::SqliteStore::move_node_in_tx(
             tx.store_tx(),
