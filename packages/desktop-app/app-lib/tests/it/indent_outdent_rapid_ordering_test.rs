@@ -211,7 +211,7 @@ async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
 /// first and ends up second-to-last. Fix by resolving the position inside the
 /// transaction, then remove the ignore.
 #[tokio::test]
-#[ignore = "reorder_node resolves End/After from a pre-transaction read; see #3882"]
+#[ignore = "reorder_node resolves End/After from a pre-transaction read; see the doc comment above"]
 async fn concurrent_reorders_produce_correct_final_order() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
