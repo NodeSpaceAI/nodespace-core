@@ -98,7 +98,7 @@ const DOC_PATH_PATTERN = /nodespace-docs\/|\bdocs\/(?:architecture|components|de
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
-  issueNumberReferences: 71,
+  issueNumberReferences: 70,
   docPathReferences: 0,
 };
 
