@@ -50,6 +50,11 @@ pub(crate) const MAX_IMPORT_FILES: usize = 5_000;
 /// below a log or database dump named `.md`.
 pub(crate) const MAX_IMPORT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 
+/// Most bytes of file content one batch import will read in total. Every file
+/// of a batch is held, parsed, until phase 2 writes it, so this bounds the
+/// batch's memory independent of the file-count and per-file caps.
+pub(crate) const MAX_IMPORT_BATCH_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Extensions (compared case-insensitively) a file must have to be imported.
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown"];
 
@@ -344,6 +349,7 @@ async fn run_batch_import(
     let mut prepared_files: Vec<PreparedFileImport> = Vec::new();
     let mut failed_results: Vec<LocalFileImportResult> = Vec::new();
     let mut parsed_count = 0usize;
+    let mut batch_bytes = 0u64;
 
     // Read and parse in bounded chunks: reads go through `tokio::fs` so they
     // never park a runtime worker, and each chunk's raw contents are dropped as
@@ -378,6 +384,10 @@ async fn run_batch_import(
                     continue;
                 }
             };
+            if let Err(msg) = charge_batch_bytes(&mut batch_bytes, content.len() as u64) {
+                failed_results.push(LocalFileImportResult::error(file_path.clone(), &msg));
+                continue;
+            }
 
             let (collection_path, is_archived) = if opts.auto_collection_routing {
                 let meta = derive_collection_metadata(&path, &base_dir);
@@ -1085,36 +1095,48 @@ fn too_large_error(len: u64) -> String {
 /// Read one import source through `tokio::fs`, so the read runs on the blocking
 /// pool instead of parking an async worker. Errors are user-facing messages.
 ///
-/// Only markdown files are read: the extension is checked (on the named path
-/// and on what a symlink resolves to) before the file is opened, and a file
-/// over [`MAX_IMPORT_FILE_BYTES`] is refused from its metadata. The read itself
-/// is capped too, in case the file grows after the check.
+/// Only markdown files are read. The extension is checked on the named path,
+/// then the path is resolved (symlinks followed) and the resolved path's
+/// extension is checked too; the file is then opened once, by its resolved
+/// path, and everything else (regular file, size) is decided from the opened
+/// handle, so the checks and the read cannot see different files. A fully
+/// atomic check of a symlink's target is not portable (an open handle does not
+/// carry its path on every platform), so a parent directory swapped between
+/// the resolve and the open is the one remaining window. The read itself is
+/// capped at [`MAX_IMPORT_FILE_BYTES`] in case the file grows after the check.
 async fn read_import_file(path: &Path) -> Result<String, String> {
     use tokio::io::AsyncReadExt;
 
     if !is_markdown_path(path) {
         return Err(not_markdown_error(path));
     }
-    let meta = match tokio::fs::metadata(path).await {
-        Ok(meta) if meta.is_file() => meta,
-        Ok(_) => return Err("Path is not a file".to_string()),
+    let resolved = match tokio::fs::canonicalize(path).await {
+        Ok(resolved) => resolved,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err("File does not exist".to_string());
         }
         Err(e) => return Err(format!("Failed to read file: {e}")),
     };
-    // A symlink named `x.md` must not reach a non-markdown target.
-    if let Ok(resolved) = tokio::fs::canonicalize(path).await {
-        if !is_markdown_path(&resolved) {
-            return Err(not_markdown_error(path));
+    if !is_markdown_path(&resolved) {
+        return Err(not_markdown_error(path));
+    }
+    let file = match tokio::fs::File::open(&resolved).await {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err("File does not exist".to_string());
         }
+        Err(e) => return Err(format!("Failed to read file: {e}")),
+    };
+    let meta = file
+        .metadata()
+        .await
+        .map_err(|e| format!("Failed to read file: {e}"))?;
+    if !meta.is_file() {
+        return Err("Path is not a file".to_string());
     }
     if meta.len() > MAX_IMPORT_FILE_BYTES {
         return Err(too_large_error(meta.len()));
     }
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| format!("Failed to read file: {e}"))?;
     let mut bytes = Vec::new();
     file.take(MAX_IMPORT_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -1124,6 +1146,21 @@ async fn read_import_file(path: &Path) -> Result<String, String> {
         return Err(too_large_error(bytes.len() as u64));
     }
     String::from_utf8(bytes).map_err(|_| "Failed to read file: not valid UTF-8 text".to_string())
+}
+
+/// Adds `len` to the batch's running byte total, or explains why the batch
+/// cannot take another file ([`MAX_IMPORT_BATCH_BYTES`]).
+fn charge_batch_bytes(total: &mut u64, len: u64) -> Result<(), String> {
+    match total.checked_add(len) {
+        Some(sum) if sum <= MAX_IMPORT_BATCH_BYTES => {
+            *total = sum;
+            Ok(())
+        }
+        _ => Err(format!(
+            "Import batch is too large: reading this file would exceed the batch limit of \
+             {MAX_IMPORT_BATCH_BYTES} bytes; import fewer files at a time"
+        )),
+    }
 }
 
 /// Parse one read file into its import root and child nodes. Synchronous and
@@ -2253,6 +2290,21 @@ mod tests {
         let r = import_single_file(&ns, &link, &ImportOptions::default()).await;
         assert!(!r.success);
         assert!(r.error.unwrap().contains("Not a markdown file"));
+    }
+
+    #[test]
+    fn batch_byte_cap_accepts_up_to_the_limit_and_rejects_beyond_it() {
+        let mut total = 0u64;
+        assert!(charge_batch_bytes(&mut total, MAX_IMPORT_BATCH_BYTES - 1).is_ok());
+        assert!(charge_batch_bytes(&mut total, 1).is_ok());
+        assert_eq!(total, MAX_IMPORT_BATCH_BYTES);
+        let err = charge_batch_bytes(&mut total, 1).unwrap_err();
+        assert!(err.contains("Import batch is too large"), "{err}");
+        assert_eq!(
+            total, MAX_IMPORT_BATCH_BYTES,
+            "a refused file is not charged"
+        );
+        assert!(charge_batch_bytes(&mut 1, u64::MAX).is_err());
     }
 
     /// A file of exactly the cap is read; one byte more fails with a clear

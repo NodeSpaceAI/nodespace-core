@@ -85,12 +85,39 @@ pub struct SchemaParamsArgs {
     pub params_file: Option<String>,
 }
 
+/// Largest params file the CLI reads. Params are a JSON schema definition,
+/// kilobytes at most.
+const MAX_PARAMS_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Reads a params file: a regular file of at most [`MAX_PARAMS_FILE_BYTES`]
+/// (so a device such as `/dev/zero` or a huge file is refused, not slurped).
+fn read_params_file(path: &str) -> Result<String> {
+    use std::io::Read;
+    let ctx = || format!("failed to read params file '{path}'");
+    let file = std::fs::File::open(path).with_context(ctx)?;
+    let meta = file.metadata().with_context(ctx)?;
+    anyhow::ensure!(meta.is_file(), "params file '{path}' is not a regular file");
+    anyhow::ensure!(
+        meta.len() <= MAX_PARAMS_FILE_BYTES,
+        "params file '{path}' is too large ({} bytes; the limit is {MAX_PARAMS_FILE_BYTES})",
+        meta.len()
+    );
+    let mut text = String::new();
+    file.take(MAX_PARAMS_FILE_BYTES + 1)
+        .read_to_string(&mut text)
+        .with_context(ctx)?;
+    anyhow::ensure!(
+        text.len() as u64 <= MAX_PARAMS_FILE_BYTES,
+        "params file '{path}' is too large (the limit is {MAX_PARAMS_FILE_BYTES} bytes)"
+    );
+    Ok(text)
+}
+
 impl SchemaParamsArgs {
     fn resolve(self) -> Result<String> {
         match (self.params, self.params_file) {
             (Some(inline), None) => Ok(inline),
-            (None, Some(path)) => std::fs::read_to_string(&path)
-                .with_context(|| format!("failed to read params file '{path}'")),
+            (None, Some(path)) => read_params_file(&path),
             (None, None) => anyhow::bail!("one of --params or --params-file is required"),
             (Some(_), Some(_)) => unreachable!("clap enforces mutual exclusivity"),
         }
@@ -226,4 +253,36 @@ async fn delete(client: &mut NodeClient, args: SchemaDeleteArgs, json: bool) -> 
         .into_inner();
 
     output::print_delete(&response, json)
+}
+
+#[cfg(test)]
+mod params_file_tests {
+    use super::*;
+
+    #[test]
+    fn params_file_must_be_a_small_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("p.json");
+        std::fs::write(&ok, r#"{"name":"x"}"#).unwrap();
+        assert_eq!(
+            read_params_file(ok.to_str().unwrap()).unwrap(),
+            r#"{"name":"x"}"#
+        );
+
+        let big = dir.path().join("big.json");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_PARAMS_FILE_BYTES + 1)
+            .unwrap();
+        let err = read_params_file(big.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+
+        let err = read_params_file(dir.path().to_str().unwrap()).unwrap_err();
+        assert!(!err.to_string().is_empty());
+        #[cfg(unix)]
+        {
+            let err = read_params_file("/dev/zero").unwrap_err();
+            assert!(err.to_string().contains("not a regular file"), "{err}");
+        }
+    }
 }

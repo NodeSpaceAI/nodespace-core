@@ -752,6 +752,15 @@ const ALLOWED_SUBCOMMANDS: &[&str] = &[
 /// and `reset` write outside the graph or discard user edits.
 const ALLOWED_SKILL_ACTIONS: &[&str] = &["guidance", "get"];
 
+/// Flags that make the CLI read or write a file path. None is accepted
+/// through the passthrough; a test walks every allowed subcommand's arguments
+/// and fails on any path-like argument not listed here or reviewed there.
+const FILE_FLAGS: &[&str] = &["--params-file"];
+
+fn is_file_flag(flag: &str) -> bool {
+    FILE_FLAGS.contains(&flag)
+}
+
 /// Applies the allow-list to the flag-stripped words of a call.
 fn check_allowed(words: &[String]) -> Result<(), String> {
     let mut positional = words.iter().filter(|w| !w.starts_with('-'));
@@ -818,12 +827,20 @@ fn build_child_args(args_str: &str, sock: &Path) -> Result<Vec<String>, String> 
     let bound_socket = sock.display().to_string();
     while let Some(word) = words.next() {
         let (flag, inline) = match word.split_once('=') {
-            Some((flag, value)) if flag == "--socket" || flag == "--database" => {
+            Some((flag, value))
+                if flag == "--socket" || flag == "--database" || is_file_flag(flag) =>
+            {
                 (flag.to_string(), Some(value.to_string()))
             }
             _ => (word.clone(), None),
         };
         match flag.as_str() {
+            f if is_file_flag(f) => {
+                return Err(format!(
+                    "{f} cannot be used in a call: this surface has no file access. Pass the \
+                     content inline instead (e.g. `--params`)."
+                ));
+            }
             "--database" => {
                 return Err(
                     "--database cannot be set in a call: this tool acts on the active \
@@ -1090,6 +1107,103 @@ mod tests {
                 "{name} is not a CLI subcommand"
             );
         }
+    }
+
+    /// Arguments of an allowed subcommand whose name suggests a path, reviewed
+    /// and found not to touch the filesystem: (subcommand path, arg id, reason).
+    const REVIEWED_PATH_LIKE_ARGS: &[(&str, &str, &str)] = &[
+        (
+            "node context",
+            "paths",
+            "context paths are graph (collection-style) paths, not filesystem paths",
+        ),
+        (
+            "node create",
+            "collections",
+            "collection paths in the graph, `:`-delimited; not filesystem paths",
+        ),
+        (
+            "node update",
+            "collections",
+            "collection paths in the graph, `:`-delimited; not filesystem paths",
+        ),
+        (
+            "relationship get",
+            "direction",
+            "edge direction (in/out), matched only because the name contains `dir`",
+        ),
+    ];
+
+    fn collect_path_like(cmd: &clap::Command, trail: &str, out: &mut Vec<(String, String)>) {
+        const HINTS: &[&str] = &["file", "path", "dir", "out", "input"];
+        for arg in cmd.get_arguments() {
+            let id = arg.get_id().as_str().to_string();
+            let mut names = vec![id.clone()];
+            names.extend(arg.get_long().map(str::to_string));
+            names.extend(
+                arg.get_value_names()
+                    .into_iter()
+                    .flatten()
+                    .map(|v| v.to_string()),
+            );
+            let hit = names.iter().any(|n| {
+                let n = n.to_lowercase();
+                HINTS.iter().any(|h| n.contains(h))
+            });
+            if hit {
+                out.push((trail.to_string(), id));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            collect_path_like(sub, &format!("{trail} {}", sub.get_name()), out);
+        }
+    }
+
+    /// Every argument of every allowed subcommand (recursively) that looks
+    /// like a file or directory is either refused by the passthrough
+    /// ([`FILE_FLAGS`]) or listed with a reason in `REVIEWED_PATH_LIKE_ARGS`.
+    #[test]
+    fn allowed_subcommands_have_no_unreviewed_path_like_arguments() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let mut hits = Vec::new();
+        for name in ALLOWED_SUBCOMMANDS {
+            let sub = cmd.find_subcommand(name).unwrap();
+            collect_path_like(sub, name, &mut hits);
+        }
+        let unreviewed: Vec<_> = hits
+            .iter()
+            .filter(|(trail, id)| {
+                let refused = is_file_flag(&format!("--{}", id.replace('_', "-")));
+                let reviewed = REVIEWED_PATH_LIKE_ARGS
+                    .iter()
+                    .any(|(t, i, _)| t == trail && i == id);
+                !refused && !reviewed
+            })
+            .collect();
+        assert!(
+            unreviewed.is_empty(),
+            "path-like arguments reachable through the passthrough: {unreviewed:#?}"
+        );
+    }
+
+    #[test]
+    fn build_child_args_refuses_file_path_flags() {
+        for args in [
+            "schema create --params-file /etc/hosts",
+            "schema update --params-file=/etc/hosts",
+            "--json schema create --params-file=/dev/zero",
+            "schema create --params-file",
+        ] {
+            let err = build_child_args(args, Path::new("/s")).expect_err(args);
+            assert!(
+                err.contains("--params-file cannot be used"),
+                "{args}: {err}"
+            );
+        }
+        // Inline params are still fine, and a value that merely mentions it is not a flag.
+        build_child_args(r#"schema create --params '{"name":"x"}'"#, Path::new("/s")).unwrap();
+        build_child_args(r#"search "about --params-file""#, Path::new("/s")).unwrap();
     }
 
     /// Session launch, import, installers and the rest are not reachable
