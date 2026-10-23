@@ -155,9 +155,7 @@ async fn rapid_sibling_creation_preserves_insertion_order() {
 /// two nodes being reordered are distinct, so there's no version conflict
 /// between them). Does NOT assert the final sibling order matches both
 /// reorders: that assertion is `concurrent_reorders_produce_correct_final_order`
-/// below, `#[ignore]`d as a known-failing regression test for a real,
-/// intermittent race in the fractional-order read-then-write window that
-/// this concurrent case can trigger.
+/// below, which is `#[ignore]`d for a known, reproducible ordering bug.
 #[tokio::test]
 async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
     let daemon = SpawnedDaemon::spawn();
@@ -203,15 +201,17 @@ async fn concurrent_reorders_of_distinct_nodes_all_succeed() {
 /// Regression test: concurrent reorders of distinct siblings to
 /// opposite boundary positions (Beginning / End) must produce a sibling
 /// order reflecting BOTH operations, not just that each RPC individually
-/// succeeded. `move_node`'s same-parent branch reads sibling order values
-/// and writes the new order back as two separate, non-transactional steps
-/// (`packages/core/src/db/sqlite_store.rs`), so two concurrent reorders can
-/// read the same sibling snapshot and race. Reproduces intermittently
-/// (roughly 1 in 15 full-suite runs) — `#[ignore]`d so the flake doesn't
-/// block the suite; un-ignore once the read+compute+write is wrapped in a
-/// transaction per parent.
+/// succeeded.
+///
+/// `#[ignore]`d: it fails every time. The write itself is transactional now
+/// (the old `reorder_lock` race is gone), but `NodeService::reorder_node`
+/// resolves `End` to "after the last sibling" with a pooled read BEFORE its
+/// transaction starts. A concurrent `Beginning` reorder of that last sibling
+/// commits in between, so the `End` node lands after a sibling that is now
+/// first and ends up second-to-last. Fix by resolving the position inside the
+/// transaction, then remove the ignore.
 #[tokio::test]
-#[ignore = "known race: non-transactional sibling reorder"]
+#[ignore = "reorder_node resolves End/After from a pre-transaction read; see #3882"]
 async fn concurrent_reorders_produce_correct_final_order() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;

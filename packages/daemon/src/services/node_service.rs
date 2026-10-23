@@ -488,7 +488,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .map(nodespace_core::models::ConflictKind::from_str)
             .transpose()
             .map_err(Status::invalid_argument)?;
-        let limit = (req.limit > 0).then_some(req.limit as u32);
+        let limit = (req.limit > 0).then(|| (req.limit as u32).min(MAX_ROW_LIMIT as u32));
 
         let records = this
             .node_service
@@ -800,7 +800,7 @@ impl GrpcNodeService for NodeServiceImpl {
             &this.node_service,
             FindSkillsInput {
                 query: req.query,
-                limit: (req.limit > 0).then_some(req.limit as usize),
+                limit: (req.limit > 0).then(|| (req.limit as usize).min(MAX_ROW_LIMIT)),
             },
         )
         .await
@@ -1646,10 +1646,11 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
+        // Zero means "default"; anything else is capped like the other list RPCs.
         let limit = if req.limit == 0 {
             None
         } else {
-            Some(req.limit as usize)
+            Some((req.limit as usize).min(MAX_ROW_LIMIT))
         };
 
         let nodes = this
