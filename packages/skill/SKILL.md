@@ -40,10 +40,10 @@ Date nodes make temporal retrieval reliable: if a finding is time-bound, attach 
 How you run a `nodespace` command depends on the tools you were given. Decide from your tool list:
 
 - **A shell tool**: run `nodespace <args>` on a shell line.
-- **No shell, but a `nodespace` tool** (one `args: string` parameter, the MCP passthrough): call it with the argument list that would follow `nodespace` on a shell line. `nodespace search "auth tokens"` becomes `args: "search \"auth tokens\""`. Every command in this skill, its references and the instructions you fetch works the same way through it. It acts on whichever database is active when you call it, so the calls below that use `--database`, and the `database` subcommand, are refused here (as is a `--socket` naming another daemon); ask the user to switch databases.
+- **No shell, but a `nodespace` tool** (one `args: string` parameter, the MCP passthrough): call it with the argument list that would follow `nodespace` on a shell line. `nodespace search "auth tokens"` becomes `args: "search \"auth tokens\""`. Every command in this skill, its references and the instructions you fetch works the same way through it. It acts on whichever database is active when you call it, so the calls below that use `--database`, and the `database` subcommand, are refused here (as is a `--socket` naming another daemon); ask the user to switch databases. The tool runs only the graph commands (`node`, `search`, `query`, `mention`, `schema`, `relationship`, `conflicts`, and `skill guidance` / `skill get`); everything else is refused, including `session launch` / `session attach`, `import`, `skill install`, `mcp`, `uninstall`, `seed`, `model`, `logs`, `diagnostics`, `wait` and `database`. Those need a shell; tell the user instead of retrying.
 - **Neither**: NodeSpace is not reachable from this surface. Run nothing and guess at no result. Tell the user so, and point them at the NodeSpace desktop app or a shell- or MCP-capable agent.
 
-The CLI talks to the `nodespaced` daemon on this machine, and a command that cannot reach it says so. `nodespace diagnostics` reports the database's health: when it lists `errors`, report them to the user before continuing.
+The CLI talks to the `nodespaced` daemon on this machine, and a command that cannot reach it says so. From a shell, `nodespace diagnostics` reports the database's health: when it lists `errors`, report them to the user before continuing (the `nodespace` tool refuses it).
 
 **Confirmation is the same on every surface.** Never run the installer, start the daemon, or delete a node or type without the user's explicit confirmation. A deletion is previewed first and carried out only after the user says yes.
 
@@ -53,7 +53,7 @@ The CLI talks to the `nodespaced` daemon on this machine, and a command that can
 | `Failed to run the nodespace CLI at ...` (from the `nodespace` tool) | The CLI behind the tool is missing or broken | Tell the user NodeSpace needs reinstalling: the desktop app, or `brew install --cask nodespaceai/nodespace/nodespace`. You cannot install it from there. |
 | `Could not connect to nodespaced` | The daemon is not running | Tell the user to start it with `nodespaced` (it starts on login when installed from the DMG). Do not retry until they confirm. |
 | `This database needs …` and a `Download …` line | The database requires an extension this build doesn't support; the daemon refuses it and leaves the file untouched | Relay the message to the user verbatim, download line included. Don't retry, and never move or edit the file. Offer another database instead (`references/cli.md`, *Manage local databases*). |
-| `did not complete within 120s` (from the `nodespace` tool) | The command streams or blocks (`session launch`, `session attach`), which the tool ends as a timeout | Do not retry it through the tool. Tell the user that command needs a shell. |
+| `did not complete within 120s` (from the `nodespace` tool) | The command blocked, which the tool ends as a timeout | Do not retry it through the tool. Tell the user that command needs a shell. |
 
 ## The Instructions Live in NodeSpace: Fetch Them
 
