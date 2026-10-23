@@ -95,7 +95,7 @@ class SchemasStore {
    * TO MAKE A HIDDEN TYPE VISIBLE AGAIN: add its nearest core base type's id to
    * `SIDENAV_CORE_TYPES` (this also lists that core type itself in
    * `builtInSchemas`), or, to show one subtype only, replace this rule with an
-   * explicit allow/deny list or a declared schema flag (option 2 in #3851).
+   * explicit allow/deny list or a declared schema flag.
    */
   #extendsHiddenBase(schema: SchemaNode): boolean {
     const base = nearestCoreType(schema.id);
