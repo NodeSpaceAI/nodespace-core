@@ -17,17 +17,97 @@ INSTALL_PREFIX="/usr/local/bin"
 LAUNCHD_PLIST="/Library/LaunchAgents/app.nodespace.daemon.plist"
 
 # ---------------------------------------------------------------------------
+# Installing user: the owner of the console (the person logged in at the
+# screen). $USER is NOT trusted: under Installer.app and `sudo installer` it is
+# commonly `root` or the sudo caller, and it is caller-controlled input. The
+# name is only ever passed as a quoted argument; nothing is evaluated.
+#
+# Sets INSTALLING_USER, INSTALLING_USER_UID and INSTALLING_USER_HOME, or leaves INSTALLING_USER empty when there is no
+# usable non-root console user (e.g. install at the login window).
+# --- BEGIN console-user (verified by scripts/postinstall-bootstrap.test.ts) ---
+resolve_installing_user() {
+    INSTALLING_USER=""
+    INSTALLING_USER_UID=""
+    INSTALLING_USER_HOME=""
+
+    local name uid out
+    name=$(stat -f%Su /dev/console 2>/dev/null || true)
+    case "${name}" in
+        "" | root | -*) return 0 ;;
+    esac
+
+    uid=$(id -u -- "${name}" 2>/dev/null || true)
+    case "${uid}" in "" | *[!0-9]*) return 0 ;; esac
+    # Real (human) accounts start at 500; system accounts below are skipped.
+    if [[ "${uid}" -lt 500 ]]; then
+        return 0
+    fi
+
+    # `dscl` prints the value on the same line, or on the next line when it
+    # contains a space; strip the attribute name and all leading whitespace.
+    out=$(dscl -q . -read "/Users/${name}" NFSHomeDirectory 2>/dev/null || true)
+    out="${out#NFSHomeDirectory:}"
+    out="${out#"${out%%[![:space:]]*}"}"
+    out="${out%"${out##*[![:space:]]}"}"
+    case "${out}" in /*) ;; *) return 0 ;; esac
+
+    INSTALLING_USER="${name}"
+    INSTALLING_USER_UID="${uid}"
+    INSTALLING_USER_HOME="${out}"
+}
+# --- END console-user ---
+
+# ---------------------------------------------------------------------------
 # Log directory: create the per-user log directory for the LaunchAgent.
 # This must be done before launchctl bootstrap so the daemon can write logs
-# immediately on first start.
-# ---------------------------------------------------------------------------
-INSTALLING_USER_EARLY="${USER:-$(logname 2>/dev/null || echo "")}"
-if [[ -n "${INSTALLING_USER_EARLY}" && "${INSTALLING_USER_EARLY}" != "root" ]]; then
-    INSTALLING_USER_HOME=$(eval echo "~${INSTALLING_USER_EARLY}" 2>/dev/null || echo "")
-    if [[ -n "${INSTALLING_USER_HOME}" && -d "${INSTALLING_USER_HOME}" ]]; then
-        mkdir -p "${INSTALLING_USER_HOME}/Library/Logs/com.nodespace"
+# immediately on first start. The directory is created *as the user* (privileges
+# dropped before touching the user-owned tree, so a symlink planted there
+# cannot redirect a root-privileged write) and therefore ends up owned by the
+# user, which launchd needs to create `nodespaced.log` inside it.
+# --- BEGIN log-dir (verified by scripts/postinstall-bootstrap.test.ts) ---
+create_user_log_dir() {
+    [[ -n "${INSTALLING_USER}" && -d "${INSTALLING_USER_HOME}" ]] || return 0
+    local dir="${INSTALLING_USER_HOME}/Library/Logs/com.nodespace"
+    if sudo -n -u "#${INSTALLING_USER_UID}" mkdir -p -- "${dir}" 2>/dev/null; then
+        return 0
     fi
-fi
+
+    # Fallback for locked-down sudoers/MDM setups where dropping privileges
+    # fails: create the missing components as root and hand each one to the
+    # user by numeric uid. Refuse if the home or any component is a symlink, so
+    # a link planted in the user's tree cannot redirect a root-privileged write
+    # or chown. `chown -h` never follows a link. (A residual race between the
+    # check and the mkdir remains; this path is only the degraded case.)
+    local part path="${INSTALLING_USER_HOME}"
+    local -a created=()
+    if [[ -L "${path}" ]]; then
+        echo "Warning: ${path} is a symlink; not creating the daemon log directory." >&2
+        return 0
+    fi
+    for part in Library Logs com.nodespace; do
+        path="${path}/${part}"
+        if [[ -L "${path}" ]]; then
+            echo "Warning: ${path} is a symlink; not creating the daemon log directory." >&2
+            return 0
+        fi
+        if [[ ! -e "${path}" ]]; then
+            if ! mkdir -- "${path}" 2>/dev/null; then
+                echo "Warning: could not create ${dir} for ${INSTALLING_USER}; daemon logs may be unavailable." >&2
+                return 0
+            fi
+            created+=("${path}")
+        fi
+    done
+    for path in ${created[@]+"${created[@]}"}; do
+        chown -h "${INSTALLING_USER_UID}" "${path}" 2>/dev/null || true
+    done
+    echo "Warning: created ${dir} as root and set its owner to uid ${INSTALLING_USER_UID} (could not run mkdir as the user)." >&2
+}
+# --- END log-dir ---
+
+PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+resolve_installing_user
+create_user_log_dir
 
 # ---------------------------------------------------------------------------
 # Permissions: binaries must be executable by all users.
@@ -78,9 +158,8 @@ fi
 # the retry is reported — without aborting the install.
 # ---------------------------------------------------------------------------
 # --- BEGIN launchd-bootstrap (verified by scripts/postinstall-bootstrap.test.ts) ---
-INSTALLING_USER="${USER:-$(logname 2>/dev/null || echo "")}"
-if [[ -n "${INSTALLING_USER}" && "${INSTALLING_USER}" != "root" ]]; then
-    USER_UID=$(id -u "${INSTALLING_USER}" 2>/dev/null || echo "")
+if [[ -n "${INSTALLING_USER:-}" ]]; then
+    USER_UID="${INSTALLING_USER_UID}"
     if [[ -n "${USER_UID}" ]]; then
         SERVICE_TARGET="gui/${USER_UID}/app.nodespace.daemon"
 

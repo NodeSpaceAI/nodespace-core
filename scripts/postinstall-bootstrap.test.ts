@@ -16,7 +16,18 @@
 // `bun test scripts/` (part of `test:all`, enforced by the merge gate)
 // — without needing a real macOS install or root privileges.
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -29,20 +40,23 @@ setDefaultTimeout(30_000);
 const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 const POSTINSTALL = join(REPO, "scripts", "pkg-resources", "postinstall");
 
-const BEGIN_MARKER = "# --- BEGIN launchd-bootstrap";
-const END_MARKER = "# --- END launchd-bootstrap ---";
-
-function extractBootstrapSnippet(): string {
+function extractBlock(name: string): string {
+  const beginMarker = `# --- BEGIN ${name}`;
+  const endMarker = `# --- END ${name} ---`;
   const src = readFileSync(POSTINSTALL, "utf8");
-  const begin = src.indexOf(BEGIN_MARKER);
-  const end = src.indexOf(END_MARKER);
+  const begin = src.indexOf(beginMarker);
+  const end = src.indexOf(endMarker);
   if (begin === -1 || end === -1 || end < begin) {
     throw new Error(
-      `could not find ${BEGIN_MARKER} / ${END_MARKER} sentinels in ${POSTINSTALL} — ` +
-        "did the launchd-bootstrap block move or get renamed?",
+      `could not find ${beginMarker} / ${endMarker} sentinels in ${POSTINSTALL} — ` +
+        `did the ${name} block move or get renamed?`,
     );
   }
   return src.slice(begin, end);
+}
+
+function extractBootstrapSnippet(): string {
+  return extractBlock("launchd-bootstrap");
 }
 
 /**
@@ -80,9 +94,44 @@ case "$1" in
     ;;
 esac
 `;
-  const bin = join(dir, "launchctl");
-  writeFileSync(bin, script);
-  chmodSync(bin, 0o755);
+  const stubs: Record<string, string> = {
+    launchctl: script,
+    // Console owner, uid/gid and home directory come from env vars so each
+    // test picks the "logged-in user" without touching real directory services.
+    stat: `#!/bin/bash
+printf '%s\\n' "\${MOCK_CONSOLE_USER-}"
+`,
+    id: `#!/bin/bash
+[[ "$1" == "-u" ]] && { printf '%s\\n' "\${MOCK_UID-501}"; exit 0; }
+[[ "$1" == "-g" ]] && { printf '%s\\n' "\${MOCK_GID-20}"; exit 0; }
+exit 1
+`,
+    dscl: `#!/bin/bash
+if [[ -n "\${MOCK_HOME_ON_NEXT_LINE-}" ]]; then
+  printf 'NFSHomeDirectory:\\n %s\\n' "\${MOCK_HOME-}"
+else
+  printf 'NFSHomeDirectory: %s\\n' "\${MOCK_HOME-}"
+fi
+`,
+    // Records the argv it was given (one per line) instead of running anything.
+    sudo: `#!/bin/bash
+printf '%s\\n' "$@" > "\${MOCK_SUDO_LOG}"
+exit "\${MOCK_SUDO_EXIT:-0}"
+`,
+    // The whole-script test runs the real main body, which chmods/chowns
+    // absolute system paths; these stubs record instead of touching them.
+    chown: `#!/bin/bash
+printf '%s\\n' "$*" >> "\${MOCK_CHOWN_LOG}"
+`,
+    chmod: `#!/bin/bash
+exit 0
+`,
+  };
+  for (const [name, body] of Object.entries(stubs)) {
+    const file = join(dir, name);
+    writeFileSync(file, body);
+    chmodSync(file, 0o755);
+  }
   return dir;
 }
 
@@ -93,7 +142,15 @@ interface RunResult {
 
 function runSnippet(env: Record<string, string | undefined>): RunResult {
   const snippet = extractBootstrapSnippet();
-  const script = ["set -euo pipefail", snippet, "exit 0"].join("\n");
+  const script = [
+    "set -euo pipefail",
+    extractBlock("console-user"),
+    extractBlock("log-dir"),
+    "resolve_installing_user",
+    "create_user_log_dir",
+    snippet,
+    "exit 0",
+  ].join("\n");
 
   const result = Bun.spawnSync(["bash", "-c", script], {
     env: env as Record<string, string>,
@@ -107,7 +164,14 @@ function runSnippet(env: Record<string, string | undefined>): RunResult {
 function baseEnv(mockDir: string, counterFile: string): Record<string, string> {
   return {
     PATH: `${mockDir}:${process.env.PATH}`,
-    USER: process.env.USER ?? "testuser",
+    // $USER is deliberately hostile: it must never decide who gets the install.
+    USER: "root",
+    MOCK_CONSOLE_USER: "alice",
+    MOCK_UID: "501",
+    MOCK_GID: "20",
+    MOCK_HOME: mockDir,
+    MOCK_SUDO_LOG: join(mockDir, "sudo.log"),
+    MOCK_CHOWN_LOG: join(mockDir, "chown.log"),
     LAUNCHD_PLIST: "/Library/LaunchAgents/app.nodespace.daemon.plist",
     MOCK_CALL_COUNTER: counterFile,
   };
@@ -184,13 +248,13 @@ describe("postinstall launchd-bootstrap resilience", () => {
     }
   });
 
-  test("skips bootstrap entirely for root (matches original guard)", () => {
+  test("skips bootstrap entirely when the console owner is root (login window)", () => {
     const mockDir = makeMockBin();
     const counterFile = join(mockDir, "count");
     try {
       const { exitCode } = runSnippet({
         ...baseEnv(mockDir, counterFile),
-        USER: "root",
+        MOCK_CONSOLE_USER: "root",
         MOCK_BOOTSTRAP_FAIL_COUNT: "0",
       });
       expect(exitCode).toBe(0);
@@ -199,5 +263,176 @@ describe("postinstall launchd-bootstrap resilience", () => {
     } finally {
       rmSync(mockDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("postinstall installing-user resolution and log directory", () => {
+  function withMock(fn: (mockDir: string, counterFile: string) => void) {
+    const mockDir = makeMockBin();
+    try {
+      fn(mockDir, join(mockDir, "count"));
+    } finally {
+      rmSync(mockDir, { recursive: true, force: true });
+    }
+  }
+
+  test("USER=root with a real console user still bootstraps for the console user", () => {
+    withMock((mockDir, counterFile) => {
+      const { exitCode } = runSnippet({ ...baseEnv(mockDir, counterFile), USER: "root" });
+      expect(exitCode).toBe(0);
+      expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
+    });
+  });
+
+  test("USER unset does not matter", () => {
+    withMock((mockDir, counterFile) => {
+      const env: Record<string, string | undefined> = baseEnv(mockDir, counterFile);
+      delete env.USER;
+      const { exitCode } = runSnippet(env);
+      expect(exitCode).toBe(0);
+      expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
+    });
+  });
+
+  test("the log directory is created as the user (privileges dropped), not as root", () => {
+    withMock((mockDir, counterFile) => {
+      const { exitCode } = runSnippet(baseEnv(mockDir, counterFile));
+      expect(exitCode).toBe(0);
+      const argv = readFileSync(join(mockDir, "sudo.log"), "utf8").trimEnd().split("\n");
+      expect(argv).toEqual([
+        "-n",
+        "-u",
+        "#501",
+        "mkdir",
+        "-p",
+        "--",
+        `${mockDir}/Library/Logs/com.nodespace`,
+      ]);
+    });
+  });
+
+  test("a home directory containing a space (dscl wraps it onto the next line) is kept whole", () => {
+    withMock((mockDir, counterFile) => {
+      const home = join(mockDir, "Mary Ann");
+      mkdirSync(home);
+      const { exitCode } = runSnippet({
+        ...baseEnv(mockDir, counterFile),
+        MOCK_CONSOLE_USER: "Mary Ann",
+        MOCK_HOME: home,
+        MOCK_HOME_ON_NEXT_LINE: "1",
+      });
+      expect(exitCode).toBe(0);
+      const argv = readFileSync(join(mockDir, "sudo.log"), "utf8").trimEnd().split("\n");
+      expect(argv[argv.length - 1]).toBe(`${home}/Library/Logs/com.nodespace`);
+    });
+  });
+
+  test("a user name made of shell metacharacters is never evaluated", () => {
+    withMock((mockDir, counterFile) => {
+      const pwned = join(mockDir, "pwned");
+      const { exitCode } = runSnippet({
+        ...baseEnv(mockDir, counterFile),
+        MOCK_CONSOLE_USER: `x; touch ${pwned}; $(touch ${pwned}) \`touch ${pwned}\``,
+      });
+      expect(exitCode).toBe(0);
+      expect(existsSync(pwned)).toBe(false);
+    });
+  });
+
+  test("a name starting with a dash, a system uid, or a missing home is refused", () => {
+    for (const override of [
+      { MOCK_CONSOLE_USER: "-n" },
+      { MOCK_UID: "89" },
+      { MOCK_UID: "abc" },
+      { MOCK_HOME: "relative/path" },
+    ]) {
+      withMock((mockDir, counterFile) => {
+        const { exitCode } = runSnippet({ ...baseEnv(mockDir, counterFile), ...override });
+        expect(exitCode).toBe(0);
+        expect(existsSync(counterFile)).toBe(false);
+        expect(existsSync(join(mockDir, "sudo.log"))).toBe(false);
+      });
+    }
+  });
+
+  test("sudo failing falls back to a root mkdir handed to the numeric uid, with a warning", () => {
+    withMock((mockDir, counterFile) => {
+      const { exitCode, stderr } = runSnippet({
+        ...baseEnv(mockDir, counterFile),
+        MOCK_SUDO_EXIT: "1",
+      });
+      expect(exitCode).toBe(0);
+      expect(statSync(`${mockDir}/Library/Logs/com.nodespace`).isDirectory()).toBe(true);
+      const owned = readFileSync(join(mockDir, "chown.log"), "utf8").trimEnd().split("\n");
+      expect(owned).toEqual([
+        `-h 501 ${mockDir}/Library`,
+        `-h 501 ${mockDir}/Library/Logs`,
+        `-h 501 ${mockDir}/Library/Logs/com.nodespace`,
+      ]);
+      expect(stderr).toContain("created");
+      // Bootstrap still ran for the console user.
+      expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
+    });
+  });
+
+  test("the fallback only chowns what it created and refuses symlinked components", () => {
+    withMock((mockDir, counterFile) => {
+      mkdirSync(join(mockDir, "Library", "Logs"), { recursive: true });
+      const { exitCode } = runSnippet({ ...baseEnv(mockDir, counterFile), MOCK_SUDO_EXIT: "1" });
+      expect(exitCode).toBe(0);
+      expect(readFileSync(join(mockDir, "chown.log"), "utf8").trimEnd()).toBe(
+        `-h 501 ${mockDir}/Library/Logs/com.nodespace`,
+      );
+    });
+    for (const linked of ["Library", "Library/Logs", "Library/Logs/com.nodespace"]) {
+      withMock((mockDir, counterFile) => {
+        const target = join(mockDir, "elsewhere");
+        mkdirSync(target);
+        const parts = linked.split("/");
+        let cur = mockDir;
+        for (const part of parts.slice(0, -1)) {
+          cur = join(cur, part);
+          mkdirSync(cur);
+        }
+        symlinkSync(target, join(cur, parts[parts.length - 1]));
+        const { exitCode, stderr } = runSnippet({
+          ...baseEnv(mockDir, counterFile),
+          MOCK_SUDO_EXIT: "1",
+        });
+        expect(exitCode).toBe(0);
+        expect(stderr).toContain("is a symlink");
+        expect(existsSync(join(mockDir, "chown.log"))).toBe(false);
+        expect(readdirSync(target)).toEqual([]);
+      });
+    }
+  });
+
+  test("the real script body resolves the console user and feeds it to the bootstrap", () => {
+    withMock((mockDir, counterFile) => {
+      // Run the actual script, only swapping its hardened PATH for the stub
+      // dir (the stubs replace stat/id/dscl/sudo/launchctl/chown/chmod).
+      const src = readFileSync(POSTINSTALL, "utf8");
+      const pathLine = /^PATH="[^"]*"$/m;
+      expect(src).toMatch(pathLine);
+      const script = src.replace(pathLine, `PATH="${mockDir}:/usr/bin:/bin"`);
+      const result = Bun.spawnSync(["bash", "-c", script], {
+        env: { ...baseEnv(mockDir, counterFile), USER: "root" } as Record<string, string>,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
+      expect(readFileSync(join(mockDir, "sudo.log"), "utf8")).toContain("#501");
+    });
+  });
+
+  test("the script contains no eval and does not read $USER or logname", () => {
+    const code = readFileSync(POSTINSTALL, "utf8")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(code).not.toMatch(/\beval\b/);
+    expect(code).not.toMatch(/\$\{?USER\b/);
+    expect(code).not.toMatch(/\blogname\b/);
   });
 });
