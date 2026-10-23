@@ -137,6 +137,11 @@ impl WriteJournal {
     /// Appends one line saying `node_id` is now at `version`. One `write` of a
     /// whole line to a file opened for appending, so concurrent commands never
     /// interleave inside a line.
+    ///
+    /// Best effort and silent: if the directory, file or write fails, nothing
+    /// is recorded and the watching plugin cannot tell this write is the
+    /// session's own (it may treat it as someone else's change). The command
+    /// itself is never affected.
     pub fn record(&self, node_id: &str, version: i64) {
         let Some(path) = &self.path else {
             return;

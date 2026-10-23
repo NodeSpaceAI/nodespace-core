@@ -1235,29 +1235,7 @@ fn resource_root_candidates(dir: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// Name of the file the desktop app writes beside the `nodespace` copy it
-/// stages in `~/.nodespace/bin`: the path of the bundled `nodespace` the copy
-/// was made from. The staged copy has no installer or `skill/` beside it, so
-/// it follows this path to the bundle that has them. Must match
-/// `BUNDLE_MARKER_NAME` in the desktop app's `daemon_setup`.
-const BUNDLE_MARKER_NAME: &str = ".nodespace.bundle";
-
-/// Whether `exe` sits at `<name>.app/Contents/MacOS/<file>`, the only layout
-/// a recorded bundle path is trusted in.
-fn is_app_bundle_exe(exe: &Path) -> bool {
-    let Some(macos) = exe.parent() else {
-        return false;
-    };
-    let Some(contents) = macos.parent() else {
-        return false;
-    };
-    let Some(app) = contents.parent() else {
-        return false;
-    };
-    macos.file_name().is_some_and(|n| n == "MacOS")
-        && contents.file_name().is_some_and(|n| n == "Contents")
-        && app.extension().is_some_and(|e| e == "app")
-}
+use nodespace_types::app_bundle::{is_app_bundle_exe, BUNDLE_MARKER_NAME};
 
 /// The bundled `nodespace` recorded beside `exe` by the desktop app, if any.
 /// Only an absolute path that resolves (symlinks followed) to a file inside

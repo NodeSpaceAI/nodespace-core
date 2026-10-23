@@ -89,11 +89,7 @@ const DAEMON_DB_DIR: &str = ".nodespace/database";
 const DAEMON_LOG_DIR: &str = ".nodespace/logs";
 pub(crate) const DAEMON_BINARY_NAME: &str = "nodespaced";
 const CLI_BINARY_NAME: &str = "nodespace";
-/// File beside the staged CLI naming the bundled CLI it was copied from, so the
-/// staged copy can find the skill installer and resources that only the bundle
-/// has. The CLI reads it under the same name (`BUNDLE_MARKER_NAME` in
-/// `packages/cli/src/commands/skill.rs`).
-const BUNDLE_MARKER_NAME: &str = ".nodespace.bundle";
+use nodespace_types::app_bundle::{is_app_bundle_exe, BUNDLE_MARKER_NAME};
 
 #[cfg(target_os = "linux")]
 const SYSTEMD_SERVICE_NAME: &str = "nodespace.service";
@@ -1590,32 +1586,35 @@ fn marker_tmp_path(bin_dir: &Path, pid: u32) -> PathBuf {
     bin_dir.join(format!("{BUNDLE_MARKER_NAME}.tmp-{pid}"))
 }
 
-/// Whether `exe` sits at `<name>.app/Contents/MacOS/<file>`.
-fn is_app_bundle_exe(exe: &Path) -> bool {
-    let Some(macos) = exe.parent() else {
-        return false;
-    };
-    let Some(contents) = macos.parent() else {
-        return false;
-    };
-    let Some(app) = contents.parent() else {
-        return false;
-    };
-    macos.file_name().is_some_and(|n| n == "MacOS")
-        && contents.file_name().is_some_and(|n| n == "Contents")
-        && app.extension().is_some_and(|e| e == "app")
-}
+/// How old a `.nodespace.bundle.tmp-<pid>` file must be before it is treated
+/// as abandoned; a younger one may belong to a live peer mid-write.
+const MARKER_TMP_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Removes `.nodespace.bundle.tmp-<pid>` files left by an earlier run that
-/// died between the write and the rename (this process's own is excluded).
+/// died between the write and the rename. This process's own file and any
+/// younger than [`MARKER_TMP_MIN_AGE`] are kept.
 fn sweep_stale_marker_tmp(bin_dir: &Path) {
+    sweep_marker_tmp_older_than(bin_dir, MARKER_TMP_MIN_AGE);
+}
+
+fn sweep_marker_tmp_older_than(bin_dir: &Path, min_age: std::time::Duration) {
     let prefix = format!("{BUNDLE_MARKER_NAME}.tmp-");
     let own = marker_tmp_path(bin_dir, std::process::id());
     let Ok(entries) = std::fs::read_dir(bin_dir) else {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().starts_with(&prefix) && entry.path() != own {
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) || entry.path() == own {
+            continue;
+        }
+        // An mtime in the future (clock change) cannot belong to a live
+        // write in progress, so it counts as old enough.
+        let old_enough = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .is_some_and(|t| t.elapsed().map_or(true, |age| age >= min_age));
+        if old_enough {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -5614,28 +5613,29 @@ mod bundle_marker_tests {
     }
 
     #[test]
-    fn stale_marker_temp_files_are_swept() {
+    fn only_old_marker_temp_files_are_swept() {
+        use std::time::Duration;
         let dir = tempfile::tempdir().unwrap();
         let stale = dir.path().join(format!("{BUNDLE_MARKER_NAME}.tmp-1"));
         std::fs::write(&stale, b"x").unwrap();
         let other = dir.path().join("nodespace.tmp-1");
         std::fs::write(&other, b"x").unwrap();
         let bundled = dir.path().join("A.app/Contents/MacOS/nodespace");
-        // Swept even when the marker is already current.
+        // A just-written file may be a live peer's: the default sweep keeps it.
         record_bundle_marker(dir.path(), &bundled).unwrap();
-        std::fs::write(&stale, b"x").unwrap();
-        record_bundle_marker(dir.path(), &bundled).unwrap();
+        assert!(stale.exists(), "a fresh temp file is not swept");
+        // Once old enough it is swept, even when the marker is already current.
+        super::sweep_marker_tmp_older_than(dir.path(), Duration::ZERO);
         assert!(!stale.exists());
         assert!(other.exists(), "unrelated files are left alone");
-    }
 
-    /// The CLI cannot be depended on from here, so pin the shared file name
-    /// against its definition there.
-    #[test]
-    fn the_marker_name_matches_the_one_the_cli_reads() {
-        let cli = include_str!("../../../cli/src/commands/skill.rs");
-        assert!(cli.contains(&format!(
-            "BUNDLE_MARKER_NAME: &str = \"{BUNDLE_MARKER_NAME}\";"
-        )));
+        // A temp file stamped in the future is swept too.
+        let future = dir.path().join(format!("{BUNDLE_MARKER_NAME}.tmp-2"));
+        let f = std::fs::File::create(&future).unwrap();
+        f.set_modified(std::time::SystemTime::now() + Duration::from_secs(3600))
+            .unwrap();
+        drop(f);
+        super::sweep_marker_tmp_older_than(dir.path(), Duration::from_secs(60));
+        assert!(!future.exists(), "a future-dated temp file is swept");
     }
 }

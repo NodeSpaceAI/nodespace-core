@@ -29,6 +29,7 @@
 //! only with the `ts` feature, which no other crate enables.
 
 mod ai_chat;
+pub mod app_bundle;
 mod collection;
 mod convert;
 mod core_type;
