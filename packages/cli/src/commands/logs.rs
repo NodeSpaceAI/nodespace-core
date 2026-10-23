@@ -94,8 +94,8 @@ fn candidate_paths_for(state_dir: Option<PathBuf>, redirected: bool) -> Vec<Path
         );
     }
 
-    // The pkg LaunchAgent (`scripts/pkg-resources/app.nodespace.daemon.plist`)
-    // names this path for the daemon's stdout/stderr; checked last.
+    // Older .pkg builds pointed the LaunchAgent's stdout/stderr here; checked
+    // last, for logs they left behind.
     if let Some(home) = home_of_state_dir.as_deref() {
         candidates.push(
             home.join("Library")
@@ -112,7 +112,7 @@ fn resolve_log_path() -> Option<PathBuf> {
     candidate_paths().into_iter().find(|p| p.exists())
 }
 
-/// Tail of the pkg LaunchAgent's log path.
+/// Tail of the log path older .pkg LaunchAgents used.
 const LAUNCH_AGENT_LOG_SUFFIX: &str = "Library/Logs/com.nodespace/nodespaced.log";
 
 /// The state-directory log, the one a desktop-app daemon writes: any other

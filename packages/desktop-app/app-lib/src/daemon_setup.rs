@@ -315,7 +315,11 @@ fn daemon_program_paths(
 fn loaded_job_program(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
         let value = line.trim().strip_prefix("program = ")?.trim();
-        (value.starts_with('/')).then(|| value.to_string())
+        // The .pkg's job runs the daemon through `/bin/sh -c "... exec <daemon>"`,
+        // so a shell can be the job's program. After the `exec` the process
+        // is the daemon, which the install locations already cover; a shell
+        // must never become a path whose processes may be signalled.
+        (value.starts_with('/') && value != "/bin/sh").then(|| value.to_string())
     })
 }
 
@@ -3683,16 +3687,13 @@ mod pkg_plist_matches_app_plist_tests {
     #[test]
     fn pkg_plist_opts_the_daemon_into_tray_mode() {
         let contents = pkg_plist_contents();
-        let launcher_args: String = nodespace_proto::socket::LAUNCHER_ARGS
-            .iter()
-            .map(|arg| format!("\n        <string>{arg}</string>"))
-            .collect();
+        let launcher_args = nodespace_proto::socket::LAUNCHER_ARGS.join(" ");
         assert!(
             contents.contains(&format!(
-                "<string>/usr/local/bin/nodespaced</string>{launcher_args}\n    </array>"
+                "exec /usr/local/bin/nodespaced {launcher_args} &gt;&gt;"
             )),
-            "the .pkg's plist must pass every launcher argument {:?} like write_plist does, \
-             or the daemon it starts runs headless with no tray icon: {contents}",
+            "the .pkg's plist must exec the daemon with every launcher argument {:?} like \
+             write_plist does, or the daemon it starts runs headless with no tray icon: {contents}",
             nodespace_proto::socket::LAUNCHER_ARGS
         );
     }
@@ -5509,6 +5510,8 @@ mod daemon_signal_target_tests {
         );
         assert_eq!(loaded_job_program("state = running"), None);
         assert_eq!(loaded_job_program("program = relative/path"), None);
+        // The .pkg's job runs a shell wrapper; the shell is not a daemon path.
+        assert_eq!(loaded_job_program("\tprogram = /bin/sh\n"), None);
     }
 
     #[test]

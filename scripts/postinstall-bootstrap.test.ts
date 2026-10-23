@@ -21,11 +21,8 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   rmSync,
-  statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -113,11 +110,6 @@ else
   printf 'NFSHomeDirectory: %s\\n' "\${MOCK_HOME-}"
 fi
 `,
-    // Records the argv it was given (one per line) instead of running anything.
-    sudo: `#!/bin/bash
-printf '%s\\n' "$@" > "\${MOCK_SUDO_LOG}"
-exit "\${MOCK_SUDO_EXIT:-0}"
-`,
     // The whole-script test runs the real main body, which chmods/chowns
     // absolute system paths; these stubs record instead of touching them.
     chown: `#!/bin/bash
@@ -145,9 +137,7 @@ function runSnippet(env: Record<string, string | undefined>): RunResult {
   const script = [
     "set -euo pipefail",
     extractBlock("console-user"),
-    extractBlock("log-dir"),
     "resolve_installing_user",
-    "create_user_log_dir",
     snippet,
     "exit 0",
   ].join("\n");
@@ -170,7 +160,6 @@ function baseEnv(mockDir: string, counterFile: string): Record<string, string> {
     MOCK_UID: "501",
     MOCK_GID: "20",
     MOCK_HOME: mockDir,
-    MOCK_SUDO_LOG: join(mockDir, "sudo.log"),
     MOCK_CHOWN_LOG: join(mockDir, "chown.log"),
     LAUNCHD_PLIST: "/Library/LaunchAgents/app.nodespace.daemon.plist",
     MOCK_CALL_COUNTER: counterFile,
@@ -266,7 +255,7 @@ describe("postinstall launchd-bootstrap resilience", () => {
   });
 });
 
-describe("postinstall installing-user resolution and log directory", () => {
+describe("postinstall installing-user resolution", () => {
   function withMock(fn: (mockDir: string, counterFile: string) => void) {
     const mockDir = makeMockBin();
     try {
@@ -294,24 +283,7 @@ describe("postinstall installing-user resolution and log directory", () => {
     });
   });
 
-  test("the log directory is created as the user (privileges dropped), not as root", () => {
-    withMock((mockDir, counterFile) => {
-      const { exitCode } = runSnippet(baseEnv(mockDir, counterFile));
-      expect(exitCode).toBe(0);
-      const argv = readFileSync(join(mockDir, "sudo.log"), "utf8").trimEnd().split("\n");
-      expect(argv).toEqual([
-        "-n",
-        "-u",
-        "#501",
-        "mkdir",
-        "-p",
-        "--",
-        `${mockDir}/Library/Logs/com.nodespace`,
-      ]);
-    });
-  });
-
-  test("a home directory containing a space (dscl wraps it onto the next line) is kept whole", () => {
+  test("a home directory containing a space (dscl wraps it onto the next line) does not stop the bootstrap", () => {
     withMock((mockDir, counterFile) => {
       const home = join(mockDir, "Mary Ann");
       mkdirSync(home);
@@ -322,8 +294,16 @@ describe("postinstall installing-user resolution and log directory", () => {
         MOCK_HOME_ON_NEXT_LINE: "1",
       });
       expect(exitCode).toBe(0);
-      const argv = readFileSync(join(mockDir, "sudo.log"), "utf8").trimEnd().split("\n");
-      expect(argv[argv.length - 1]).toBe(`${home}/Library/Logs/com.nodespace`);
+      expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
+    });
+  });
+
+  test("the install leaves the user's home alone: the agent makes its own log directory at run time", () => {
+    withMock((mockDir, counterFile) => {
+      const { exitCode } = runSnippet(baseEnv(mockDir, counterFile));
+      expect(exitCode).toBe(0);
+      expect(existsSync(join(mockDir, "Library"))).toBe(false);
+      expect(existsSync(join(mockDir, ".nodespace"))).toBe(false);
     });
   });
 
@@ -350,59 +330,6 @@ describe("postinstall installing-user resolution and log directory", () => {
         const { exitCode } = runSnippet({ ...baseEnv(mockDir, counterFile), ...override });
         expect(exitCode).toBe(0);
         expect(existsSync(counterFile)).toBe(false);
-        expect(existsSync(join(mockDir, "sudo.log"))).toBe(false);
-      });
-    }
-  });
-
-  test("sudo failing falls back to a root mkdir handed to the numeric uid, with a warning", () => {
-    withMock((mockDir, counterFile) => {
-      const { exitCode, stderr } = runSnippet({
-        ...baseEnv(mockDir, counterFile),
-        MOCK_SUDO_EXIT: "1",
-      });
-      expect(exitCode).toBe(0);
-      expect(statSync(`${mockDir}/Library/Logs/com.nodespace`).isDirectory()).toBe(true);
-      const owned = readFileSync(join(mockDir, "chown.log"), "utf8").trimEnd().split("\n");
-      expect(owned).toEqual([
-        `-h 501 ${mockDir}/Library`,
-        `-h 501 ${mockDir}/Library/Logs`,
-        `-h 501 ${mockDir}/Library/Logs/com.nodespace`,
-      ]);
-      expect(stderr).toContain("created");
-      // Bootstrap still ran for the console user.
-      expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
-    });
-  });
-
-  test("the fallback only chowns what it created and refuses symlinked components", () => {
-    withMock((mockDir, counterFile) => {
-      mkdirSync(join(mockDir, "Library", "Logs"), { recursive: true });
-      const { exitCode } = runSnippet({ ...baseEnv(mockDir, counterFile), MOCK_SUDO_EXIT: "1" });
-      expect(exitCode).toBe(0);
-      expect(readFileSync(join(mockDir, "chown.log"), "utf8").trimEnd()).toBe(
-        `-h 501 ${mockDir}/Library/Logs/com.nodespace`,
-      );
-    });
-    for (const linked of ["Library", "Library/Logs", "Library/Logs/com.nodespace"]) {
-      withMock((mockDir, counterFile) => {
-        const target = join(mockDir, "elsewhere");
-        mkdirSync(target);
-        const parts = linked.split("/");
-        let cur = mockDir;
-        for (const part of parts.slice(0, -1)) {
-          cur = join(cur, part);
-          mkdirSync(cur);
-        }
-        symlinkSync(target, join(cur, parts[parts.length - 1]));
-        const { exitCode, stderr } = runSnippet({
-          ...baseEnv(mockDir, counterFile),
-          MOCK_SUDO_EXIT: "1",
-        });
-        expect(exitCode).toBe(0);
-        expect(stderr).toContain("is a symlink");
-        expect(existsSync(join(mockDir, "chown.log"))).toBe(false);
-        expect(readdirSync(target)).toEqual([]);
       });
     }
   });
@@ -410,7 +337,7 @@ describe("postinstall installing-user resolution and log directory", () => {
   test("the real script body resolves the console user and feeds it to the bootstrap", () => {
     withMock((mockDir, counterFile) => {
       // Run the actual script, only swapping its hardened PATH for the stub
-      // dir (the stubs replace stat/id/dscl/sudo/launchctl/chown/chmod).
+      // dir (the stubs replace stat/id/dscl/launchctl/chown/chmod).
       const src = readFileSync(POSTINSTALL, "utf8");
       const pathLine = /^PATH="[^"]*"$/m;
       expect(src).toMatch(pathLine);
@@ -422,7 +349,6 @@ describe("postinstall installing-user resolution and log directory", () => {
       });
       expect(result.exitCode).toBe(0);
       expect(readFileSync(counterFile, "utf8").trim()).toBe("1");
-      expect(readFileSync(join(mockDir, "sudo.log"), "utf8")).toContain("#501");
     });
   });
 
