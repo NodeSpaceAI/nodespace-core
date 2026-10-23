@@ -14,6 +14,7 @@
   import { mount, unmount } from 'svelte';
   import { isSafeLinkHref } from '$lib/utils/safe-link';
   import { sanitizeChatHtml } from '$lib/utils/sanitize-chat-html';
+  import { chatTaskCheckbox } from '$lib/utils/chat-task-checkbox';
   import NodeCardInline from './node-card-inline.svelte';
 
   let { content = '' }: { content: string } = $props();
@@ -51,6 +52,8 @@
     if (!isSafeLinkHref(href)) return text;
     return `<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
+
+  chatRenderer.checkbox = chatTaskCheckbox;
 
   const rendered = $derived(renderMarkdown(content));
 
