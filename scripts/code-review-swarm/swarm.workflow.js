@@ -27,7 +27,7 @@ const doneReview = done.review || {}
 const doneFiled = new Set(done.filed || [])
 const MAX_CANDIDATES = args.maxCandidates || 60
 const LEAN = args.profile === 'lean'
-const RUN_DATE = args.runDate || new Date().toISOString().slice(0, 10)
+const RUN_DATE = args.runDate || '(date not given)'
 const CORE_REPO = args.coreRepo || 'the live core checkout'
 const SYNC_REPO = args.syncRepo || 'the live sync checkout'
 const DOCS_TEXT = args.docsRepo

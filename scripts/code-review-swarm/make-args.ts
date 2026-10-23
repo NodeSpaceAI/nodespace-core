@@ -43,13 +43,18 @@ for (const f of ls("review")) {
   }
 }
 const filed = ls("filed").map((f) => f.replace(/\.json$/, ""));
+const runDate = new Date().toISOString().slice(0, 10);
+if (!/^\d{4}-\d{2}-\d{2}$/.test(runDate)) {
+  console.error(`Cannot compute the run date (got "${runDate}"); the filed issues would carry no date.`);
+  process.exit(1);
+}
 const repos = resolveRepos(S);
 const args = {
   stateDir: S,
   part,
   profile,
   maxCandidates: Number(argValue(process.argv, "--max", "60")),
-  runDate: new Date().toISOString().slice(0, 10),
+  runDate,
   coreRepo: repos.coreRepo,
   syncRepo: repos.syncRepo,
   docsRepo: repos.docsRepo,

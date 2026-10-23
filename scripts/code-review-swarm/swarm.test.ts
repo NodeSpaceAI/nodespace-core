@@ -120,6 +120,11 @@ describe("swarm.workflow.js mock run", () => {
     }
   });
 
+  test("without a runDate the script falls back to a plain string and does not throw", async () => {
+    const { calls } = await runWorkflow({ ...base, runDate: undefined });
+    expect(calls.find((c) => c.label === "file:F-001")!.prompt).toContain("on (date not given);");
+  });
+
   test("without a docs checkout the prompts say so instead of naming a path", async () => {
     const { calls } = await runWorkflow({ ...base, docsRepo: undefined });
     const find = calls.find((c) => c.phase === "Find")!;
