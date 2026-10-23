@@ -184,6 +184,13 @@ fn nodespace_blocks(content: &str) -> Vec<std::ops::Range<usize>> {
     blocks
 }
 
+/// True when the file has at least one newline and every one is `\r\n`; a
+/// mixed or LF file gets LF.
+fn all_newlines_are_crlf(content: &str) -> bool {
+    let newlines = content.matches('\n').count();
+    newlines > 0 && newlines == content.matches("\r\n").count()
+}
+
 /// Resolve a symlinked dotfile to the file it points at, so an edit lands on
 /// the real target instead of replacing the link with a regular file.
 fn resolve_symlink(path: &Path) -> std::path::PathBuf {
@@ -390,7 +397,7 @@ async fn append_path_to_file(path: &Path, line: &str) -> Result<PathFileOutcome,
                 .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
         }
         content.push_str(line.trim_start_matches('\n'));
-    } else if content.contains("\r\n") {
+    } else if all_newlines_are_crlf(&content) {
         content.push_str(&line.replace('\n', "\r\n"));
     } else {
         content.push_str(line);
@@ -1084,6 +1091,21 @@ mod tests {
             std::fs::read_to_string(&rc).expect("read"),
             "keep one\r\nkeep two\r\n"
         );
+    }
+
+    #[tokio::test]
+    async fn a_mixed_line_ending_file_gets_lf() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let rc = home.path().join(".bashrc");
+        std::fs::write(&rc, "one\r\ntwo\n").expect("seed");
+        append_path_to_file(&rc, POSIX_EXPORT_LINE)
+            .await
+            .expect("append");
+        let written = std::fs::read_to_string(&rc).expect("read");
+        assert!(
+            written.ends_with("\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n")
+        );
+        assert!(!written.ends_with("\r\n"));
     }
 
     #[tokio::test]

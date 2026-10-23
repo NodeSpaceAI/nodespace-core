@@ -1669,6 +1669,21 @@ plugin_label = "blue"
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
     }
 
+    /// `Registry::save` persists through the durable helper: file sync, then
+    /// rename, then directory sync.
+    #[tokio::test]
+    async fn registry_save_syncs_the_file_then_renames_then_syncs_the_directory() {
+        use crate::durable_write::tests::{record_writes_to, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+        let log = record_writes_to(&path);
+        Registry::default().save(&path).await.unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [Step::SyncTemp, Step::Rename, Step::SyncDir]
+        );
+    }
+
     /// A zero-length or whitespace-only registry is what a crash leaves behind;
     /// it must not load as "no databases" (the next save would erase every
     /// registration). A genuinely absent file is still a first boot.

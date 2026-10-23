@@ -202,6 +202,21 @@ mod tests {
         clear(&marker).await;
     }
 
+    #[tokio::test]
+    async fn record_goes_through_the_durable_write_helper() {
+        use crate::durable_write::tests::{record_writes_to, Step};
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("incompatible-database.json");
+        let log = record_writes_to(&marker);
+        record(&marker, &dir.path().join("nodespace.db"), &mismatch())
+            .await
+            .unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [Step::SyncTemp, Step::Rename, Step::SyncDir]
+        );
+    }
+
     /// The heart of the crash-loop fix: an incompatible database must end
     /// startup with `Ok` (exit 0, no restart), and every other failure must
     /// keep its error (non-zero exit, restart).
