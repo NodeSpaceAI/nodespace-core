@@ -1,5 +1,11 @@
 import { createLogger } from '$lib/utils/logger';
 import createDOMPurify from 'dompurify';
+import {
+  isSafeAttrValue,
+  sanitizeStyleAttr,
+  ROOT_CONTAINMENT,
+  sanitizeStyleSheetText
+} from '$lib/services/svg-css-sanitize';
 import type { Mermaid } from 'mermaid';
 
 const log = createLogger('MermaidRender');
@@ -90,6 +96,16 @@ function buildThemeVariables(isDark: boolean) {
   };
 }
 
+const DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp);/i;
+
+function outermostSvg(svg: Element): Element {
+  let top = svg;
+  for (let up = top.parentElement?.closest('svg'); up; up = top.parentElement?.closest('svg')) {
+    top = up;
+  }
+  return top;
+}
+
 // Build a DOMPurify instance bound to document.defaultView rather than relying on the module-
 // level default export or the global `window` binding. In tests each file gets a fresh
 // happy-dom document, and other test files' global-`window` stubbing/teardown can leave the
@@ -97,18 +113,40 @@ function buildThemeVariables(isDark: boolean) {
 // though `document` itself is always current.
 function getDOMPurify() {
   const purify = createDOMPurify(document.defaultView ?? undefined);
-  // DOMPurify treats `style` as a URI-safe attribute and does not parse its CSS content, so
-  // it won't strip a javascript: URI hidden inside url(...) in an inline style. Mermaid relies
-  // on inline styles for theming, so we can't forbid the attribute outright — scrub dangerous
-  // CSS constructs from it directly instead. Known gap: CSS backslash-escapes/whitespace
-  // splicing (e.g. "jav\61script:") can obfuscate past this regex. Accepted for now since the
-  // app's CSP (script-src 'self', object-src 'none') already blocks javascript: URIs from
-  // executing in any modern webview — revisit if that CSP is ever relaxed.
-  purify.addHook('uponSanitizeAttribute', (_node, data) => {
-    if (data.attrName === 'style') {
-      data.attrValue = data.attrValue
-        .replace(/(?:javascript|vbscript):/gi, '')
-        .replace(/expression\s*\(/gi, '');
+  // DOMPurify does not parse CSS, so style attributes, <style> text and every
+  // other attribute that can carry a url() are normalised in this hook.
+  purify.addHook('afterSanitizeAttributes', (node) => {
+    const tag = node.nodeName.toLowerCase();
+    const isRootSvg = tag === 'svg' && !node.parentElement?.closest('svg');
+    if (tag === 'style') {
+      // Rebuilt from an allow-list under the root svg id; see svg-css-sanitize.
+      const svg = node.closest('svg');
+      const rootId = (svg ? outermostSvg(svg) : null)?.getAttribute('id') ?? '';
+      const css = sanitizeStyleSheetText(node.textContent ?? '', rootId);
+      if (css === null) node.remove();
+      else node.textContent = css;
+      return;
+    }
+    for (const name of node.getAttributeNames?.() ?? []) {
+      const value = node.getAttribute(name) ?? '';
+      if (name === 'style') {
+        const clean = sanitizeStyleAttr(value, isRootSvg);
+        if (clean === null) node.removeAttribute(name);
+        else node.setAttribute(name, clean);
+      } else if (name === 'href' || name === 'xlink:href') {
+        // Fetched references (image, feImage, use, ...) may only point at a
+        // fragment in the same document or carry an inline data image.
+        if (tag !== 'a' && !/^\s*#/.test(value) && !DATA_IMAGE.test(value.trim())) {
+          node.removeAttribute(name);
+        }
+      } else if (!isSafeAttrValue(value)) {
+        node.removeAttribute(name);
+      }
+    }
+    if (isRootSvg) {
+      // Appended last and inline !important, which beats any author rule, so the diagram cannot paint outside its own box.
+      const existing = node.getAttribute('style');
+      node.setAttribute('style', existing ? `${existing};${ROOT_CONTAINMENT}` : ROOT_CONTAINMENT);
     }
   });
   return purify;

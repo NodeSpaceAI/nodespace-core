@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { marked } from 'marked';
-import { sanitizeChatHtml } from '../../lib/utils/sanitize-chat-html.js';
+import { marked, Marked, Renderer } from 'marked';
+import { chatTaskCheckbox } from '../../lib/utils/chat-task-checkbox.js';
+import { sanitizeChatHtml, sanitizeWithConfig, stripNetworkAttrs } from '../../lib/utils/sanitize-chat-html.js';
 
 // Real Chromium + real DOMPurify (Happy-DOM's DOM drops anchors under DOMPurify),
 // with raw HTML passed through marked exactly as the chat renderer does.
@@ -116,5 +117,58 @@ describe('sanitizeChatHtml', () => {
   it('leaves link hrefs on the link allow-list', () => {
     expect(sanitized('<a href="https://a.test/x">go</a>')).toContain('href="https://a.test/x"');
     expect(sanitized('<a href="mailto:a@b.test">go</a>')).toContain('href="mailto:a@b.test"');
+  });
+
+  it('drops ping, longdesc and data attributes', () => {
+    const a = sanitized('<a href="https://a.test/x" ping="https://evil.test/p">go</a>');
+    expect(a).not.toContain('ping');
+    expect(a).not.toContain('evil.test');
+    expect(a).toContain('href="https://a.test/x"');
+    const area = sanitized('<map name="m"><area href="https://a.test/x" ping="https://evil.test/p"></map>');
+    expect(area).not.toContain('evil.test');
+    const img = sanitized('<img src="img/t.png" longdesc="https://evil.test/d">');
+    expect(img).not.toContain('longdesc');
+    expect(img).toContain('src="img/t.png"');
+    // `data` is not an attribute DOMPurify's allow-list knows, but it is
+    // dropped on any element so a permissive config change cannot expose it.
+    expect(sanitized('<span data="https://evil.test/o">t</span>')).not.toContain('evil.test');
+    // With the allow-list widened, the hook alone must still remove them.
+    const kept = sanitizeWithConfig(
+      '<a href="https://a.test/x" ping="https://evil.test/p">go</a><img src="img/t.png" longdesc="https://evil.test/d"><object data="https://evil.test/o"></object>',
+      { ADD_ATTR: ['ping', 'longdesc', 'data'], ADD_TAGS: ['object'] }
+    );
+    expect(kept).not.toContain('evil.test');
+    expect(kept).toContain('<object');
+    // The hook step itself, independent of DOMPurify's own allow-list.
+    const el = document.createElement('a');
+    el.setAttribute('ping', 'https://evil.test/p');
+    el.setAttribute('longdesc', 'https://evil.test/d');
+    el.setAttribute('data', 'https://evil.test/o');
+    el.setAttribute('data-node-id', 'abc');
+    stripNetworkAttrs(el);
+    expect(el.getAttributeNames()).toEqual(['data-node-id']);
+    // data-* attributes are untouched.
+    expect(sanitized('<span data-node-id="abc">t</span>')).toContain('data-node-id="abc"');
+  });
+
+  it('renders task-list checkboxes as plain text with the checked state', () => {
+    const marked = new Marked();
+    const renderer = new Renderer();
+    renderer.checkbox = chatTaskCheckbox;
+    const out = sanitizeChatHtml(marked.parse('- [x] done\n- [ ] todo', { gfm: true, renderer }) as string);
+    expect(out).not.toContain('<input');
+    expect(out).toContain('[x] done');
+    expect(out).toContain('[ ] todo');
+  });
+
+  it('removes form controls but keeps their text', () => {
+    for (const tag of ['form', 'input', 'textarea', 'select', 'option', 'optgroup', 'button']) {
+      const out = sanitized(`<${tag}>kept text</${tag}>`);
+      expect(out, tag).not.toContain(`<${tag}`);
+    }
+    const out = sanitized('<form><label>Password <input type="password" name="p"></label><button>Send</button></form>');
+    expect(out).not.toMatch(/<(form|input|button)/);
+    expect(out).toContain('Password');
+    expect(out).toContain('Send');
   });
 });

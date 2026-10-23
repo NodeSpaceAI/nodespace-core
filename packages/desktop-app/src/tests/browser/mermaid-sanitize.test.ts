@@ -135,7 +135,7 @@ describe('renderMermaid', () => {
     const { renderMermaid } = await import('../../lib/services/mermaid-render.js');
     const result = await renderMermaid('graph TD; A-->B;', 'test-id');
     expect(result).not.toBeNull();
-    expect(result).toContain('<svg>');
+    expect(result).toMatch(/<svg[ >]/);
     expect(result).toContain('flowchart');
   });
 
@@ -187,5 +187,26 @@ describe('renderMermaid', () => {
       (mermaid.initialize as ReturnType<typeof vi.fn>).mockReset();
       (mermaid.render as ReturnType<typeof vi.fn>).mockReset();
     }
+  });
+
+  it('sanitizes hostile mermaid output end to end and keeps the diagram elements', async () => {
+    const { default: mermaid } = await import('mermaid');
+    (mermaid.render as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      svg:
+        '<svg viewBox="0 0 100 50" onload="alert(1)"><style>.node{fill:#fff}</style>' +
+        '<defs><marker id="arrow"><path d="M0 0L5 2.5L0 5z"/></marker></defs>' +
+        '<script>alert(1)</script>' +
+        '<g class="node"><rect width="40" height="20" onclick="alert(2)"/><text>Node A</text></g>' +
+        '<path d="M0 0L10 10" marker-end="url(#arrow)"/>' +
+        '<foreignObject><form action="https://evil.test"><input name="x"></form></foreignObject>' +
+        '<a href="javascript:alert(3)"><text>link</text></a></svg>'
+    });
+    const { renderMermaid } = await import('../../lib/services/mermaid-render.js');
+    const out = (await renderMermaid('graph TD; A-->B;', 'hostile')) ?? '';
+    expect(out).not.toMatch(/<script|onload|onclick|javascript:|foreignObject|<form|<input|evil\.test/i);
+    expect(out).toContain('<rect');
+    expect(out).toContain('Node A');
+    expect(out).toContain('marker-end');
+    expect(out).toContain('<marker');
   });
 });
