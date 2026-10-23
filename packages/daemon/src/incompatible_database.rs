@@ -123,12 +123,13 @@ pub async fn record(marker: &Path, database_path: &Path, mismatch: &SchemaMismat
             .with_context(|| format!("create {}", parent.display()))?;
     }
     let tmp = marker.with_extension("json.tmp");
-    tokio::fs::write(&tmp, json)
-        .await
-        .with_context(|| format!("write {}", tmp.display()))?;
-    tokio::fs::rename(&tmp, marker)
-        .await
-        .with_context(|| format!("rename {} into place", marker.display()))?;
+    let marker_owned = marker.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        crate::durable_write::write_durably(&tmp, &marker_owned, &json)
+    })
+    .await
+    .context("incompatible-database marker write task panicked")?
+    .with_context(|| format!("write {}", marker.display()))?;
     Ok(())
 }
 
