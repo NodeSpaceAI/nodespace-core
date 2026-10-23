@@ -502,9 +502,9 @@ fn skill_md_mcp_branch_names_the_real_passthrough_tool() {
 /// streaming commands it cannot support, not an invented number.
 ///
 /// `nodespace mcp` kills and reports as a timeout any dispatched command
-/// that outlives `DISPATCH_TIMEOUT` — in practice, `session launch`/`session
-/// attach`, which stream a PTY and would otherwise block the server's
-/// single-threaded request loop forever (see `mcp.rs`'s own doc comment).
+/// that outlives `DISPATCH_TIMEOUT` — a blocked command would otherwise stall
+/// the server's single-threaded request loop forever (see `mcp.rs`'s own doc
+/// comment). `session` is refused outright; the section must say so.
 /// If that constant is ever tuned, this test forces the doc's numeral to be
 /// re-checked rather than silently going stale.
 #[test]

@@ -428,6 +428,22 @@ async fn mcp_refuses_database_selection_other_sockets_and_the_database_subcomman
         ),
         (4, "database use Second", "`database` subcommand"),
         (5, "nodespace database list", "`database` subcommand"),
+        (
+            6,
+            "session launch claude-code --prompt hi --folder /",
+            "`session` subcommand cannot be run through this tool",
+        ),
+        (
+            7,
+            "--json import file /etc/hosts",
+            "`import` subcommand cannot be run through this tool",
+        ),
+        (8, "skill install", "only `skill guidance` and `skill get`"),
+        (
+            9,
+            "uninstall --yes",
+            "`uninstall` subcommand cannot be run through this tool",
+        ),
     ] {
         let result = call_tool(&mut stdin, &mut stdout, id, args).await;
         assert_eq!(result["isError"], true, "{args}: {result}");

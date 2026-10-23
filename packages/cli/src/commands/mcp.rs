@@ -54,6 +54,17 @@
 //!   other than the server's own, and the `database` subcommand, so which
 //!   database `nodespace mcp` acts on is always the user's decision (the
 //!   daemon's default), never a client's.
+//! - **Graph commands only.** [`build_child_args`] applies an allow-list
+//!   ([`ALLOWED_SUBCOMMANDS`]), deny by default: only the graph-facing
+//!   subcommands (`node`, `search`, `query`, `mention`, `schema`,
+//!   `relationship`, `conflicts`, `playbook`, and `skill guidance`/`skill
+//!   get`) run. Everything that spawns processes (`session`), reads
+//!   arbitrary paths (`import`), writes outside the graph (`skill install`,
+//!   `mcp`, `uninstall`, `seed`, `model`) or is telemetry (`logs`,
+//!   `diagnostics`) is refused with a message pointing at a shell-capable
+//!   surface. The surface is defined as having no shell, file I/O or code
+//!   execution, and a chat model can be steered by text it read in a node, a
+//!   page or an email, so the tool must not hand it those back.
 //! - **Provenance marking.** Every `tools/list` entry carries
 //!   `_meta.source: "external"` ([`TOOL_SOURCE`]) -- see that constant's doc
 //!   comment for why this is the scoped analog of ADR-038's registry-node
@@ -101,10 +112,11 @@ const TOOL_DESCRIPTION: &str = "Run a `nodespace` CLI command. `args` is the exa
     Returns the command's --json output. See the NodeSpace skill for available commands.";
 
 /// A single dispatched invocation may run for this long before being killed
-/// and reported as a timeout. Generous enough for a slow `import`/`query`,
-/// but finite: `session launch`/`session attach` are designed to stream and
-/// block indefinitely (interactive PTY attachment), which would otherwise
-/// wedge this server's single-threaded request loop forever.
+/// and reported as a timeout. Generous enough for a slow `query`, but finite:
+/// a call that blocks would otherwise wedge this server's single-threaded
+/// request loop forever. (`session` and `wait`, which stream or block by
+/// design, are refused outright by [`ALLOWED_SUBCOMMANDS`]; this bounds what
+/// is left.)
 ///
 /// `pub` for the same reason as [`TOOL_NAME`]: SKILL.md documents
 /// this exact timeout, and a test pins the two together.
@@ -700,6 +712,93 @@ fn extract_tool_call(params: &Value) -> Result<String, String> {
         .ok_or_else(|| format!("the \"{TOOL_NAME}\" tool requires a string \"args\" argument"))
 }
 
+/// Top-level subcommands a passthrough call may reach: the graph-facing ones.
+/// Deny by default: a subcommand that is not listed here (including any added
+/// to the CLI later) is refused until someone decides it belongs on a surface
+/// with no shell.
+///
+/// Decisions, per subcommand:
+/// - `node`, `search`, `query`, `mention`, `schema`, `relationship`,
+///   `conflicts`, `playbook`: read and write the graph in the active database.
+///   Allowed.
+/// - `skill`: only `guidance` and `get` (read the graph's own skills, which
+///   SKILL.md tells a bash-less surface to fetch); see [`ALLOWED_SKILL_ACTIONS`].
+/// - `session`: launches and attaches PTY agent sessions in an arbitrary folder
+///   (code execution). Refused; the session outlives the killed CLI process.
+/// - `import`: reads files from disk into the graph (arbitrary file read).
+///   Refused.
+/// - `mcp`, `uninstall`, `seed`, `model`: change files or state outside the
+///   graph (client config, binaries, the model cache, built-in items).
+///   Refused.
+/// - `logs`, `diagnostics`: operational telemetry, not graph content. Refused.
+/// - `database`: the user's choice of active database. Refused (own message).
+/// - `wait`: blocks until a condition holds, which would stall this
+///   single-threaded server for the whole dispatch timeout. Refused.
+/// - `journal` (hidden, for harness plugins), `help` and anything else:
+///   refused.
+const ALLOWED_SUBCOMMANDS: &[&str] = &[
+    "node",
+    "search",
+    "query",
+    "mention",
+    "schema",
+    "relationship",
+    "conflicts",
+    "playbook",
+    "skill",
+];
+
+/// The only `skill` actions reachable here; `install`, `uninstall`, `status`
+/// and `reset` write outside the graph or discard user edits.
+const ALLOWED_SKILL_ACTIONS: &[&str] = &["guidance", "get"];
+
+/// Flags that make the CLI read or write a file path. None is accepted
+/// through the passthrough; a test walks every allowed subcommand's arguments
+/// and fails on any path-like argument not listed here or reviewed there.
+const FILE_FLAGS: &[&str] = &["--params-file"];
+
+fn is_file_flag(flag: &str) -> bool {
+    FILE_FLAGS.contains(&flag)
+}
+
+/// Applies the allow-list to the flag-stripped words of a call.
+fn check_allowed(words: &[String]) -> Result<(), String> {
+    let mut positional = words.iter().filter(|w| !w.starts_with('-'));
+    let Some(sub) = positional.next().map(String::as_str) else {
+        return Err(format!(
+            "give a subcommand: this tool runs {}.",
+            ALLOWED_SUBCOMMANDS.join(", ")
+        ));
+    };
+    if sub == "database" {
+        return Err(
+            "the `database` subcommand cannot be run through this tool: the user \
+             chooses the active database."
+                .to_string(),
+        );
+    }
+    if !ALLOWED_SUBCOMMANDS.contains(&sub) {
+        return Err(format!(
+            "the `{sub}` subcommand cannot be run through this tool: it starts processes, \
+             reads files or changes state outside the graph, which this surface (no shell) \
+             is not given. Ask the user to run it in a terminal or a shell-capable agent. \
+             This tool runs: {}.",
+            ALLOWED_SUBCOMMANDS.join(", ")
+        ));
+    }
+    if sub == "skill" {
+        let action = positional.next().map(String::as_str);
+        if !action.is_some_and(|a| ALLOWED_SKILL_ACTIONS.contains(&a)) {
+            return Err(format!(
+                "only `skill {}` can be run through this tool; installing, removing or \
+                 resetting skills needs a terminal.",
+                ALLOWED_SKILL_ACTIONS.join("` and `skill ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Builds the child argv for one dispatched call: the `--socket` this `mcp`
 /// process was started with, then the shell-split `args`, then `--json`
 /// (unless already present) so the tool result is always structured.
@@ -728,12 +827,20 @@ fn build_child_args(args_str: &str, sock: &Path) -> Result<Vec<String>, String> 
     let bound_socket = sock.display().to_string();
     while let Some(word) = words.next() {
         let (flag, inline) = match word.split_once('=') {
-            Some((flag, value)) if flag == "--socket" || flag == "--database" => {
+            Some((flag, value))
+                if flag == "--socket" || flag == "--database" || is_file_flag(flag) =>
+            {
                 (flag.to_string(), Some(value.to_string()))
             }
             _ => (word.clone(), None),
         };
         match flag.as_str() {
+            f if is_file_flag(f) => {
+                return Err(format!(
+                    "{f} cannot be used in a call: this surface has no file access. Pass the \
+                     content inline instead (e.g. `--params`)."
+                ));
+            }
             "--database" => {
                 return Err(
                     "--database cannot be set in a call: this tool acts on the active \
@@ -761,19 +868,10 @@ fn build_child_args(args_str: &str, sock: &Path) -> Result<Vec<String>, String> 
     }
 
     // The subcommand is the first word that is not a flag (the only global
-    // flag taking a value, `--socket`, was consumed above).
-    if tail
-        .iter()
-        .find(|w| !w.starts_with('-'))
-        .map(String::as_str)
-        == Some("database")
-    {
-        return Err(
-            "the `database` subcommand cannot be run through this tool: the user \
-             chooses the active database."
-                .to_string(),
-        );
-    }
+    // flag taking a value, `--socket`, was consumed above). The CLI accepts no
+    // abbreviation or alias of a subcommand (pinned by a test), so an exact
+    // match on this word is enough.
+    check_allowed(&tail)?;
 
     let mut argv = vec!["--socket".to_string(), bound_socket];
     argv.extend(tail);
@@ -798,16 +896,16 @@ async fn call_tool(exe: &Path, args_str: &str, sock: &Path) -> Value {
 /// `isError: true` result, so a failed dispatch reads as an actionable
 /// answer rather than crashing the server or the caller's turn.
 ///
-/// `kill_on_drop(true)` ensures a child that outlives `timeout` (e.g. a
-/// `session launch` that never exits on its own) is actually killed when the
-/// timed-out future is dropped, rather than left running as an orphan.
+/// `kill_on_drop(true)` ensures a child that outlives `timeout` is actually
+/// killed when the timed-out future is dropped, rather than left running as
+/// an orphan.
 ///
 /// `stdin(Stdio::null())` is load-bearing, not cosmetic: unlike
 /// `std::process::Command::output()`, which nulls stdin by default,
 /// `tokio::process::Command::output()` leaves stdin untouched — i.e.
 /// inherited from this `mcp` process, which is this server's real JSON-RPC
 /// transport. Without this call, dispatching a subcommand that itself reads
-/// stdin (`session attach`/`session launch`, which stream a PTY) would race
+/// stdin (a streaming or interactive subcommand) would race
 /// this function's own stdin loop for bytes off the same pipe, silently
 /// diverting a live client's subsequent JSON-RPC messages into an unrelated
 /// terminal session instead of the request loop. Do not remove it.
@@ -846,10 +944,9 @@ async fn run_child(exe: &Path, argv: &[String], timeout: Duration) -> Value {
             exe.display()
         )),
         Err(_) => tool_error(format!(
-            "`nodespace {}` did not complete within {}s. Commands that stream or block (e.g. \
-             `session launch`/`session attach`) are not supported through this passthrough — use \
-             a shell-capable surface (Claude Code, the Claude Desktop Code tab) for interactive \
-             sessions.",
+            "`nodespace {}` did not complete within {}s. A command that blocks \
+             is not supported through this passthrough — use a shell-capable surface (Claude \
+             Code, the Claude Desktop Code tab) for it.",
             argv.join(" "),
             timeout.as_secs(),
         )),
@@ -966,13 +1063,246 @@ mod tests {
     }
 
     #[test]
-    fn build_child_args_handles_empty_args_string() {
-        // A bare tool call with an empty `args` string is well-formed shell
-        // syntax (zero tokens) — the dispatched binary is responsible for
-        // rejecting "no subcommand given", the same as running `nodespace`
-        // alone.
-        let argv = build_child_args("", Path::new("/s")).expect("empty is valid");
-        assert_eq!(argv, vec!["--socket", "/s", "--json"]);
+    fn build_child_args_refuses_a_call_with_no_subcommand() {
+        for args in ["", "   ", "--json", "nodespace"] {
+            let err = build_child_args(args, Path::new("/s")).expect_err(args);
+            assert!(err.contains("give a subcommand"), "{args}: {err}");
+        }
+    }
+
+    /// Every top-level subcommand of the CLI, each decided: reachable here or
+    /// refused. A subcommand added to the CLI without a decision fails
+    /// `every_cli_subcommand_has_a_passthrough_decision`.
+    const REFUSED: &[&str] = &[
+        "journal",
+        "model",
+        "diagnostics",
+        "logs",
+        "import",
+        "seed",
+        "session",
+        "database",
+        "uninstall",
+        "wait",
+        "mcp",
+        "help",
+    ];
+
+    #[test]
+    fn every_cli_subcommand_has_a_passthrough_decision() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            let allowed = ALLOWED_SUBCOMMANDS.contains(&name);
+            let refused = REFUSED.contains(&name);
+            assert!(
+                allowed ^ refused,
+                "`{name}` must be in exactly one of ALLOWED_SUBCOMMANDS or the test's REFUSED"
+            );
+        }
+        for name in ALLOWED_SUBCOMMANDS {
+            assert!(
+                cmd.find_subcommand(name).is_some(),
+                "{name} is not a CLI subcommand"
+            );
+        }
+    }
+
+    /// Arguments of an allowed subcommand whose name suggests a path, reviewed
+    /// and found not to touch the filesystem: (subcommand path, arg id, reason).
+    const REVIEWED_PATH_LIKE_ARGS: &[(&str, &str, &str)] = &[
+        (
+            "node context",
+            "paths",
+            "context paths are graph (collection-style) paths, not filesystem paths",
+        ),
+        (
+            "node create",
+            "collections",
+            "collection paths in the graph, `:`-delimited; not filesystem paths",
+        ),
+        (
+            "node update",
+            "collections",
+            "collection paths in the graph, `:`-delimited; not filesystem paths",
+        ),
+        (
+            "relationship get",
+            "direction",
+            "edge direction (in/out), matched only because the name contains `dir`",
+        ),
+    ];
+
+    fn collect_path_like(cmd: &clap::Command, trail: &str, out: &mut Vec<(String, String)>) {
+        const HINTS: &[&str] = &["file", "path", "dir", "out", "input"];
+        for arg in cmd.get_arguments() {
+            let id = arg.get_id().as_str().to_string();
+            let mut names = vec![id.clone()];
+            names.extend(arg.get_long().map(str::to_string));
+            names.extend(
+                arg.get_value_names()
+                    .into_iter()
+                    .flatten()
+                    .map(|v| v.to_string()),
+            );
+            let hit = names.iter().any(|n| {
+                let n = n.to_lowercase();
+                HINTS.iter().any(|h| n.contains(h))
+            });
+            if hit {
+                out.push((trail.to_string(), id));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            collect_path_like(sub, &format!("{trail} {}", sub.get_name()), out);
+        }
+    }
+
+    /// Every argument of every allowed subcommand (recursively) that looks
+    /// like a file or directory is either refused by the passthrough
+    /// ([`FILE_FLAGS`]) or listed with a reason in `REVIEWED_PATH_LIKE_ARGS`.
+    #[test]
+    fn allowed_subcommands_have_no_unreviewed_path_like_arguments() {
+        use clap::CommandFactory;
+        let cmd = crate::Cli::command();
+        let mut hits = Vec::new();
+        for name in ALLOWED_SUBCOMMANDS {
+            let sub = cmd.find_subcommand(name).unwrap();
+            collect_path_like(sub, name, &mut hits);
+        }
+        let unreviewed: Vec<_> = hits
+            .iter()
+            .filter(|(trail, id)| {
+                let refused = is_file_flag(&format!("--{}", id.replace('_', "-")));
+                let reviewed = REVIEWED_PATH_LIKE_ARGS
+                    .iter()
+                    .any(|(t, i, _)| t == trail && i == id);
+                !refused && !reviewed
+            })
+            .collect();
+        assert!(
+            unreviewed.is_empty(),
+            "path-like arguments reachable through the passthrough: {unreviewed:#?}"
+        );
+    }
+
+    #[test]
+    fn build_child_args_refuses_file_path_flags() {
+        for args in [
+            "schema create --params-file /etc/hosts",
+            "schema update --params-file=/etc/hosts",
+            "--json schema create --params-file=/dev/zero",
+            "schema create --params-file",
+        ] {
+            let err = build_child_args(args, Path::new("/s")).expect_err(args);
+            assert!(
+                err.contains("--params-file cannot be used"),
+                "{args}: {err}"
+            );
+        }
+        // Inline params are still fine, and a value that merely mentions it is not a flag.
+        build_child_args(r#"schema create --params '{"name":"x"}'"#, Path::new("/s")).unwrap();
+        build_child_args(r#"search "about --params-file""#, Path::new("/s")).unwrap();
+    }
+
+    /// Session launch, import, installers and the rest are not reachable
+    /// through the passthrough, in any spelling that moves the subcommand
+    /// word (leading global flags, an inline `--socket=`, the replayed
+    /// binary name, extra whitespace).
+    #[test]
+    fn build_child_args_refuses_every_non_graph_subcommand() {
+        let sock = "/s";
+        let calls = [
+            "session launch claude-code --prompt hi --project P --folder /",
+            "session attach abc",
+            "session list",
+            "session kill abc",
+            "import file /etc/hosts",
+            "import dir /tmp",
+            "skill install",
+            "skill uninstall",
+            "skill status",
+            "skill reset foo --yes",
+            "skill",
+            "mcp install",
+            "mcp uninstall",
+            "mcp status",
+            "mcp",
+            "uninstall --yes",
+            "seed take foo --yes",
+            "seed pending",
+            "model load",
+            "logs",
+            "diagnostics",
+            "wait node abc",
+            "journal append",
+            "help",
+            "frobnicate",
+        ];
+        for call in calls {
+            for prefix in [
+                "",
+                "nodespace ",
+                "--json ",
+                "--json --json ",
+                "--socket /s ",
+                "--socket=/s ",
+                "  ",
+            ] {
+                let args = format!("{prefix}{call}");
+                let err = build_child_args(&args, Path::new(sock))
+                    .expect_err(&format!("must be refused: {args}"));
+                assert!(
+                    err.contains("cannot be run through this tool")
+                        || err.contains("can be run through this tool")
+                        || err.contains("give a subcommand"),
+                    "{args}: {err}"
+                );
+            }
+        }
+        // A flag after the subcommand does not hide it either.
+        build_child_args("session --json launch x", Path::new(sock)).expect_err("flag between");
+        // The refusal names a way forward.
+        let err = build_child_args("session launch x", Path::new(sock)).unwrap_err();
+        assert!(err.contains("terminal"), "{err}");
+    }
+
+    #[test]
+    fn build_child_args_allows_the_graph_subcommands() {
+        for args in [
+            "node get abc",
+            "--json node create --type text --content hi",
+            "search auth",
+            "query --type task",
+            "mention list abc",
+            "schema list",
+            "relationship list abc",
+            "conflicts list",
+            "playbook list",
+            "skill guidance \"add a task\"",
+            "skill get \"Some skill\"",
+            "skill --json guidance",
+        ] {
+            build_child_args(args, Path::new("/s")).expect(args);
+        }
+    }
+
+    /// Through the real dispatch entry point, a denied command is answered
+    /// with a tool error and no process is spawned (the executable is a path
+    /// that does not exist; a spawn would report "Failed to run").
+    #[tokio::test]
+    async fn call_tool_refuses_denied_commands_without_spawning() {
+        let result = call_tool(
+            Path::new("/nonexistent/nodespace"),
+            "session launch claude-code --prompt x --folder /",
+            Path::new("/s"),
+        )
+        .await;
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("`session` subcommand"), "{text}");
+        assert!(!text.contains("Failed to run"), "{text}");
     }
 
     /// The refusal guard scans the call's words, so it depends on clap not
@@ -1688,7 +2018,7 @@ mod process_tests {
         assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("did not complete within"));
-        assert!(text.contains("session launch"));
+        assert!(text.contains("shell-capable surface"));
     }
 
     #[tokio::test]
