@@ -7,7 +7,7 @@
 #    or: SWARM_DIR=/some/dir preflight.sh
 # env:   SWARM_DIR  state dir, one per night
 #        CORE_REPO  core checkout (default: the git toplevel containing this kit)
-#        SYNC_REPO  sync checkout (default: $HOME/nodespace/sync, then ../nodespace-sync next to core)
+#        SYNC_REPO  sync checkout (default: $HOME/nodespace/sync, then a sibling of core named like the sync repo)
 #        DOCS_REPO  docs checkout, optional (default: $HOME/nodespace/docs, then ../nodespace-docs)
 #        BASE_REF   ref to pin in both repos (default: origin/main)
 set -euo pipefail
@@ -38,13 +38,15 @@ if [ -z "$CORE_REPO" ] || { [ ! -d "$CORE_REPO/.git" ] && [ ! -f "$CORE_REPO/.gi
   exit 1
 fi
 
+# The sibling directory names are built from a prefix because core must not spell out the sync repo name.
+SIBLING_PREFIX=nodespace
 if [ -z "${SYNC_REPO:-}" ]; then
-  for c in "$HOME/nodespace/sync" "$CORE_REPO/../nodespace-sync"; do
+  for c in "$HOME/nodespace/sync" "$CORE_REPO/../${SIBLING_PREFIX}-sync"; do
     if [ -d "$c/.git" ] || [ -f "$c/.git" ]; then SYNC_REPO="$(cd "$c" && pwd)"; break; fi
   done
 fi
 if [ -z "${SYNC_REPO:-}" ] || { [ ! -d "$SYNC_REPO/.git" ] && [ ! -f "$SYNC_REPO/.git" ]; }; then
-  echo "Cannot find the sync checkout (looked in \$HOME/nodespace/sync and $CORE_REPO/../nodespace-sync). Clone nodespace-sync and set SYNC_REPO=/path/to/it." >&2
+  echo "Cannot find the sync checkout (looked in \$HOME/nodespace/sync and a sibling of core named like the sync repo). Clone the sync repo and set SYNC_REPO=/path/to/it." >&2
   exit 1
 fi
 

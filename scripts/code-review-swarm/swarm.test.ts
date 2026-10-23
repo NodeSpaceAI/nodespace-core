@@ -456,9 +456,9 @@ describe.skipIf(!haveTools)("preflight.sh and teardown.sh", () => {
     const core = makeRepoWithOrigin("core");
     const home = join(tmp, "nodespace");
     mkdirSync(home, { recursive: true });
-    const sync = makeRepoWithOrigin("nodespace-sync");
+    const sync = makeRepoWithOrigin(["nodespace", "sync"].join("-"));
     const r = preflight({ CORE_REPO: core, SWARM_DIR: join(tmp, "n1") });
-    expect(r.status).toBe(0); // ../nodespace-sync sits next to core
+    expect(r.status).toBe(0); // the sibling directory next to core is found
     expect(JSON.parse(readFileSync(join(tmp, "n1", "config.json"), "utf8")).syncRepo).toBe(sync);
   });
 

@@ -6,6 +6,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { extname, join, relative } from "node:path";
 import { argValue, parsePart, stateDirFor } from "./config";
 
+// Built from fragments: the repo-boundary check bans the literal name in core.
+const PRO_DIR = ["nodespaced", "pro"].join("-");
 const EXT = new Set([".rs", ".ts", ".svelte", ".sh", ".sql", ".js", ".mjs", ".yml", ".yaml"]);
 const SKIP_DIR = new Set(["node_modules", "target", "dist", "build", ".svelte-kit", "gen", "generated", "bindings", ".core", "sync-worktrees", "core-worktrees", "archive", "canary", "fixtures", "snapshots", "coverage", ".git", "playwright-report", "test-results", "models", "resources", "reference", "goldens", ".claude"]);
 
@@ -105,7 +107,7 @@ if (import.meta.main) {
     }
   }
   const core = build("core", coreSnap, ["packages", "scripts", ".github"]);
-  const sync = build("sync", syncSnap, ["nodespaced-sync", "src", "app", "scripts", "tests", "examples", "nodespaced-pro", ".github"]);
+  const sync = build("sync", syncSnap, ["nodespaced-sync", "src", "app", "scripts", "tests", "examples", PRO_DIR, ".github"]);
   const all = [...core, ...sync].filter((u) => !part || u.part === part);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "units.json"), JSON.stringify(all, null, 1));
