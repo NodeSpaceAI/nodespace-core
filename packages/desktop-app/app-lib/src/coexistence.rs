@@ -106,6 +106,15 @@ pub async fn foreign_machine_wide_registration() -> bool {
 #[cfg(target_os = "macos")]
 const MACHINE_WIDE_LAUNCH_AGENTS: &str = "/Library/LaunchAgents";
 
+/// The program a `sh -c` script hands the process to: the word after the first
+/// `exec`, or `None` when the script has none.
+#[cfg(target_os = "macos")]
+fn exec_target(script: &str) -> Option<&str> {
+    let mut words = script.split_whitespace();
+    words.find(|word| *word == "exec")?;
+    words.next()
+}
+
 /// The program the launchd job at `plist` runs, when it is not `profile`'s
 /// daemon binary (compared by file name,
 /// [`crate::daemon_setup::runs_profile_binary`]). launchd runs `Program` when it is set and the first of
@@ -132,15 +141,28 @@ fn foreign_program(
         }
     };
     let job = job.as_dictionary()?;
+    let arguments: Vec<&str> = job
+        .get("ProgramArguments")
+        .and_then(plist::Value::as_array)
+        .map(|arguments| {
+            arguments
+                .iter()
+                .filter_map(plist::Value::as_string)
+                .collect()
+        })
+        .unwrap_or_default();
     let program = match job.get("Program") {
         Some(program) => program.as_string(),
-        None => job
-            .get("ProgramArguments")
-            .and_then(plist::Value::as_array)
-            .and_then(|arguments| arguments.first())
-            .and_then(plist::Value::as_string),
+        None => arguments.first().copied(),
     }
-    .filter(|program| !program.is_empty())?;
+    .filter(|program| !program.is_empty());
+    // The .pkg's registration starts the daemon through a shell that `exec`s
+    // it (to point its log at the user's own directory): the daemon it runs is
+    // the `exec` target, not the shell.
+    let program = match (program, arguments.as_slice()) {
+        (Some("/bin/sh"), ["/bin/sh", "-c", script]) => exec_target(script).or(program),
+        _ => program,
+    }?;
     (!runs_profile_binary(program, profile)).then(|| program.to_owned())
 }
 
@@ -246,6 +268,34 @@ mod tests {
         fn foreign(job: plist::Value) -> Option<String> {
             let dir = tempfile::tempdir().expect("tempdir");
             foreign_program(&write_xml(dir.path(), job), &DaemonProfile::community())
+        }
+
+        fn shell_wrapper(script: &str) -> plist::Value {
+            plist::Value::Array(vec!["/bin/sh".into(), "-c".into(), script.into()])
+        }
+
+        #[test]
+        fn the_pkg_registration_that_execs_this_apps_daemon_is_not_foreign() {
+            // The shipped plist, so a change to its wrapper shape is judged here.
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../scripts/pkg-resources/app.nodespace.daemon.plist");
+            assert_eq!(foreign_program(&path, &DaemonProfile::community()), None);
+        }
+
+        #[test]
+        fn a_shell_wrapper_that_execs_another_binary_is_foreign() {
+            assert_eq!(
+                foreign(job(vec![(
+                    "ProgramArguments",
+                    shell_wrapper("mkdir -p \"$HOME/x\" && exec /opt/other-daemon --tray >>\"$HOME/x/log\" 2>&1")
+                )])),
+                Some("/opt/other-daemon".to_owned())
+            );
+            // A shell that never hands over to the daemon is not this app's.
+            assert_eq!(
+                foreign(job(vec![("ProgramArguments", shell_wrapper("true"))])),
+                Some("/bin/sh".to_owned())
+            );
         }
 
         #[test]

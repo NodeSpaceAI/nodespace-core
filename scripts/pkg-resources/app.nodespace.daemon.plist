@@ -13,12 +13,25 @@
     <key>Label</key>
     <string>app.nodespace.daemon</string>
 
-    <!-- The tray flag opts into the tray icon; the daemon is headless without it.
-         Matches daemon_setup.rs's write_plist. -->
+    <!-- This plist is shared by every user of the Mac, and launchd does NOT
+         expand "~" or environment variables in StandardOutPath /
+         StandardErrorPath (a "~" there makes the job fail to start with
+         EX_CONFIG, exit 78). The daemon writes no log file of its own and
+         logs to its stdout/stderr, so a small shell resolves the log file
+         per user at run time: it makes ~/.nodespace (owner-only when new; a
+         umask here would leak into the daemon) and ~/.nodespace/logs (the directory the
+         app's own per-user registration and `nodespace logs` use) and then
+         `exec`s the daemon with stdout and stderr appended to the log, so
+         the daemon replaces the shell (same pid, command line
+         "/usr/local/bin/nodespaced --tray") and the log rotation can reach
+         the file behind its stdio.
+         The tray flag opts into the tray icon; the daemon is headless
+         without it. Matches daemon_setup.rs's write_plist. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/nodespaced</string>
-        <string>--tray</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>mkdir -p -m 700 "$HOME/.nodespace" &amp;&amp; mkdir -p "$HOME/.nodespace/logs" &amp;&amp; exec /usr/local/bin/nodespaced --tray &gt;&gt;"$HOME/.nodespace/logs/nodespaced.log" 2&gt;&amp;1</string>
     </array>
 
     <!-- Conditional restart: only on a nonzero/crash exit, not on every
@@ -35,14 +48,6 @@
     <!-- Start at login; do not require the user to manually launch. -->
     <key>RunAtLoad</key>
     <true/>
-
-    <!-- Log to the standard macOS user log directory (world-readable /tmp is avoided). -->
-    <!-- launchd expands ~ for LaunchAgent plists. -->
-    <key>StandardOutPath</key>
-    <string>~/Library/Logs/com.nodespace/nodespaced.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>~/Library/Logs/com.nodespace/nodespaced.log</string>
 
     <!-- Throttle rapid restart loops (e.g. crash on startup) to 10s. -->
     <key>ThrottleInterval</key>
