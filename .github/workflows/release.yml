@@ -817,12 +817,29 @@ jobs:
           # :arm64 -dev packages uninstallable ("held broken packages").
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
           sudo apt-get update
-          # A multi-arch library must be the same version on both architectures. The host's
-          # amd64 mirror can trail ports.ubuntu.com by a security revision (amd64 3.22, arm64
-          # 3.23), which leaves the :arm64 -dev packages uninstallable ("held broken
-          # packages"). Install the arm64 libraries at the version the host already has.
-          sys_ver=$(dpkg-query -W -f='${Version}' libsystemd0:amd64)
-          udev_ver=$(dpkg-query -W -f='${Version}' libudev1:amd64)
+          # A multi-arch library must have the same version on both architectures, or the
+          # :arm64 -dev packages are uninstallable ("held broken packages"). The host's amd64
+          # mirror and ports.ubuntu.com publish security revisions at different times, so the
+          # skew can go either way (amd64 ahead or behind arm64). Align libsystemd0/libudev1
+          # by moving the amd64 side to the arm64 candidate version, then install arm64 at
+          # that same version. Fail with both versions if the amd64 repo cannot provide it.
+          for pkg in libsystemd0 libudev1; do
+            arm_ver=$(apt-cache policy "${pkg}:arm64" | awk '/Candidate:/ {print $2}')
+            amd_ver=$(dpkg-query -W -f='${Version}' "${pkg}:amd64")
+            echo "${pkg}: amd64 installed=${amd_ver} arm64 candidate=${arm_ver}"
+            if [ -z "${arm_ver}" ] || [ "${arm_ver}" = "(none)" ]; then
+              echo "::error::no arm64 candidate for ${pkg}"; exit 1
+            fi
+            if [ "${arm_ver}" != "${amd_ver}" ]; then
+              sudo apt-get install -y --allow-downgrades "${pkg}:amd64=${arm_ver}" || {
+                echo "::error::${pkg} version skew: amd64 has ${amd_ver}, arm64 mirror has ${arm_ver}, and the amd64 repo cannot provide ${arm_ver}"
+                exit 1
+              }
+            fi
+            echo "${pkg}=${arm_ver}" >> "$RUNNER_TEMP/arm-pins.txt"
+          done
+          sys_ver=$(grep '^libsystemd0=' "$RUNNER_TEMP/arm-pins.txt" | cut -d= -f2)
+          udev_ver=$(grep '^libudev1=' "$RUNNER_TEMP/arm-pins.txt" | cut -d= -f2)
           sudo apt-get install -y libxml2:arm64 "libsystemd0:arm64=${sys_ver}" "libudev1:arm64=${udev_ver}"
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libgtk-3-dev:arm64 libxdo-dev:arm64 libssl-dev:arm64
         env:
