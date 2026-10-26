@@ -619,6 +619,149 @@ async fn retargeting_a_declaration_with_live_edges_is_blocked() -> Result<()> {
     Ok(())
 }
 
+/// `create_widget_pair` plus `subassembly extends assembly`, with one
+/// `widgets` edge from a subassembly instance: an edge under the declaration
+/// `assembly` owns and `subassembly` inherits (ADR-078).
+async fn create_subtype_edge_under_inherited_declaration(svc: &Arc<NodeService>) -> Result<()> {
+    create_widget_pair(svc).await?;
+    handle_create_schema(
+        svc,
+        json!({ "name": "Subassembly", "extends": "assembly", "fields": [] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("subassembly schema: {e}"))?;
+    make_node(svc, "2f0c0b8e-5f8e-5c55-9a59-3b1d7f6e4c21", "subassembly").await?;
+    make_node(svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "2f0c0b8e-5f8e-5c55-9a59-3b1d7f6e4c21",
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn removing_a_declaration_a_subtype_instance_edge_uses_is_blocked() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_subtype_edge_under_inherited_declaration(&svc).await?;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "assembly", "remove_relationships": ["widgets"] }),
+    )
+    .await
+    .expect_err("removing a declaration a subtype instance's edge depends on must be blocked");
+    assert!(
+        err.to_string().contains("1 instance edge"),
+        "error should name the live edge count: {err}"
+    );
+    let schema = svc.get_schema_node("assembly").await?.expect("assembly");
+    assert_eq!(schema.relationships.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retargeting_a_declaration_a_subtype_instance_edge_uses_is_blocked() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_subtype_edge_under_inherited_declaration(&svc).await?;
+    handle_create_schema(&svc, json!({ "name": "Gear", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "assembly",
+            "remove_relationships": ["widgets"],
+            "add_relationships": [{
+                "name": "widgets",
+                "targetType": "gear",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "assemblies",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("retargeting a declaration a subtype instance's edge depends on must be blocked");
+    assert!(err.to_string().contains("retarget"), "got: {err}");
+    let schema = svc.get_schema_node("assembly").await?.expect("assembly");
+    assert_eq!(
+        schema.relationships[0].target_type.as_deref(),
+        Some("widget")
+    );
+    Ok(())
+}
+
+/// A subtype that declares the name itself owns its instances' edges under
+/// that declaration, not the ancestor's: removing the ancestor's leaves them
+/// declared, so they do not block it.
+#[tokio::test]
+async fn edges_under_a_subtypes_own_declaration_do_not_block_removing_the_ancestors() -> Result<()>
+{
+    let (svc, _t) = create_test_service().await?;
+    let holds = json!({
+        "name": "holds",
+        "targetType": "widget",
+        "direction": "out",
+        "cardinality": "many",
+        "reverseName": "held_by",
+        "reverseCardinality": "many"
+    });
+    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    handle_create_schema(&svc, json!({ "name": "Rack", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Subrack", "extends": "rack", "fields": [], "relationships": [holds.clone()] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "rack", "add_relationships": [holds] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    make_node(&svc, "2f0c0b8e-5f8e-5c55-9a59-3b1d7f6e4c21", "subrack").await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        "2f0c0b8e-5f8e-5c55-9a59-3b1d7f6e4c21",
+        "holds",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "rack", "remove_relationships": ["holds"] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("the subtype's edge is under its own declaration: {e}"))?;
+    assert!(svc
+        .get_schema_node("rack")
+        .await?
+        .expect("rack")
+        .relationships
+        .is_empty());
+    assert_eq!(
+        svc.get_schema_node("subrack")
+            .await?
+            .expect("subrack")
+            .relationships
+            .len(),
+        1
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn deleting_a_schema_with_declarations_is_blocked_on_both_ends() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
@@ -796,7 +939,7 @@ async fn an_untyped_relationship_may_target_a_schema_node() -> Result<()> {
     assert_eq!(svc.store().get_schema_declarations("board").await?.len(), 1);
     assert_eq!(
         svc.store()
-            .count_instance_edges_for_declaration("board", "pins")
+            .count_instance_edges_from_types("pins", &["board".to_string()])
             .await?,
         1
     );

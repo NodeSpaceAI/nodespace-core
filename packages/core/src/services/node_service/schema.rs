@@ -1334,36 +1334,14 @@ impl NodeService {
             }
         }
 
-        // Block removing/retargeting a declaration that live instance edges
-        // depend on. A rename arrives as remove+add, so it is covered by the
-        // removal check; a retarget keeps the name but changes target_type.
         let existing = self
             .store
             .get_schema_declarations(schema_id)
             .await
             .map_err(NodeServiceError::from_store)?;
         Self::reject_cleared_parent(schema_id, &existing, relationships)?;
-        for old in &existing {
-            let replacement = relationships.iter().find(|r| r.name == old.name);
-            let removed = replacement.is_none();
-            let retargeted = replacement.is_some_and(|r| r.target_type != old.target_type);
-            if !(removed || retargeted) {
-                continue;
-            }
-            let live = self
-                .store
-                .count_instance_edges_for_declaration(schema_id, &old.name)
-                .await
-                .map_err(NodeServiceError::from_store)?;
-            if live > 0 {
-                let action = if removed { "remove" } else { "retarget" };
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Cannot {} relationship '{}' on schema '{}': {} instance edge(s) exist \
-                     under it. Delete those relationships first.",
-                    action, old.name, schema_id, live
-                )));
-            }
-        }
+        self.reject_live_edge_declaration_changes(schema_id, &existing, relationships)
+            .await?;
 
         let changes = self
             .store
@@ -1397,6 +1375,74 @@ impl NodeService {
         }
 
         Ok(())
+    }
+
+    /// Refuse removing or retargeting a declaration that live instance edges
+    /// depend on (block by default, no cascade, no detach), naming the number
+    /// of affected edges. A rename arrives as remove+add, so it is covered by
+    /// the removal check; a retarget keeps the name but changes target_type.
+    async fn reject_live_edge_declaration_changes(
+        &self,
+        schema_id: &str,
+        existing: &[crate::models::schema::SchemaRelationship],
+        relationships: &[crate::models::schema::SchemaRelationship],
+    ) -> Result<(), NodeServiceError> {
+        for old in existing {
+            let replacement = relationships.iter().find(|r| r.name == old.name);
+            let removed = replacement.is_none();
+            let retargeted = replacement.is_some_and(|r| r.target_type != old.target_type);
+            if !(removed || retargeted) {
+                continue;
+            }
+            let live = self
+                .count_instance_edges_under_declaration(schema_id, &old.name)
+                .await?;
+            if live > 0 {
+                let action = if removed { "remove" } else { "retarget" };
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Cannot {} relationship '{}' on schema '{}': {} instance edge(s) exist \
+                     under it. Delete those relationships first.",
+                    action, old.name, schema_id, live
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The instance edges that `declaring_type`'s `relationship_name`
+    /// declaration owns. A subtype inherits its ancestors' declarations
+    /// (ADR-078), so they come from instances of the declaring type and of
+    /// every subtype that resolves the name to it; a subtype whose nearer
+    /// schema declares the same name owns its edges under that declaration
+    /// instead, the same nearest-first ownership the write path resolves by.
+    async fn count_instance_edges_under_declaration(
+        &self,
+        declaring_type: &str,
+        relationship_name: &str,
+    ) -> Result<i64, NodeServiceError> {
+        let mut source_types = Vec::new();
+        for source_type in self
+            .store
+            .get_subtype_closure(declaring_type)
+            .await
+            .map_err(NodeServiceError::from_store)?
+        {
+            if source_type == declaring_type
+                || self
+                    .source_resolves_relationship_to(
+                        &source_type,
+                        relationship_name,
+                        declaring_type,
+                    )
+                    .await?
+            {
+                source_types.push(source_type);
+            }
+        }
+        self.store
+            .count_instance_edges_from_types(relationship_name, &source_types)
+            .await
+            .map_err(NodeServiceError::from_store)
     }
 
     /// Refuse a declaration set that drops a schema's `extends` edge.
@@ -1435,11 +1481,11 @@ impl NodeService {
     /// `set_schema_declarations_in_tx` instead of opening a new transaction
     /// — this is what lets `handle_create_schema` compose it into the same
     /// transaction as the schema node create and the description subtree.
-    /// The validation reads (`get_schema_declarations`,
-    /// `count_instance_edges_for_declaration`) run against the pooled
-    /// reader exactly as the standalone method does — safe here because
-    /// they read declarations that predate this transaction, not anything
-    /// it is concurrently writing.
+    /// The validation reads (`get_schema_declarations` and the live-edge
+    /// count with its subtype resolution) run against the pooled reader
+    /// exactly as the standalone method does — safe here because they read
+    /// declarations, `extends` edges and instance edges that predate this
+    /// transaction, not anything it is concurrently writing.
     pub(crate) async fn set_schema_relationships_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -1466,27 +1512,8 @@ impl NodeService {
             .await
             .map_err(NodeServiceError::from_store)?;
         Self::reject_cleared_parent(schema_id, &existing, relationships)?;
-        for old in &existing {
-            let replacement = relationships.iter().find(|r| r.name == old.name);
-            let removed = replacement.is_none();
-            let retargeted = replacement.is_some_and(|r| r.target_type != old.target_type);
-            if !(removed || retargeted) {
-                continue;
-            }
-            let live = self
-                .store
-                .count_instance_edges_for_declaration(schema_id, &old.name)
-                .await
-                .map_err(NodeServiceError::from_store)?;
-            if live > 0 {
-                let action = if removed { "remove" } else { "retarget" };
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Cannot {} relationship '{}' on schema '{}': {} instance edge(s) exist \
-                     under it. Delete those relationships first.",
-                    action, old.name, schema_id, live
-                )));
-            }
-        }
+        self.reject_live_edge_declaration_changes(schema_id, &existing, relationships)
+            .await?;
 
         let changes = crate::db::SqliteStore::set_schema_declarations_in_tx(
             tx.store_tx(),

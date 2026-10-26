@@ -2866,26 +2866,36 @@ impl SqliteStore {
         Ok(changes)
     }
 
-    /// Count the INSTANCE-level edges written under a declaration: edges whose
-    /// `relationship_type` is the declared name and whose source node is an
-    /// instance of the declaring type. The declaring schema node itself has
-    /// `node_type = 'schema'`, so declaration edges never match — this is the
-    /// shared scoping rule (endpoint type, not name) that keeps declarations
-    /// and instance edges apart in the one table.
-    pub async fn count_instance_edges_for_declaration(
+    /// Count the INSTANCE-level edges named `relationship_name` whose source
+    /// node is of one of `source_types`: the types whose edges under that name
+    /// a declaration owns, which the caller resolves through the `extends`
+    /// chain. A schema node has `node_type = 'schema'`, never one of them, so
+    /// declaration edges never match — this is the shared scoping rule
+    /// (endpoint type, not name) that keeps declarations and instance edges
+    /// apart in the one table.
+    pub async fn count_instance_edges_from_types(
         &self,
-        declaring_type: &str,
         relationship_name: &str,
+        source_types: &[String],
     ) -> Result<i64> {
+        if source_types.is_empty() {
+            return Ok(0);
+        }
+        let placeholders: Vec<String> = (2..source_types.len() + 2)
+            .map(|i| format!("?{i}"))
+            .collect();
+        let sql = format!(
+            "SELECT COUNT(*) FROM relationship r \
+             JOIN node s ON s.id = r.in_node \
+             WHERE r.relationship_type = ?1 AND s.node_type IN ({})",
+            placeholders.join(", ")
+        );
+        let mut params = vec![libsql::Value::Text(relationship_name.to_string())];
+        params.extend(source_types.iter().map(|t| libsql::Value::Text(t.clone())));
         let mut rows = self
             .read()
             .await?
-            .query(
-                "SELECT COUNT(*) FROM relationship r \
-                 JOIN node s ON s.id = r.in_node \
-                 WHERE r.relationship_type = ?1 AND s.node_type = ?2",
-                libsql::params![relationship_name.to_string(), declaring_type.to_string()],
-            )
+            .query(&sql, params)
             .await
             .context("Failed to count instance edges for declaration")?;
         let row = rows
