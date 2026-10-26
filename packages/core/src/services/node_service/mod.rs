@@ -13120,6 +13120,64 @@ mod tests {
         );
     }
 
+    /// Converting a stored node to a task through the versioned
+    /// `update_node`, the path a client's type conversion takes, stores the
+    /// task's default status. Schema validation accepts the missing required
+    /// field because it has a default, so without the default the row would
+    /// be a task with no status, and a query filtering on the status the task
+    /// has by default would never find it.
+    #[tokio::test]
+    async fn a_versioned_retype_stores_the_new_types_defaults() {
+        let (service, _temp) = create_test_service().await;
+        let id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Write the report".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let version = service.get_node(&id).await.unwrap().unwrap().version;
+
+        let retyped = service
+            .update_node(
+                &id,
+                version,
+                NodeUpdate::new().with_node_type("task".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(retyped.node_type, "task");
+        let stored = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.properties["task"]["status"],
+            json!("open"),
+            "the retype must store the task's default status: {}",
+            stored.properties
+        );
+        let open_tasks = service
+            .query_nodes(
+                NodeFilter::new()
+                    .with_node_type("task".to_string())
+                    .with_property_filter(
+                        crate::models::PropertyFilter::new(
+                            "$.status".to_string(),
+                            FilterOperator::Equals,
+                            json!("open"),
+                        )
+                        .unwrap(),
+                    ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            open_tasks.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec![id.as_str()],
+            "the converted task must be found by its default status"
+        );
+    }
+
     // ========================================================================
     // build_node_tree_recursive guards.
     //

@@ -350,10 +350,6 @@ async fn a_trusted_import_stores_an_inherited_field_in_its_declaring_bucket() {
 #[tokio::test]
 async fn a_retype_into_a_subtype_defaults_inherited_fields_before_validating() {
     for path in UPDATE_PATHS {
-        // The version-checked update never defaults: it is not a retype path.
-        if matches!(path, UpdatePath::VersionCheckedInTx) {
-            continue;
-        }
         let (service, _temp) = service_with_campaign_type().await;
         let id = service
             .create_node(Node::new(
@@ -412,10 +408,6 @@ async fn a_value_named_in_its_declaring_bucket_is_not_defaulted_over() {
     }
 
     for path in UPDATE_PATHS {
-        // The version-checked update never defaults: it is not a retype path.
-        if matches!(path, UpdatePath::VersionCheckedInTx) {
-            continue;
-        }
         let id = service
             .create_node(Node::new(
                 "text".to_string(),
