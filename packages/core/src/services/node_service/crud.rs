@@ -1958,12 +1958,13 @@ impl NodeService {
         // included. Non-tx reads like the chain lookup behind it are safe
         // from inside a write transaction — same precedent as
         // `insert_node_in_tx_no_invariant_dispatch`'s own
-        // schema/title/play-validation calls. Re-bucketed before validating,
-        // same reasoning as the update paths above: an inherited field
-        // arrives flat and must be moved to its declaring ancestor's bucket,
-        // or it exists in two places. No defaulting here — this path does not
-        // change the node's type.
-        self.rebucket_and_validate(&mut updated, false).await?;
+        // schema/title/play-validation calls. Same sequence as the update
+        // paths above: on a type change the new type's missing fields are
+        // defaulted first, and an inherited field, which arrives flat, is
+        // moved to its declaring ancestor's bucket before anything validates
+        // it, or it exists in two places.
+        self.rebucket_and_validate(&mut updated, node_type_changed)
+            .await?;
 
         let play_rules_changed = self
             .settle_play_update(existing, &mut updated, enables_play)
