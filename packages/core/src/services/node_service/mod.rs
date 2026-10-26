@@ -5776,6 +5776,73 @@ mod tests {
         assert!(children.iter().any(|c| c.id == child_id));
     }
 
+    /// The first create under a virtual date page creates the page. A writer
+    /// holds the write guard with that page already inserted, uncommitted,
+    /// so a create under the same date reads the page as absent and queues
+    /// on the guard. Once the writer commits, the create must find the page
+    /// there rather than insert it a second time and fail on its id.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_create_under_a_date_page_another_writer_is_creating_succeeds() {
+        let (service, _temp) = create_test_service().await;
+        let date = "2025-06-16";
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let writer_service = service.clone();
+        let writer = tokio::spawn(async move {
+            let service_for_tx = writer_service.clone();
+            writer_service
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        let page = Node::new_with_id(
+                            date.to_string(),
+                            "date".to_string(),
+                            date.to_string(),
+                            json!({}),
+                        );
+                        service_for_tx.create_node_in_tx(tx, page, true).await?;
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let creator = service.clone();
+        let create_task = tokio::spawn(async move {
+            creator
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "text".to_string(),
+                    content: "Note under date".to_string(),
+                    parent_id: Some(date.to_string()),
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({}),
+                    lifecycle_status: None,
+                })
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !create_task.is_finished(),
+            "the create must read the date page as absent and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        let child_id = create_task
+            .await
+            .unwrap()
+            .expect("a date page another writer created must not fail the create");
+
+        let children = service.get_children(date).await.unwrap();
+        assert_eq!(
+            children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec![child_id.as_str()]
+        );
+    }
+
     #[tokio::test]
     async fn test_mention_operations() {
         let (service, _temp) = create_test_service().await;

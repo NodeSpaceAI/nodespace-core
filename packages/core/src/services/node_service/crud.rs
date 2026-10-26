@@ -1236,17 +1236,35 @@ impl NodeService {
             return Ok(()); // Already exists in database
         }
 
-        // Auto-create the date container
-        let date_node = Node::new_with_id(
-            node_id.to_string(),
-            "date".to_string(),
-            node_id.to_string(), // Default content to date
-            serde_json::json!({}),
-        );
-
-        self.create_node(date_node).await?;
-
-        Ok(())
+        // Auto-create the date container. The pooled read above only skips
+        // the write guard in the common case; whether the page is absent is
+        // decided again under the guard, with the insert, so a page another
+        // writer committed while this call waited is left as it is instead
+        // of inserted twice.
+        let date_id = node_id.to_string();
+        let service = self.clone();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                let exists = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &date_id)
+                    .await
+                    .map_err(NodeServiceError::from_store)?
+                    .is_some();
+                if exists {
+                    return Ok(());
+                }
+                let date_node = Node::new_with_id(
+                    date_id.clone(),
+                    crate::models::CoreNodeType::Date.as_str().to_string(),
+                    date_id, // Default content to date
+                    serde_json::json!({}),
+                );
+                service
+                    .create_node_in_tx(tx, date_node, true)
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await
     }
 
     /// Get a node by ID
