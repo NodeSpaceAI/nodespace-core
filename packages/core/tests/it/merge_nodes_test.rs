@@ -560,6 +560,104 @@ async fn merge_closes_the_conflict_record_with_a_merge_resolution() -> Result<()
     Ok(())
 }
 
+/// A node cannot be merged into itself. The merge and its preview are
+/// refused before anything is written: the node keeps its parent, its place
+/// among its siblings, its version and its lifecycle, and a conflict record
+/// named in the call stays open.
+#[tokio::test]
+async fn merge_refuses_the_same_node_as_survivor_and_loser() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+
+    let parent_id = svc
+        .create_node(Node::new(
+            "text".to_string(),
+            "parent".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let mut children = Vec::new();
+    for content in ["first", "merged into itself", "last"] {
+        children.push(
+            svc.create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: content.to_string(),
+                parent_id: Some(parent_id.clone()),
+                position: InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await?,
+        );
+    }
+    let node_id = children[1].clone();
+    let before = svc.get_node(&node_id).await?.unwrap();
+
+    let merged = svc.merge_nodes(&node_id, &node_id, None).await;
+    assert!(
+        matches!(merged, Err(NodeServiceError::InvalidUpdate(_))),
+        "a self-merge must be refused, got {merged:?}"
+    );
+    let previewed = svc.preview_merge(&node_id, &node_id).await;
+    assert!(
+        matches!(previewed, Err(NodeServiceError::InvalidUpdate(_))),
+        "a self-merge preview must be refused, got {previewed:?}"
+    );
+
+    let after = svc.get_node(&node_id).await?.unwrap();
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.lifecycle_status, before.lifecycle_status);
+    let order: Vec<String> = svc
+        .get_children(&parent_id)
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(order, children, "the node must keep its parent and place");
+
+    let alice_id = svc
+        .create_node(Node::new(
+            "person".to_string(),
+            String::new(),
+            json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
+        ))
+        .await?;
+    svc.create_node(Node::new(
+        "person".to_string(),
+        String::new(),
+        json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
+    ))
+    .await?;
+    let conflict_id = svc
+        .conflicts_for_node(&alice_id)
+        .await?
+        .into_iter()
+        .find(|r| r.kind == ConflictKind::UniqueFieldCollision && r.status == ConflictStatus::Open)
+        .expect("the colliding email must have journaled a conflict")
+        .id;
+
+    let merged = svc
+        .merge_nodes(&alice_id, &alice_id, Some(&conflict_id))
+        .await;
+    assert!(
+        matches!(merged, Err(NodeServiceError::InvalidUpdate(_))),
+        "a self-merge must be refused, got {merged:?}"
+    );
+    let record = svc
+        .conflicts_for_node(&alice_id)
+        .await?
+        .into_iter()
+        .find(|r| r.id == conflict_id)
+        .expect("the record must still exist");
+    assert_eq!(record.status, ConflictStatus::Open);
+    assert_eq!(
+        svc.get_node(&alice_id).await?.unwrap().lifecycle_status,
+        "active"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn get_conflict_returns_the_record_by_its_own_id() -> Result<()> {
     let (svc, _tmp) = service().await?;
