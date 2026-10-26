@@ -832,6 +832,22 @@ impl SqliteStore {
     }
 }
 
+/// An edge's `$.order`, read from column `idx` of `row`: `None` for an edge
+/// with no order.
+///
+/// `json_extract` returns a JSON number written without a fraction or
+/// exponent (`{"order": 5}`) as an INTEGER and any other (`5.0`) as a REAL,
+/// and the driver's `f64` conversion panics on anything but a REAL, so read
+/// the raw value and take either kind.
+fn edge_order(row: &libsql::Row, idx: i32) -> Result<Option<f64>> {
+    match row.get_value(idx)? {
+        libsql::Value::Null => Ok(None),
+        libsql::Value::Real(order) => Ok(Some(order)),
+        libsql::Value::Integer(order) => Ok(Some(order as f64)),
+        other => Err(anyhow::anyhow!("edge order is not a number: {other:?}")),
+    }
+}
+
 // The remaining `impl SqliteStore` methods are split by concern into these
 // child modules; each is an additional `impl SqliteStore` block over the same
 // struct. See ADR-053 groundwork (node CRUD / relationships / embeddings / search).
@@ -3341,6 +3357,250 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// An edge `order` stored as a whole JSON number (`{"order": 5}`) comes
+    /// back from `json_extract` as an INTEGER, not a REAL, and the driver's
+    /// `f64` conversion panics on an INTEGER. Every read of an existing
+    /// sibling or member order must take it as the number it is. One test
+    /// per read site, so each one is pinned on its own.
+    mod integer_edge_order {
+        use super::*;
+
+        async fn new_node(store: &SqliteStore, node_type: &str) -> Result<String> {
+            let node = Node::new(node_type.to_string(), "n".to_string(), json!({}));
+            let id = node.id.clone();
+            store.create_node(node, None, None).await?;
+            Ok(id)
+        }
+
+        /// The stored `order` of the `in_node -[rel_type]-> out_node` edge:
+        /// its SQL type and its value.
+        async fn stored_order(
+            store: &SqliteStore,
+            in_node: &str,
+            out_node: &str,
+            rel_type: &str,
+        ) -> Result<(String, f64)> {
+            let mut rows = store
+                .read()
+                .await?
+                .query(
+                    "SELECT typeof(json_extract(properties, '$.order')), \
+                            CAST(json_extract(properties, '$.order') AS REAL) \
+                     FROM relationship \
+                     WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3",
+                    libsql::params![
+                        in_node.to_string(),
+                        out_node.to_string(),
+                        rel_type.to_string()
+                    ],
+                )
+                .await?;
+            let row = rows.next().await?.context("no such edge")?;
+            Ok((row.get::<String>(0)?, row.get::<f64>(1)?))
+        }
+
+        /// Store `in_node -[rel_type]-> out_node` with the caller's
+        /// whole-number `order`, as the generic relationship write stores
+        /// caller edge data, and check it really landed as an INTEGER.
+        async fn integer_order_edge(
+            store: &SqliteStore,
+            in_node: &str,
+            out_node: &str,
+            rel_type: &str,
+            order: i64,
+        ) -> Result<()> {
+            store
+                .create_generic_relationship(
+                    in_node,
+                    out_node,
+                    rel_type,
+                    None,
+                    &json!({ "order": order }),
+                )
+                .await?;
+            assert_eq!(
+                stored_order(store, in_node, out_node, rel_type).await?,
+                ("integer".to_string(), order as f64),
+                "the setup must store an INTEGER order"
+            );
+            Ok(())
+        }
+
+        /// A collection whose one member sits at integer order 5.
+        async fn collection_with_integer_member(store: &SqliteStore) -> Result<String> {
+            let collection = new_node(store, "collection").await?;
+            let member = new_node(store, "text").await?;
+            integer_order_edge(store, &member, &collection, "member_of", 5).await?;
+            Ok(collection)
+        }
+
+        /// A parent whose one child sits at integer order 5, and that child.
+        async fn parent_with_integer_child(store: &SqliteStore) -> Result<(String, String)> {
+            let parent = new_node(store, "text").await?;
+            let child = new_node(store, "text").await?;
+            integer_order_edge(store, &parent, &child, "has_child", 5).await?;
+            Ok((parent, child))
+        }
+
+        #[tokio::test]
+        async fn next_member_order_follows_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let collection = collection_with_integer_member(&store).await?;
+            assert_eq!(store.get_next_member_order(&collection).await?, 6.0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn add_to_collection_appends_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let collection = collection_with_integer_member(&store).await?;
+            let member = new_node(&store, "text").await?;
+            let (_, props) = store
+                .add_to_collection(&member, &collection, &json!({}))
+                .await?
+                .context("the member was not added")?;
+            assert_eq!(props["order"], json!(6.0));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn bulk_add_to_collections_appends_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let collection = collection_with_integer_member(&store).await?;
+            let member = new_node(&store, "text").await?;
+            store
+                .bulk_add_to_collections(&[(member.clone(), collection.clone())])
+                .await?;
+            assert_eq!(
+                stored_order(&store, &member, &collection, "member_of").await?,
+                ("real".to_string(), 6.0)
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn relationship_orders_read_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let collection = collection_with_integer_member(&store).await?;
+            assert_eq!(
+                store
+                    .get_relationship_orders(&collection, "member_of", "out_node")
+                    .await?,
+                vec![Some(5.0)]
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn append_child_edge_appends_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let (parent, _) = parent_with_integer_child(&store).await?;
+            let child = new_node(&store, "text").await?;
+            let (order, _) = store.append_child_edge(&parent, &child).await?;
+            assert_eq!(order, 6.0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn create_child_node_appends_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let (parent, _) = parent_with_integer_child(&store).await?;
+            let child = store
+                .create_child_node_atomic(&parent, "text", "new child", json!({}), None)
+                .await?;
+            assert_eq!(
+                stored_order(&store, &parent, &child.id, "has_child").await?,
+                ("real".to_string(), 6.0)
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn has_child_edge_in_tx_places_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let (parent, first) = parent_with_integer_child(&store).await?;
+            let child = new_node(&store, "text").await?;
+            let placement = store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::create_has_child_edge_in_tx(tx, &parent, &child, Some(&first))
+                            .await
+                    })
+                })
+                .await?;
+            assert_eq!(placement.order, 6.0);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn move_node_places_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let (parent, first) = parent_with_integer_child(&store).await?;
+            let moving = new_node(&store, "text").await?;
+            let placement = store
+                .move_node(&moving, Some(&parent), Some(&first))
+                .await?;
+            assert_eq!(placement.order, 6.0);
+            Ok(())
+        }
+
+        /// The re-spread rewrites only keys that are not already on their
+        /// rank, so an integer order equal to its rank stays an INTEGER, and
+        /// the move's second sibling read meets it.
+        #[tokio::test]
+        async fn move_node_rereads_an_integer_order_after_a_respread() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let parent = new_node(&store, "text").await?;
+            let first = new_node(&store, "text").await?;
+            integer_order_edge(&store, &parent, &first, "has_child", 1).await?;
+            let second = new_node(&store, "text").await?;
+            store
+                .create_generic_relationship(
+                    &parent,
+                    &second,
+                    "has_child",
+                    None,
+                    &json!({ "order": 1.00001 }),
+                )
+                .await?;
+
+            let moving = new_node(&store, "text").await?;
+            let placement = store
+                .move_node(&moving, Some(&parent), Some(&first))
+                .await?;
+
+            assert_eq!(
+                placement.respread,
+                vec![(second.clone(), 2.0)],
+                "the collapsed gap must re-spread the second sibling only"
+            );
+            assert_eq!(
+                stored_order(&store, &parent, &first, "has_child").await?,
+                ("integer".to_string(), 1.0),
+                "the first sibling keeps its INTEGER order through the re-spread"
+            );
+            assert_eq!(placement.order, 1.5);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn move_children_to_parent_appends_after_an_integer_order() -> Result<()> {
+            let (store, _t) = create_test_store().await?;
+            let (parent, _) = parent_with_integer_child(&store).await?;
+            // The moved child needs a parent edge to replace.
+            let source = new_node(&store, "text").await?;
+            let moving = Node::new("text".to_string(), "moving".to_string(), json!({}));
+            let (moving_id, version) = (moving.id.clone(), moving.version);
+            store.create_node(moving, None, None).await?;
+            store.move_node(&moving_id, Some(&source), None).await?;
+            assert_eq!(
+                move_children_to_parent(&store, &parent, &[(moving_id.as_str(), version)]).await?,
+                vec![6.0]
+            );
+            Ok(())
+        }
     }
 
     /// A cursor left open by one task must not pin another task's reads to a

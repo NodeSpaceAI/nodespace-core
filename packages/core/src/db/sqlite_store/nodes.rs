@@ -623,7 +623,7 @@ impl SqliteStore {
         // so the next append also got 1.0 → two siblings collided at 1.0. Track
         // presence as Option and append after the max regardless of sign.
         let last_order: Option<f64> = if let Some(row) = rows.next().await? {
-            Some(row.get::<Option<f64>>(0)?.unwrap_or(0.0))
+            Some(edge_order(&row, 0)?.unwrap_or(0.0))
         } else {
             None
         };
@@ -753,7 +753,7 @@ impl SqliteStore {
         let mut siblings: Vec<(String, f64)> = Vec::new();
         while let Some(row) = rows.next().await? {
             let sibling_id: String = row.get(0)?;
-            let ord: Option<f64> = row.get(1)?;
+            let ord = edge_order(&row, 1)?;
             siblings.push((sibling_id, ord.unwrap_or(0.0)));
         }
 
@@ -3373,7 +3373,7 @@ impl SqliteStore {
             let mut siblings: Vec<(String, f64)> = Vec::new();
             while let Some(row) = rows.next().await? {
                 let child_id: String = row.get(0)?;
-                let ord: Option<f64> = row.get(1)?;
+                let ord = edge_order(&row, 1)?;
                 siblings.push((child_id, ord.unwrap_or(0.0)));
             }
 
@@ -3399,7 +3399,7 @@ impl SqliteStore {
                             let mut siblings2: Vec<(String, f64)> = Vec::new();
                             while let Some(row) = rows2.next().await? {
                                 let cid: String = row.get(0)?;
-                                let ord: Option<f64> = row.get(1)?;
+                                let ord = edge_order(&row, 1)?;
                                 siblings2.push((cid, ord.unwrap_or(0.0)));
                             }
                             if let Some(after_index2) =
@@ -3528,7 +3528,7 @@ impl SqliteStore {
                 libsql::params![new_parent_id.to_string()],
             ).await.context("Failed to read existing child order for move_children_to_parent")?;
             if let Some(row) = rows.next().await? {
-                Some(row.get::<Option<f64>>(0)?.unwrap_or(0.0))
+                Some(edge_order(&row, 0)?.unwrap_or(0.0))
             } else {
                 None
             }
