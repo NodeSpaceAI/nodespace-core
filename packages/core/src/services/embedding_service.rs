@@ -95,6 +95,9 @@ pub const DEFAULT_BATCH_SIZE: usize = 50;
 /// the node is fetched — so the boost must be Rust-side, not SQL-side.
 pub const TITLE_BOOST: f64 = 0.1;
 
+/// How much of a search query, in bytes, the search profile log line carries.
+const LOGGED_QUERY_BYTES: usize = 50;
+
 /// Root-aggregate embedding service (behavior-driven)
 ///
 /// Manages semantic embeddings using the root-aggregate model where only
@@ -408,6 +411,14 @@ impl NodeEmbeddingService {
             index -= 1;
         }
         index
+    }
+
+    /// The start of `query` for a log line: at most [`LOGGED_QUERY_BYTES`]
+    /// bytes, cut at a character boundary. A byte cut through a multi-byte
+    /// character (CJK, an accented letter, an emoji) would panic the search
+    /// whenever the log line is enabled.
+    fn query_log_prefix(query: &str) -> &str {
+        &query[..Self::find_char_boundary(query, LOGGED_QUERY_BYTES)]
     }
 
     // =========================================================================
@@ -908,7 +919,7 @@ impl NodeEmbeddingService {
             tier1 = intersection_count,
             tier2 = tier2_count,
             tier3 = tier3_count,
-            query = &query[..query.len().min(50)],
+            query = Self::query_log_prefix(query),
             "hybrid search profile"
         );
 
@@ -1203,6 +1214,30 @@ mod tests {
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
         assert_eq!(hash1.len(), 64); // SHA256 hex = 64 chars
+    }
+
+    /// The search profile logs a query's first bytes. A query whose limit
+    /// falls inside a character is cut before that character, not through it.
+    #[test]
+    fn query_log_prefix_cuts_at_a_character_boundary() {
+        // 20 CJK characters of 3 bytes each: byte 50 is inside the 17th.
+        let cjk = "如何在两台设备之间同步我的笔记和任务列表";
+        assert_eq!(cjk.len(), 60);
+        assert_eq!(
+            NodeEmbeddingService::query_log_prefix(cjk),
+            "如何在两台设备之间同步我的笔记和"
+        );
+
+        // An accented letter (2 bytes) straddling the limit.
+        let accented = format!("{}é tail", "a".repeat(49));
+        assert_eq!(
+            NodeEmbeddingService::query_log_prefix(&accented),
+            "a".repeat(49)
+        );
+
+        let ascii = "a".repeat(80);
+        assert_eq!(NodeEmbeddingService::query_log_prefix(&ascii).len(), 50);
+        assert_eq!(NodeEmbeddingService::query_log_prefix("short"), "short");
     }
 
     #[test]
