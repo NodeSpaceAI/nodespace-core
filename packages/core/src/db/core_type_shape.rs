@@ -17,7 +17,9 @@
 //! do to a core schema through the schema API is left out of the comparison:
 //!
 //! - add a namespaced field (`custom:estimate`);
-//! - add values to an extensible enum;
+//! - add values to an extensible enum, including one the type inherits
+//!   through `extends` (an issue's `priority`, from `task`), which the type
+//!   then declares itself, holding no core values, only the values added;
 //! - remove or rename a field core declares as theirs to change (one with
 //!   `user` protection, such as a task's `priority`);
 //! - add or remove a context path. The `_seed` bookkeeping kept beside the
@@ -37,7 +39,9 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 
 use crate::models::core_schemas::get_core_schemas;
-use crate::models::{CoreNodeType, SchemaField, SchemaProtectionLevel};
+use crate::models::{
+    CoreNodeType, SchemaField, SchemaFieldType, SchemaNode, SchemaProtectionLevel,
+};
 
 /// How one core type in a database differs from the one this build ships.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +68,8 @@ pub enum CoreTypeDifference {
         /// Fields this build declares and protects that the stored schema
         /// lacks.
         missing: Vec<String>,
-        /// Fields the stored schema declares that this build does not.
+        /// Fields the stored schema declares that this build does not, other
+        /// than a user's extension of an enum the type inherits.
         unexpected: Vec<String>,
         /// Fields both declare, with a different type or different core
         /// values.
@@ -143,9 +148,44 @@ fn core_fields(fields: &[SchemaField]) -> BTreeMap<&str, FieldShape> {
         .collect()
 }
 
+/// The fields a core type inherits through `extends`, as this build ships
+/// its ancestors: each ancestor's own declarations, nearest ancestor first.
+fn inherited_fields<'a>(shipped: &'a [SchemaNode], schema: &SchemaNode) -> Vec<&'a SchemaField> {
+    let mut fields = Vec::new();
+    let mut parent = schema.extends.as_deref();
+    while let Some(id) = parent {
+        let Some(ancestor) = shipped.iter().find(|s| s.envelope.id == id) else {
+            break;
+        };
+        fields.extend(&ancestor.fields);
+        parent = ancestor.extends.as_deref();
+    }
+    fields
+}
+
+/// Whether `stored`, a field a core type holds under a name it does not
+/// declare, is what the schema API stores when a user adds values to an
+/// extensible enum the type inherits: the inherited field declared again on
+/// the type with no core values, only the user values added.
+fn extends_an_inherited_enum(name: &str, stored: &FieldShape, inherited: &[&SchemaField]) -> bool {
+    inherited
+        .iter()
+        .find(|field| field.name == name)
+        .is_some_and(|field| {
+            field.field_type == SchemaFieldType::Enum
+                && field.extensible == Some(true)
+                && *stored
+                    == FieldShape {
+                        core_values: Vec::new(),
+                        ..FieldShape::of(field)
+                    }
+        })
+}
+
 fn compare_fields(
     type_id: &str,
     shipped: &[SchemaField],
+    inherited: &[&SchemaField],
     stored: &[SchemaField],
 ) -> Option<CoreTypeMismatch> {
     // A field a user may remove or rename is not missing when it is gone.
@@ -159,9 +199,10 @@ fn compare_fields(
     let shipped = core_fields(shipped);
     let stored = core_fields(stored);
     let unexpected: Vec<String> = stored
-        .keys()
-        .filter(|name| !shipped.contains_key(*name))
-        .map(|name| name.to_string())
+        .iter()
+        .filter(|(name, _)| !shipped.contains_key(*name))
+        .filter(|(name, shape)| !extends_an_inherited_enum(name, shape, inherited))
+        .map(|(name, _)| name.to_string())
         .collect();
     let changed: Vec<String> = shipped
         .iter()
@@ -190,7 +231,8 @@ pub(super) async fn find_core_type_mismatches(
     conn: &libsql::Connection,
 ) -> Result<Vec<CoreTypeMismatch>> {
     let mut mismatches = Vec::new();
-    for shipped in get_core_schemas() {
+    let core_schemas = get_core_schemas();
+    for shipped in &core_schemas {
         let type_id = shipped.envelope.id.as_str();
         let mut rows = conn
             .query(
@@ -244,7 +286,12 @@ pub(super) async fn find_core_type_mismatches(
                 }
             },
         };
-        mismatches.extend(compare_fields(type_id, &shipped.fields, &stored));
+        mismatches.extend(compare_fields(
+            type_id,
+            &shipped.fields,
+            &inherited_fields(&core_schemas, shipped),
+            &stored,
+        ));
     }
     Ok(mismatches)
 }
@@ -254,7 +301,6 @@ mod tests {
     use super::*;
     use crate::models::schema::EnumValue;
     use crate::models::schema_node::to_node;
-    use crate::models::{SchemaFieldType, SchemaNode};
 
     async fn database() -> (libsql::Connection, tempfile::TempDir) {
         crate::db::ensure_sqlite_vec_registered().await;
@@ -472,6 +518,133 @@ mod tests {
         insert(&conn, &task).await;
 
         assert!(find_core_type_mismatches(&conn).await.unwrap().is_empty());
+    }
+
+    /// A value a user adds to an enum a core subtype inherits is stored on
+    /// the subtype as its own declaration of the field, holding only the
+    /// values added: not a difference. The same name on the subtype holding
+    /// core values, or of another type, or for a field that is not an
+    /// extensible enum, is no user's extension, and still is one.
+    #[tokio::test]
+    async fn a_users_extension_of_an_inherited_enum_is_not_a_mismatch() {
+        let (conn, _dir) = database().await;
+        seed_all(&conn).await;
+
+        // What the schema API stores: the inherited field, with no core
+        // values and the added ones as user values.
+        let extension = |base: &str, name: &str, value: &str, maps_to: &str| {
+            let mut field = shipped(base).get_field(name).unwrap().clone();
+            field.core_values = Some(Vec::new());
+            field.user_values = Some(vec![EnumValue {
+                value: value.to_string(),
+                label: value.to_string(),
+                maps_to: Some(maps_to.to_string()),
+            }]);
+            field
+        };
+        let mut issue = shipped("issue");
+        assert!(issue.get_field("priority").is_none());
+        issue
+            .fields
+            .push(extension("task", "priority", "urgent", "highest"));
+        insert(&conn, &issue).await;
+        let mut project = shipped("software-project");
+        assert!(project.get_field("status").is_none());
+        project
+            .fields
+            .push(extension("project", "status", "incubating", "planning"));
+        project
+            .fields
+            .push(extension("project", "priority", "someday", "lowest"));
+        insert(&conn, &project).await;
+        assert!(find_core_type_mismatches(&conn).await.unwrap().is_empty());
+        insert(&conn, &shipped("software-project")).await;
+
+        let unexpected_on_issue = [CoreTypeMismatch {
+            type_id: "issue".to_string(),
+            difference: CoreTypeDifference::Fields {
+                missing: vec![],
+                unexpected: vec!["priority".to_string()],
+                changed: vec![],
+            },
+        }];
+        // `priority` declared again with core values of its own.
+        let mut issue = shipped("issue");
+        issue
+            .fields
+            .push(shipped("task").get_field("priority").unwrap().clone());
+        insert(&conn, &issue).await;
+        assert_eq!(
+            find_core_type_mismatches(&conn).await.unwrap(),
+            unexpected_on_issue
+        );
+
+        // `priority` of another type.
+        let mut issue = shipped("issue");
+        let mut priority = extension("task", "priority", "urgent", "highest");
+        priority.field_type = SchemaFieldType::Text;
+        issue.fields.push(priority);
+        insert(&conn, &issue).await;
+        assert_eq!(
+            find_core_type_mismatches(&conn).await.unwrap(),
+            unexpected_on_issue
+        );
+
+        // An inherited field that is not an extensible enum takes no values.
+        let mut issue = shipped("issue");
+        let mut due_date = shipped("task").get_field("due_date").unwrap().clone();
+        due_date.core_values = Some(Vec::new());
+        issue.fields.push(due_date);
+        insert(&conn, &issue).await;
+        assert_eq!(
+            find_core_type_mismatches(&conn).await.unwrap(),
+            [CoreTypeMismatch {
+                type_id: "issue".to_string(),
+                difference: CoreTypeDifference::Fields {
+                    missing: vec![],
+                    unexpected: vec!["due_date".to_string()],
+                    changed: vec![],
+                },
+            }]
+        );
+    }
+
+    /// Only an inherited enum that is extensible takes a user's values, so a
+    /// field declared again without core values is an extension only of one.
+    #[test]
+    fn only_an_inherited_extensible_enum_is_extended() {
+        let priority = shipped("task").get_field("priority").unwrap().clone();
+        let extension = |field: &SchemaField| {
+            FieldShape::of(&SchemaField {
+                core_values: Some(Vec::new()),
+                user_values: Some(vec![EnumValue::new(
+                    "urgent".to_string(),
+                    "Urgent".to_string(),
+                )]),
+                ..field.clone()
+            })
+        };
+        assert!(extends_an_inherited_enum(
+            "priority",
+            &extension(&priority),
+            &[&priority]
+        ));
+
+        let closed = SchemaField {
+            extensible: None,
+            ..priority.clone()
+        };
+        let text = SchemaField {
+            field_type: SchemaFieldType::Text,
+            core_values: None,
+            ..priority.clone()
+        };
+        for field in [closed, text] {
+            assert!(
+                !extends_an_inherited_enum("priority", &extension(&field), &[&field]),
+                "{field:?}"
+            );
+        }
     }
 
     /// A core schema's context paths are the user's to change, and the

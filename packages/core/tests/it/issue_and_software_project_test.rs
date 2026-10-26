@@ -934,6 +934,71 @@ async fn a_user_status_added_to_issue_resolves_to_a_task_status() -> Result<()> 
     Ok(())
 }
 
+/// A value a user adds to an enum `issue` or `software-project` inherits
+/// rather than declares is stored on the subtype as its own declaration of
+/// that field. That is a user's change to a core schema, not another build's
+/// core type, so the database still opens afterwards, with the value there.
+#[tokio::test]
+async fn a_value_added_to_an_inherited_enum_survives_a_reopen() -> Result<()> {
+    use nodespace_core::services::NodeService;
+    use std::sync::Arc;
+    async fn open(path: &std::path::Path) -> Result<Arc<NodeService>> {
+        let mut store = Arc::new(nodespace_core::db::SqliteStore::new(path.to_path_buf()).await?);
+        Ok(Arc::new(NodeService::new(&mut store).await?))
+    }
+    // (type, inherited field, added value, the value it maps to)
+    let additions = [
+        ("issue", "priority", "urgent", "highest"),
+        ("software-project", "status", "incubating", "planning"),
+        ("software-project", "priority", "someday", "lowest"),
+    ];
+    let dir = tempfile::TempDir::new()?;
+    let path = dir.path().join("test.db");
+
+    {
+        let service = open(&path).await?;
+        for (schema_id, field, value, maps_to) in additions {
+            let own = service.get_schema_node(schema_id).await?.unwrap();
+            assert!(
+                own.get_field(field).is_none(),
+                "{schema_id} inherits {field}"
+            );
+            nodespace_core::schema::handle_update_schema(
+                &service,
+                json!({
+                    "schema_id": schema_id,
+                    "add_field_values": [{
+                        "field": field,
+                        "values": [{ "value": value, "label": value, "mapsTo": maps_to }]
+                    }]
+                }),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("adding {value} to {schema_id}.{field}: {e}"))?;
+            let own = service.get_schema_node(schema_id).await?.unwrap();
+            assert!(
+                own.get_field(field).is_some(),
+                "{schema_id} declares {field}"
+            );
+        }
+    }
+
+    let service = open(&path).await?;
+    for (schema_id, field, value, _) in additions {
+        let fields = nodespace_core::schema::resolve_effective_fields(&service, schema_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("resolving {schema_id}: {e}"))?;
+        let values: Vec<&str> = fields
+            .iter()
+            .filter(|f| f.name == field)
+            .flat_map(|f| f.core_values.iter().chain(f.user_values.iter()).flatten())
+            .map(|v| v.value.as_str())
+            .collect();
+        assert!(values.contains(&value), "{schema_id}.{field}: {values:?}");
+    }
+    Ok(())
+}
+
 /// A task retyped into an issue keeps what it had. An issue declares
 /// `status` itself, so the status the task held in the `task` bucket moves to
 /// the `issue` bucket, and the fields a task declares stay where they were.
