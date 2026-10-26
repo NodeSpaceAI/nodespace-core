@@ -795,7 +795,9 @@ impl NodeService {
                 )));
             };
 
-            // Cycle guard: the new parent must not be a descendant of any moved child.
+            // Cycle guard: the new parent must not be a descendant of any moved
+            // child. This pooled read only fails fast; the store checks again
+            // inside the transaction, against the tree it writes into.
             if self.is_descendant(node_id, new_parent_id).await? {
                 return Err(TreeInvariantViolation::cycle(
                     node_id,

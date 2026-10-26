@@ -2659,6 +2659,51 @@ mod tests {
         Ok(())
     }
 
+    /// The batch move checks for a cycle against the tree it writes into: a
+    /// child cannot be moved under its own descendant, and nothing moves.
+    #[tokio::test]
+    async fn test_move_children_to_parent_store_refuses_a_cycle() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
+        let root_id = root.id.clone();
+        store.create_node(root, None, None).await?;
+        let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
+        let child_id = child.id.clone();
+        store.create_node(child, None, None).await?;
+        store.move_node(&child_id, Some(&root_id), None).await?;
+        let grandchild = Node::new("text".to_string(), "Grandchild".to_string(), json!({}));
+        let grandchild_id = grandchild.id.clone();
+        store.create_node(grandchild, None, None).await?;
+        store
+            .move_node(&grandchild_id, Some(&child_id), None)
+            .await?;
+        let child_version = store.get_node(&child_id).await?.unwrap().version;
+
+        let err = move_children_to_parent(
+            &store,
+            &grandchild_id,
+            &[(child_id.as_str(), child_version)],
+        )
+        .await
+        .expect_err("a child cannot be moved under its own descendant");
+        let violation = err
+            .downcast_ref::<TreeInvariantViolation>()
+            .unwrap_or_else(|| panic!("expected a typed TreeInvariantViolation, got: {err:#}"));
+        assert_eq!(violation.rule, TreeInvariantRule::Cycle);
+        assert_eq!(
+            store.get_parent_id(&child_id).await?.as_deref(),
+            Some(root_id.as_str()),
+            "the refused move must leave the child where it was"
+        );
+        assert_eq!(
+            store.get_parent_id(&grandchild_id).await?.as_deref(),
+            Some(child_id.as_str())
+        );
+
+        Ok(())
+    }
+
     // C3c: store-layer atomicity — exercises the in-transaction version check
     // that the service-level pre-validation cannot catch (concurrent version bump).
     #[tokio::test]

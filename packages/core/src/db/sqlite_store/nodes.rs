@@ -3530,7 +3530,10 @@ impl SqliteStore {
 
     /// Re-parent an ordered set of existing children to `new_parent_id` inside
     /// `tx`. Validates each child's version using `SELECT changes()` after a
-    /// version-gated DELETE.
+    /// version-gated DELETE, then, like [`Self::move_node_in_tx`], refuses a
+    /// child the new parent sits under (a cycle), read through `tx` under the
+    /// write guard. A caller's pooled cycle check before the transaction only
+    /// fails fast: a crossing move can commit between it and this write.
     ///
     /// Returns the assigned fractional order for each child, preserving input
     /// array order as sibling order under the new parent, or
@@ -3639,6 +3642,8 @@ impl SqliteStore {
                     child_id
                 ));
             }
+
+            Self::validate_no_cycle_in_tx(tx, new_parent_id, &child_id).await?;
 
             // Insert new has_child edge under new_parent_id.
             let rel_id = uuid::Uuid::new_v4().to_string();
