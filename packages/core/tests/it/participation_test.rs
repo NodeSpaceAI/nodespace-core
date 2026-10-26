@@ -540,6 +540,7 @@ mod vector_index {
                     100,
                     10,
                 )],
+                chrono::Utc::now(),
             )
             .await
             .unwrap();

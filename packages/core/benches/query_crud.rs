@@ -569,7 +569,11 @@ fn bench_vector_search(c: &mut Criterion) {
             let vector = random_unit_vector(&mut rng);
             let embedding = NewEmbedding::single_chunk(id, vector, format!("hash-{}", i), 32, 8);
             store
-                .upsert_embeddings(&embedding.node_id.clone(), vec![embedding])
+                .upsert_embeddings(
+                    &embedding.node_id.clone(),
+                    vec![embedding],
+                    chrono::Utc::now(),
+                )
                 .await
                 .expect("upsert embedding");
         }

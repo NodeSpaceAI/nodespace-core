@@ -90,7 +90,7 @@ mod search_result_scaling_tests {
             let id = node.id.clone();
             store.create_node(node, None, None).await?;
             store
-                .upsert_embeddings(&id, vec![embedding_for(&id, i)])
+                .upsert_embeddings(&id, vec![embedding_for(&id, i)], chrono::Utc::now())
                 .await?;
         }
         Ok(())

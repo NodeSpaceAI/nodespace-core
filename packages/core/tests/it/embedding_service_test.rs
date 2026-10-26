@@ -560,6 +560,7 @@ async fn test_knn_search_with_mock_embeddings() -> Result<()> {
                 content_hash: "hash1".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -577,6 +578,7 @@ async fn test_knn_search_with_mock_embeddings() -> Result<()> {
                 content_hash: "hash2".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -594,6 +596,7 @@ async fn test_knn_search_with_mock_embeddings() -> Result<()> {
                 content_hash: "hash3".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -660,6 +663,7 @@ async fn test_knn_search_respects_threshold() -> Result<()> {
                 content_hash: "hash1".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -729,6 +733,7 @@ async fn test_knn_search_with_multiple_chunks() -> Result<()> {
                     token_count: 100,
                 },
             ],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -806,7 +811,9 @@ async fn test_multi_chunk_scoring_density_boost() -> Result<()> {
             }
         })
         .collect();
-    store.upsert_embeddings(&doc_a.id, chunks_a).await?;
+    store
+        .upsert_embeddings(&doc_a.id, chunks_a, chrono::Utc::now())
+        .await?;
 
     // Doc B: 5 chunks, total_chunks=5, same similarity ~0.80
     let chunks_b: Vec<NewEmbedding> = (0..5i32)
@@ -827,7 +834,9 @@ async fn test_multi_chunk_scoring_density_boost() -> Result<()> {
             }
         })
         .collect();
-    store.upsert_embeddings(&doc_b.id, chunks_b).await?;
+    store
+        .upsert_embeddings(&doc_b.id, chunks_b, chrono::Utc::now())
+        .await?;
 
     // Search
     let results = store.search_embeddings(&query_vec, 10, Some(0.5)).await?;
@@ -939,7 +948,9 @@ async fn test_partial_density_ranks_below_full_density() -> Result<()> {
             }
         })
         .collect();
-    store.upsert_embeddings(&doc_a.id, chunks_a).await?;
+    store
+        .upsert_embeddings(&doc_a.id, chunks_a, chrono::Utc::now())
+        .await?;
 
     // Doc B: max_sim ~0.85, but total_chunks=10 while only 2 are stored.
     // density = 2/10 = 0.2 → score = 0.85 * (1 + 0.3 * 0.2) = 0.85 * 1.06 ≈ 0.901
@@ -961,7 +972,9 @@ async fn test_partial_density_ranks_below_full_density() -> Result<()> {
             }
         })
         .collect();
-    store.upsert_embeddings(&doc_b.id, chunks_b).await?;
+    store
+        .upsert_embeddings(&doc_b.id, chunks_b, chrono::Utc::now())
+        .await?;
 
     let results = store.search_embeddings(&query_vec, 10, Some(0.5)).await?;
 
@@ -1085,7 +1098,9 @@ async fn test_threshold_filters_by_composite_score_not_raw_similarity() -> Resul
         })
         .collect();
 
-    store.upsert_embeddings(&doc.id, chunks).await?;
+    store
+        .upsert_embeddings(&doc.id, chunks, chrono::Utc::now())
+        .await?;
 
     // First, get the document with a low threshold to see its actual scores
     let low_threshold_results = store.search_embeddings(&query_vec, 10, Some(0.3)).await?;
@@ -1222,6 +1237,7 @@ async fn test_title_keyword_boost_applied() -> Result<()> {
                 content_hash: "hash-titled".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -1239,6 +1255,7 @@ async fn test_title_keyword_boost_applied() -> Result<()> {
                 content_hash: "hash-untitled".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -1577,6 +1594,7 @@ async fn test_indented_root_drops_its_embedding() -> Result<()> {
                 content_hash: "hash".to_string(),
                 token_count: 3,
             }],
+            chrono::Utc::now(),
         )
         .await?;
     assert!(store.has_embeddings(&moved.id).await?);
@@ -1679,6 +1697,7 @@ async fn test_hybrid_intersection_tier_signal() -> Result<()> {
                     content_hash: hash.to_string(),
                     token_count: 10,
                 }],
+                chrono::Utc::now(),
             )
             .await?;
     }
@@ -1772,6 +1791,7 @@ async fn test_hybrid_bm25_only_tier_has_no_knn_score() -> Result<()> {
                 content_hash: "hash_knn".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
@@ -1842,6 +1862,7 @@ async fn test_hybrid_conceptual_query_bm25_misses_knn_hits() -> Result<()> {
                 content_hash: "hash1".to_string(),
                 token_count: 10,
             }],
+            chrono::Utc::now(),
         )
         .await?;
 
