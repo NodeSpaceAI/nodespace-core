@@ -363,3 +363,88 @@ async fn sweep_closes_an_inherited_field_collision_that_no_longer_holds() -> Res
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Collection-name collisions
+// ---------------------------------------------------------------------------
+
+/// Two collection ids, the first sorting before the second. A record's ids
+/// are stored sorted, so every scenario below runs with each one created
+/// first: a predicate that leans on id or row order fails one of them.
+const LOW_COLLECTION_ID: &str = "1b6f1c2e-3d4a-4b5c-8d6e-7f8091a2b3c4";
+const HIGH_COLLECTION_ID: &str = "e4d3c2b1-a091-4f8e-9d7c-6b5a4f3e2d1c";
+
+/// Creates two active collections named "Projects", `first` before `second`,
+/// and checks that their collision is journaled as one open record.
+async fn colliding_collections(svc: &NodeService, first: &str, second: &str) -> Result<()> {
+    for id in [first, second] {
+        svc.create_node(Node::new_with_id(
+            id.to_string(),
+            "collection".to_string(),
+            "Projects".to_string(),
+            json!({}),
+        ))
+        .await?;
+    }
+    let records = svc.conflicts_for_node(first).await?;
+    assert_eq!(records.len(), 1, "the name collision must be journaled");
+    assert_eq!(records[0].status, ConflictStatus::Open);
+    Ok(())
+}
+
+#[tokio::test]
+async fn sweep_leaves_a_live_collection_name_collision_open_in_either_id_order() -> Result<()> {
+    for (first, second) in [
+        (LOW_COLLECTION_ID, HIGH_COLLECTION_ID),
+        (HIGH_COLLECTION_ID, LOW_COLLECTION_ID),
+    ] {
+        let (svc, _tmp) = service().await?;
+        colliding_collections(&svc, first, second).await?;
+
+        let closed = svc.reconcile_conflicts().await?;
+        assert_eq!(
+            closed, 0,
+            "two active collections still share the name ({first} created first)"
+        );
+        let after = svc.conflicts_for_node(first).await?;
+        assert_eq!(after[0].status, ConflictStatus::Open);
+    }
+    Ok(())
+}
+
+/// Archiving or renaming either participant outside the Conflicts view ends
+/// the collision, whichever one it is and whichever was created first.
+#[tokio::test]
+async fn sweep_closes_a_collection_name_collision_once_either_participant_leaves_it() -> Result<()>
+{
+    for (first, second) in [
+        (LOW_COLLECTION_ID, HIGH_COLLECTION_ID),
+        (HIGH_COLLECTION_ID, LOW_COLLECTION_ID),
+    ] {
+        for leaving in [LOW_COLLECTION_ID, HIGH_COLLECTION_ID] {
+            for update in [
+                NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+                NodeUpdate::new().with_content("Archive".to_string()),
+            ] {
+                let (svc, _tmp) = service().await?;
+                colliding_collections(&svc, first, second).await?;
+                let node = svc.get_node(leaving).await?.unwrap();
+                svc.update_node(leaving, node.version, update.clone())
+                    .await?;
+
+                let closed = svc.reconcile_conflicts().await?;
+                assert_eq!(
+                    closed, 1,
+                    "{leaving} left the collision ({first} created first, {update:?})"
+                );
+                let after = svc.conflicts_for_node(first).await?;
+                assert_eq!(after[0].status, ConflictStatus::Resolved);
+                assert_eq!(
+                    after[0].resolution.as_ref().unwrap()["reason"],
+                    "no_longer_conflicting"
+                );
+            }
+        }
+    }
+    Ok(())
+}
