@@ -315,25 +315,45 @@ impl NodeEmbeddingService {
     /// This function is UTF-8 safe - it never splits in the middle of a
     /// multi-byte character (like emojis).
     fn chunk_content(config: &EmbeddingConfig, content: &str) -> Vec<(i32, i32, String)> {
+        Self::chunks(config, content).collect()
+    }
+
+    /// The chunks `chunk_content` returns, one at a time.
+    ///
+    /// Each chunk holds at least one whole character and starts after the
+    /// previous chunk's start, so the chunks run out even under a config
+    /// whose chunk is shorter than a character or whose overlap is not
+    /// shorter than its chunk.
+    fn chunks<'a>(
+        config: &EmbeddingConfig,
+        content: &'a str,
+    ) -> impl Iterator<Item = (i32, i32, String)> + 'a {
         // Use configured chars_per_token estimate (default: 3)
         // BGE models typically tokenize at ~3-4 chars/token, but technical content
         // with code, markdown, and special characters can be closer to 2.5.
         let chars_per_token = config.chars_per_token_estimate;
         let max_chars = config.max_tokens_per_chunk * chars_per_token;
         let overlap_chars = config.overlap_tokens * chars_per_token;
+        let min_advance = max_chars.saturating_sub(overlap_chars).max(1);
 
-        if content.len() <= max_chars {
-            // Single chunk
-            return vec![(0, content.len() as i32, content.to_string())];
-        }
+        let mut next_start = Some(0);
+        std::iter::from_fn(move || {
+            let start = next_start?;
 
-        let mut chunks = Vec::new();
-        let mut start = 0;
+            if content.len() <= max_chars {
+                // Single chunk
+                next_start = None;
+                return Some((0, content.len() as i32, content.to_string()));
+            }
 
-        while start < content.len() {
+            // The end of the character at `start`: the shortest chunk, and the
+            // shortest step to the next one.
+            let char_end = start + content[start..].chars().next().map_or(1, char::len_utf8);
+
             // Find the byte index that's at most max_chars from start,
             // but ensure it's on a valid UTF-8 character boundary
-            let end = Self::find_char_boundary(content, (start + max_chars).min(content.len()));
+            let end = Self::find_char_boundary(content, (start + max_chars).min(content.len()))
+                .max(char_end);
 
             // Try to find a good break point (newline or space)
             // All searches use rfind which returns byte positions within the slice
@@ -356,29 +376,24 @@ impl NodeEmbeddingService {
                 end
             };
 
-            chunks.push((
+            // Once a chunk reaches the end of the content, there is no next one.
+            // Otherwise start the next chunk a fixed stride of (chunk_size -
+            // overlap) on, so tiny advances can't multiply chunks, but never
+            // past where this chunk ended: a break before the stride would
+            // otherwise leave the bytes between it and the stride in no chunk.
+            // `actual_end` is a char boundary, so the minimum is one too.
+            next_start = (actual_end < content.len()).then(|| {
+                Self::find_char_boundary(content, start + min_advance)
+                    .max(char_end)
+                    .min(actual_end)
+            });
+
+            Some((
                 start as i32,
                 actual_end as i32,
                 content[start..actual_end].to_string(),
-            ));
-
-            // Move forward with overlap, ensuring we land on a char boundary
-            if actual_end >= content.len() {
-                // We've processed the entire content, exit the loop
-                break;
-            }
-
-            // Start the next chunk a fixed stride of (chunk_size - overlap) on, so
-            // tiny advances can't multiply chunks, but never past where this
-            // chunk ended: a break before the stride would otherwise leave the
-            // bytes between it and the stride in no chunk. `actual_end` is a char
-            // boundary, so the minimum is one too.
-            let min_advance = max_chars.saturating_sub(overlap_chars).max(1);
-            let next_start = Self::find_char_boundary(content, start + min_advance);
-            start = next_start.min(actual_end);
-        }
-
-        chunks
+            ))
+        })
     }
 
     /// Find the nearest valid UTF-8 character boundary at or before the given byte index.
@@ -1386,8 +1401,9 @@ mod tests {
     }
 
     /// Asserts that `chunks` are slices of `content` that start at 0, end at
-    /// its length, fit the chunk size, keep advancing, and leave no byte
-    /// between one chunk and the next.
+    /// its length, fit the chunk size (or are a single character, when that is
+    /// longer), keep advancing, and leave no byte between one chunk and the
+    /// next.
     fn assert_chunks_cover(config: &EmbeddingConfig, content: &str, chunks: &[(i32, i32, String)]) {
         let max_chars = config.max_tokens_per_chunk * config.chars_per_token_estimate;
         assert_eq!(
@@ -1402,9 +1418,10 @@ mod tests {
         );
         for (start, end, text) in chunks {
             let (start, end) = (*start as usize, *end as usize);
+            let one_char = content[start..].chars().next().map_or(0, char::len_utf8);
             assert!(
-                start < end && end - start <= max_chars,
-                "chunk {start}..{end} is empty or longer than {max_chars} bytes"
+                start < end && end - start <= max_chars.max(one_char),
+                "chunk {start}..{end} is empty or longer than {max_chars} bytes and one character"
             );
             assert_eq!(text, &content[start..end], "chunk text must be its slice");
         }
@@ -1467,6 +1484,45 @@ mod tests {
                 pair[1].0
             );
         }
+    }
+
+    /// The chunks of `content`, failing instead of running on when there are
+    /// more chunks than characters: chunks that each start at least one
+    /// character after the previous one can't outnumber the characters.
+    fn bounded_chunks(config: &EmbeddingConfig, content: &str) -> Vec<(i32, i32, String)> {
+        let limit = content.chars().count();
+        let chunks: Vec<_> = NodeEmbeddingService::chunks(config, content)
+            .take(limit + 1)
+            .collect();
+        assert!(
+            chunks.len() <= limit,
+            "more chunks than the {limit} characters: chunking stopped advancing"
+        );
+        chunks
+    }
+
+    #[test]
+    fn test_chunk_content_ends_when_the_chunk_is_shorter_than_a_character() {
+        // A zero-token chunk fits no character, so each chunk is one character.
+        let config = EmbeddingConfig {
+            max_tokens_per_chunk: 0,
+            ..Default::default()
+        };
+        let content = "hello world";
+        let chunks = bounded_chunks(&config, content);
+        assert_chunks_cover(&config, content, &chunks);
+    }
+
+    #[test]
+    fn test_chunk_content_ends_when_the_overlap_is_not_shorter_than_the_chunk() {
+        // The stride is one byte, inside the first four-byte character.
+        let config = EmbeddingConfig {
+            overlap_tokens: 600,
+            ..Default::default()
+        };
+        let content = "🎉".repeat(600);
+        let chunks = bounded_chunks(&config, &content);
+        assert_chunks_cover(&config, &content, &chunks);
     }
 
     // =========================================================================
