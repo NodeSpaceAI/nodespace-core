@@ -474,7 +474,8 @@ impl NodeService {
     /// The checks before the transaction read through pooled readers and
     /// only fail fast with a readable error. The guarantees come from the
     /// transaction (ADR-069 §1a): the store re-checks existence, cycles and
-    /// membership against the state it writes, and the bump re-checks
+    /// membership against the state it writes, `position` is resolved
+    /// against the sibling order it writes into, and the bump re-checks
     /// `expected_version`, so a concurrent writer that bumped the node after
     /// the pre-check rolls the edge and every re-spread key back. Events are
     /// buffered and flushed only after commit (ADR-069 §2), so a failed move
@@ -503,13 +504,19 @@ impl NodeService {
 
         self.validate_move(&node, new_parent).await?;
 
-        let insert_after = self.resolve_insert_position(position, new_parent).await?;
-
         let node_id = node_id.to_string();
         let new_parent = new_parent.map(str::to_string);
+        let position = crate::services::InsertPositionOwned::from(position);
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
+                let insert_after = Self::resolve_insert_after_in_tx(
+                    tx,
+                    &node_id,
+                    new_parent.as_deref(),
+                    position.as_ref(),
+                )
+                .await?;
                 let moved = service
                     .move_in_tx(tx, &node_id, new_parent.as_deref(), insert_after.as_deref())
                     .await?;
@@ -691,15 +698,7 @@ impl NodeService {
         // bump's `NodeUpdated` is unaffected by running first. Events are
         // buffered and flushed only after commit (ADR-069 §2).
         let node_id = node_id.to_string();
-        let position = match position {
-            crate::services::InsertPosition::Beginning => {
-                crate::services::InsertPositionOwned::Beginning
-            }
-            crate::services::InsertPosition::End => crate::services::InsertPositionOwned::End,
-            crate::services::InsertPosition::After(id) => {
-                crate::services::InsertPositionOwned::After(id.to_string())
-            }
-        };
+        let position = crate::services::InsertPositionOwned::from(position);
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
@@ -884,27 +883,29 @@ impl NodeService {
         Ok(updated)
     }
 
-    /// Resolve an `InsertPosition` to a concrete `Option<String>` for the store layer.
+    /// Resolve `position` under `parent_id` to the sibling the store places
+    /// `node_id` after (`None` places it first), inside `tx`.
     ///
-    /// - `Beginning` → `None` (store interprets `None` as "before the first child")
-    /// - `End`       → `Some(last_child_id)` (or `None` if the parent has no children yet)
-    /// - `After(id)` → `Some(id.to_string())`
-    async fn resolve_insert_position(
-        &self,
-        position: crate::services::InsertPosition<'_>,
+    /// `End` becomes the last child of `parent_id` other than `node_id`, read
+    /// under the write guard the placement is written under. A pooled read
+    /// before the transaction would miss a sibling another writer commits
+    /// while this one waits for the guard, and any sibling this transaction
+    /// has written itself, so the node would land before it rather than last.
+    /// `End` with no parent (a move to root) resolves to `None`.
+    async fn resolve_insert_after_in_tx(
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
         parent_id: Option<&str>,
+        position: crate::services::InsertPosition<'_>,
     ) -> Result<Option<String>, NodeServiceError> {
-        match position {
-            crate::services::InsertPosition::Beginning => Ok(None),
-            crate::services::InsertPosition::After(id) => Ok(Some(id.to_string())),
-            crate::services::InsertPosition::End => {
-                if let Some(pid) = parent_id {
-                    let children = self.get_children(pid).await?;
-                    Ok(children.last().map(|n| n.id.clone()))
-                } else {
-                    // `End` with no parent (root-level moves) resolves to `None`.
-                    Ok(None)
-                }
+        match (position, parent_id) {
+            (crate::services::InsertPosition::Beginning, _)
+            | (crate::services::InsertPosition::End, None) => Ok(None),
+            (crate::services::InsertPosition::After(id), _) => Ok(Some(id.to_string())),
+            (crate::services::InsertPosition::End, Some(parent_id)) => {
+                crate::db::SqliteStore::last_child_id_in_tx(tx.store_tx(), parent_id, node_id)
+                    .await
+                    .map_err(NodeServiceError::from_store)
             }
         }
     }
@@ -953,22 +954,25 @@ impl NodeService {
             return Ok(());
         }
 
-        // Resolve InsertPosition::End to the actual last sibling id so the
-        // store's move gets a concrete Option<&str>.
-        let insert_after = self
-            .resolve_insert_position(position, Some(parent_id))
-            .await?;
-
         // The edge write — which replaces any existing parent, so this can
         // reparent — its sibling re-spread and the rootness refresh commit as
         // one transaction (ADR-069 §1a). The parent the refresh treats as
-        // left is read inside it, with the write. Events are buffered and
-        // flushed only after commit (ADR-069 §2).
+        // left, and the sibling `position` resolves to, are read inside it,
+        // with the write. Events are buffered and flushed only after commit
+        // (ADR-069 §2).
         let child_id = child_id.to_string();
         let parent_id = parent_id.to_string();
+        let position = crate::services::InsertPositionOwned::from(position);
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
+                let insert_after = Self::resolve_insert_after_in_tx(
+                    tx,
+                    &child_id,
+                    Some(&parent_id),
+                    position.as_ref(),
+                )
+                .await?;
                 let moved = service
                     .move_in_tx(tx, &child_id, Some(&parent_id), insert_after.as_deref())
                     .await?;
@@ -1003,11 +1007,9 @@ impl NodeService {
     /// from `create_node_with_parent_in_tx`, where `child_id` is a node this
     /// same transaction just created via `create_node_in_tx`, so it can
     /// never already have a parent edge to be idempotent against. The
-    /// sibling-position resolution runs against a pooled reader exactly like
-    /// `resolve_insert_position` does today (existing siblings under
-    /// `parent_id` are necessarily already-committed data, not something
-    /// this transaction is concurrently mutating), then the edge insert
-    /// itself lands on `tx.store_tx()`.
+    /// sibling position is resolved on `tx`, so it counts any sibling this
+    /// transaction has already placed under `parent_id`, and the edge insert
+    /// lands on `tx.store_tx()`.
     pub(crate) async fn create_parent_edge_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -1015,16 +1017,14 @@ impl NodeService {
         parent_id: &str,
         position: crate::services::InsertPosition<'_>,
     ) -> Result<crate::db::ChildPlacement, NodeServiceError> {
-        let resolved = self
-            .resolve_insert_position(position, Some(parent_id))
-            .await?;
-        let insert_after_id: Option<&str> = resolved.as_deref();
+        let insert_after =
+            Self::resolve_insert_after_in_tx(tx, child_id, Some(parent_id), position).await?;
 
         let placement = crate::db::SqliteStore::create_has_child_edge_in_tx(
             tx.store_tx(),
             parent_id,
             child_id,
-            insert_after_id,
+            insert_after.as_deref(),
         )
         .await
         .map_err(NodeServiceError::from_store)?;
@@ -1176,23 +1176,13 @@ impl NodeService {
         else {
             return Ok(None);
         };
-        let last_sibling;
-        let insert_after = match position {
-            crate::services::InsertPosition::Beginning => None,
-            crate::services::InsertPosition::After(id) => Some(id),
-            crate::services::InsertPosition::End => {
-                last_sibling =
-                    crate::db::SqliteStore::last_child_id_in_tx(tx.store_tx(), &parent_id, node_id)
-                        .await
-                        .map_err(NodeServiceError::from_store)?;
-                last_sibling.as_deref()
-            }
-        };
+        let insert_after =
+            Self::resolve_insert_after_in_tx(tx, node_id, Some(&parent_id), position).await?;
         let moved = crate::db::SqliteStore::move_node_in_tx(
             tx.store_tx(),
             node_id,
             Some(&parent_id),
-            insert_after,
+            insert_after.as_deref(),
         )
         .await
         .map_err(NodeServiceError::from_store)?;

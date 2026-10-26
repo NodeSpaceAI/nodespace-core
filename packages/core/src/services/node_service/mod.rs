@@ -6807,6 +6807,179 @@ mod tests {
         assert_eq!(order.len(), 3);
     }
 
+    /// Place a root node at `End` under a parent while a writer holds the
+    /// write guard with another node already attached last under that
+    /// parent, uncommitted. The placement passes its pooled checks, queues on
+    /// the guard, and must then land after the sibling that is last at write
+    /// time, not after the one that was last (or before the first child, for
+    /// a parent that was empty) when it was called. `via_create_parent_edge`
+    /// places through `create_parent_edge` instead of `move_node`.
+    async fn race_end_placement_against_sibling_writer(
+        via_create_parent_edge: bool,
+        parent_starts_empty: bool,
+    ) {
+        let (service, _temp) = create_test_service().await;
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+        let parent_id = service.create_node(text("parent")).await.unwrap();
+        let mut expected = Vec::new();
+        if !parent_starts_empty {
+            let existing = service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "text".to_string(),
+                    content: "existing".to_string(),
+                    parent_id: Some(parent_id.clone()),
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({}),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+            expected.push(existing);
+        }
+        // The writer attaches its node after the existing child, if any.
+        let writer_after = expected.first().cloned();
+        let concurrent_id = service.create_node(text("concurrent")).await.unwrap();
+        let placed_id = service.create_node(text("placed")).await.unwrap();
+        expected.push(concurrent_id.clone());
+        expected.push(placed_id.clone());
+        let version = service.get_node(&placed_id).await.unwrap().unwrap().version;
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let (writer_child, writer_parent) = (concurrent_id.clone(), parent_id.clone());
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::move_node_in_tx(
+                            tx,
+                            &writer_child,
+                            Some(&writer_parent),
+                            writer_after.as_deref(),
+                        )
+                        .await?;
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let placer = service.clone();
+        let (node_id, target) = (placed_id.clone(), parent_id.clone());
+        let place_task = tokio::spawn(async move {
+            if via_create_parent_edge {
+                placer
+                    .create_parent_edge(&node_id, &target, crate::services::InsertPosition::End)
+                    .await
+            } else {
+                placer
+                    .move_node(
+                        &node_id,
+                        version,
+                        Some(&target),
+                        crate::services::InsertPosition::End,
+                    )
+                    .await
+                    .map(|_| ())
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !place_task.is_finished(),
+            "the placement must pass its pooled checks and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        place_task.await.unwrap().unwrap();
+
+        let order: Vec<String> = service
+            .get_children(&parent_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(
+            order, expected,
+            "End must land after the sibling that is last at write time"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_move_node_end_lands_after_a_sibling_committed_ahead_of_it() {
+        race_end_placement_against_sibling_writer(false, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_move_node_end_into_empty_parent_lands_after_a_child_committed_ahead_of_it() {
+        race_end_placement_against_sibling_writer(false, true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_create_parent_edge_end_lands_after_a_sibling_committed_ahead_of_it() {
+        race_end_placement_against_sibling_writer(true, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_create_parent_edge_end_into_empty_parent_lands_after_a_child_committed_ahead_of_it(
+    ) {
+        race_end_placement_against_sibling_writer(true, true).await;
+    }
+
+    /// Two children created at `End` under one parent in a single
+    /// transaction keep their creation order: the second resolves `End`
+    /// against the first, which only that transaction can see yet.
+    #[tokio::test]
+    async fn test_end_creates_in_one_transaction_keep_their_order() {
+        let (service, _temp) = create_test_service().await;
+        let parent = Node::new("text".to_string(), "parent".to_string(), json!({}));
+        let parent_id = service.create_node(parent).await.unwrap();
+
+        let creator = service.clone();
+        let tx_parent = parent_id.clone();
+        let created: Vec<String> = service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let mut ids = Vec::new();
+                    for content in ["first", "second"] {
+                        ids.push(
+                            creator
+                                .create_node_with_parent_in_tx(
+                                    tx,
+                                    CreateNodeParams {
+                                        id: None,
+                                        node_type: "text".to_string(),
+                                        content: content.to_string(),
+                                        parent_id: Some(tx_parent.clone()),
+                                        position: crate::services::InsertPositionOwned::End,
+                                        properties: json!({}),
+                                        lifecycle_status: None,
+                                    },
+                                )
+                                .await?,
+                        );
+                    }
+                    Ok(ids)
+                })
+            })
+            .await
+            .unwrap();
+
+        let order: Vec<String> = service
+            .get_children(&parent_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(order, created, "End creates must keep their order");
+    }
+
     #[tokio::test]
     async fn test_reparenting_a_collection_member_is_rejected() {
         // ADR-059 §2 (reparent side): a content node that holds a `member_of` edge
