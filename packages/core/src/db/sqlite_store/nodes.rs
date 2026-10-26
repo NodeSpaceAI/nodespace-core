@@ -2104,6 +2104,16 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Delete `id` only if its persisted version is `expected_version`, and
+    /// return the rows deleted: 1, or 0 when the node is missing or at another
+    /// version. The node's relationship and embedding rows go with it (FK
+    /// CASCADE).
+    ///
+    /// The reads before the write guard only fail fast. The version that
+    /// decides is read under the guard, and the `DELETE` itself carries it, so
+    /// an edit that commits while this call waits for the guard is never
+    /// deleted. One `NodeDeleted` notification follows, carrying the row read
+    /// under the guard, and only when a row was deleted.
     pub async fn delete_with_version_check(
         &self,
         id: &str,
@@ -2115,13 +2125,45 @@ impl SqliteStore {
             Some(n) => n,
             None => return Ok(0),
         };
-
         if node.version != expected_version {
             return Ok(0);
         }
+        self.assert_schema_deletable(&node).await?;
 
-        let result = self.delete_node(id, source, write_context).await?;
-        Ok(if result.existed { 1 } else { 0 })
+        let db = self.write().await;
+        let mut rows = db
+            .query(
+                "SELECT * FROM node WHERE id = ?1 AND version = ?2",
+                libsql::params![id.to_string(), expected_version],
+            )
+            .await
+            .context("Failed to re-read node before a versioned delete")?;
+        let node = match rows.next().await? {
+            Some(row) => Self::row_to_node(&row)?,
+            None => return Ok(0),
+        };
+        drop(rows);
+        let deleted = db
+            .execute(
+                "DELETE FROM node WHERE id = ?1 AND version = ?2",
+                libsql::params![id.to_string(), expected_version],
+            )
+            .await
+            .context("Failed to delete node with version check")?;
+        drop(db);
+        if deleted == 0 {
+            return Ok(0);
+        }
+
+        self.notify(StoreChange {
+            operation: StoreOperation::Deleted,
+            node,
+            source,
+            previous_node: None,
+            playbook_context: None,
+            write_context,
+        });
+        Ok(1)
     }
 
     pub async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {

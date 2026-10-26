@@ -8255,6 +8255,139 @@ mod tests {
         assert_eq!(result.deleted_count, 0);
     }
 
+    /// `delete_with_version_check` deletes only at the expected version and
+    /// announces only what it deleted: a stale version and a missing node
+    /// are 0 rows and no event; the expected version is 1 row and one
+    /// `NodeDeleted`.
+    #[tokio::test]
+    async fn test_delete_with_version_check_deletes_only_at_the_expected_version() {
+        let (service, _temp) = create_test_service().await;
+        let node_id = service
+            .create_node(Node::new("text".to_string(), "note".to_string(), json!({})))
+            .await
+            .unwrap();
+        let version = service.get_node(&node_id).await.unwrap().unwrap().version;
+        let mut rx = service.subscribe_to_events();
+
+        assert_eq!(
+            service
+                .delete_with_version_check(&node_id, version + 1)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            service
+                .delete_with_version_check("no-such-node", version)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing was deleted, so nothing may be announced"
+        );
+        assert!(service.get_node(&node_id).await.unwrap().is_some());
+
+        assert_eq!(
+            service
+                .delete_with_version_check(&node_id, version)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(service.get_node(&node_id).await.unwrap().is_none());
+        let mut deleted = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let DomainEvent::NodeDeleted { id, .. } = envelope.event {
+                deleted.push(id);
+            }
+        }
+        assert_eq!(deleted, vec![node_id]);
+    }
+
+    /// `delete_with_version_check` decides on the version under the write
+    /// guard it deletes under. A writer holds the guard with the node already
+    /// edited to the next version, uncommitted, so the delete's pooled read
+    /// still sees the expected version and the delete queues on the guard.
+    /// Once the edit commits, the delete must report 0 rows, leave the edited
+    /// node in place and announce no deletion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_delete_with_version_check_spares_an_edit_committed_ahead_of_it() {
+        let (service, _temp) = create_test_service().await;
+        let node_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "original".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let version = service.get_node(&node_id).await.unwrap().unwrap().version;
+        let mut rx = service.subscribe_to_events();
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let edit_id = node_id.clone();
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::update_node_with_version_check_in_tx(
+                            tx,
+                            &edit_id,
+                            version,
+                            NodeUpdate {
+                                content: Some("edited".to_string()),
+                                ..Default::default()
+                            },
+                        )
+                        .await?
+                        .expect("the writer edits the version the delete expects");
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let deleter = service.clone();
+        let delete_id = node_id.clone();
+        let delete_task =
+            tokio::spawn(
+                async move { deleter.delete_with_version_check(&delete_id, version).await },
+            );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !delete_task.is_finished(),
+            "the delete must pass its pooled check and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+
+        assert_eq!(
+            delete_task.await.unwrap().unwrap(),
+            0,
+            "the edit moved the node past the expected version"
+        );
+        let node = service
+            .get_node(&node_id)
+            .await
+            .unwrap()
+            .expect("the edited node must survive the stale delete");
+        assert_eq!(node.content, "edited");
+        assert_eq!(node.version, version + 1);
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(
+                !matches!(envelope.event, DomainEvent::NodeDeleted { .. }),
+                "a delete that deleted nothing must not announce one"
+            );
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Non-cascading single-node delete (`delete_leaf_node`) and `is_persisted`
     // ---------------------------------------------------------------------------
