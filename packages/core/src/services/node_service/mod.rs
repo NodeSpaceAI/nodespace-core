@@ -7933,6 +7933,93 @@ mod tests {
         );
     }
 
+    /// A crossing move must not let `move_children_to_parent` close a cycle.
+    /// Root R has children C and N. A writer holds the write guard with N
+    /// already moved under C, uncommitted, so the batch move of C under N
+    /// passes its pooled cycle check and queues on the guard. Once the writer
+    /// commits, N is C's descendant: the batch move must be refused as a
+    /// cycle and move nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_move_children_to_parent_refuses_a_cycle_a_crossing_move_closes() {
+        let (service, _temp) = create_test_service().await;
+        let root_id = service
+            .create_node(Node::new("text".to_string(), "R".to_string(), json!({})))
+            .await
+            .unwrap();
+        let mut children = Vec::new();
+        for content in ["C", "N"] {
+            children.push(
+                service
+                    .create_node_with_parent(CreateNodeParams {
+                        id: None,
+                        node_type: "text".to_string(),
+                        content: content.to_string(),
+                        parent_id: Some(root_id.clone()),
+                        position: crate::services::InsertPositionOwned::End,
+                        properties: json!({}),
+                        lifecycle_status: None,
+                    })
+                    .await
+                    .unwrap(),
+            );
+        }
+        let (c_id, n_id) = (children[0].clone(), children[1].clone());
+        let c_version = service.get_node(&c_id).await.unwrap().unwrap().version;
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let (moving, under) = (n_id.clone(), c_id.clone());
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::move_node_in_tx(tx, &moving, Some(&under), None).await?;
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let mover = service.clone();
+        let (target, batch) = (n_id.clone(), vec![(c_id.clone(), c_version)]);
+        let move_task =
+            tokio::spawn(async move { mover.move_children_to_parent(&target, &batch).await });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !move_task.is_finished(),
+            "the batch move must pass its pooled checks and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), move_task)
+            .await
+            .expect("the batch move must finish")
+            .unwrap();
+
+        assert!(
+            matches!(
+                &result,
+                Err(NodeServiceError::TreeInvariantViolation(v))
+                    if v.rule == crate::db::TreeInvariantRule::Cycle
+            ),
+            "expected a cycle refusal, got {result:?}"
+        );
+        assert_eq!(
+            service.get_parent(&c_id).await.unwrap().map(|p| p.id),
+            Some(root_id),
+            "the refused batch move must leave C under R"
+        );
+        assert_eq!(
+            service.get_parent(&n_id).await.unwrap().map(|p| p.id),
+            Some(c_id),
+            "the crossing move stands"
+        );
+    }
+
     #[tokio::test]
     async fn test_move_node_unchecked_rejects_non_container_parent() {
         let (service, _temp) = create_test_service().await;
