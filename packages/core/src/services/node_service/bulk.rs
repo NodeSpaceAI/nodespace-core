@@ -874,10 +874,11 @@ impl NodeService {
             Vec::with_capacity(updates.len());
         let mut pending_events: Vec<(String, Node, Vec<crate::db::events::PropertyChange>)> =
             Vec::with_capacity(updates.len());
-        // Nodes this batch archives or unarchives: their embedding roots are
-        // re-queued once the batch commits (ADR-087 §2).
+        // Nodes whose content this batch changes, or which it archives or
+        // unarchives (ADR-087 §2): their embedding roots are re-queued once
+        // the batch commits, as a single-node update re-queues them.
         #[cfg(feature = "nlp")]
-        let mut participation_changed: Vec<String> = Vec::new();
+        let mut requeue_for_embedding: Vec<String> = Vec::new();
 
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
@@ -1034,8 +1035,8 @@ impl NodeService {
                 updated.lifecycle_status = status.clone();
             }
             #[cfg(feature = "nlp")]
-            if crate::governance::participation_changed(existing, &updated) {
-                participation_changed.push(id.clone());
+            if content_changed || crate::governance::participation_changed(existing, &updated) {
+                requeue_for_embedding.push(id.clone());
             }
             pending_events.push((id.clone(), updated, changed_properties));
         }
@@ -1078,12 +1079,29 @@ impl NodeService {
         })
         .await?;
 
-        // An unarchived node is embedded again, and an archived child leaves
-        // its root's aggregate. An archived root's own vectors went with the
-        // write. Best-effort and after the commit, like every queueing path.
+        // A content change is embedded again in its root's aggregate. An
+        // unarchived node is embedded again, and an archived child leaves its
+        // root's aggregate; an archived root's own vectors went with the
+        // write. Each root is queued once, however many of its nodes the
+        // batch changed. Best-effort and after the commit, like every
+        // queueing path.
         #[cfg(feature = "nlp")]
-        for id in &participation_changed {
-            self.queue_root_for_embedding(id).await;
+        {
+            let mut queued_roots = std::collections::HashSet::new();
+            for id in &requeue_for_embedding {
+                match self.get_embedding_root_id(id).await {
+                    Ok(root_id) => {
+                        if queued_roots.insert(root_id.clone()) {
+                            self.queue_root_for_embedding(&root_id).await;
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        node_id = %id,
+                        error = %e,
+                        "failed to resolve the embedding root (not queued)"
+                    ),
+                }
+            }
         }
 
         Ok(())
@@ -1141,5 +1159,131 @@ impl NodeService {
         // _batch drops here → one flush per deleted node
 
         Ok(())
+    }
+}
+
+/// A batched update re-queues the embedding root of every node whose content
+/// it changes, as a single-node update does. Each test gives the roots a
+/// fresh (non-stale) embedding first, so a stale mark afterwards can only
+/// come from the batch.
+#[cfg(all(test, feature = "nlp"))]
+mod bulk_update_embedding_tests {
+    use crate::db::SqliteStore;
+    use crate::models::{NewEmbedding, NodeUpdate};
+    use crate::services::{CreateNodeParams, InsertPositionOwned, NodeService};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    const ROOT_A: &str = "33333333-0000-0000-0000-00000000000a";
+    const ROOT_B: &str = "33333333-0000-0000-0000-00000000000b";
+    const ROOT_C: &str = "33333333-0000-0000-0000-00000000000c";
+    const LINE_A1: &str = "33333333-0000-0000-0000-0000000000a1";
+    const LINE_A2: &str = "33333333-0000-0000-0000-0000000000a2";
+
+    async fn text(svc: &NodeService, id: &str, content: &str, parent: Option<&str>) {
+        svc.create_node_with_parent(CreateNodeParams {
+            id: Some(id.into()),
+            node_type: "text".into(),
+            content: content.into(),
+            parent_id: parent.map(Into::into),
+            position: InsertPositionOwned::End,
+            properties: serde_json::json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn is_stale(svc: &NodeService, id: &str) -> bool {
+        svc.store()
+            .get_embeddings(id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.stale)
+    }
+
+    /// ROOT_A holds LINE_A1 and LINE_A2; ROOT_B and ROOT_C are separate
+    /// trees. Every root starts with a fresh embedding.
+    async fn three_trees() -> (NodeService, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let svc = NodeService::new(&mut store).await.unwrap();
+        text(&svc, ROOT_A, "Root A", None).await;
+        text(&svc, LINE_A1, "Line A1", Some(ROOT_A)).await;
+        text(&svc, LINE_A2, "Line A2", Some(ROOT_A)).await;
+        text(&svc, ROOT_B, "Root B", None).await;
+        text(&svc, ROOT_C, "Root C", None).await;
+        for id in [ROOT_A, ROOT_B, ROOT_C] {
+            svc.store()
+                .upsert_embeddings(
+                    id,
+                    vec![NewEmbedding::single_chunk(id, vec![0.5; 768], "h", 1, 1)],
+                )
+                .await
+                .unwrap();
+            assert!(!is_stale(&svc, id).await, "{id} must start fresh");
+        }
+        (svc, tmp)
+    }
+
+    fn content(id: &str, content: &str) -> (String, NodeUpdate) {
+        (
+            id.to_string(),
+            NodeUpdate::new().with_content(content.to_string()),
+        )
+    }
+
+    #[tokio::test]
+    async fn content_edits_requeue_each_edited_nodes_root() {
+        let (svc, _tmp) = three_trees().await;
+
+        svc.bulk_update(vec![
+            content(LINE_A1, "Line A1, edited"),
+            content(LINE_A2, "Line A2, edited"),
+            content(ROOT_B, "Root B, edited"),
+        ])
+        .await
+        .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the root of edited lines");
+        assert!(is_stale(&svc, ROOT_B).await, "an edited root");
+        assert!(!is_stale(&svc, ROOT_C).await, "an uninvolved tree");
+        for line in [LINE_A1, LINE_A2] {
+            assert!(
+                svc.store().get_embeddings(line).await.unwrap().is_empty(),
+                "{line} is a child and is never queued"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_update_that_leaves_content_unchanged_requeues_nothing() {
+        let (svc, _tmp) = three_trees().await;
+
+        svc.bulk_update(vec![content(LINE_A1, "Line A1"), content(ROOT_B, "Root B")])
+            .await
+            .unwrap();
+
+        for id in [ROOT_A, ROOT_B, ROOT_C] {
+            assert!(!is_stale(&svc, id).await, "{id} has no new content");
+        }
+    }
+
+    /// An archived child leaves its root's aggregate (ADR-087 §2), so the
+    /// root is re-queued though no content changed.
+    #[tokio::test]
+    async fn archiving_a_child_requeues_its_root() {
+        let (svc, _tmp) = three_trees().await;
+
+        svc.bulk_update(vec![(
+            LINE_A1.to_string(),
+            NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )])
+        .await
+        .unwrap();
+
+        assert!(is_stale(&svc, ROOT_A).await, "the archived line's root");
+        assert!(!is_stale(&svc, ROOT_B).await, "an uninvolved tree");
     }
 }
