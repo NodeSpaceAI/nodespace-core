@@ -390,6 +390,65 @@ async fn test_process_stale_embeddings_empty_queue() -> Result<()> {
     Ok(())
 }
 
+/// A root whose embedding failed every retry is embedded again after its
+/// next edit. Without a model every attempt fails, as it does when inference
+/// keeps failing, so this drives the real processor and edit path and
+/// asserts the queue.
+#[tokio::test]
+async fn test_an_edit_gives_a_failed_root_a_fresh_retry_budget() -> Result<()> {
+    let config = EmbeddingConfig {
+        debounce_duration_secs: 0,
+        ..EmbeddingConfig::default()
+    };
+    let max_retries = config.max_retries;
+    let (embedding_service, node_service, store, _temp_dir) =
+        create_unified_test_env_with_config(config).await?;
+    let root = create_root_node(&node_service, "text", "Field notes").await?;
+    embedding_service.queue_for_embedding(&root.id).await?;
+    let queued = || async {
+        store
+            .get_stale_embedding_root_ids(None, 0, max_retries)
+            .await
+            .map(|ids| ids.contains(&root.id))
+    };
+
+    // Each pass fails the root once. The limit covers every seeded marker,
+    // so the root is in every pass.
+    for _ in 0..max_retries {
+        assert!(queued().await?, "queued until its retries are used up");
+        embedding_service
+            .process_stale_embeddings(Some(10_000))
+            .await?;
+    }
+    assert!(!queued().await?, "its retries are used up");
+
+    node_service
+        .update_node(
+            &root.id,
+            root.version,
+            nodespace_core::models::NodeUpdate::new().with_content("Field notes, revised".into()),
+        )
+        .await?;
+
+    // The edit queues the root from a spawned task.
+    let mut requeued = false;
+    for _ in 0..100 {
+        if queued().await? {
+            requeued = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(requeued, "an edit must queue the root again");
+    let rows = store.get_embeddings(&root.id).await?;
+    assert!(
+        rows.iter()
+            .all(|e| e.error_count == 0 && e.last_error.is_none()),
+        "with a fresh retry budget: {rows:?}"
+    );
+    Ok(())
+}
+
 // =========================================================================
 // Configuration Tests
 // =========================================================================
