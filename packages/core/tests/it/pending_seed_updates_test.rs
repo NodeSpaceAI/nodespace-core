@@ -23,6 +23,7 @@ use tempfile::TempDir;
 const SKILL_ID: &str = "0f1d6c4e-8a3b-4c57-9e21-5b7a3d9c1e01";
 const PLAY_ID: &str = "0f1d6c4e-8a3b-4c57-9e21-5b7a3d9c1e02";
 const QUERY_ID: &str = "0f1d6c4e-8a3b-4c57-9e21-5b7a3d9c1e03";
+const TOOL_ID: &str = "0f1d6c4e-8a3b-4c57-9e21-5b7a3d9c1e04";
 
 async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
     let temp_dir = TempDir::new()?;
@@ -73,6 +74,25 @@ fn saved_query(limit: u32) -> NodeTemplate {
             "filters": [],
             "generated_by": "user",
             "limit": limit,
+        }),
+        child_node_type: None,
+        tier: SeedTier::System,
+    }
+}
+
+/// A native tool seed, the way the agent ships one: a `tool-native` node,
+/// which extends `tool`, with every field flat on the template.
+fn native_tool(description: &str) -> NodeTemplate {
+    NodeTemplate {
+        id: TOOL_ID.to_string(),
+        title: "file_note".to_string(),
+        markdown_content: String::new(),
+        root_node_type: "tool-native".to_string(),
+        root_properties: json!({
+            "handler": "file_note",
+            "description": description,
+            "parameter_schema": { "type": "object" },
+            "enabled": true,
         }),
         child_node_type: None,
         tier: SeedTier::System,
@@ -278,6 +298,66 @@ async fn keeping_theirs_stays_settled_until_the_shipped_version_changes_again() 
         !service
             .keep_seed_update(SKILL_ID, SeedAspect::Guidance)
             .await?
+    );
+    Ok(())
+}
+
+/// The keys of a config comparison's fields.
+fn config_keys(text: &str) -> Vec<String> {
+    let (_, fields) = text.split_once('\n').expect("a name line, then the fields");
+    let fields: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(fields).expect("the fields are a JSON object");
+    fields.keys().cloned().collect()
+}
+
+/// A subtype seed keeps its inherited fields in the bucket of the type that
+/// declares them (ADR-078): the user's side of a comparison reads the whole
+/// chain, so it lists the same fields as the shipped side and shows the edit.
+#[tokio::test]
+async fn a_subtype_seeds_config_comparison_shows_its_inherited_fields() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(&service, &native_tool("File a note.")).await?;
+    edit_root(
+        &service,
+        TOOL_ID,
+        json!({
+            "handler": "file_note",
+            "description": "File a note.",
+            "parameter_schema": { "type": "object" },
+            "enabled": false,
+        }),
+    )
+    .await?;
+    let stored = service.get_node(TOOL_ID).await?.unwrap();
+    assert_eq!(stored.properties["tool"]["enabled"], false);
+
+    let v2 = native_tool("File a note in the right collection.");
+    seed(&service, &v2).await?;
+    let comparison = service
+        .compare_pending_seed_update(&prepare_nodes_from_template(&v2)?, SeedAspect::Config)
+        .await?
+        .expect("the config is pending");
+
+    assert_eq!(
+        config_keys(&comparison.yours),
+        config_keys(&comparison.shipped)
+    );
+    assert!(
+        comparison.yours.contains("\"enabled\": false"),
+        "{}",
+        comparison.yours
+    );
+    assert!(
+        comparison.yours.contains("File a note."),
+        "{}",
+        comparison.yours
+    );
+    assert!(
+        comparison
+            .shipped
+            .contains("File a note in the right collection."),
+        "{}",
+        comparison.shipped
     );
     Ok(())
 }
