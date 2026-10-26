@@ -74,6 +74,20 @@ pub fn deterministic_conflict_id(
     uuid::Uuid::new_v5(&CONFLICT_ID_NAMESPACE, seed.as_bytes()).to_string()
 }
 
+/// Refuse a merge whose survivor and loser are the same node. The merge would
+/// otherwise treat the node's own parent edge as the loser's, drop it and
+/// archive the node: it would leave its place in the tree and could not be
+/// put back by un-archiving it.
+fn refuse_self_merge(survivor_id: &str, loser_id: &str) -> Result<(), NodeServiceError> {
+    if survivor_id == loser_id {
+        return Err(NodeServiceError::invalid_update(format!(
+            "Cannot merge node '{survivor_id}' into itself: the survivor and the loser must be \
+             different nodes"
+        )));
+    }
+    Ok(())
+}
+
 impl NodeService {
     /// List conflict records, optionally filtered by status/kind.
     pub async fn list_conflicts(
@@ -265,6 +279,7 @@ impl NodeService {
         loser_id: &str,
         conflict_id: Option<&str>,
     ) -> Result<MergeOutcome, NodeServiceError> {
+        refuse_self_merge(survivor_id, loser_id)?;
         let survivor_id = survivor_id.to_string();
         let loser_id = loser_id.to_string();
         let conflict_id = conflict_id.map(|s| s.to_string());
@@ -375,6 +390,7 @@ impl NodeService {
         survivor_id: &str,
         loser_id: &str,
     ) -> Result<MergePreview, NodeServiceError> {
+        refuse_self_merge(survivor_id, loser_id)?;
         let survivor_id = survivor_id.to_string();
         let loser_id = loser_id.to_string();
         let plan = self
