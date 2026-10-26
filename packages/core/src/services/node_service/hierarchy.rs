@@ -937,7 +937,9 @@ impl NodeService {
         // Idempotency guard for the alice-side echo — if
         // `child_id` is already a child of `parent_id` AND the position is
         // End (no explicit reorder hint), treat this call as a no-op.
-        // `Beginning` and `After(_)` still trigger a real reorder.
+        // `Beginning` and `After(_)` still trigger a real reorder. This
+        // pooled read only skips the transaction; the guard is decided again
+        // inside it.
         let existing_parent = self
             .store
             .get_parent_id(child_id)
@@ -966,6 +968,17 @@ impl NodeService {
         let service = self.clone();
         self.with_transaction(move |tx| {
             Box::pin(async move {
+                // A move that committed while this call waited for the write
+                // guard may already have put the child under `parent_id`.
+                if position == crate::services::InsertPositionOwned::End
+                    && crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), &child_id)
+                        .await
+                        .map_err(NodeServiceError::from_store)?
+                        .as_deref()
+                        == Some(parent_id.as_str())
+                {
+                    return Ok(());
+                }
                 let insert_after = Self::resolve_insert_after_in_tx(
                     tx,
                     &child_id,
@@ -1004,12 +1017,12 @@ impl NodeService {
 
     /// `_in_tx` twin of [`Self::create_parent_edge`] (ADR-069 §1b/S2). Same
     /// idempotency posture is NOT reproduced here — callers reach this only
-    /// from `create_node_with_parent_in_tx`, where `child_id` is a node this
-    /// same transaction just created via `create_node_in_tx`, so it can
-    /// never already have a parent edge to be idempotent against. The
-    /// sibling position is resolved on `tx`, so it counts any sibling this
-    /// transaction has already placed under `parent_id`, and the edge insert
-    /// lands on `tx.store_tx()`.
+    /// from `create_node_with_parent_in_tx` and `create_placed_node`, where
+    /// `child_id` is a node this same transaction just created via
+    /// `create_node_in_tx`, so it can never already have a parent edge to be
+    /// idempotent against. The sibling position is resolved on `tx`, so it
+    /// counts any sibling this transaction has already placed under
+    /// `parent_id`, and the edge insert lands on `tx.store_tx()`.
     pub(crate) async fn create_parent_edge_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,

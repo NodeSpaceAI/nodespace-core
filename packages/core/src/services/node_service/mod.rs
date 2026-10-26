@@ -6980,6 +6980,214 @@ mod tests {
         assert_eq!(order, created, "End creates must keep their order");
     }
 
+    /// The children of `parent_id` as the store orders them: by order key,
+    /// then by edge id, as `respread_children` does.
+    async fn children_in_store_order(service: &NodeService, parent_id: &str) -> Vec<String> {
+        let parent_id = parent_id.to_string();
+        service
+            .store()
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let mut rows = tx
+                        .conn()
+                        .query(
+                            "SELECT out_node FROM relationship \
+                             WHERE in_node = ?1 AND relationship_type = 'has_child' \
+                             ORDER BY json_extract(properties, '$.order') ASC, id ASC",
+                            libsql::params![parent_id],
+                        )
+                        .await?;
+                    let mut children = Vec::new();
+                    while let Some(row) = rows.next().await? {
+                        children.push(row.get(0)?);
+                    }
+                    Ok(children)
+                })
+            })
+            .await
+            .unwrap()
+    }
+
+    /// `End` under a parent whose last two children share an order key lands
+    /// after the one the store orders last, the tie broken by edge id as
+    /// `respread_children` breaks it. Both id assignments are tried, so the
+    /// test does not depend on which of two tied rows SQLite returns first.
+    #[tokio::test]
+    async fn test_end_placement_after_tied_last_siblings_lands_last() {
+        for via_create_parent_edge in [false, true] {
+            for (second_edge, third_edge) in [("aa-edge", "zz-edge"), ("zz-edge", "aa-edge")] {
+                let (service, _temp) = create_test_service().await;
+                let text =
+                    |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+                let parent_id = service.create_node(text("parent")).await.unwrap();
+                let mut children = Vec::new();
+                for content in ["first", "second", "third"] {
+                    children.push(
+                        service
+                            .create_node_with_parent(CreateNodeParams {
+                                id: None,
+                                node_type: "text".to_string(),
+                                content: content.to_string(),
+                                parent_id: Some(parent_id.clone()),
+                                position: crate::services::InsertPositionOwned::End,
+                                properties: json!({}),
+                                lifecycle_status: None,
+                            })
+                            .await
+                            .unwrap(),
+                    );
+                }
+                // Tie the last two children at one key and fix their edge ids.
+                let (tie_parent, tie_children) = (parent_id.clone(), children.clone());
+                service
+                    .store()
+                    .with_transaction(move |tx| {
+                        Box::pin(async move {
+                            for (child, order, edge_id) in [
+                                (&tie_children[0], 1.0, "mm-edge"),
+                                (&tie_children[1], 2.0, second_edge),
+                                (&tie_children[2], 2.0, third_edge),
+                            ] {
+                                tx.conn()
+                                    .execute(
+                                        "UPDATE relationship SET id = ?1, \
+                                         properties = json_set(properties, '$.order', ?2) \
+                                         WHERE in_node = ?3 AND out_node = ?4 \
+                                         AND relationship_type = 'has_child'",
+                                        libsql::params![
+                                            edge_id,
+                                            order,
+                                            tie_parent.clone(),
+                                            child.clone()
+                                        ],
+                                    )
+                                    .await?;
+                            }
+                            Ok(())
+                        })
+                    })
+                    .await
+                    .unwrap();
+
+                let placed_id = service.create_node(text("placed")).await.unwrap();
+                if via_create_parent_edge {
+                    service
+                        .create_parent_edge(&placed_id, &parent_id, InsertPosition::End)
+                        .await
+                        .unwrap();
+                } else {
+                    let version = service.get_node(&placed_id).await.unwrap().unwrap().version;
+                    service
+                        .move_node(&placed_id, version, Some(&parent_id), InsertPosition::End)
+                        .await
+                        .unwrap();
+                }
+
+                let order = children_in_store_order(&service, &parent_id).await;
+                assert_eq!(
+                    order.last(),
+                    Some(&placed_id),
+                    "End must land after both tied children \
+                     (create_parent_edge: {via_create_parent_edge}, edges: {second_edge}, \
+                     {third_edge}), got {order:?}"
+                );
+                assert_eq!(order.len(), 4);
+            }
+        }
+    }
+
+    /// `create_parent_edge` at `End` for a child already under that parent is
+    /// a no-op, decided under the write guard. A writer holds the guard with
+    /// the child already moved to the front of the parent, uncommitted, so
+    /// the call reads the child as elsewhere and queues on the guard. Once
+    /// the move commits, the call must leave the child first and announce no
+    /// edge.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_create_parent_edge_end_is_a_no_op_for_a_child_moved_under_the_parent_ahead_of_it()
+    {
+        let (service, _temp) = create_test_service().await;
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+        let parent_id = service.create_node(text("parent")).await.unwrap();
+        let elsewhere_id = service.create_node(text("elsewhere")).await.unwrap();
+        let sibling_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "sibling".to_string(),
+                parent_id: Some(parent_id.clone()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let child_id = service.create_node(text("child")).await.unwrap();
+        service
+            .create_parent_edge(&child_id, &elsewhere_id, InsertPosition::End)
+            .await
+            .unwrap();
+        let mut rx = service.subscribe_to_events();
+
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let (moving, target) = (child_id.clone(), parent_id.clone());
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::move_node_in_tx(tx, &moving, Some(&target), None).await?;
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let placer = service.clone();
+        let (edge_child, edge_parent) = (child_id.clone(), parent_id.clone());
+        let place_task = tokio::spawn(async move {
+            placer
+                .create_parent_edge(&edge_child, &edge_parent, InsertPosition::End)
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !place_task.is_finished(),
+            "the call must read the child as elsewhere and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        place_task.await.unwrap().unwrap();
+
+        let order: Vec<String> = service
+            .get_children(&parent_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![child_id.clone(), sibling_id],
+            "the existing edge must be left where the committed move put it"
+        );
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(
+                !matches!(
+                    &envelope.event,
+                    DomainEvent::RelationshipCreated { .. }
+                        | DomainEvent::RelationshipUpdated { .. }
+                        | DomainEvent::RelationshipDeleted { .. }
+                ),
+                "a no-op must announce no edge, got {:?}",
+                envelope.event
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_reparenting_a_collection_member_is_rejected() {
         // ADR-059 §2 (reparent side): a content node that holds a `member_of` edge

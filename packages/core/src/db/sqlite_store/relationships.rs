@@ -710,7 +710,9 @@ impl SqliteStore {
 
     /// The last child of `parent_id` in sibling order, not counting
     /// `excluding`, read inside `tx` so the answer is the order the caller's
-    /// write will extend. `None` when the parent has no other child.
+    /// write will extend. `None` when the parent has no other child. Children
+    /// with equal order keys are ordered by edge id, as `respread_children`
+    /// orders them, so the child returned is the one a re-spread puts last.
     pub(crate) async fn last_child_id_in_tx(
         tx: &Tx<'_>,
         parent_id: &str,
@@ -719,7 +721,7 @@ impl SqliteStore {
         let mut rows = tx
             .conn()
             .query(
-                "SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' AND out_node != ?2 ORDER BY json_extract(properties, '$.order') DESC LIMIT 1",
+                "SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child' AND out_node != ?2 ORDER BY json_extract(properties, '$.order') DESC, id DESC LIMIT 1",
                 libsql::params![parent_id.to_string(), excluding.to_string()],
             )
             .await
