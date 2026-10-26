@@ -341,6 +341,18 @@ const HAS_CHILD_CYCLE_SQL: &str = r#"WITH RECURSIVE desc(node_id, depth) AS (
 )
 SELECT node_id FROM desc WHERE node_id = ?2 LIMIT 1"#;
 
+/// Every `has_child` descendant of `?1`, each once. Shared by
+/// `collect_subtree_ids` and `delete_subtree_atomic`'s walk inside its
+/// transaction, so the two compare the same set.
+const SUBTREE_DESCENDANTS_SQL: &str = r#"WITH RECURSIVE subtree(node_id) AS (
+    SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
+    UNION ALL
+    SELECT r.out_node FROM relationship r
+    JOIN subtree s ON r.in_node = s.node_id
+    WHERE r.relationship_type = 'has_child'
+)
+SELECT DISTINCT node_id FROM subtree"#;
+
 fn has_child_cycle_violation(parent_id: &str, child_id: &str) -> anyhow::Error {
     let detail = if parent_id == child_id {
         format!("node '{}' cannot be placed under itself", child_id)
@@ -1632,17 +1644,15 @@ impl SqliteStore {
     /// pre-delete access gate (to know what to check access for) — computed once and shared so
     /// the two never see different sets.
     pub async fn collect_subtree_ids(&self, node_id: &str) -> Result<Vec<String>> {
-        let mut id_rows = self.read().await?.query(
-            r#"WITH RECURSIVE subtree(node_id) AS (
-                SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
-                UNION ALL
-                SELECT r.out_node FROM relationship r
-                JOIN subtree s ON r.in_node = s.node_id
-                WHERE r.relationship_type = 'has_child'
+        let mut id_rows = self
+            .read()
+            .await?
+            .query(
+                SUBTREE_DESCENDANTS_SQL,
+                libsql::params![node_id.to_string()],
             )
-            SELECT DISTINCT node_id FROM subtree"#,
-            libsql::params![node_id.to_string()],
-        ).await.context("Failed to collect subtree descendants")?;
+            .await
+            .context("Failed to collect subtree descendants")?;
 
         let mut all_ids: Vec<String> = vec![node_id.to_string()];
         while let Some(row) = id_rows.next().await? {
@@ -1661,14 +1671,16 @@ impl SqliteStore {
     /// every descendant) after the commit, so the frontend store reconciles each removal.
     ///
     /// `subtree_ids`: the target + all descendants, as previously computed by
-    /// `collect_subtree_ids`. Passed in (rather than re-walked here) so a caller that already
-    /// ran a pre-delete access gate check against this exact set doesn't pay for — or risk
-    /// drifting from — a second walk.
+    /// `collect_subtree_ids`, the set a caller's pre-delete access gate checked. The caller
+    /// collects it before the write guard, so a move can change the subtree before this runs;
+    /// a move bumps only the moved node, so the target's version cannot show it. The subtree
+    /// is therefore walked again inside the transaction, and the delete runs only when that
+    /// walk finds exactly `subtree_ids`. Otherwise nothing is deleted and the outcome is
+    /// [`SubtreeDeleteOutcome::SubtreeChanged`]: deleting the stale set would remove a node
+    /// moved out of the subtree and leave one moved into it behind as a root.
     ///
-    /// Returns `(existed, deleted_nodes)` where `deleted_nodes` contains the target and all
-    /// descendants that were deleted (empty vec when target didn't exist), or
-    /// `Ok(Err(VersionConflict))` when the target's persisted version is not
-    /// `expected_version` — nothing is deleted in that case.
+    /// Returns the outcome, or `Ok(Err(VersionConflict))` when the target's persisted version
+    /// is not `expected_version` — nothing is deleted in that case.
     pub async fn delete_subtree_atomic(
         &self,
         node_id: &str,
@@ -1676,11 +1688,10 @@ impl SqliteStore {
         subtree_ids: &[String],
         source: Option<String>,
         write_context: WriteContext,
-    ) -> Result<std::result::Result<(bool, Vec<Node>), VersionConflict>> {
-        // Collect the target + all descendants before mutating.
+    ) -> Result<std::result::Result<SubtreeDeleteOutcome, VersionConflict>> {
         let target = match self.get_node(node_id).await? {
             Some(n) => n,
-            None => return Ok(Ok((false, vec![]))),
+            None => return Ok(Ok(SubtreeDeleteOutcome::NotFound)),
         };
 
         // A schema is always a root (its `must_be_root` structural rule refuses
@@ -1700,39 +1711,8 @@ impl SqliteStore {
             }));
         }
 
-        let all_ids: Vec<String> = subtree_ids.to_vec();
-
-        // Fetch all node records (needed for post-commit notifications). Chunk
-        // under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766) — an
-        // unchunked IN (...) over a whole subtree's ids fails to prepare once
-        // the subtree crosses that count. 900 mirrors the chunk size used by
-        // the other bulk store queries.
-        const ID_CHUNK: usize = 900;
-        let mut nodes_to_delete: Vec<Node> = Vec::new();
-        // Taken before the fetch, not just before the transaction: the fetched
-        // rows are what this call reports as deleted, so they must be read from
-        // the same serialized point the delete runs at.
-        let db = self.write().await;
-        for chunk in all_ids.chunks(ID_CHUNK) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            let fetch_sql = format!(
-                "SELECT * FROM node WHERE id IN ({})",
-                placeholders.join(", ")
-            );
-            let fetch_params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.clone()))
-                .collect();
-            let mut node_rows = db
-                .query(&fetch_sql, fetch_params)
-                .await
-                .context("Failed to fetch subtree nodes for deletion")?;
-            while let Some(row) = node_rows.next().await? {
-                nodes_to_delete.push(Self::row_to_node(&row)?);
-            }
-        }
-
         // Single-transaction delete — FK CASCADE cleans relationship and embedding rows.
+        let db = self.write().await;
         let tx = db
             .transaction()
             .await
@@ -1748,9 +1728,10 @@ impl SqliteStore {
             Some(row) => row.get(0)?,
             None => {
                 // Node disappeared between pre-check and transaction — idempotent.
-                return Ok(Ok((false, vec![])));
+                return Ok(Ok(SubtreeDeleteOutcome::NotFound));
             }
         };
+        drop(check_rows);
         if actual_version != expected_version {
             // Dropping `tx` uncommitted rolls it back; nothing was written yet.
             return Ok(Err(VersionConflict {
@@ -1758,6 +1739,54 @@ impl SqliteStore {
                 expected: expected_version,
                 actual: actual_version,
             }));
+        }
+
+        // The subtree as of this write must be the one the caller collected.
+        let mut walked: HashSet<String> = HashSet::from([node_id.to_string()]);
+        let mut walk_rows = tx
+            .query(
+                SUBTREE_DESCENDANTS_SQL,
+                libsql::params![node_id.to_string()],
+            )
+            .await
+            .context("Failed to re-walk the subtree to delete")?;
+        while let Some(row) = walk_rows.next().await? {
+            walked.insert(row.get(0)?);
+        }
+        drop(walk_rows);
+        let collected: HashSet<&str> = subtree_ids.iter().map(String::as_str).collect();
+        if walked.len() != collected.len()
+            || !walked.iter().all(|id| collected.contains(id.as_str()))
+        {
+            return Ok(Ok(SubtreeDeleteOutcome::SubtreeChanged));
+        }
+
+        // Fetch all node records (needed for post-commit notifications). Chunk
+        // under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER (32766) — an
+        // unchunked IN (...) over a whole subtree's ids fails to prepare once
+        // the subtree crosses that count. 900 mirrors the chunk size used by
+        // the other bulk store queries. Read in the transaction, so the rows
+        // reported as deleted are the rows the delete removes.
+        const ID_CHUNK: usize = 900;
+        let all_ids: Vec<String> = subtree_ids.to_vec();
+        let mut nodes_to_delete: Vec<Node> = Vec::new();
+        for chunk in all_ids.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            let fetch_sql = format!(
+                "SELECT * FROM node WHERE id IN ({})",
+                placeholders.join(", ")
+            );
+            let fetch_params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|id| libsql::Value::Text(id.clone()))
+                .collect();
+            let mut node_rows = tx
+                .query(&fetch_sql, fetch_params)
+                .await
+                .context("Failed to fetch subtree nodes for deletion")?;
+            while let Some(row) = node_rows.next().await? {
+                nodes_to_delete.push(Self::row_to_node(&row)?);
+            }
         }
 
         // Chunked, but every chunk executes against the same `tx` opened above —
@@ -1797,7 +1826,7 @@ impl SqliteStore {
             });
         }
 
-        Ok(Ok((true, nodes_to_delete)))
+        Ok(Ok(SubtreeDeleteOutcome::Deleted(nodes_to_delete)))
     }
 
     /// Delete exactly one node, and only if it has no `has_child` children.
@@ -6113,7 +6142,7 @@ mod large_subtree_chunking_tests {
         // statement could even prepare, and the whole call failed with
         // "Failed to fetch subtree nodes for deletion" / "Failed to delete
         // subtree nodes" without deleting anything.
-        let (existed, deleted_nodes) = store
+        let outcome = store
             .delete_subtree_atomic(
                 &root.id,
                 root.version,
@@ -6124,7 +6153,9 @@ mod large_subtree_chunking_tests {
             .await?
             .expect("target is at root.version");
 
-        assert!(existed);
+        let SubtreeDeleteOutcome::Deleted(deleted_nodes) = outcome else {
+            panic!("expected the subtree to be deleted, got {outcome:?}");
+        };
         assert_eq!(deleted_nodes.len(), DESCENDANT_COUNT + 1);
 
         // The whole subtree — root and every descendant — is actually gone,
@@ -6147,7 +6178,7 @@ mod large_subtree_chunking_tests {
         // (now-nonexistent) target is the documented idempotent no-op, not a
         // version-conflict error, which is only possible if the very first
         // call's chunks committed together as one unit.
-        let (existed_again, _) = store
+        let again = store
             .delete_subtree_atomic(
                 &root.id,
                 root.version,
@@ -6157,7 +6188,7 @@ mod large_subtree_chunking_tests {
             )
             .await?
             .expect("target is at root.version");
-        assert!(!existed_again);
+        assert!(matches!(again, SubtreeDeleteOutcome::NotFound), "{again:?}");
 
         Ok(())
     }
@@ -6228,7 +6259,7 @@ mod large_subtree_chunking_tests {
         let subtree_ids = store.collect_subtree_ids(&root.id).await?;
         assert_eq!(subtree_ids.len(), MULTI_CHUNK_COUNT + 1);
 
-        let (existed, deleted_nodes) = store
+        let outcome = store
             .delete_subtree_atomic(
                 &root.id,
                 root.version,
@@ -6239,7 +6270,9 @@ mod large_subtree_chunking_tests {
             .await?
             .expect("target is at root.version");
 
-        assert!(existed);
+        let SubtreeDeleteOutcome::Deleted(deleted_nodes) = outcome else {
+            panic!("expected the subtree to be deleted, got {outcome:?}");
+        };
         assert_eq!(deleted_nodes.len(), MULTI_CHUNK_COUNT + 1);
         assert!(store.get_node(&root.id).await?.is_none());
         for id in &child_ids {

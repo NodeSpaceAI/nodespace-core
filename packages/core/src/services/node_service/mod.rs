@@ -9398,6 +9398,222 @@ mod tests {
         assert_eq!(result.deleted_count, 2);
     }
 
+    /// Delete `target` with its subtree while a writer holds the write guard
+    /// with `moving` already moved under `new_parent` (a root when `None`),
+    /// uncommitted. The delete collects the subtree and runs the access gate
+    /// before the guard, so it sees the tree from before the move, then
+    /// queues on the guard. Returns the delete's result once the move has
+    /// committed.
+    async fn race_subtree_delete_against_move(
+        service: &NodeService,
+        target: &str,
+        moving: &str,
+        new_parent: Option<&str>,
+    ) -> Result<crate::models::DeleteResult, NodeServiceError> {
+        let version = service.get_node(target).await.unwrap().unwrap().version;
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let store = Arc::clone(service.store());
+        let (moving, new_parent) = (moving.to_string(), new_parent.map(str::to_string));
+        let writer = tokio::spawn(async move {
+            store
+                .with_transaction(move |tx| {
+                    Box::pin(async move {
+                        SqliteStore::move_node_in_tx(tx, &moving, new_parent.as_deref(), None)
+                            .await?;
+                        held_tx.send(()).unwrap();
+                        let _ = release_rx.await;
+                        Ok(())
+                    })
+                })
+                .await
+        });
+        held_rx.await.unwrap();
+
+        let deleter = service.clone();
+        let target = target.to_string();
+        let delete_task = tokio::spawn(async move { deleter.delete_node(&target, version).await });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !delete_task.is_finished(),
+            "the delete must collect its subtree and wait on the writer's guard"
+        );
+        release_tx.send(()).unwrap();
+        writer.await.unwrap().unwrap();
+        delete_task.await.unwrap()
+    }
+
+    /// A child moved out of the subtree before the delete takes the write
+    /// guard leaves with its own subtree: only the target is deleted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_delete_node_spares_a_child_moved_out_ahead_of_it() {
+        let (service, _temp) = create_test_service().await;
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+        let target = service.create_node(text("target")).await.unwrap();
+        let child = service.create_node(text("child")).await.unwrap();
+        let grandchild = service.create_node(text("grandchild")).await.unwrap();
+        let elsewhere = service.create_node(text("elsewhere")).await.unwrap();
+        service
+            .create_parent_edge(&child, &target, InsertPosition::End)
+            .await
+            .unwrap();
+        service
+            .create_parent_edge(&grandchild, &child, InsertPosition::End)
+            .await
+            .unwrap();
+        let mut rx = service.subscribe_to_events();
+
+        let result = race_subtree_delete_against_move(&service, &target, &child, Some(&elsewhere))
+            .await
+            .unwrap();
+
+        assert!(result.existed);
+        assert_eq!(result.deleted_count, 1, "only the target is left to delete");
+        assert!(service.get_node(&target).await.unwrap().is_none());
+        assert_eq!(
+            service.get_parent(&child).await.unwrap().map(|p| p.id),
+            Some(elsewhere),
+            "the moved child must survive under its new parent"
+        );
+        assert_eq!(
+            service.get_parent(&grandchild).await.unwrap().map(|p| p.id),
+            Some(child),
+            "the moved child's own subtree must survive with it"
+        );
+        let mut deleted = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let DomainEvent::NodeDeleted { id, .. } = envelope.event {
+                deleted.push(id);
+            }
+        }
+        assert_eq!(deleted, vec![target]);
+    }
+
+    /// A node moved into the subtree before the delete takes the write guard
+    /// is part of what the delete removes, so it goes with the subtree rather
+    /// than being left behind as a root.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_delete_node_takes_a_node_moved_in_ahead_of_it() {
+        let (service, _temp) = create_test_service().await;
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+        let target = service.create_node(text("target")).await.unwrap();
+        let arriving = service.create_node(text("arriving")).await.unwrap();
+
+        let result = race_subtree_delete_against_move(&service, &target, &arriving, Some(&target))
+            .await
+            .unwrap();
+
+        assert!(result.existed);
+        assert_eq!(result.deleted_count, 2);
+        assert!(service.get_node(&target).await.unwrap().is_none());
+        assert!(
+            service.get_node(&arriving).await.unwrap().is_none(),
+            "a node in the subtree at delete time must not survive as a root"
+        );
+    }
+
+    /// The access gate is asked about the subtree the delete actually
+    /// removes: a node the gate refuses, moved into the subtree after the
+    /// first check, refuses the whole delete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_delete_node_gates_a_node_moved_in_ahead_of_it() {
+        let (service, _temp) = create_test_service().await;
+        let text = |content: &str| Node::new("text".to_string(), content.to_string(), json!({}));
+        let target = service.create_node(text("target")).await.unwrap();
+        let restricted = service.create_node(text("restricted")).await.unwrap();
+        service.set_subtree_access_gate(std::sync::Arc::new(DenyIfPresentGate {
+            restricted_id: restricted.clone(),
+        }));
+
+        let result =
+            race_subtree_delete_against_move(&service, &target, &restricted, Some(&target)).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(NodeServiceError::SubtreeAccessDenied {
+                    inaccessible_count: 1
+                })
+            ),
+            "expected SubtreeAccessDenied {{ inaccessible_count: 1 }}, got {result:?}"
+        );
+        assert!(service.get_node(&target).await.unwrap().is_some());
+        assert_eq!(
+            service.get_parent(&restricted).await.unwrap().map(|p| p.id),
+            Some(target),
+            "a refused delete must leave the subtree as it is"
+        );
+    }
+
+    /// Allows every delete, but first commits a new child under `parent`, so
+    /// the subtree it was asked about is stale by the time the delete runs.
+    struct GrowingSubtreeGate {
+        store: Arc<SqliteStore>,
+        parent: String,
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::services::node_service::access_gate::SubtreeAccessGate for GrowingSubtreeGate {
+        async fn check_subtree_access(
+            &self,
+            _node_ids: &[String],
+        ) -> crate::services::node_service::access_gate::SubtreeAccessDecision {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let child = self
+                .store
+                .create_node(
+                    Node::new("text".to_string(), "late child".to_string(), json!({})),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            self.store
+                .move_node(&child.id, Some(&self.parent), None)
+                .await
+                .unwrap();
+            crate::services::node_service::access_gate::SubtreeAccessDecision::Allowed
+        }
+    }
+
+    /// A subtree that changes before every attempt fails the delete after a
+    /// bounded number of attempts, with nothing deleted.
+    #[tokio::test]
+    async fn test_delete_node_gives_up_on_a_subtree_that_keeps_changing() {
+        let (service, _temp) = create_test_service().await;
+        let target = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "target".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let gate = Arc::new(GrowingSubtreeGate {
+            store: Arc::clone(service.store()),
+            parent: target.clone(),
+            calls: std::sync::atomic::AtomicU32::new(0),
+        });
+        service.set_subtree_access_gate(gate.clone());
+
+        let version = service.get_node(&target).await.unwrap().unwrap().version;
+        let result = service.delete_node(&target, version).await;
+
+        assert!(
+            matches!(result, Err(NodeServiceError::TransactionFailed { .. })),
+            "expected TransactionFailed, got {result:?}"
+        );
+        let attempts = gate.calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(attempts, super::crud::SUBTREE_DELETE_ATTEMPTS);
+        assert!(service.get_node(&target).await.unwrap().is_some());
+        assert_eq!(
+            service.get_children(&target).await.unwrap().len(),
+            attempts as usize,
+            "every child added during the attempts must survive"
+        );
+    }
+
     // =========================================================================
     // BatchEmitGuard — batched event emission tests
     // =========================================================================

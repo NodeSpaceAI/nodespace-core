@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// How many times [`NodeService::delete_node`] collects, checks and tries to
+/// delete a subtree that concurrent moves keep changing before it gives up.
+pub(crate) const SUBTREE_DELETE_ATTEMPTS: u32 = 3;
+
 /// `(effective_fields, field_name -> owning_schema_id, chain)`, as
 /// [`NodeService::resolve_field_owners`] returns it: what a write needs of a
 /// node type to default, bucket and validate a node of it. A bulk write
@@ -2570,6 +2574,12 @@ impl NodeService {
     /// refusal here; only an injected gate can deny. This check runs before the transaction
     /// opens, not inside it — a rollback-based check would do wasted work every time.
     ///
+    /// The store deletes the checked set only if it is still the target's subtree when the
+    /// delete runs. If a concurrent move changed the subtree in between, the subtree is
+    /// collected and checked again, up to `SUBTREE_DELETE_ATTEMPTS` times in all; a subtree
+    /// that keeps changing fails the delete with [`NodeServiceError::TransactionFailed`] and
+    /// nothing deleted.
+    ///
     /// Returns `DeleteResult` with `existed=true` and `deleted_count` (target + all descendants)
     /// on success, or `existed=false` when the target node was already gone.
     pub async fn delete_node(
@@ -2595,43 +2605,58 @@ impl NodeService {
             });
         }
 
-        // Compute the subtree once; both the access gate and the delete itself use this exact
-        // set so they can never see different subtrees.
-        let subtree_ids = self.store.collect_subtree_ids(node_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to collect subtree: {}", e))
-        })?;
+        // The access gate and the delete use one collected set, so they never see different
+        // subtrees: the store deletes it only if it is still the subtree at write time, and
+        // otherwise it is collected and checked again.
+        let mut attempts = 0;
+        let deleted_nodes = loop {
+            attempts += 1;
+            let subtree_ids = self.store.collect_subtree_ids(node_id).await.map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to collect subtree: {}", e))
+            })?;
 
-        if let access_gate::SubtreeAccessDecision::Denied { inaccessible_count } = self
-            .subtree_access_gate()
-            .check_subtree_access(&subtree_ids)
-            .await
-        {
-            debug_assert!(
-                inaccessible_count > 0,
-                "a Denied decision must report at least one inaccessible node — \
-                 a gate reporting 0 would surface a confusing refusal message"
-            );
-            return Err(NodeServiceError::subtree_access_denied(inaccessible_count));
-        }
+            if let access_gate::SubtreeAccessDecision::Denied { inaccessible_count } = self
+                .subtree_access_gate()
+                .check_subtree_access(&subtree_ids)
+                .await
+            {
+                debug_assert!(
+                    inaccessible_count > 0,
+                    "a Denied decision must report at least one inaccessible node — \
+                     a gate reporting 0 would surface a confusing refusal message"
+                );
+                return Err(NodeServiceError::subtree_access_denied(inaccessible_count));
+            }
 
-        let (existed, deleted_nodes) = self
-            .store
-            .delete_subtree_atomic(
-                node_id,
-                expected_version,
-                &subtree_ids,
-                self.client_id.clone(),
-                self.write_context,
-            )
-            .await
-            .map_err(NodeServiceError::from_store)??;
-
-        if !existed {
-            return Ok(crate::models::DeleteResult {
-                existed: false,
-                deleted_count: 0,
-            });
-        }
+            match self
+                .store
+                .delete_subtree_atomic(
+                    node_id,
+                    expected_version,
+                    &subtree_ids,
+                    self.client_id.clone(),
+                    self.write_context,
+                )
+                .await
+                .map_err(NodeServiceError::from_store)??
+            {
+                crate::db::SubtreeDeleteOutcome::Deleted(nodes) => break nodes,
+                crate::db::SubtreeDeleteOutcome::NotFound => {
+                    return Ok(crate::models::DeleteResult {
+                        existed: false,
+                        deleted_count: 0,
+                    });
+                }
+                crate::db::SubtreeDeleteOutcome::SubtreeChanged
+                    if attempts < SUBTREE_DELETE_ATTEMPTS => {}
+                crate::db::SubtreeDeleteOutcome::SubtreeChanged => {
+                    return Err(NodeServiceError::transaction_failed(format!(
+                        "the subtree of node '{node_id}' changed while it was being deleted, \
+                         {attempts} times in a row; nothing was deleted"
+                    )));
+                }
+            }
+        };
 
         // Queue the embedding root for regeneration when a node inside it was deleted.
         #[cfg(feature = "nlp")]
