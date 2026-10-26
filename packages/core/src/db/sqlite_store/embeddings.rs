@@ -6,13 +6,22 @@ impl SqliteStore {
     /// across `embedding` and the `vec_embeddings` vec0 mirror. Empty
     /// `embeddings` is a no-op (use `delete_embeddings` to clear). This is what
     /// the embedding generation path uses.
+    ///
+    /// `read_at` is when the content the vectors embed was read. If the
+    /// node's rows were written at or after it, the vectors may be out of
+    /// date and are not written. That write is either an edit's stale mark,
+    /// which stays so the node is embedded again, or vectors from a later
+    /// read, which stay as they are.
+    ///
+    /// Returns whether the vectors were written.
     pub async fn upsert_embeddings(
         &self,
         node_id: &str,
         embeddings: Vec<crate::models::NewEmbedding>,
-    ) -> Result<()> {
+        read_at: DateTime<Utc>,
+    ) -> Result<bool> {
         if embeddings.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
 
         // Replace the node's embeddings atomically across both `embedding` and the
@@ -24,6 +33,27 @@ impl SqliteStore {
             .transaction()
             .await
             .context("Failed to begin upsert_embeddings transaction")?;
+
+        // Checked in the transaction that writes, as the archive check below
+        // is: an edit's stale mark goes through the same writer, so it lands
+        // either before this check or after the commit. Every timestamp here
+        // is `to_rfc3339` in UTC, so text order is time order.
+        let written_since_read = {
+            let mut rows = tx
+                .query(
+                    "SELECT 1 FROM embedding WHERE node_id = ?1 AND modified_at >= ?2 LIMIT 1",
+                    libsql::params![node_id.to_string(), read_at.to_rfc3339()],
+                )
+                .await
+                .context("Failed to check for embedding rows newer than the read")?;
+            rows.next().await?.is_some()
+        };
+        if written_since_read {
+            tx.rollback()
+                .await
+                .context("Failed to roll back upsert_embeddings transaction")?;
+            return Ok(false);
+        }
 
         tx.execute(
             "DELETE FROM vec_embeddings WHERE embedding_id IN (SELECT id FROM embedding WHERE node_id = ?1)",
@@ -61,7 +91,7 @@ impl SqliteStore {
             tx.commit()
                 .await
                 .context("Failed to commit upsert_embeddings transaction")?;
-            return Ok(());
+            return Ok(false);
         }
 
         let now = Utc::now().to_rfc3339();
@@ -161,7 +191,7 @@ impl SqliteStore {
             .await
             .context("Failed to commit upsert_embeddings transaction")?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// Decode a stored embedding row into the `Embedding` model. Vectors are

@@ -64,6 +64,7 @@ async fn embed_fresh(service: &NodeService, id: &str) -> Result<()> {
         .upsert_embeddings(
             id,
             vec![NewEmbedding::single_chunk(id, vec![0.5; 768], "h", 1, 1)],
+            chrono::Utc::now(),
         )
         .await?;
     assert!(!is_queued(service, id).await?, "{id} must start fresh");

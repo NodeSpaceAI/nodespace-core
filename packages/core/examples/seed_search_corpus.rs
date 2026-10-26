@@ -67,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
         let id = node.id.clone();
         store.create_node(node, None, None).await?;
         store
-            .upsert_embeddings(&id, vec![embedding_for(&id, i)])
+            .upsert_embeddings(&id, vec![embedding_for(&id, i)], chrono::Utc::now())
             .await?;
         if i > 0 && i % 5000 == 0 {
             eprintln!(

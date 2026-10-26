@@ -433,6 +433,12 @@ impl NodeEmbeddingService {
     /// 2. `behavior.get_aggregated_content()` gathers child content
     /// 3. Chunks, generates vectors, and stores in the embedding table
     pub async fn embed_root_node(&self, root_id: &str) -> Result<(), NodeServiceError> {
+        // Taken before anything is read. An edit can land while the content
+        // is read and embedded, and the vectors may then not include it; its
+        // stale mark is no older than this, so `upsert_embeddings` keeps the
+        // mark rather than store these vectors as fresh.
+        let read_at = chrono::Utc::now();
+
         // Get root node via accessor (applies business rules: mentions, etc.)
         let root = self
             .node_accessor
@@ -500,18 +506,26 @@ impl NodeEmbeddingService {
         }
 
         // Store embeddings (replaces any existing)
-        self.store
-            .upsert_embeddings(root_id, new_embeddings)
+        let written = self
+            .store
+            .upsert_embeddings(root_id, new_embeddings, read_at)
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to store embeddings: {}", e))
             })?;
 
-        tracing::debug!(
-            "Successfully embedded root {} ({} chunks)",
-            root_id,
-            total_chunks
-        );
+        if written {
+            tracing::debug!(
+                "Successfully embedded root {} ({} chunks)",
+                root_id,
+                total_chunks
+            );
+        } else {
+            tracing::debug!(
+                "Vectors for root {} not stored: it changed or was archived while being embedded",
+                root_id
+            );
+        }
 
         Ok(())
     }

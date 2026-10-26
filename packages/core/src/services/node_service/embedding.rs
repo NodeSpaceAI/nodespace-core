@@ -335,6 +335,7 @@ mod former_embedding_root_tests {
                 .upsert_embeddings(
                     id,
                     vec![NewEmbedding::single_chunk(*id, vec![0.5; 768], "h", 1, 1)],
+                    chrono::Utc::now(),
                 )
                 .await
                 .unwrap();

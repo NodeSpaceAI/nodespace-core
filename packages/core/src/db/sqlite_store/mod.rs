@@ -2179,7 +2179,9 @@ mod tests {
         e1.chunk_start = 100;
         e1.chunk_end = 200;
         e1.total_chunks = 2;
-        store.upsert_embeddings(&node.id, vec![e0, e1]).await?;
+        store
+            .upsert_embeddings(&node.id, vec![e0, e1], chrono::Utc::now())
+            .await?;
 
         let got = store.get_embeddings(&node.id).await?;
         assert_eq!(got.len(), 2, "both chunks returned");
@@ -2265,7 +2267,11 @@ mod tests {
             )
             .await?;
         store
-            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 0)],
+                chrono::Utc::now(),
+            )
             .await?;
 
         let results = store
@@ -2291,7 +2297,11 @@ mod tests {
             .await?;
 
         store
-            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 0)],
+                chrono::Utc::now(),
+            )
             .await?;
 
         let results = store
@@ -2320,7 +2330,11 @@ mod tests {
             .await?;
 
         store
-            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 0)],
+                chrono::Utc::now(),
+            )
             .await?;
         assert_eq!(vec_row_count(&store).await?, 1);
         assert!(!store
@@ -2354,10 +2368,18 @@ mod tests {
 
         // First embed on axis 0, then re-embed on axis 1.
         store
-            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 0)],
+                chrono::Utc::now(),
+            )
             .await?;
         store
-            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 1)])
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 1)],
+                chrono::Utc::now(),
+            )
             .await?;
 
         assert_eq!(vec_row_count(&store).await?, 1, "no stale duplicate rows");
@@ -2403,7 +2425,9 @@ mod tests {
                 e
             })
             .collect();
-        store.upsert_embeddings(&node.id, embeddings).await?;
+        store
+            .upsert_embeddings(&node.id, embeddings, chrono::Utc::now())
+            .await?;
 
         let got = store.get_embeddings(&node.id).await?;
         assert_eq!(got.len(), n, "all chunks across batch boundaries persisted");
@@ -2479,7 +2503,11 @@ mod tests {
                 )
                 .await?;
             store
-                .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+                .upsert_embeddings(
+                    &node.id,
+                    vec![unit_embedding(&node.id, 0)],
+                    chrono::Utc::now(),
+                )
                 .await?;
         }
 
@@ -2495,7 +2523,9 @@ mod tests {
                 .await?;
             let mut embedding = unit_embedding(&node.id, 0);
             embedding.vector[1 + i] = 1.0;
-            store.upsert_embeddings(&node.id, vec![embedding]).await?;
+            store
+                .upsert_embeddings(&node.id, vec![embedding], chrono::Utc::now())
+                .await?;
             skill_ids.push(node.id);
         }
 
@@ -2533,7 +2563,11 @@ mod tests {
             .await?;
 
         store
-            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 0)],
+                chrono::Utc::now(),
+            )
             .await?;
         store.mark_root_embedding_stale(&node.id).await?;
 
@@ -2622,6 +2656,117 @@ mod tests {
             results.iter().all(|r| r.node_id != node.id),
             "stale marker must never appear in KNN results"
         );
+        Ok(())
+    }
+
+    /// An edit lands while a node is being embedded, so its stale mark is
+    /// newer than the read the vectors were computed from. The write keeps
+    /// the mark, so the node is embedded again with the edit, rather than
+    /// replace it with vectors of the old content marked fresh.
+    #[tokio::test]
+    async fn test_upsert_keeps_a_stale_mark_made_after_the_read() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let node = store
+            .create_node(
+                Node::new("text".to_string(), "edited node".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        store
+            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)], Utc::now())
+            .await?;
+
+        let read_at = Utc::now();
+        store.mark_root_embedding_stale(&node.id).await?;
+        let written = store
+            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 1)], read_at)
+            .await?;
+
+        assert!(!written, "the vectors of the read are not written");
+        let rows = store.get_embeddings(&node.id).await?;
+        assert!(
+            !rows.is_empty() && rows.iter().all(|e| e.stale),
+            "the edit's stale mark is kept"
+        );
+        assert_eq!(
+            rows[0].vector[1], 0.0,
+            "the vectors of the read are not written"
+        );
+        assert!(
+            store
+                .get_stale_embedding_root_ids(None, 0, 3)
+                .await?
+                .contains(&node.id),
+            "the node is embedded again"
+        );
+        assert_eq!(vec_row_count(&store).await?, 0, "nothing is searchable");
+        Ok(())
+    }
+
+    /// Two embeds of one node overlap, and the one that read later wrote
+    /// first. The earlier read's vectors are older than what is stored, so
+    /// they do not replace it.
+    #[tokio::test]
+    async fn test_upsert_keeps_vectors_from_a_later_read() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let node = store
+            .create_node(
+                Node::new("text".to_string(), "twice embedded".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        store.create_stale_embedding_marker(&node.id).await?;
+
+        let earlier_read = Utc::now();
+        store
+            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 2)], Utc::now())
+            .await?;
+        let written = store
+            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 1)], earlier_read)
+            .await?;
+        assert!(!written, "the earlier read's vectors are not written");
+
+        let rows = store.get_embeddings(&node.id).await?;
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].stale);
+        assert_eq!(rows[0].vector[2], 1.0, "the later read's vectors stay");
+        Ok(())
+    }
+
+    /// The mark that queued a node is older than the read that embeds it, so
+    /// the vectors include everything it marked and replace it.
+    #[tokio::test]
+    async fn test_upsert_replaces_a_stale_mark_made_before_the_read() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let node = store
+            .create_node(
+                Node::new("text".to_string(), "queued node".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        store.create_stale_embedding_marker(&node.id).await?;
+
+        let read_at = Utc::now();
+        let written = store
+            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 1)], read_at)
+            .await?;
+
+        assert!(written);
+        let rows = store.get_embeddings(&node.id).await?;
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].stale, "the vectors replace the mark");
+        assert_eq!(rows[0].vector[1], 1.0);
+        assert!(!store
+            .get_stale_embedding_root_ids(None, 0, 3)
+            .await?
+            .contains(&node.id));
+        let hits = store
+            .search_embeddings(&unit_query(1), 10, Some(0.5))
+            .await?;
+        assert!(hits.iter().any(|r| r.node_id == node.id));
         Ok(())
     }
 
@@ -3174,7 +3319,11 @@ mod tests {
             )
             .await?;
         store
-            .upsert_embeddings(&embedded.id, vec![unit_embedding(&embedded.id, 0)])
+            .upsert_embeddings(
+                &embedded.id,
+                vec![unit_embedding(&embedded.id, 0)],
+                chrono::Utc::now(),
+            )
             .await?;
 
         // A root node filed into a collection, so `assert_may_gain_parent` finds
