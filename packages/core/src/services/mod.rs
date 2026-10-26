@@ -318,6 +318,16 @@ pub enum InsertPositionOwned {
     After(String),
 }
 
+impl From<InsertPosition<'_>> for InsertPositionOwned {
+    fn from(position: InsertPosition<'_>) -> Self {
+        match position {
+            InsertPosition::Beginning => InsertPositionOwned::Beginning,
+            InsertPosition::End => InsertPositionOwned::End,
+            InsertPosition::After(id) => InsertPositionOwned::After(id.to_string()),
+        }
+    }
+}
+
 impl InsertPositionOwned {
     pub fn as_ref(&self) -> InsertPosition<'_> {
         match self {
