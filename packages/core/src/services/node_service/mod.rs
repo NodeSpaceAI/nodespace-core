@@ -6747,6 +6747,253 @@ mod tests {
             .unwrap()
     }
 
+    /// The stored `order` of the `in_node -[rel_type]-> out_node` edge, as
+    /// SQLite sees it: its type and its value. `None` when there is no edge.
+    async fn stored_edge_order(
+        service: &NodeService,
+        in_node: &str,
+        out_node: &str,
+        rel_type: &str,
+    ) -> Option<(String, f64)> {
+        let mut rows = service
+            .store()
+            .read()
+            .await
+            .unwrap()
+            .query(
+                "SELECT typeof(json_extract(properties, '$.order')), \
+                        CAST(json_extract(properties, '$.order') AS REAL) \
+                 FROM relationship \
+                 WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3",
+                libsql::params![
+                    in_node.to_string(),
+                    out_node.to_string(),
+                    rel_type.to_string()
+                ],
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap()?;
+        Some((row.get(0).unwrap(), row.get(1).unwrap()))
+    }
+
+    /// `parent -has_child-> child` with `edge_data`, through
+    /// `create_relationship_in_tx`, the path an invariant play's
+    /// `add_relationship` action takes.
+    async fn create_has_child_in_tx(
+        service: &NodeService,
+        parent_id: &str,
+        child_id: &str,
+        edge_data: serde_json::Value,
+    ) -> Result<(), NodeServiceError> {
+        let service_for_tx = service.clone();
+        let (parent, child) = (parent_id.to_string(), child_id.to_string());
+        service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    service_for_tx
+                        .create_relationship_in_tx(tx, &parent, "has_child", &child, edge_data)
+                        .await
+                        .map(|_| ())
+                })
+            })
+            .await
+    }
+
+    /// A whole-number `order` a caller gives a `member_of` or `has_child`
+    /// edge (`{"order": 5}`, as JSON from the CLI or the frontend carries a
+    /// whole number) is stored and announced as a float, on every path that
+    /// takes a caller's order.
+    #[tokio::test]
+    async fn a_whole_number_edge_order_is_stored_as_a_float() {
+        let (service, _temp) = create_test_service().await;
+        let collection = service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "orders".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let member = create_text(&service, "member").await;
+        let parent = create_text(&service, "parent").await;
+        let child = create_text(&service, "child").await;
+        let tx_child = create_text(&service, "tx child").await;
+        let mut rx = service.subscribe_to_events();
+
+        service
+            .create_relationship(&member, "member_of", &collection, json!({ "order": 5 }))
+            .await
+            .unwrap();
+        service
+            .create_relationship(&parent, "has_child", &child, json!({ "order": 5 }))
+            .await
+            .unwrap();
+        create_has_child_in_tx(&service, &parent, &tx_child, json!({ "order": 7 }))
+            .await
+            .unwrap();
+        service
+            .update_relationship_properties(
+                &member,
+                "member_of",
+                &collection,
+                json!({ "order": 9 }),
+            )
+            .await
+            .unwrap();
+
+        let real = |order: f64| Some(("real".to_string(), order));
+        assert_eq!(
+            stored_edge_order(&service, &member, &collection, "member_of").await,
+            real(9.0)
+        );
+        assert_eq!(
+            stored_edge_order(&service, &parent, &child, "has_child").await,
+            real(5.0)
+        );
+        assert_eq!(
+            stored_edge_order(&service, &parent, &tx_child, "has_child").await,
+            real(7.0)
+        );
+
+        // The events carry the order as stored, not as the caller wrote it.
+        let mut announced = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            match envelope.event {
+                DomainEvent::RelationshipCreated { relationship }
+                | DomainEvent::RelationshipUpdated { relationship } => {
+                    announced.push(relationship.properties["order"].clone());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            announced,
+            vec![json!(5.0), json!(5.0), json!(7.0), json!(9.0)]
+        );
+    }
+
+    /// An `order` that is not a number on a `member_of` or `has_child` edge
+    /// is refused, and nothing is written.
+    #[tokio::test]
+    async fn a_non_numeric_edge_order_is_refused() {
+        let (service, _temp) = create_test_service().await;
+        let collection = service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "orders".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let member = create_text(&service, "member").await;
+        let parent = create_text(&service, "parent").await;
+        let child = create_text(&service, "child").await;
+
+        for bad in [json!("5"), json!(true), json!([1])] {
+            let edge_data = json!({ "order": bad });
+            let refused = [
+                service
+                    .create_relationship(&member, "member_of", &collection, edge_data.clone())
+                    .await
+                    .map(|_| ()),
+                service
+                    .create_relationship(&parent, "has_child", &child, edge_data.clone())
+                    .await
+                    .map(|_| ()),
+                create_has_child_in_tx(&service, &parent, &child, edge_data.clone()).await,
+            ];
+            for result in refused {
+                assert!(
+                    matches!(result, Err(NodeServiceError::InvalidUpdate(_))),
+                    "order {bad} must be refused, got {result:?}"
+                );
+            }
+            assert_eq!(
+                stored_edge_order(&service, &member, &collection, "member_of").await,
+                None
+            );
+            assert_eq!(
+                stored_edge_order(&service, &parent, &child, "has_child").await,
+                None
+            );
+        }
+
+        service
+            .create_relationship(&member, "member_of", &collection, json!({ "order": 1.0 }))
+            .await
+            .unwrap();
+        let err = service
+            .update_relationship_properties(
+                &member,
+                "member_of",
+                &collection,
+                json!({ "order": "first" }),
+            )
+            .await
+            .expect_err("a non-numeric order must be refused on edit");
+        assert!(
+            matches!(err, NodeServiceError::InvalidUpdate(_)),
+            "got {err:?}"
+        );
+        assert_eq!(
+            stored_edge_order(&service, &member, &collection, "member_of").await,
+            Some(("real".to_string(), 1.0)),
+            "the refused edit must leave the stored order alone"
+        );
+    }
+
+    /// An auto-ordered append to a collection or a parent that already holds
+    /// an edge created with a whole-number `order` places after it.
+    #[tokio::test]
+    async fn an_auto_ordered_append_follows_a_whole_number_order() {
+        let (service, _temp) = create_test_service().await;
+        let collection = service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "orders".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let first_member = create_text(&service, "first member").await;
+        let next_member = create_text(&service, "next member").await;
+        let parent = create_text(&service, "parent").await;
+        let first_child = create_text(&service, "first child").await;
+        let next_child = create_text(&service, "next child").await;
+
+        service
+            .create_relationship(
+                &first_member,
+                "member_of",
+                &collection,
+                json!({ "order": 5 }),
+            )
+            .await
+            .unwrap();
+        service
+            .create_relationship(&next_member, "member_of", &collection, json!({}))
+            .await
+            .unwrap();
+        service
+            .create_relationship(&parent, "has_child", &first_child, json!({ "order": 5 }))
+            .await
+            .unwrap();
+        service
+            .create_relationship(&parent, "has_child", &next_child, json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stored_edge_order(&service, &next_member, &collection, "member_of").await,
+            Some(("real".to_string(), 6.0))
+        );
+        assert_eq!(
+            stored_edge_order(&service, &parent, &next_child, "has_child").await,
+            Some(("real".to_string(), 6.0))
+        );
+    }
+
     #[tokio::test]
     async fn test_has_child_relationship_refuses_a_cycle() {
         // `root → mid → leaf`; `leaf has_child root` would make `root` its own

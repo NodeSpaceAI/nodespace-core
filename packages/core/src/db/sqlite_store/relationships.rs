@@ -475,7 +475,7 @@ impl SqliteStore {
         // presence-not-sign — append after the max sibling even when its
         // order is <= 0 (a `> 0.0` sentinel misreads a lone child at 0.0 as none).
         let last_order: Option<f64> = if let Some(row) = rows.next().await? {
-            Some(row.get::<Option<f64>>(0)?.unwrap_or(0.0))
+            Some(edge_order(&row, 0)?.unwrap_or(0.0))
         } else {
             None
         };
@@ -892,7 +892,7 @@ impl SqliteStore {
 
         // presence-not-sign — append after the max member even at order <= 0.
         let last_order: Option<f64> = if let Some(row) = order_rows.next().await? {
-            Some(row.get::<Option<f64>>(0)?.unwrap_or(0.0))
+            Some(edge_order(&row, 0)?.unwrap_or(0.0))
         } else {
             None
         };
@@ -1591,7 +1591,7 @@ impl SqliteStore {
                 .context("Failed to read existing member orders")?;
             while let Some(row) = rows.next().await? {
                 let collection_id: String = row.get(0)?;
-                let ord: Option<f64> = row.get(1)?;
+                let ord = edge_order(&row, 1)?;
                 // Re-borrow the caller's `&str` key so the map stays borrow-free.
                 if let Some(key) = chunk.iter().find(|id| **id == collection_id) {
                     max_order.insert(key, ord);
@@ -2169,7 +2169,7 @@ impl SqliteStore {
             .context("Failed to get relationship orders")?;
         let mut orders = Vec::new();
         while let Some(row) = rows.next().await? {
-            let order: Option<f64> = row.get(0).ok();
+            let order = edge_order(&row, 0).ok().flatten();
             orders.push(order);
         }
         Ok(orders)

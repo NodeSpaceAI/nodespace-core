@@ -1063,7 +1063,8 @@ impl NodeService {
             ));
         }
 
-        // Remaining relationships carry the caller's edge_data as-is: the two
+        // Remaining relationships carry the caller's edge_data as-is, apart
+        // from an explicit `order` (see `normalize_edge_order`): the two
         // auto-ordered builtins (member_of, has_child) returned early above
         // when auto-ordered, and mentions / has_role are unordered. Only a
         // builtin ever reaches here at all — a declared (custom) relationship
@@ -1071,7 +1072,9 @@ impl NodeService {
         // `create_relationship_in_tx` path. Builtins normalize a non-object
         // payload to an empty object and carry no declared reverse name (the
         // store derives a builtin's reverse from its forward name).
-        let final_edge_data = serde_json::json!(edge_data.as_object().cloned().unwrap_or_default());
+        let mut final_edge_data =
+            serde_json::json!(edge_data.as_object().cloned().unwrap_or_default());
+        normalize_edge_order(relationship_name, &mut final_edge_data)?;
 
         let rel_id = self
             .store
@@ -1584,11 +1587,14 @@ impl NodeService {
             ));
         }
 
-        let final_edge_data = if is_builtin {
+        let mut final_edge_data = if is_builtin {
             serde_json::json!(edge_data.as_object().cloned().unwrap_or_default())
         } else {
             edge_data.clone()
         };
+        if is_builtin {
+            normalize_edge_order(relationship_name, &mut final_edge_data)?;
+        }
 
         let rel_id = crate::db::SqliteStore::create_generic_relationship_in_tx(
             tx.store_tx(),
@@ -2280,7 +2286,7 @@ impl NodeService {
         source_id: &str,
         relationship_name: &str,
         target_id: &str,
-        properties: serde_json::Value,
+        mut properties: serde_json::Value,
     ) -> Result<(), NodeServiceError> {
         // Edge attributes are a JSON object (mirrors `edge_data` on create, which
         // defaults to `{}`). Reject a scalar/array/null so an edit can't replace a
@@ -2308,6 +2314,9 @@ impl NodeService {
         // schema's description subtree legitimately carries `has_child` edges
         // whose order attribute may be rewritten.
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+        if is_builtin {
+            normalize_edge_order(relationship_name, &mut properties)?;
+        }
 
         // Same forward spelling the create path stored — see
         // `in_declaration_forward_name`.
@@ -2708,6 +2717,36 @@ fn second_parent_refused(target_id: &str, existing: &str, source_id: &str) -> No
          it with `nodespace node move {target_id} --parent {source_id}` instead of adding a \
          second `has_child` edge."
     ))
+}
+
+/// Store a caller's `order` on a `has_child` or `member_of` edge as the float
+/// every internal writer stores, and refuse one that is not a number.
+///
+/// Those two edges sort their siblings or members by `order`, and the store
+/// reads it as a float. A whole JSON number (`5`) stored as given comes back
+/// from SQLite as an integer instead, so it is rewritten to `5.0` before it
+/// is stored or announced. A `null` order is left alone: the store treats it
+/// as an edge with no order.
+fn normalize_edge_order(
+    relationship_name: &str,
+    edge_data: &mut serde_json::Value,
+) -> Result<(), NodeServiceError> {
+    if !matches!(relationship_name, "has_child" | "member_of") {
+        return Ok(());
+    }
+    let Some(order) = edge_data.get_mut("order") else {
+        return Ok(());
+    };
+    match order.as_f64() {
+        Some(number) => *order = serde_json::json!(number),
+        None if order.is_null() => {}
+        None => {
+            return Err(NodeServiceError::invalid_update(format!(
+                "'{relationship_name}' edge order must be a number, got {order}"
+            )))
+        }
+    }
+    Ok(())
 }
 
 /// `(source, name, target)` as stored: swapped onto `forward_name` when
