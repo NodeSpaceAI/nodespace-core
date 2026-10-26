@@ -2098,17 +2098,12 @@ impl NodeService {
         // A schema is found by meaning, a core one included, so it is queued
         // for embedding like any other created root. Derived state: a failure
         // to queue does not fail the seed.
-        for schema in &missing_schemas {
-            if let Err(e) = store
-                .create_stale_embedding_marker(&schema.envelope.id)
-                .await
-            {
-                tracing::warn!(
-                    "Failed to queue core schema '{}' for embedding: {}",
-                    schema.envelope.id,
-                    e
-                );
-            }
+        let seeded_ids: Vec<String> = missing_schemas
+            .iter()
+            .map(|schema| schema.envelope.id.clone())
+            .collect();
+        if let Err(e) = store.create_stale_embedding_markers_bulk(&seeded_ids).await {
+            tracing::warn!("Failed to queue core schemas for embedding: {}", e);
         }
 
         tracing::info!("✅ Core schemas seeded successfully");
@@ -4723,51 +4718,25 @@ mod tests {
         );
     }
 
-    /// A first open that stops part-way through seeding the core schemas
-    /// leaves nothing behind for the next open to skip: every core schema
-    /// ends up with exactly its shipped declarations, `extends` edges
-    /// included. A schema counts as seeded once its node exists, so nodes
+    /// Opens a fresh database with `fault` (a `CREATE TRIGGER` that raises)
+    /// installed, so the first open stops part-way through seeding the core
+    /// schemas; then drops it and opens again. A schema counts as seeded once
+    /// its node exists, so that second open must find every core schema with
+    /// exactly its shipped declarations, `extends` edges included: nodes
     /// committed without their declarations would never get them.
-    #[tokio::test]
-    async fn interrupted_core_schema_seed_leaves_no_schema_without_its_declarations() {
+    async fn assert_interrupted_core_schema_seed_recovers(fault: &str, drop_fault: &str) {
         use crate::models::core_schemas::get_core_schemas;
 
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        let core_schemas = get_core_schemas();
-        let last_id = core_schemas
-            .last()
-            .expect("core schemas are seeded")
-            .envelope
-            .id
-            .clone();
-
         {
-            // The last schema's create fails, after every other one's.
             let mut store = Arc::new(SqliteStore::new(db_path.clone()).await.unwrap());
-            store
-                .write()
-                .await
-                .execute(
-                    &format!(
-                        "CREATE TRIGGER fail_last_core_schema BEFORE INSERT ON node \
-                         WHEN NEW.id = '{last_id}' \
-                         BEGIN SELECT RAISE(ABORT, 'injected seed failure'); END"
-                    ),
-                    (),
-                )
-                .await
-                .unwrap();
+            store.write().await.execute(fault, ()).await.unwrap();
             assert!(
                 NodeService::new(&mut store).await.is_err(),
                 "the injected failure stops the first open"
             );
-            store
-                .write()
-                .await
-                .execute("DROP TRIGGER fail_last_core_schema", ())
-                .await
-                .unwrap();
+            store.write().await.execute(drop_fault, ()).await.unwrap();
         }
 
         let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
@@ -4779,7 +4748,7 @@ mod tests {
             declarations.sort_by(|a, b| a.name.cmp(&b.name));
             declarations
         };
-        for schema in &core_schemas {
+        for schema in &get_core_schemas() {
             let stored = service
                 .store
                 .get_schema_declarations(&schema.envelope.id)
@@ -4792,6 +4761,45 @@ mod tests {
                 schema.envelope.id
             );
         }
+    }
+
+    /// The last schema node's create fails, whichever schema that is: every
+    /// other node has been created by then.
+    #[tokio::test]
+    async fn core_schema_seed_interrupted_at_a_node_create_recovers() {
+        let schema_count = crate::models::core_schemas::get_core_schemas().len();
+        assert_interrupted_core_schema_seed_recovers(
+            &format!(
+                "CREATE TRIGGER fail_seed BEFORE INSERT ON node \
+                 WHEN NEW.node_type = 'schema' \
+                 AND (SELECT COUNT(*) FROM node WHERE node_type = 'schema') = {} \
+                 BEGIN SELECT RAISE(ABORT, 'injected seed failure'); END",
+                schema_count - 1
+            ),
+            "DROP TRIGGER fail_seed",
+        )
+        .await;
+    }
+
+    /// A declaration write fails after every schema node exists: the case
+    /// where the nodes alone would make the next open skip the seed.
+    #[tokio::test]
+    async fn core_schema_seed_interrupted_at_a_declaration_write_recovers() {
+        let declaring = crate::models::core_schemas::get_core_schemas()
+            .into_iter()
+            .find(|schema| !crate::models::schema_node::to_declarations(schema).is_empty())
+            .expect("a core schema declares relationships")
+            .envelope
+            .id;
+        assert_interrupted_core_schema_seed_recovers(
+            &format!(
+                "CREATE TRIGGER fail_seed BEFORE INSERT ON relationship \
+                 WHEN NEW.in_node = '{declaring}' \
+                 BEGIN SELECT RAISE(ABORT, 'injected seed failure'); END"
+            ),
+            "DROP TRIGGER fail_seed",
+        )
+        .await;
     }
 
     /// Adding existing nodes as children one at a time appends each after the

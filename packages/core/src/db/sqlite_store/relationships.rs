@@ -2593,14 +2593,15 @@ impl SqliteStore {
     /// atomically, diffing by name so unchanged declarations keep their row (no
     /// delete/reinsert churn, stable edge ids, no spurious events).
     ///
-    /// The NAME invariants are enforced here, at the lowest write layer, so no
-    /// direct caller (core-schema seeding, tests) can bypass them: a declared
-    /// name may not collide with a built-in structural relationship (the
-    /// builtin exclusion in every declaration query keys on exactly this), and
-    /// names must be unique within one schema (the diff-by-name and the
-    /// `relationship_type` addressing both assume it). Higher-level validation
-    /// with friendlier errors (target existence, live-instance-edge
-    /// protection) lives in `NodeService::set_schema_relationships`.
+    /// The NAME invariants are enforced here and in the `_in_tx` twin, at the
+    /// lowest write layer, so no caller (core-schema seeding included) can
+    /// bypass them: a declared name may not collide with a built-in structural
+    /// relationship (the builtin exclusion in every declaration query keys on
+    /// exactly this), and names must be unique within one schema (the
+    /// diff-by-name and the `relationship_type` addressing both assume it).
+    /// Higher-level validation with friendlier errors (target existence,
+    /// live-instance-edge protection) lives in
+    /// `NodeService::set_schema_relationships`.
     pub async fn set_schema_declarations(
         &self,
         schema_id: &str,
@@ -2736,11 +2737,13 @@ impl SqliteStore {
     /// of opening its own — this is what lets `handle_create_schema` and
     /// `handle_update_schema` compose the relationship-declaration write
     /// into the same transaction as the schema node and description
-    /// subtree writes.
+    /// subtree writes, and core-schema seeding write the schema nodes and
+    /// their declarations as one unit.
     ///
     /// Does NOT bump the schema node's `version`. Every caller must also
-    /// rewrite the schema node in the same transaction (both current callers
-    /// do), because that bump is what `handle_update_schema`'s pre-write
+    /// write the schema node in the same transaction (every current caller
+    /// does: create and update rewrite it, seeding creates it), because that
+    /// bump is what `handle_update_schema`'s pre-write
     /// version check relies on to detect a concurrent change: a
     /// declaration-only write that skipped it would go unseen, and a
     /// concurrent `update_schema` holding a stale declaration list would

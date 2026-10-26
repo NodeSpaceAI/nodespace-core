@@ -1294,11 +1294,12 @@ impl NodeService {
     /// Replace a schema's declaration edges — the write path for them.
     /// `relationships` is the full set, the `extends` edge included
     /// (`schema_node::to_declarations`): a declaration left out is removed.
-    /// `create_schema`/`update_schema` route through here;
-    /// core-schema seeding (which runs before a `NodeService` exists) calls
-    /// `SqliteStore::set_schema_declarations` directly, which enforces the same
-    /// name invariants (reserved builtin names, per-schema uniqueness) at the
-    /// store layer.
+    /// `create_schema`/`update_schema` route through here or the `_in_tx`
+    /// twin; core-schema seeding (which runs before a `NodeService` exists)
+    /// calls `SqliteStore::set_schema_declarations_in_tx` directly, in the
+    /// transaction that creates the schema nodes. The store enforces the same
+    /// name invariants (reserved builtin names, per-schema uniqueness) on
+    /// both paths.
     ///
     /// Enforces, in order:
     /// 1. **Reserved names** — a declaration may not take a built-in structural
