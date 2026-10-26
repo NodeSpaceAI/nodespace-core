@@ -341,17 +341,20 @@ const HAS_CHILD_CYCLE_SQL: &str = r#"WITH RECURSIVE desc(node_id, depth) AS (
 )
 SELECT node_id FROM desc WHERE node_id = ?2 LIMIT 1"#;
 
-/// Every `has_child` descendant of `?1`, each once. Shared by
-/// `collect_subtree_ids` and `delete_subtree_atomic`'s walk inside its
-/// transaction, so the two compare the same set.
+/// Every `has_child` descendant of `?1`, each once, never `?1` itself.
+/// Shared by `collect_subtree_ids` and `delete_subtree_atomic`'s walk inside
+/// its transaction, so the two compare the same set. `UNION`, not
+/// `UNION ALL`: a node already reached is not walked again, so the walk ends
+/// even on a `has_child` cycle, which matters most where it runs under the
+/// write guard.
 const SUBTREE_DESCENDANTS_SQL: &str = r#"WITH RECURSIVE subtree(node_id) AS (
     SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
-    UNION ALL
+    UNION
     SELECT r.out_node FROM relationship r
     JOIN subtree s ON r.in_node = s.node_id
     WHERE r.relationship_type = 'has_child'
 )
-SELECT DISTINCT node_id FROM subtree"#;
+SELECT node_id FROM subtree WHERE node_id != ?1"#;
 
 fn has_child_cycle_violation(parent_id: &str, child_id: &str) -> anyhow::Error {
     let detail = if parent_id == child_id {
@@ -6458,5 +6461,91 @@ mod knowledge_listing_tests {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod subtree_walk_cycle_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// The subtree walk ends on a `has_child` cycle. The guards keep cycles
+    /// out, so this one is written straight into the table; a walk that
+    /// followed it for ever would hold the write guard inside
+    /// `delete_subtree_atomic` and stop every writer. The walk runs on its
+    /// own thread, so a walk that never ends fails the test instead of
+    /// hanging it.
+    #[test]
+    fn subtree_walk_and_delete_end_on_a_has_child_cycle() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let outcome = runtime.block_on(async {
+                let temp_dir = TempDir::new()?;
+                let store = SqliteStore::new(temp_dir.path().join("test.db")).await?;
+                let mut ids = Vec::new();
+                for content in ["a", "b"] {
+                    let node = store
+                        .create_node(
+                            Node::new("text".to_string(), content.to_string(), serde_json::json!({})),
+                            None,
+                            None,
+                        )
+                        .await?;
+                    ids.push(node.id);
+                }
+                let (a, b) = (ids[0].clone(), ids[1].clone());
+                let (cycle_a, cycle_b) = (a.clone(), b.clone());
+                store
+                    .with_transaction(move |tx| {
+                        Box::pin(async move {
+                            for (parent, child) in [(&cycle_a, &cycle_b), (&cycle_b, &cycle_a)] {
+                                tx.conn()
+                                    .execute(
+                                        "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
+                                         VALUES (?1, ?2, ?3, 'has_child', 'child_of', '{\"order\":1.0}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                                        libsql::params![
+                                            uuid::Uuid::new_v4().to_string(),
+                                            parent.clone(),
+                                            child.clone()
+                                        ],
+                                    )
+                                    .await?;
+                            }
+                            Ok(())
+                        })
+                    })
+                    .await?;
+
+                let subtree_ids = store.collect_subtree_ids(&a).await?;
+                let version = store.get_node(&a).await?.expect("a exists").version;
+                let outcome = store
+                    .delete_subtree_atomic(
+                        &a,
+                        version,
+                        &subtree_ids,
+                        None,
+                        crate::db::WriteContext::default(),
+                    )
+                    .await?;
+                anyhow::Ok((a, b, subtree_ids, outcome, store.node_exists(&ids[1]).await?))
+            });
+            let _ = done_tx.send(outcome);
+        });
+
+        let (a, b, subtree_ids, outcome, b_exists) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the subtree walk must end on a has_child cycle")
+            .unwrap();
+        assert_eq!(
+            subtree_ids,
+            vec![a.clone(), b.clone()],
+            "each node listed once"
+        );
+        let Ok(SubtreeDeleteOutcome::Deleted(deleted)) = outcome else {
+            panic!("expected the cycle to be deleted, got {outcome:?}");
+        };
+        assert_eq!(deleted.len(), 2);
+        assert!(!b_exists);
     }
 }
