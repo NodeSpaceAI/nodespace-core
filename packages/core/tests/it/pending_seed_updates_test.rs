@@ -13,7 +13,9 @@ use nodespace_core::playbook::core_plays::{
     core_play_templates, parent_task_completion_rules, seed_core_plays,
     PARENT_TASK_COMPLETION_PLAY_ID,
 };
-use nodespace_core::services::NodeService;
+use nodespace_core::services::{
+    CreateNodeParams, InsertPosition, InsertPositionOwned, NodeService,
+};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -127,6 +129,59 @@ async fn body(service: &NodeService, id: &str) -> Result<Vec<String>> {
         .into_iter()
         .map(|child| child.content)
         .collect())
+}
+
+/// Write a line of the user's own under `parent`, the way the app, the CLI
+/// or an agent creates one: not through an edit of an existing node.
+async fn write_line(service: &NodeService, parent: Option<&str>, content: &str) -> Result<String> {
+    Ok(service
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: content.to_string(),
+            properties: json!({}),
+            parent_id: parent.map(ToString::to_string),
+            position: InsertPositionOwned::End,
+            lifecycle_status: None,
+        })
+        .await?)
+}
+
+/// Move `id` to the end of `new_parent`'s children, the way a user drags it.
+async fn move_under(service: &NodeService, id: &str, new_parent: &str) -> Result<()> {
+    let node = service.get_node(id).await?.expect("the node exists");
+    service
+        .move_node(id, node.version, Some(new_parent), InsertPosition::End)
+        .await?;
+    Ok(())
+}
+
+/// The order values on the edges to the seed's lines, smallest first.
+async fn line_orders(service: &NodeService) -> Result<Vec<f64>> {
+    let (_, edges) = service
+        .store()
+        .get_subtree_with_relationships(SKILL_ID)
+        .await?;
+    let mut orders: Vec<f64> = edges
+        .iter()
+        .filter(|edge| edge.in_node == SKILL_ID)
+        .map(|edge| edge.order())
+        .collect();
+    orders.sort_by(f64::total_cmp);
+    Ok(orders)
+}
+
+/// The guidance of the seed is pending, and nothing else is.
+async fn assert_only_guidance_pending(service: &NodeService, shipped: &NodeTemplate) -> Result<()> {
+    let pending = service.list_pending_seed_updates().await?;
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].node_id, SKILL_ID);
+    assert_eq!(pending[0].aspect, SeedAspect::Guidance);
+    assert_eq!(
+        pending[0].shipped_version,
+        shipped_version(shipped, SeedAspect::Guidance)
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -640,5 +695,386 @@ async fn pending_state_is_not_node_content() -> Result<()> {
         .list_pending_seed_updates()
         .await?
         .is_empty());
+    Ok(())
+}
+
+// A seed's body is the user's once anything beneath its root is no longer
+// what seeding wrote there, whichever call changed it. Only an `update_node`
+// to the content or fields of a line of a seed at the top of its tree marks
+// the body as edited, so the tests that follow change it some other way.
+
+#[tokio::test]
+async fn a_line_the_user_added_under_a_seed_is_kept_when_its_body_changes() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    let note = write_line(&service, Some(SKILL_ID), "A note of the user's.").await?;
+    let beneath = write_line(&service, Some(&note), "Beneath the user's note.").await?;
+
+    let v2 = skill("File a note.", "Shipped body, second version.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, first version.", "A note of the user's."]
+    );
+    assert!(service.get_node(&beneath).await?.is_some());
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn lines_the_user_moved_under_a_seed_are_kept_when_its_body_changes() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    let page = write_line(&service, None, "A page of the user's.").await?;
+    let moved = write_line(&service, Some(&page), "A line moved into the skill.").await?;
+    let beneath = write_line(&service, Some(&moved), "Beneath the moved line.").await?;
+    move_under(&service, &moved, SKILL_ID).await?;
+
+    let v2 = skill("File a note.", "Shipped body, second version.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        [
+            "Shipped body, first version.",
+            "A line moved into the skill."
+        ]
+    );
+    assert!(service.get_node(&beneath).await?.is_some());
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn lines_the_user_imported_under_a_seed_are_kept_when_its_body_changes() -> Result<()> {
+    const IMPORTED: &str = "0f1d6c4e-8a3b-4c57-9e21-5b7a3d9c1e11";
+    const IMPORTED_CHILD: &str = "0f1d6c4e-8a3b-4c57-9e21-5b7a3d9c1e12";
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    service
+        .bulk_create_hierarchy(vec![
+            (
+                IMPORTED.to_string(),
+                "text".to_string(),
+                "An imported line.".to_string(),
+                Some(SKILL_ID.to_string()),
+                100.0,
+                json!({}),
+            ),
+            (
+                IMPORTED_CHILD.to_string(),
+                "text".to_string(),
+                "Beneath the imported line.".to_string(),
+                Some(IMPORTED.to_string()),
+                1.0,
+                json!({}),
+            ),
+        ])
+        .await?;
+
+    let v2 = skill("File a note.", "Shipped body, second version.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, first version.", "An imported line."]
+    );
+    assert!(service.get_node(IMPORTED_CHILD).await?.is_some());
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_edit_to_a_seed_filed_under_a_page_is_kept_when_its_body_changes() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    let page = write_line(&service, None, "A page of the user's.").await?;
+    move_under(&service, SKILL_ID, &page).await?;
+    edit_body(&service, SKILL_ID, "The body the user wrote.").await?;
+
+    let v2 = skill("File a note.", "Shipped body, second version.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_line_the_user_deleted_from_a_seed_stays_deleted_when_its_body_changes() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped line one.\n\nShipped line two."),
+    )
+    .await?;
+    let children = service.get_children(SKILL_ID).await?;
+    assert_eq!(children.len(), 2, "{children:?}");
+    service
+        .delete_node(&children[0].id, children[0].version)
+        .await?;
+
+    let v2 = skill("File a note.", "Shipped line one.\n\nShipped line three.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(body(&service, SKILL_ID).await?, ["Shipped line two."]);
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn lines_the_user_reordered_in_a_seed_stay_in_their_order_when_its_body_changes() -> Result<()>
+{
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped line one.\n\nShipped line two."),
+    )
+    .await?;
+    let children = service.get_children(SKILL_ID).await?;
+    service
+        .reorder_node(
+            &children[1].id,
+            children[1].version,
+            InsertPosition::Beginning,
+        )
+        .await?;
+
+    let v2 = skill("File a note.", "Shipped line one.\n\nShipped line three.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped line two.", "Shipped line one."]
+    );
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+/// Archiving changes no content, so the edit marks nothing; the line stays
+/// archived.
+#[tokio::test]
+async fn a_line_the_user_archived_in_a_seed_stays_archived_when_its_body_changes() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped line one.\n\nShipped line two."),
+    )
+    .await?;
+    let children = service.get_children(SKILL_ID).await?;
+    let archived = children[0].id.clone();
+    service
+        .update_node(
+            &archived,
+            children[0].version,
+            NodeUpdate::default().with_lifecycle_status("archived".to_string()),
+        )
+        .await?;
+
+    let v2 = skill("File a note.", "Shipped line one.\n\nShipped line three.");
+    seed(&service, &v2).await?;
+
+    let stored = service
+        .get_node(&archived)
+        .await?
+        .expect("the archived line is kept");
+    assert_eq!(stored.lifecycle_status, "archived");
+    assert_only_guidance_pending(&service, &v2).await?;
+    Ok(())
+}
+
+/// A line moved away and back to its place leaves the body as seeding wrote
+/// it, though the move bumped its version and timestamps and gave it new
+/// order values: only what the body holds, and in what order, is compared.
+#[tokio::test]
+async fn a_line_moved_away_and_back_leaves_the_body_free_to_follow_what_ships() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped line one.\n\nShipped line two."),
+    )
+    .await?;
+    let children = service.get_children(SKILL_ID).await?;
+    let (one, two) = (children[0].id.clone(), children[1].id.clone());
+    let orders_as_seeded = line_orders(&service).await?;
+
+    // Line two to the front, then line one in front of it: the order they
+    // were seeded in, under new order values.
+    for line in [&two, &one] {
+        let node = service.get_node(line).await?.expect("the line exists");
+        service
+            .reorder_node(line, node.version, InsertPosition::Beginning)
+            .await?;
+    }
+    // Line two moved out to a page of the user's, then back to the end.
+    let page = write_line(&service, None, "A page of the user's.").await?;
+    move_under(&service, &two, &page).await?;
+    move_under(&service, &two, SKILL_ID).await?;
+
+    let moved = service.get_node(&two).await?.expect("line two exists");
+    assert!(moved.version > children[1].version, "the moves bumped it");
+    assert_ne!(line_orders(&service).await?, orders_as_seeded);
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped line one.", "Shipped line two."]
+    );
+
+    seed(
+        &service,
+        &skill("File a note.", "Shipped line one.\n\nShipped line three."),
+    )
+    .await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped line one.", "Shipped line three."]
+    );
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// What seeding writes is recorded each time it writes a body, so a body
+/// replaced by a shipped change follows the next one on its own too.
+#[tokio::test]
+async fn a_replaced_body_follows_the_next_shipped_change_on_its_own() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, second version."),
+    )
+    .await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, third version."),
+    )
+    .await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, third version."]
+    );
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// A shipped settings change leaves the record of what seeding wrote beneath
+/// the root alone, so the next body change still applies on its own.
+#[tokio::test]
+async fn a_settings_change_leaves_the_body_free_to_follow_what_ships() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    seed(
+        &service,
+        &skill("File a note, reworded.", "Shipped body, first version."),
+    )
+    .await?;
+    seed(
+        &service,
+        &skill("File a note, reworded.", "Shipped body, second version."),
+    )
+    .await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, second version."]
+    );
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// Taking the shipped body discards what the user added, by their choice,
+/// and the body follows what ships on its own again afterwards.
+#[tokio::test]
+async fn taking_the_shipped_body_over_added_lines_lets_later_changes_apply() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    let note = write_line(&service, Some(SKILL_ID), "A note of the user's.").await?;
+    let v2 = skill("File a note.", "Shipped body, second version.");
+    seed(&service, &v2).await?;
+    assert_only_guidance_pending(&service, &v2).await?;
+
+    assert!(
+        service
+            .take_seed_update(&prepare_nodes_from_template(&v2)?, SeedAspect::Guidance)
+            .await?
+    );
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, second version."]
+    );
+    assert!(service.get_node(&note).await?.is_none());
+
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, third version."),
+    )
+    .await?;
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, third version."]
+    );
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// A body with no record of what seeding wrote beneath it cannot be shown to
+/// hold nothing of the user's, so it is kept too.
+#[tokio::test]
+async fn a_body_with_no_record_of_what_seeding_wrote_is_kept_when_it_changes() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
+    service
+        .update_node_unchecked(
+            SKILL_ID,
+            NodeUpdate::default()
+                .with_properties(json!({ "_seed": { "guidance_seeded_fingerprint": null } })),
+        )
+        .await?;
+
+    let v2 = skill("File a note.", "Shipped body, second version.");
+    seed(&service, &v2).await?;
+
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["Shipped body, first version."]
+    );
+    assert_only_guidance_pending(&service, &v2).await?;
     Ok(())
 }

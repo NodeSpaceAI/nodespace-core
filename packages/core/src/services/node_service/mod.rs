@@ -477,6 +477,11 @@ pub struct CreateNodeParams {
 /// small ids).
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 4096;
 
+/// The `_seed` key on a seeded root holding the fingerprint of the body
+/// seeding last wrote beneath it. Reconciliation replaces a body only while
+/// what is stored still matches it; see `NodeService::guidance_is_as_seeded`.
+const GUIDANCE_SEEDED_FINGERPRINT_KEY: &str = "guidance_seeded_fingerprint";
+
 tokio::task_local! {
     /// Set while a [`NodeService::with_transaction`] closure runs, so
     /// [`NodeService::emit_event`] can refuse, in debug builds, to broadcast
@@ -2121,8 +2126,8 @@ impl NodeService {
     /// | config hash differs, `config_modified` not set                 | replace root properties  |
     /// | config hash differs, `config_modified` set                     | keep, record as pending  |
     /// | guidance hash matches                                          | skip                     |
-    /// | guidance hash differs, `guidance_modified` not set              | replace children         |
-    /// | guidance hash differs, `guidance_modified` set                 | keep, record as pending  |
+    /// | guidance hash differs, body as seeding wrote it                | replace children         |
+    /// | guidance hash differs, body changed or `guidance_modified` set | keep, record as pending  |
     ///
     /// A config "replace" updates the existing root's `properties` in place —
     /// the root's id and content are untouched. A guidance "replace" deletes
@@ -2132,8 +2137,14 @@ impl NodeService {
     /// template versions. The two replaces are independent: a config-only
     /// template change never touches children, and vice versa.
     ///
-    /// This never discards content a user has touched — see `_seed.config_modified`
-    /// / `_seed.guidance_modified`, stamped by [`Self::update_node`]. A kept
+    /// This never discards content a user has touched. The config aspect is
+    /// the user's once `_seed.config_modified` is set, stamped by
+    /// [`Self::update_node`]. The guidance aspect is the user's once
+    /// `_seed.guidance_modified` is set, and also whenever what is stored
+    /// beneath the root is not provably the body seeding last wrote there
+    /// (`guidance_is_as_seeded`): a replace deletes the root's whole
+    /// subtree, and most calls that add, move, delete or change a node
+    /// beneath a seed stamp no flag. A kept
     /// aspect whose shipped version differs is recorded as pending, with that
     /// version's fingerprint, so the choice can be put to the user (ADR-094
     /// §8, [`Self::list_pending_seed_updates`]); the record is cleared once
@@ -2219,6 +2230,7 @@ impl NodeService {
                 if !children.is_empty() {
                     created_children += self.bulk_create_seed_children(children).await?;
                 }
+                self.record_seeded_guidance(&root.id).await?;
                 continue;
             };
 
@@ -2264,13 +2276,15 @@ impl NodeService {
                 replaced_config += 1;
             }
 
-            // Guidance aspect: the markdown children.
+            // Guidance aspect: the markdown children. A replace deletes
+            // everything beneath the root, so it runs only on a body that is
+            // provably the one seeding wrote; see `guidance_is_as_seeded`.
             let guidance_pending = pending.contains(&(root.id.clone(), SeedAspect::Guidance));
             if existing_guidance_version == guidance_version {
                 skipped_guidance_current += 1;
                 self.settle_pending_seed_update(&root.id, SeedAspect::Guidance, guidance_pending)
                     .await?;
-            } else if guidance_modified {
+            } else if guidance_modified || !self.guidance_is_as_seeded(existing_node).await? {
                 tracing::info!(
                     seed_key,
                     node_type = %root.node_type,
@@ -2421,8 +2435,13 @@ impl NodeService {
     /// Guidance-only replace: delete the existing children and recreate them
     /// from the template, leaving the root untouched, then stamp the root's
     /// `_seed.guidance_version` to `new_guidance_version` so this replace
-    /// isn't redone on the next reconciliation pass. Returns the number of
+    /// isn't redone on the next reconciliation pass, and record the new body
+    /// as seeding's ([`Self::record_seeded_guidance`]). Returns the number of
     /// children created.
+    ///
+    /// Deletes everything beneath the root unconditionally: reconciliation
+    /// calls it only for a body [`Self::guidance_is_as_seeded`], and a reset
+    /// or a taken update calls it because the user asked to discard theirs.
     async fn replace_seed_guidance(
         &self,
         existing_root_id: &str,
@@ -2447,8 +2466,125 @@ impl NodeService {
             )
             .await
             .map_err(NodeServiceError::from_store)?;
+        self.record_seeded_guidance(existing_root_id).await?;
 
         Ok(created)
+    }
+
+    /// Record on a seeded root the fingerprint of the body seeding has just
+    /// written beneath it ([`Self::guidance_fingerprint`]), as
+    /// `_seed.guidance_seeded_fingerprint`. Called after every write of a
+    /// seed's body: its creation, a replace, and a reset or a taken update.
+    async fn record_seeded_guidance(&self, root_id: &str) -> Result<(), NodeServiceError> {
+        let fingerprint = self.guidance_fingerprint(root_id).await?;
+        // The same OCC-bypassing stamp as the rest of `_seed`'s bookkeeping:
+        // it carries no content.
+        self.store
+            .set_property_string(
+                root_id,
+                &format!("$._seed.{GUIDANCE_SEEDED_FINGERPRINT_KEY}"),
+                &fingerprint,
+            )
+            .await
+            .map_err(NodeServiceError::from_store)
+    }
+
+    /// Whether everything beneath the seeded `root` is still exactly the
+    /// body seeding last wrote there: the fingerprint recorded then
+    /// ([`Self::record_seeded_guidance`]) matches the one read now.
+    ///
+    /// This, not a flag, is what lets reconciliation replace a body without
+    /// asking. A replace deletes the root's whole subtree, and the calls that
+    /// add, move, delete, reorder or change a node beneath a seed are many
+    /// (a create under it, a move into or out of it, a bulk import, an
+    /// archive, an edit to a seed filed under another node) and stamp no
+    /// `_seed` flag. A fingerprint of the stored subtree covers all of them,
+    /// and any added later.
+    ///
+    /// False for a root with no recorded fingerprint: nothing then proves
+    /// the body is seeding's, so it is kept.
+    async fn guidance_is_as_seeded(&self, root: &Node) -> Result<bool, NodeServiceError> {
+        let Some(recorded) = root
+            .properties
+            .get("_seed")
+            .and_then(|seed| seed.get(GUIDANCE_SEEDED_FINGERPRINT_KEY))
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(false);
+        };
+        Ok(self.guidance_fingerprint(&root.id).await? == recorded)
+    }
+
+    /// A fingerprint of everything stored beneath `root_id`, the root itself
+    /// left out: each descendant's id, its parent, type, content, fields and
+    /// whether it participates, depth first with siblings in their order. Two
+    /// reads differ whenever a node beneath the root was added, removed,
+    /// moved or reordered between them, given other content or fields, or
+    /// archived or unarchived.
+    ///
+    /// Versions, timestamps and the order values themselves are left out, as
+    /// is a node's title, which is derived: they record that a write
+    /// happened, not what it left, and a body whose every node holds what
+    /// seeding wrote, in the order seeding wrote it, holds nothing of the
+    /// user's.
+    async fn guidance_fingerprint(&self, root_id: &str) -> Result<String, NodeServiceError> {
+        use sha2::{Digest, Sha256};
+
+        let (nodes, edges) = self
+            .store
+            .get_subtree_with_relationships(root_id)
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        let nodes: HashMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let mut children: HashMap<&str, Vec<(f64, &str)>> = HashMap::new();
+        for edge in &edges {
+            children
+                .entry(edge.in_node.as_str())
+                .or_default()
+                .push((edge.order(), edge.out_node.as_str()));
+        }
+        // Ties in order are broken by id, so two reads walk the same way.
+        for siblings in children.values_mut() {
+            siblings.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        }
+
+        let mut hasher = Sha256::new();
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<(&str, &str)> = children
+            .get(root_id)
+            .into_iter()
+            .flatten()
+            .rev()
+            .map(|(_, child)| (root_id, *child))
+            .collect();
+        while let Some((parent, id)) = stack.pop() {
+            // Visited once, so a cycle in damaged data cannot loop.
+            if !visited.insert(id) {
+                continue;
+            }
+            hasher.update(parent.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(id.as_bytes());
+            hasher.update(b"\0");
+            if let Some(node) = nodes.get(id) {
+                hasher.update(node.node_type.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(node.content.as_bytes());
+                hasher.update(b"\0");
+                // The same stored fields serialize the same way on every
+                // read.
+                hasher.update(node.properties.to_string().as_bytes());
+                hasher.update(b"\0");
+                // Asked through the one participation check (ADR-087): an
+                // archived line is a change to the body like any other.
+                hasher.update([u8::from(crate::governance::participates(node))]);
+                hasher.update(b"\0");
+            }
+            if let Some(siblings) = children.get(id) {
+                stack.extend(siblings.iter().rev().map(|(_, child)| (id, *child)));
+            }
+        }
+        Ok(format!("{:x}", hasher.finalize()))
     }
 
     /// Explicitly discard a seeded node's user-modified aspect(s), restoring
