@@ -586,7 +586,7 @@ impl NodeEmbeddingService {
                     // Record error but continue processing
                     if let Err(record_err) = self
                         .store
-                        .record_embedding_error(&root_id, &e.to_string(), self.config.max_retries)
+                        .record_embedding_error(&root_id, &e.to_string())
                         .await
                     {
                         tracing::error!("Failed to record error for {}: {}", root_id, record_err);

@@ -2552,6 +2552,49 @@ mod tests {
         Ok(())
     }
 
+    /// A node whose embedding failed every retry has no real vector: its
+    /// rows hold the queue marker's placeholder (or the vector of content it
+    /// no longer has). Neither search path may score them.
+    #[tokio::test]
+    async fn test_a_node_that_used_up_its_retries_is_never_scored() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let node = store
+            .create_node(
+                Node::new("text".to_string(), "never embedded".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        // The marker's placeholder is the unit vector on axis 0, so the
+        // query below matches it exactly.
+        store.create_stale_embedding_marker(&node.id).await?;
+        for _ in 0..3 {
+            store
+                .record_embedding_error(&node.id, "inference failed")
+                .await?;
+        }
+        assert!(
+            !store
+                .get_stale_embedding_root_ids(None, 0, 3)
+                .await?
+                .contains(&node.id),
+            "its retries are used up"
+        );
+
+        let typed = store
+            .search_embeddings_by_node_type(&unit_query(0), "text", 10, Some(0.0))
+            .await?;
+        assert!(
+            typed.iter().all(|r| r.node_id != node.id),
+            "the typed scan must not score a placeholder vector"
+        );
+        let knn = store
+            .search_embeddings(&unit_query(0), 10, Some(0.0))
+            .await?;
+        assert!(knn.iter().all(|r| r.node_id != node.id));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_stale_marker_never_in_knn() -> Result<()> {
         let (store, _tmp) = create_test_store().await?;

@@ -239,6 +239,11 @@ impl SqliteStore {
         Ok(out)
     }
 
+    /// Queue `node_id`'s embedding to be rebuilt after its content changed.
+    ///
+    /// The change also gives the node a fresh retry budget: `error_count`
+    /// counts failures to embed the content before it, so a node that used
+    /// up its retries is embedded again once it is edited.
     pub async fn mark_root_embedding_stale(&self, node_id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let db = self.write().await;
@@ -257,7 +262,7 @@ impl SqliteStore {
         .context("Failed to clear vec_embeddings for stale node")?;
 
         tx.execute(
-            "UPDATE embedding SET stale = 1, modified_at = ?1 WHERE node_id = ?2",
+            "UPDATE embedding SET stale = 1, error_count = 0, last_error = NULL, modified_at = ?1 WHERE node_id = ?2",
             libsql::params![now, node_id.to_string()],
         )
         .await
@@ -403,20 +408,23 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn record_embedding_error(
-        &self,
-        node_id: &str,
-        error: &str,
-        max_retries: u8,
-    ) -> Result<()> {
+    /// Record a failed attempt to embed `node_id`.
+    ///
+    /// The rows stay stale. Once `error_count` reaches the retry limit,
+    /// `get_stale_embedding_root_ids` stops returning the node, and the next
+    /// content change resets the count (`mark_root_embedding_stale`). Stale
+    /// rows are never searched, so the placeholder or outdated vector they
+    /// hold is never scored as if it described the node.
+    pub async fn record_embedding_error(&self, node_id: &str, error: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        let max_retries_i = max_retries as i64;
-
-        // Increment error_count, set last_error, clear stale if error_count reaches max_retries
-        self.write().await.execute(
-            "UPDATE embedding SET error_count = error_count + 1, last_error = ?1, modified_at = ?2, stale = CASE WHEN error_count + 1 >= ?3 THEN 0 ELSE stale END WHERE node_id = ?4",
-            libsql::params![error.to_string(), now, max_retries_i, node_id.to_string()],
-        ).await.context("Failed to record embedding error")?;
+        self.write()
+            .await
+            .execute(
+                "UPDATE embedding SET error_count = error_count + 1, last_error = ?1, modified_at = ?2 WHERE node_id = ?3",
+                libsql::params![error.to_string(), now, node_id.to_string()],
+            )
+            .await
+            .context("Failed to record embedding error")?;
         Ok(())
     }
 
