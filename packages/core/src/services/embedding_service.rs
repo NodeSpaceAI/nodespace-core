@@ -307,18 +307,20 @@ impl NodeEmbeddingService {
     ///
     /// Uses conservative token counting to ensure chunks never exceed the
     /// model's token limit. The `chars_per_token_estimate` config controls
-    /// the character-to-token ratio. Overlaps chunks by `overlap_tokens`
-    /// to maintain context across boundaries.
+    /// the character-to-token ratio. Every byte is in at least one chunk.
+    /// A chunk that ends near its size limit overlaps the next by up to
+    /// `overlap_tokens` to maintain context across boundaries; one that ends
+    /// at an earlier break is followed by a chunk starting at that break.
     ///
     /// This function is UTF-8 safe - it never splits in the middle of a
     /// multi-byte character (like emojis).
-    fn chunk_content(&self, content: &str) -> Vec<(i32, i32, String)> {
+    fn chunk_content(config: &EmbeddingConfig, content: &str) -> Vec<(i32, i32, String)> {
         // Use configured chars_per_token estimate (default: 3)
         // BGE models typically tokenize at ~3-4 chars/token, but technical content
         // with code, markdown, and special characters can be closer to 2.5.
-        let chars_per_token = self.config.chars_per_token_estimate;
-        let max_chars = self.config.max_tokens_per_chunk * chars_per_token;
-        let overlap_chars = self.config.overlap_tokens * chars_per_token;
+        let chars_per_token = config.chars_per_token_estimate;
+        let max_chars = config.max_tokens_per_chunk * chars_per_token;
+        let overlap_chars = config.overlap_tokens * chars_per_token;
 
         if content.len() <= max_chars {
             // Single chunk
@@ -366,11 +368,14 @@ impl NodeEmbeddingService {
                 break;
             }
 
-            // Calculate where to start the next chunk with overlap
-            // Ensure we advance at least (chunk_size - overlap) to prevent infinite loops
+            // Start the next chunk a fixed stride of (chunk_size - overlap) on, so
+            // tiny advances can't multiply chunks, but never past where this
+            // chunk ended: a break before the stride would otherwise leave the
+            // bytes between it and the stride in no chunk. `actual_end` is a char
+            // boundary, so the minimum is one too.
             let min_advance = max_chars.saturating_sub(overlap_chars).max(1);
-            let next_start = start + min_advance;
-            start = Self::find_char_boundary(content, next_start);
+            let next_start = Self::find_char_boundary(content, start + min_advance);
+            start = next_start.min(actual_end);
         }
 
         chunks
@@ -432,7 +437,7 @@ impl NodeEmbeddingService {
         let content_hash = Self::compute_content_hash(&content);
 
         // Chunk content
-        let chunks = self.chunk_content(&content);
+        let chunks = Self::chunk_content(&self.config, &content);
         let total_chunks = chunks.len() as i32;
 
         tracing::debug!(
@@ -1299,90 +1304,19 @@ mod tests {
         assert_eq!(NodeEmbeddingService::find_char_boundary(s, 11), 10);
     }
 
-    /// Helper struct for testing chunk_content without full service initialization
-    struct ChunkTester {
-        config: EmbeddingConfig,
-    }
-
-    impl ChunkTester {
-        fn new() -> Self {
-            Self {
-                config: EmbeddingConfig::default(),
-            }
-        }
-
-        fn chunk_content(&self, content: &str) -> Vec<(i32, i32, String)> {
-            let chars_per_token = self.config.chars_per_token_estimate;
-            let max_chars = self.config.max_tokens_per_chunk * chars_per_token;
-            let overlap_chars = self.config.overlap_tokens * chars_per_token;
-
-            if content.len() <= max_chars {
-                return vec![(0, content.len() as i32, content.to_string())];
-            }
-
-            let mut chunks = Vec::new();
-            let mut start = 0;
-
-            while start < content.len() {
-                let end = Self::find_char_boundary(content, (start + max_chars).min(content.len()));
-
-                let actual_end = if end < content.len() {
-                    if let Some(pos) = content[start..end].rfind("\n\n") {
-                        start + pos + 2
-                    } else if let Some(pos) = content[start..end].rfind(". ") {
-                        start + pos + 2
-                    } else if let Some(pos) = content[start..end].rfind(' ') {
-                        start + pos + 1
-                    } else {
-                        end
-                    }
-                } else {
-                    end
-                };
-
-                chunks.push((
-                    start as i32,
-                    actual_end as i32,
-                    content[start..actual_end].to_string(),
-                ));
-
-                if actual_end >= content.len() {
-                    break;
-                }
-
-                let min_advance = max_chars.saturating_sub(overlap_chars).max(1);
-                let next_start = start + min_advance;
-                start = Self::find_char_boundary(content, next_start);
-            }
-
-            chunks
-        }
-
-        fn find_char_boundary(s: &str, mut index: usize) -> usize {
-            if index >= s.len() {
-                return s.len();
-            }
-            while index > 0 && !s.is_char_boundary(index) {
-                index -= 1;
-            }
-            index
-        }
-    }
-
     #[test]
     fn test_chunk_content_no_infinite_loop() {
         // Regression test for infinite loop bug:
         // When content is just over 2 chunks worth, the overlap calculation
         // could cause start to only advance by 1 byte, creating hundreds of chunks.
-        let tester = ChunkTester::new();
-        let config = &tester.config;
+        let config = &EmbeddingConfig::default();
 
         // Create content that's about 2.5 chunks worth
         let max_chars = config.max_tokens_per_chunk * config.chars_per_token_estimate;
         let content_len = max_chars * 2 + (max_chars / 2);
         let content = "x".repeat(content_len);
 
-        let chunks = tester.chunk_content(&content);
+        let chunks = NodeEmbeddingService::chunk_content(config, &content);
 
         // With default config (512 tokens, 100 overlap, 3 chars/token):
         // - max_chars = 1536, overlap_chars = 300
@@ -1409,10 +1343,10 @@ mod tests {
 
     #[test]
     fn test_chunk_content_single_chunk() {
-        let tester = ChunkTester::new();
         let short_content = "Hello world, this is a short test.";
 
-        let chunks = tester.chunk_content(short_content);
+        let chunks =
+            NodeEmbeddingService::chunk_content(&EmbeddingConfig::default(), short_content);
 
         assert_eq!(chunks.len(), 1, "Short content should be single chunk");
         assert_eq!(chunks[0].0, 0);
@@ -1422,8 +1356,7 @@ mod tests {
 
     #[test]
     fn test_chunk_content_breaks_at_sentences() {
-        let tester = ChunkTester::new();
-        let config = &tester.config;
+        let config = &EmbeddingConfig::default();
         let max_chars = config.max_tokens_per_chunk * config.chars_per_token_estimate;
 
         // Create content with a sentence boundary before max_chars
@@ -1432,7 +1365,7 @@ mod tests {
         let second_part = "y".repeat(max_chars);
         let content = format!("{}{}{}", first_part, sentence_break, second_part);
 
-        let chunks = tester.chunk_content(&content);
+        let chunks = NodeEmbeddingService::chunk_content(config, &content);
 
         // Should break at the sentence boundary
         assert!(chunks.len() >= 2, "Should have at least 2 chunks");
@@ -1441,6 +1374,99 @@ mod tests {
             chunks[0].2.ends_with(". "),
             "First chunk should end at sentence boundary"
         );
+    }
+
+    /// Builds a paragraph of whole `sentence`s at least `min_len` bytes long.
+    fn paragraph(sentence: &str, min_len: usize) -> String {
+        let mut text = String::new();
+        while text.len() < min_len {
+            text.push_str(sentence);
+        }
+        text.trim_end().to_string()
+    }
+
+    /// Asserts that `chunks` are slices of `content` that start at 0, end at
+    /// its length, fit the chunk size, keep advancing, and leave no byte
+    /// between one chunk and the next.
+    fn assert_chunks_cover(config: &EmbeddingConfig, content: &str, chunks: &[(i32, i32, String)]) {
+        let max_chars = config.max_tokens_per_chunk * config.chars_per_token_estimate;
+        assert_eq!(
+            chunks.first().map(|c| c.0),
+            Some(0),
+            "first chunk must start at 0"
+        );
+        assert_eq!(
+            chunks.last().map(|c| c.1 as usize),
+            Some(content.len()),
+            "last chunk must end at the end of the content"
+        );
+        for (start, end, text) in chunks {
+            let (start, end) = (*start as usize, *end as usize);
+            assert!(
+                start < end && end - start <= max_chars,
+                "chunk {start}..{end} is empty or longer than {max_chars} bytes"
+            );
+            assert_eq!(text, &content[start..end], "chunk text must be its slice");
+        }
+        for pair in chunks.windows(2) {
+            let (prev, next) = (&pair[0], &pair[1]);
+            assert!(
+                next.0 > prev.0,
+                "chunk at {} does not advance past {}",
+                next.0,
+                prev.0
+            );
+            assert!(
+                next.0 <= prev.1,
+                "bytes {}..{} are in no chunk",
+                prev.1,
+                next.0
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_content_leaves_no_byte_out_of_every_chunk() {
+        let config = EmbeddingConfig::default();
+        let sentence = "The vendor agreed to ship the parts before the end of the quarter. ";
+
+        // A title and one long paragraph: the only paragraph break in the first
+        // window is the one after the title, so the first chunk ends there.
+        let titled = format!("Meeting with vendor\n\n{}", paragraph(sentence, 3330));
+        let chunks = NodeEmbeddingService::chunk_content(&config, &titled);
+        assert_chunks_cover(&config, &titled, &chunks);
+
+        // Children joined with paragraph breaks, so a window's last break can
+        // fall well before the window's end.
+        for len in [500, 830, 2000] {
+            let doc = vec![paragraph(sentence, len); 8].join("\n\n");
+            let chunks = NodeEmbeddingService::chunk_content(&config, &doc);
+            assert_chunks_cover(&config, &doc, &chunks);
+        }
+
+        // Multi-byte characters around the breaks and the stride.
+        let wide = vec![paragraph("Café naïve ✅ déjà vu 🎉 résumé. ", 830); 8].join("\n\n");
+        let chunks = NodeEmbeddingService::chunk_content(&config, &wide);
+        assert_chunks_cover(&config, &wide, &chunks);
+    }
+
+    #[test]
+    fn test_chunk_content_overlaps_chunks_that_break_late() {
+        // Words with no sentence or paragraph break: each chunk breaks near the
+        // end of its window, and the next chunk starts inside it.
+        let config = EmbeddingConfig::default();
+        let content = "word ".repeat(1000);
+        let chunks = NodeEmbeddingService::chunk_content(&config, &content);
+        assert_chunks_cover(&config, &content, &chunks);
+        assert!(chunks.len() > 1, "content must span several chunks");
+        for pair in chunks.windows(2) {
+            assert!(
+                pair[1].0 < pair[0].1,
+                "chunks at {} and {} must overlap",
+                pair[0].0,
+                pair[1].0
+            );
+        }
     }
 
     // =========================================================================
