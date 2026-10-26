@@ -107,6 +107,24 @@ pub enum LeafDeleteOutcome {
     HasChildren { child_count: u64 },
 }
 
+/// What [`SqliteStore::delete_subtree_atomic`] did.
+///
+/// A version mismatch is not an outcome here: it is the separate
+/// `Ok(Err(VersionConflict))` every OCC store write returns.
+#[derive(Debug, Clone)]
+pub enum SubtreeDeleteOutcome {
+    /// The target and every descendant were deleted; these are the nodes
+    /// removed, as read under the write guard.
+    Deleted(Vec<Node>),
+    /// The target was already gone; nothing was written (idempotent).
+    NotFound,
+    /// The target's subtree as of the write is not the set the caller passed:
+    /// a node moved out of it or into it after the caller collected it.
+    /// Nothing was deleted. The caller re-collects the subtree, repeats any
+    /// check it made against it, and retries.
+    SubtreeChanged,
+}
+
 impl std::fmt::Display for VersionConflict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
