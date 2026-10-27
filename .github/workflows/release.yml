@@ -724,16 +724,20 @@ jobs:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            bun_target: bun-darwin-arm64
             id: macos-arm
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
+            bun_target: bun-linux-arm64
             id: linux-arm
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            bun_target: bun-linux-x64
             id: linux-x86
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bun_target: bun-windows-x64
             id: windows-x86
 
     runs-on: ${{ matrix.os }}
@@ -887,17 +891,28 @@ jobs:
       # resolves this sidecar by looking beside its own executable, so it
       # is named and placed exactly like `nodespace`/`nodespaced` above.
       #
-      # `bun build --compile` cross-compiles across OS but not always
-      # cleanly across libc/arch on the runner it's invoked from, so this
-      # compiles natively on each matrix leg's own runner, same as the Rust
-      # binaries above -- no `--target` cross-compile flag needed since
-      # each leg already runs on a machine of its own target OS/arch.
+      # The Linux ARM leg runs on an x86_64 hosted runner and only
+      # cross-compiles the Rust binaries, so a bare `bun build --compile`
+      # would emit a host (x86-64) executable under the aarch64 asset name.
+      # `--target` is therefore always passed, from the matrix `bun_target`
+      # (kept in step with `bunCompileTarget` in scripts/build-skill.ts by
+      # scripts/build-skill.test.ts), and the result's executable format is
+      # checked against the matrix target before it can be uploaded.
       - name: Compile skill installer sidecar
         if: steps.filter.outputs.skip != 'true' && matrix.os != 'windows-latest'
+        shell: bash
         run: |
-          bun build --compile packages/skill/src/install.ts \
+          bun build --compile --target="${{ matrix.bun_target }}" \
+            packages/skill/src/install.ts \
             --outfile "nodespace-skill-installer-${{ matrix.target }}"
           chmod +x "nodespace-skill-installer-${{ matrix.target }}"
+
+      - name: Verify skill installer architecture
+        if: steps.filter.outputs.skip != 'true' && matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          bash scripts/check-binary-arch.sh \
+            "nodespace-skill-installer-${{ matrix.target }}" "${{ matrix.target }}"
 
       # The sidecar reads SKILL.md/plugins/references from --resource-root at
       # runtime (see install.ts/installer.ts) rather than bundling them --
