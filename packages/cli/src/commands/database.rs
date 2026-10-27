@@ -39,8 +39,9 @@ pub enum DatabaseAction {
 pub struct CreateArgs {
     /// Human-facing label for the new database.
     pub name: String,
-    /// Explicit path for the new database file (relative paths resolve against the current directory). When omitted the daemon places
-    /// it under its managed database directory.
+    /// Explicit path for the new database file; a relative path resolves
+    /// against the current directory. When omitted the daemon places it under
+    /// its managed database directory.
     #[arg(long)]
     pub path: Option<String>,
 }
@@ -217,18 +218,18 @@ async fn list(client: &mut DatabaseServiceClient<Channel>, json: bool) -> Result
 
 /// Build the create request with an explicit path resolved against the
 /// caller's `cwd`, since the daemon resolves paths against its own.
-fn create_request(args: CreateArgs, cwd: &std::path::Path) -> CreateDatabaseRequest {
-    CreateDatabaseRequest {
+fn create_request(args: CreateArgs, cwd: &std::path::Path) -> Result<CreateDatabaseRequest> {
+    Ok(CreateDatabaseRequest {
         name: args.name,
-        path: args.path.map(|p| paths::absolute_in(&p, cwd)),
-    }
+        path: args.path.map(|p| paths::absolute_in(&p, cwd)).transpose()?,
+    })
 }
 
 /// Build the register request with the path resolved against the caller's `cwd`.
-fn register_request(args: RegisterArgs, cwd: &std::path::Path) -> RegisterDatabaseRequest {
-    RegisterDatabaseRequest {
-        path: paths::absolute_in(&args.path, cwd),
-    }
+fn register_request(args: RegisterArgs, cwd: &std::path::Path) -> Result<RegisterDatabaseRequest> {
+    Ok(RegisterDatabaseRequest {
+        path: paths::absolute_in(&args.path, cwd)?,
+    })
 }
 
 async fn create(
@@ -236,7 +237,7 @@ async fn create(
     args: CreateArgs,
     json: bool,
 ) -> Result<()> {
-    let request = create_request(args, &std::env::current_dir()?);
+    let request = create_request(args, &std::env::current_dir()?)?;
     let info = client
         .create(request)
         .await
@@ -253,7 +254,7 @@ async fn register(
     args: RegisterArgs,
     json: bool,
 ) -> Result<()> {
-    let request = register_request(args, &std::env::current_dir()?);
+    let request = register_request(args, &std::env::current_dir()?)?;
     let info = client
         .register(request)
         .await
@@ -433,7 +434,8 @@ mod path_tests {
                 path: Some("./work.db".into()),
             },
             Path::new("/home/u/project"),
-        );
+        )
+        .unwrap();
         assert_eq!(req.path.as_deref(), Some("/home/u/project/work.db"));
     }
 
@@ -445,7 +447,8 @@ mod path_tests {
                 path: None,
             },
             Path::new("/home/u/project"),
-        );
+        )
+        .unwrap();
         assert_eq!(req.path, None);
     }
 
@@ -456,7 +459,22 @@ mod path_tests {
                 path: "notes.db".into(),
             },
             Path::new("/home/u/project"),
-        );
+        )
+        .unwrap();
         assert_eq!(req.path, "/home/u/project/notes.db");
+    }
+
+    #[test]
+    fn empty_paths_are_rejected() {
+        let cwd = Path::new("/home/u/project");
+        assert!(register_request(RegisterArgs { path: "".into() }, cwd).is_err());
+        assert!(create_request(
+            CreateArgs {
+                name: "w".into(),
+                path: Some("".into())
+            },
+            cwd
+        )
+        .is_err());
     }
 }
