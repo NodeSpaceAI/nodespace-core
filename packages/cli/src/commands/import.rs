@@ -326,8 +326,10 @@ async fn run_multi_dir(
 ) -> Result<()> {
     // Phase 1: scan every directory before issuing any RPC. The daemon
     // derives each document's deterministic id from its path *relative to
-    // that call's own base_directory* (one independent RPC per directory
-    // here), so two different directories that each contain a same-named
+    // that call's own base_directory*, qualified by the target collection
+    // (one independent RPC per directory here, all sharing this invocation's
+    // collection options, and an auto-routed collection is itself a function
+    // of that relative path), so two different directories that each contain a same-named
     // file (e.g. both have a top-level README.md) would otherwise collide on
     // identity: the second either gets silently skipped as "already
     // imported" or, with --replace, silently overwrites the first's content.

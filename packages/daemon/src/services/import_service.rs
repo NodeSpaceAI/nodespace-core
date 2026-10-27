@@ -18,7 +18,8 @@ use nodespace_core::markdown::{
 };
 use nodespace_core::models::CoreNodeType;
 use nodespace_core::services::{
-    CollectionService, NodeService as CoreNodeService, MAX_COLLECTION_DEPTH,
+    normalize_collection_name, CollectionService, NodeService as CoreNodeService,
+    MAX_COLLECTION_DEPTH,
 };
 use nodespace_core::SqliteStore;
 use tokio::sync::mpsc;
@@ -73,7 +74,8 @@ const PHASE1_CHUNK_SIZE: usize = 32;
 const PHASE2_CHUNK_NODES: usize = 1_000;
 
 /// Stable namespace for deriving deterministic import root ids from a document's
-/// identity key (its base-directory-relative path). Re-importing the same file
+/// identity key (its base-directory-relative path, qualified by the target
+/// collection). Re-importing the same file
 /// therefore addresses the same root node, which is what makes re-import
 /// idempotent (no duplicate documents, no orphan "ghost" roots). This UUID is
 /// arbitrary but MUST stay fixed — changing it re-keys every imported document.
@@ -82,23 +84,33 @@ const IMPORT_ROOT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 ]);
 
 /// Derive a document's root node id deterministically from its identity key.
-/// The key is the file's base-directory-relative path, so the same file yields
-/// the same root id across imports regardless of the absolute checkout path.
+/// The key is the file's base-directory-relative path qualified by its target
+/// collection (see [`import_identity_key`]), so the same file imported into the
+/// same collection yields the same root id regardless of the absolute checkout
+/// path, while the same relative path in another collection yields another.
 fn deterministic_root_id(key: &str) -> String {
     uuid::Uuid::new_v5(&IMPORT_ROOT_NAMESPACE, key.as_bytes()).to_string()
 }
 
 /// The identity key of an imported document: its base-directory-relative path,
-/// qualified by the explicitly chosen target collection. Two source trees
-/// imported into different collections therefore never share a root, while the
-/// same tree re-imported from another checkout path into the same collection
-/// still addresses the same root. Auto-routed collections derive from the path
-/// itself, so they add nothing to the key.
-fn import_identity_key(explicit_collection: &str, relative_path: &str) -> String {
-    if explicit_collection.is_empty() {
-        relative_path.to_string()
-    } else {
-        format!("{explicit_collection}\u{0}{relative_path}")
+/// qualified by the collection the file is imported into (explicit, or the one
+/// auto-routing resolves for that file), each path segment normalized the way
+/// collection identity is. Trees imported into different collections therefore
+/// never share a root, while the same tree re-imported from another checkout
+/// path into the same collection still addresses the same root. With no
+/// collection the key is the relative path alone.
+fn import_identity_key(collection: Option<&str>, relative_path: &str) -> String {
+    let normalized = collection
+        .map(|c| {
+            c.split(':')
+                .map(normalize_collection_name)
+                .collect::<Vec<_>>()
+                .join(":")
+        })
+        .filter(|c| !c.is_empty());
+    match normalized {
+        Some(c) => format!("{c}\u{0}{relative_path}"),
+        None => relative_path.to_string(),
     }
 }
 
@@ -274,12 +286,7 @@ async fn import_single_file(
             .to_string_lossy()
             .to_string()
     };
-    let explicit_collection = if opts.auto_collection_routing {
-        ""
-    } else {
-        opts.collection.as_str()
-    };
-    let root_id = deterministic_root_id(&import_identity_key(explicit_collection, &import_key));
+    let root_id = deterministic_root_id(&import_identity_key(collection.as_deref(), &import_key));
 
     match import_markdown_content(
         node_service,
@@ -421,12 +428,7 @@ async fn run_batch_import(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .to_string();
-            let explicit_collection = if opts.auto_collection_routing {
-                ""
-            } else {
-                opts.collection.as_str()
-            };
-            let identity_key = import_identity_key(explicit_collection, &relative_path);
+            let identity_key = import_identity_key(collection_path.as_deref(), &relative_path);
             chunk_reads.push(FileReadResult {
                 path,
                 content,
@@ -1769,6 +1771,13 @@ mod tests {
         drain.await.unwrap()
     }
 
+    /// Root id of a file imported with auto-routing from `base`: the identity
+    /// key carries the collection the file routes to.
+    fn routed_root_id(base: &Path, relative: &str) -> String {
+        let meta = derive_collection_metadata(&base.join(relative), base);
+        deterministic_root_id(&import_identity_key(Some(&meta.collection), relative))
+    }
+
     fn test_context() -> SharedContext {
         let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
         SharedContext {
@@ -1987,7 +1996,7 @@ mod tests {
 
         for i in 0..NOTES {
             let result = result_for(&done, i);
-            let root = deterministic_root_id(&note_name(i));
+            let root = routed_root_id(&src, &note_name(i));
             let stored = ns.get_node(&root).await.unwrap();
             if i < FAILED_CHUNK_START {
                 assert!(result.success, "note {i} committed: {result:?}");
@@ -2020,7 +2029,7 @@ mod tests {
 
         // Note 0 links to note 60, in the next chunk: both committed, so the
         // cross-chunk link is a mention.
-        let target = deterministic_root_id(&note_name(60));
+        let target = routed_root_id(&src, &note_name(60));
         assert_eq!(ns.get_mentioned_by(&target).await.unwrap().len(), 1);
     }
 
@@ -2544,8 +2553,8 @@ mod tests {
 
         // First import: both roots exist and are assigned to a collection.
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
-        let id_a = deterministic_root_id("a.md");
-        let id_b = deterministic_root_id("b.md");
+        let id_a = routed_root_id(&src, "a.md");
+        let id_b = routed_root_id(&src, "b.md");
         for (id, title) in [(&id_a, "Doc A"), (&id_b, "Doc B")] {
             let root = ns.get_node(id).await.unwrap().expect("root created");
             assert!(CoreNodeType::Text.is_exactly(&root.node_type));
@@ -2684,6 +2693,109 @@ mod tests {
         assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 4);
     }
 
+    fn write_readme(dir: &Path, name: &str, title: &str) -> PathBuf {
+        let d = dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("README.md"), format!("# {title}\n")).unwrap();
+        d
+    }
+
+    /// With auto-routing the root id is keyed by the collection the file
+    /// routes to, and the same tree re-imported from another checkout path is
+    /// idempotent. A routed collection is a function of the relative path, so
+    /// two trees sharing a relative path still share a root: the residual
+    /// collision this scheme cannot remove.
+    #[tokio::test]
+    async fn auto_routed_root_is_keyed_by_the_resolved_collection() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let mut roots = Vec::new();
+        for tree in ["a", "a2"] {
+            let base = dir.path().join(tree);
+            std::fs::create_dir_all(base.join("architecture")).unwrap();
+            std::fs::write(base.join("architecture/index.md"), "# Arch\n").unwrap();
+            let opts = ImportOptions {
+                base_directory: base.to_str().unwrap().to_string(),
+                auto_collection_routing: true,
+                ..Default::default()
+            };
+            let files = vec![base
+                .join("architecture/index.md")
+                .to_str()
+                .unwrap()
+                .to_string()];
+            run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+            roots.push(routed_root_id(&base, "architecture/index.md"));
+            assert!(ns
+                .get_node(&roots[roots.len() - 1])
+                .await
+                .unwrap()
+                .is_some());
+        }
+        assert_eq!(roots[0], roots[1]);
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 1);
+        assert_ne!(
+            roots[0],
+            deterministic_root_id("architecture/index.md"),
+            "the resolved collection is part of the key"
+        );
+    }
+
+    /// Without a collection the key is the relative path alone, so the same
+    /// tree from another checkout path is idempotent (and two trees with the
+    /// same relative path share a root: the documented residual).
+    #[tokio::test]
+    async fn no_collection_import_is_keyed_by_relative_path_only() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let one = dir.path().join("one");
+        let two = dir.path().join("two");
+        for d in [&one, &two] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("note.md"), "# Note\n").unwrap();
+        }
+        for d in [&one, &two] {
+            let opts = ImportOptions {
+                base_directory: d.to_str().unwrap().to_string(),
+                ..Default::default()
+            };
+            run_batch_and_wait(
+                Arc::clone(&ns),
+                vec![d.join("note.md").to_str().unwrap().to_string()],
+                opts,
+            )
+            .await;
+        }
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 1);
+        assert!(ns
+            .get_node(&deterministic_root_id("note.md"))
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// Case and whitespace variants of a collection name address one document.
+    #[tokio::test]
+    async fn collection_spelling_variants_share_one_document() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let d = write_readme(dir.path(), "d", "Readme");
+        let file = vec![d.join("README.md").to_str().unwrap().to_string()];
+        for name in ["Docs:Rust", " docs:rust ", "DOCS: Rust"] {
+            let opts = ImportOptions {
+                base_directory: d.to_str().unwrap().to_string(),
+                collection: name.to_string(),
+                ..Default::default()
+            };
+            run_batch_and_wait(Arc::clone(&ns), file.clone(), opts).await;
+        }
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 1);
+        assert_eq!(
+            import_identity_key(Some("Docs:Rust"), "x.md"),
+            import_identity_key(Some(" docs :rust"), "x.md")
+        );
+    }
+
     /// The demo-repair case: a document already in the store but MISSING its
     /// topic-collection membership (its content landed only in the default
     /// collection) regains that membership from a plain re-import — no
@@ -2709,7 +2821,7 @@ mod tests {
 
         // First import: the doc root joins its topic collection.
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
-        let root_id = deterministic_root_id("architecture/overview.md");
+        let root_id = routed_root_id(dir.path(), "architecture/overview.md");
         let memberships_before = ns.store().get_node_memberships(&root_id).await.unwrap();
         assert!(
             !memberships_before.is_empty(),
