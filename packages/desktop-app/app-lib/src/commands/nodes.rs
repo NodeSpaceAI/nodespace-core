@@ -700,6 +700,18 @@ pub async fn probe_and_recover<R: tauri::Runtime>(
     )
 }
 
+/// Longest content prefix, in characters, shown in debug logs.
+const CONTENT_PREVIEW_CHARS: usize = 50;
+
+/// Debug-log preview of node content: at most `CONTENT_PREVIEW_CHARS`
+/// characters, cut on a character boundary.
+fn content_preview(content: &str) -> String {
+    match content.char_indices().nth(CONTENT_PREVIEW_CHARS) {
+        Some((end, _)) => format!("{}...", &content[..end]),
+        None => content.to_string(),
+    }
+}
+
 /// Update an existing node
 #[tauri::command]
 pub async fn update_node(
@@ -710,18 +722,11 @@ pub async fn update_node(
 ) -> Result<Value, CommandError> {
     let mut c = client.echo_suppressed_client().await;
 
-    let content_preview = update.content.as_ref().map(|c| {
-        if c.len() > 50 {
-            format!("{}...", &c[..50])
-        } else {
-            c.clone()
-        }
-    });
     tracing::debug!(
         "update_node: id={}, version={}, content={:?}, node_type={:?}",
         id,
         version,
-        content_preview,
+        update.content.as_deref().map(content_preview),
         update.node_type
     );
 
@@ -1693,6 +1698,27 @@ pub async fn delete_node_mention(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_preview_never_splits_a_multibyte_character() {
+        let em_dash = "Meeting notes for the quarterly planning session \u{2014} agenda";
+        assert!(!em_dash.is_char_boundary(CONTENT_PREVIEW_CHARS));
+        assert_eq!(
+            content_preview(em_dash),
+            "Meeting notes for the quarterly planning session \u{2014}..."
+        );
+        let cjk = "\u{4e2d}".repeat(60);
+        assert_eq!(
+            content_preview(&cjk),
+            format!("{}...", "\u{4e2d}".repeat(CONTENT_PREVIEW_CHARS))
+        );
+        let long_ascii = "a".repeat(80);
+        assert_eq!(
+            content_preview(&long_ascii),
+            format!("{}...", "a".repeat(CONTENT_PREVIEW_CHARS))
+        );
+        assert_eq!(content_preview("short"), "short");
+    }
 
     /// The refusal the daemon returns for a request routed to a database
     /// that requires `ids`.
