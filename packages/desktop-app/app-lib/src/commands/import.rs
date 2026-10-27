@@ -328,10 +328,7 @@ pub async fn import_markdown_directory(
     let exclude_patterns = opts.exclude_patterns.clone();
     let filters = WalkFilters::from_options(&opts);
 
-    // Set base_directory if not provided
-    if opts.base_directory.is_none() {
-        opts.base_directory = Some(directory_path.clone());
-    }
+    apply_canonical_base_directory(&mut opts, &dir);
 
     let mut md_files: Vec<String> = Vec::new();
     collect_markdown_files_with_exclusions(&dir, &mut md_files, &exclude_patterns, filters)?;
@@ -345,6 +342,15 @@ pub async fn import_markdown_directory(
     );
 
     import_markdown_files(app, grpc, md_files, Some(opts)).await
+}
+
+/// Point `base_directory` at the canonical walk root, replacing any
+/// caller-supplied spelling. The walked file paths are canonical, and the
+/// daemon strips `base_directory` from each to derive collection paths and
+/// root ids, so a raw picker path (a symlinked ancestor, or a drive path on
+/// Windows where canonical paths are extended-length) would never match.
+fn apply_canonical_base_directory(opts: &mut ImportOptions, canonical_dir: &std::path::Path) {
+    opts.base_directory = Some(canonical_dir.to_string_lossy().into_owned());
 }
 
 /// Reject import directories outside the user's home directory.
@@ -778,5 +784,20 @@ mod tests {
         };
         let f = WalkFilters::from_options(&opts);
         assert!(!f.exclude_agent_files && !f.skip_hidden && !f.recursive);
+    }
+
+    #[test]
+    fn base_directory_is_canonical_walk_root_even_when_caller_supplies_one() {
+        let canonical = std::path::Path::new("/real/notes");
+        let mut opts = ImportOptions {
+            base_directory: Some("/link/notes".to_string()),
+            ..Default::default()
+        };
+        apply_canonical_base_directory(&mut opts, canonical);
+        assert_eq!(opts.base_directory.as_deref(), Some("/real/notes"));
+
+        let mut unset = ImportOptions::default();
+        apply_canonical_base_directory(&mut unset, canonical);
+        assert_eq!(unset.base_directory.as_deref(), Some("/real/notes"));
     }
 }
