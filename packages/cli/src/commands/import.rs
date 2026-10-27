@@ -574,11 +574,18 @@ fn collect_recursive(
             continue;
         }
 
-        if path.is_dir() {
+        // lstat semantics: a symlink is never descended into or imported, so a
+        // link back to the root or an ancestor cannot re-enter the tree.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        if file_type.is_dir() {
             if filters.recursive {
                 collect_recursive(&path, roots, files, exclude_patterns, filters)?;
             }
-        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+        } else if file_type.is_file() && path.extension().map(|e| e == "md").unwrap_or(false) {
             if filters.exclude_agent_files && is_agent_file(&path) {
                 continue;
             }
@@ -837,5 +844,31 @@ mod tests {
                 ".dotfile.md"
             ])
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_does_not_follow_directory_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("a.md"), "# a").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub").join("b.md"), "# b").unwrap();
+        // Cycle back to the root and a link to a sibling directory.
+        std::os::unix::fs::symlink(".", root.join("latest")).unwrap();
+        std::os::unix::fs::symlink("sub", root.join("alias")).unwrap();
+
+        let files = collect_markdown_files(root.to_str().unwrap(), &[], ALL_ON).unwrap();
+        let rel: Vec<String> = files
+            .iter()
+            .map(|f| {
+                std::path::Path::new(f)
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(rel, vec!["a.md".to_string(), "sub/b.md".to_string()]);
     }
 }
