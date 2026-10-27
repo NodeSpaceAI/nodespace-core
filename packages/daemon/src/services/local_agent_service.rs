@@ -599,12 +599,13 @@ impl LocalAgentServiceImpl {
     /// routing middleware installed a header-less request falls back to `self`
     /// while a header-carrying one is rejected.
     ///
-    /// Only the handlers that read or write per-database turn state route —
-    /// `SubscribeTokenStream`, `CancelTurn`, `GetStatus`. Model management
-    /// (list/download/delete/load/unload/cancel/ensure-ready/recommended/RAM)
-    /// acts on the process-global [`SharedLocalAgent`], so it reaches the same
-    /// engine and catalog regardless of which database a caller names — routing
-    /// it would be a no-op that only obscured that fact.
+    /// Handlers that read or write per-database state route: the turn RPCs
+    /// (`SubscribeTokenStream`, `CancelTurn`, `GetStatus`) and the model RPCs
+    /// that resolve OpenAI-compatible providers from the database's settings
+    /// node (`ListModels`, `EnsureModelReady`, `LoadModel`). The remaining
+    /// model management (download/delete/unload/cancel/recommended/RAM) acts
+    /// only on the process-global [`SharedLocalAgent`], so it reaches the same
+    /// engine and catalog regardless of which database a caller names.
     async fn route<T>(&self, request: &Request<T>) -> Result<LocalAgentServiceImpl, Status> {
         crate::db_routing::route_or_self(self, request, |s| &s.local_agent).await
     }
@@ -1561,6 +1562,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         &self,
         request: Request<EnsureModelReadyRequest>,
     ) -> Result<Response<Self::EnsureModelReadyStream>, Status> {
+        let this = self.route(&request).await?;
         let model_id = request.into_inner().model_id;
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<ModelLoadProgressEvent, Status>>(16);
 
@@ -1569,7 +1571,6 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         // load before anything is sent (which is what made a slow phase like
         // integrity verification read as a frozen "preparing model" — no
         // event arrived until it was already over).
-        let this = self.clone();
         let tx_for_panic = tx.clone();
         let model_id_for_panic = model_id.clone();
         let join_handle = tokio::spawn(async move {
@@ -1604,6 +1605,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         &self,
         request: Request<ListModelsRequest>,
     ) -> Result<Response<ListModelsResponse>, Status> {
+        let this = self.route(&request).await?;
         let force_refresh = request.into_inner().force_refresh;
 
         // A missing local model manager contributes no GGUF catalog rows rather
@@ -1617,7 +1619,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             None => Vec::new(),
         };
 
-        models.extend(self.discover_openai_compat_models(force_refresh).await);
+        models.extend(this.discover_openai_compat_models(force_refresh).await);
 
         let entries = models
             .into_iter()
@@ -1754,6 +1756,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         &self,
         request: Request<LoadModelRequest>,
     ) -> Result<Response<LoadModelResponse>, Status> {
+        let this = self.route(&request).await?;
         let model_id = request.into_inner().model_id;
         // Checked up front so a missing model manager reports the specific
         // `MODEL_MANAGER_UNAVAILABLE` status, matching every other model-
@@ -1772,7 +1775,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         // read the catalog's loaded-guard as clear and deleted a file the
         // engine still referenced. Loading the real engine synchronously here,
         // before the catalog is marked loaded, closes that window.
-        let events = self.load_model_and_collect_events(&model_id, None).await;
+        let events = this.load_model_and_collect_events(&model_id, None).await;
         match events.last() {
             Some(event) if event.event_type == "error" => Err(Status::internal(format!(
                 "Failed to load model: {}",
@@ -6925,6 +6928,70 @@ mod tests {
         assert!(
             message.contains("No OpenAI-compatible provider config found"),
             "{message}"
+        );
+    }
+
+    /// `EnsureModelReady` resolves the provider from the database the request
+    /// names, not from the database the registered service was built for.
+    #[tokio::test]
+    async fn ensure_model_ready_resolves_providers_from_the_targeted_database() {
+        use tokio_stream::StreamExt;
+
+        let (manager, default_id, second_id, _dir) = routed_manager().await;
+        let registered = manager
+            .get_or_open(&default_id)
+            .await
+            .unwrap()
+            .local_agent
+            .clone();
+        let second_node_service = manager
+            .get_or_open(&second_id)
+            .await
+            .unwrap()
+            .local_agent
+            .inner
+            .node_service
+            .clone();
+        set_providers(&second_node_service, vec![provider("")]).await;
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+
+        let mut request = Request::new(EnsureModelReadyRequest {
+            model_id: model_id.clone(),
+        });
+        request.extensions_mut().insert(manager.clone());
+        request.metadata_mut().insert(
+            crate::db_routing::DATABASE_ID_HEADER,
+            second_id.as_str().parse().unwrap(),
+        );
+        let mut stream = registered
+            .ensure_model_ready(request)
+            .await
+            .unwrap()
+            .into_inner();
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+        assert!(
+            events.iter().any(|e| e.event_type == "ready"),
+            "the provider lives in the targeted database's settings: {events:?}"
+        );
+        assert!(events.iter().all(|e| e.event_type != "error"), "{events:?}");
+
+        let mut header_less = Request::new(EnsureModelReadyRequest { model_id });
+        header_less.extensions_mut().insert(manager.clone());
+        let mut stream = registered
+            .ensure_model_ready(header_less)
+            .await
+            .unwrap()
+            .into_inner();
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event.unwrap());
+        }
+        assert!(
+            events.iter().any(|e| e.event_type == "error"),
+            "the default database has no such provider: {events:?}"
         );
     }
 
