@@ -7,7 +7,12 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
-import { buildReleaseCreateArgs, failingBenchmarks, generateReleaseNotes } from "./release";
+import {
+  buildReleaseCreateArgs,
+  failingBenchmarks,
+  generateReleaseNotes,
+  prepareVersionBump
+} from "./release";
 
 describe("failingBenchmarks", () => {
   test("names each test from vitest's Failed Tests summary", () => {
@@ -87,5 +92,90 @@ describe("buildReleaseCreateArgs", () => {
     const args = buildReleaseCreateArgs({ version: "1.2.3" });
 
     expect(args).toContain("v1.2.3");
+  });
+});
+
+describe("buildReleaseCreateArgs target", () => {
+  test("pins the tag to the bump commit when a target is given", () => {
+    const args = buildReleaseCreateArgs({ version: "v1.2.3", target: "abc123" });
+    expect(args.slice(args.indexOf("--target"), args.indexOf("--target") + 2)).toEqual([
+      "--target",
+      "abc123"
+    ]);
+  });
+
+  test("omits --target when none is given", () => {
+    expect(buildReleaseCreateArgs({ version: "v1.2.3" })).not.toContain("--target");
+  });
+});
+
+describe("prepareVersionBump", () => {
+  const SHA = "a".repeat(40);
+
+  /** Fake runner: records commands; `fail` is a command prefix that exits non-zero. */
+  function fake(opts: { dirty?: boolean; staged?: boolean; fail?: string; head?: string; remote?: string } = {}) {
+    const calls: string[] = [];
+    const run = (cmd: string[]) => {
+      const line = cmd.join(" ");
+      calls.push(line);
+      const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+      if (opts.fail && line.startsWith(opts.fail)) {
+        return { exitCode: 1, stdout: "", stderr: "boom" };
+      }
+      if (line === "git status --porcelain") return ok(opts.dirty === false ? "" : " M Cargo.toml\n");
+      if (line === "git diff --cached --quiet") return { exitCode: opts.staged === false ? 0 : 1, stdout: "", stderr: "" };
+      if (line === "git rev-parse HEAD") return ok((opts.head ?? SHA) + "\n");
+      if (line === "git rev-parse FETCH_HEAD") return ok((opts.remote ?? SHA) + "\n");
+      return ok();
+    };
+    return { calls, run };
+  }
+
+  test("commits, pushes, verifies and returns the pushed sha", () => {
+    const { calls, run } = fake();
+    expect(prepareVersionBump("1.2.3", run)).toBe(SHA);
+    const commit = calls.findIndex((c) => c.startsWith("git commit"));
+    const push = calls.indexOf("git push");
+    expect(commit).toBeGreaterThan(-1);
+    expect(push).toBeGreaterThan(commit);
+    expect(calls.indexOf("git fetch origin main")).toBeGreaterThan(push);
+  });
+
+  for (const step of ["cargo check", "bun install", "git add", "git commit", "git push", "git fetch"]) {
+    test(`aborts with a clear message when ${step} fails`, () => {
+      const { calls, run } = fake({ fail: step });
+      expect(() => prepareVersionBump("1.2.3", run)).toThrow(/No release or tag was created/);
+      expect(() => prepareVersionBump("1.2.3", run)).toThrow(new RegExp(step));
+      expect(calls.some((c) => c.startsWith("gh "))).toBe(false);
+    });
+  }
+
+  test("aborts when HEAD is not origin/main after a push that reported success", () => {
+    const { run } = fake({ remote: "b".repeat(40) });
+    expect(() => prepareVersionBump("1.2.3", run)).toThrow(/not origin\/main/);
+  });
+
+  test("accepts a bump that is already committed and on origin/main", () => {
+    const { calls, run } = fake({ dirty: false });
+    expect(prepareVersionBump("1.2.3", run)).toBe(SHA);
+    expect(calls.some((c) => c.startsWith("git commit") || c === "git push")).toBe(false);
+  });
+
+  test("skips the commit but still pushes when nothing is staged", () => {
+    const { calls, run } = fake({ staged: false });
+    expect(prepareVersionBump("1.2.3", run)).toBe(SHA);
+    expect(calls.some((c) => c.startsWith("git commit"))).toBe(false);
+    expect(calls).toContain("git push");
+  });
+
+  test("when behind origin/main, tells the releaser to use main, pull and merge the bump PR", () => {
+    const { calls, run } = fake({ head: "c".repeat(40) });
+    expect(() => prepareVersionBump("1.2.3", run)).toThrow(/switch to main.*git pull.*version-bump PR is merged/);
+    expect(calls.some((c) => c.startsWith("gh "))).toBe(false);
+  });
+
+  test("rejects an already-committed bump that is not on origin/main", () => {
+    const { run } = fake({ dirty: false, head: "c".repeat(40) });
+    expect(() => prepareVersionBump("1.2.3", run)).toThrow(/not origin\/main/);
   });
 });

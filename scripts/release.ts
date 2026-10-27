@@ -24,6 +24,8 @@ interface ReleaseConfig {
   notes?: string;
   draft?: boolean;
   prerelease?: boolean;
+  /** Commit the release tag is created on (the pushed version bump). */
+  target?: string;
 }
 
 /**
@@ -170,10 +172,106 @@ function buildReleaseCreateArgs(config: ReleaseConfig): string[] {
     args.push("--generate-notes");
   }
 
+  // Without --target GitHub tags the default branch's current HEAD, which
+  // is not the bump commit if anything else landed (or the push never did).
+  if (config.target) args.push("--target", config.target);
+
   if (config.draft) args.push("--draft");
   if (config.prerelease) args.push("--prerelease");
 
   return args;
+}
+
+/** Result of running one external command. */
+interface CommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Runs a command; injectable so the release ordering can be tested without git or gh. */
+type CommandRunner = (cmd: string[], opts?: { inherit?: boolean }) => CommandResult;
+
+const runCommand: CommandRunner = (cmd, opts) => {
+  const result = Bun.spawnSync(cmd, opts?.inherit
+    ? { stdout: "inherit", stderr: "inherit" }
+    : { stdout: "pipe", stderr: "pipe" });
+  return {
+    exitCode: result.exitCode ?? 1,
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? ""
+  };
+};
+
+/** Files a version bump may touch; only these are staged. */
+const VERSION_FILES = [
+  "packages/desktop-app/src-tauri/tauri.conf.json",
+  "packages/desktop-app/src-tauri/Cargo.toml",
+  "packages/desktop-app/package.json",
+  "Cargo.toml",
+  "Cargo.lock",
+  "bun.lock",
+  "package.json"
+];
+
+/**
+ * Re-sync lockfiles, commit and push the version bump, then confirm the
+ * commit is on origin/main. Returns the sha the release tag must point at.
+ *
+ * Throws on the first failing step, so the caller never reaches
+ * `gh release create` (which would publish a tag on an unbumped commit and
+ * start release.yml). A bump that is already committed and pushed (clean
+ * tree, HEAD equal to origin/main) is accepted.
+ */
+function prepareVersionBump(version: string, run: CommandRunner): string {
+  const must = (cmd: string[], what: string, opts?: { inherit?: boolean }): CommandResult => {
+    const r = run(cmd, opts);
+    if (r.exitCode !== 0) {
+      const detail = (r.stderr || r.stdout).trim();
+      throw new Error(
+        `${what} failed (exit ${r.exitCode})${detail ? `: ${detail}` : ""}. ` +
+          "No release or tag was created; fix this and rerun."
+      );
+    }
+    return r;
+  };
+
+  // Cargo.lock re-sync: `cargo check` refreshes the self-referential
+  // workspace-member version entries without touching dependency versions.
+  console.log("🔒 Re-syncing Cargo.lock...");
+  must(["cargo", "check", "--workspace"], "cargo check", { inherit: true });
+
+  // bun.lock carries the same self-referential entry for packages/desktop-app.
+  console.log("🔒 Re-syncing bun.lock...");
+  must(["bun", "install"], "bun install", { inherit: true });
+
+  const status = must(["git", "status", "--porcelain"], "git status");
+  if (status.stdout.trim()) {
+    console.log("\n⚠️  There are uncommitted changes (version bump).");
+    console.log("   Committing version update...\n");
+    // Stage only the version files to avoid committing unrelated work.
+    for (const file of VERSION_FILES) {
+      must(["git", "add", file], `git add ${file}`);
+    }
+    const staged = run(["git", "diff", "--cached", "--quiet"]);
+    if (staged.exitCode !== 0) {
+      must(["git", "commit", "-m", `Bump version to ${version}`], "git commit");
+    }
+    must(["git", "push"], "git push");
+  }
+
+  // Confirm the bump is really on the remote default branch.
+  must(["git", "fetch", "origin", "main"], "git fetch origin main");
+  const head = must(["git", "rev-parse", "HEAD"], "git rev-parse HEAD").stdout.trim();
+  const remote = must(["git", "rev-parse", "FETCH_HEAD"], "git rev-parse FETCH_HEAD").stdout.trim();
+  if (!head || head !== remote) {
+    throw new Error(
+      `HEAD (${head.slice(0, 8)}) is not origin/main (${remote.slice(0, 8)}), so the version bump ` +
+        "is not published. No release or tag was created. Release from main: switch to main if you are " +
+        "on a feature branch, `git pull`, make sure the version-bump PR is merged, then rerun."
+    );
+  }
+  return head;
 }
 
 /**
@@ -487,47 +585,9 @@ async function main() {
         console.log("📝 Updating version in config files...");
         updateVersion(version);
 
-        // Re-resolve Cargo.lock so its own self-referential workspace-member
-        // version entries (nodespace-app, nodespace-cli, nodespace-agent, ...)
-        // match the Cargo.toml files updateVersion() just edited. `cargo check`
-        // is enough to trigger Cargo's normal lockfile re-sync and is far
-        // cheaper than a full build; it does not touch external dependency
-        // versions unless a requirement range actually changed.
-        console.log("🔒 Re-syncing Cargo.lock...");
-        Bun.spawnSync(["cargo", "check", "--workspace"], { stdout: "inherit", stderr: "inherit" });
-
-        // bun.lock carries the same kind of self-referential version entry
-        // for packages/desktop-app (its own workspace member record) that
-        // updateVersion() just edited in package.json. `bun install` is a
-        // fast no-op besides that resync since no actual dependency changed.
-        console.log("🔒 Re-syncing bun.lock...");
-        Bun.spawnSync(["bun", "install"], { stdout: "inherit", stderr: "inherit" });
-
-        // Check if there are uncommitted changes
-        const statusResult = Bun.spawnSync(["git", "status", "--porcelain"], {
-          stdout: "pipe"
-        });
-
-        if (statusResult.stdout.toString().trim()) {
-          console.log("\n⚠️  There are uncommitted changes (version bump).");
-          console.log("   Committing version update...\n");
-
-          // Stage only the specific version files to avoid accidentally committing unrelated work
-          const versionFiles = [
-            "packages/desktop-app/src-tauri/tauri.conf.json",
-            "packages/desktop-app/src-tauri/Cargo.toml",
-            "packages/desktop-app/package.json",
-            "Cargo.toml",
-            "Cargo.lock",
-            "bun.lock",
-            "package.json"
-          ];
-          for (const file of versionFiles) {
-            Bun.spawnSync(["git", "add", file], { stdout: "inherit" });
-          }
-          Bun.spawnSync(["git", "commit", "-m", `Bump version to ${version}`], { stdout: "inherit" });
-          Bun.spawnSync(["git", "push"], { stdout: "inherit" });
-        }
+        // Every step must succeed, and the bump must be on origin/main,
+        // before any release or tag exists. Throws otherwise.
+        config.target = prepareVersionBump(version, runCommand);
 
         await createRelease(config);
         break;
@@ -551,5 +611,6 @@ export {
   updateVersion,
   failingBenchmarks,
   generateReleaseNotes,
-  buildReleaseCreateArgs
+  buildReleaseCreateArgs,
+  prepareVersionBump
 };
