@@ -171,11 +171,14 @@ fn setup_path() -> Result<PathBuf> {
 }
 
 pub async fn read_setup_state() -> Result<SetupState> {
-    let path = setup_path()?;
+    read_setup_state_at(&setup_path()?).await
+}
+
+async fn read_setup_state_at(path: &Path) -> Result<SetupState> {
     if !path.exists() {
         return Ok(SetupState::default());
     }
-    let raw = tokio::fs::read_to_string(&path)
+    let raw = tokio::fs::read_to_string(path)
         .await
         .context("Failed to read ~/.nodespace/setup.json")?;
     serde_json::from_str(&raw).context("Failed to parse ~/.nodespace/setup.json")
@@ -183,18 +186,25 @@ pub async fn read_setup_state() -> Result<SetupState> {
 
 /// Record that the user removed the skill, so launch-time installs skip it.
 pub async fn record_skill_removed() -> Result<()> {
-    write_setup_state(&SetupState::removed_by_user()).await
+    record_skill_removed_at(&setup_path()?).await
+}
+
+async fn record_skill_removed_at(path: &Path) -> Result<()> {
+    write_setup_state_at(path, &SetupState::removed_by_user()).await
 }
 
 async fn write_setup_state(state: &SetupState) -> Result<()> {
-    let path = setup_path()?;
+    write_setup_state_at(&setup_path()?, state).await
+}
+
+async fn write_setup_state_at(path: &Path, state: &SetupState) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .context("Failed to create ~/.nodespace dir")?;
     }
     let json = serde_json::to_string_pretty(state).context("Failed to serialize setup state")?;
-    tokio::fs::write(&path, json)
+    tokio::fs::write(path, json)
         .await
         .context("Failed to write ~/.nodespace/setup.json")
 }
@@ -463,29 +473,54 @@ pub async fn uninstall_skill(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Launch-time install: [`install_skill`] without force, except that it does
-/// nothing while the user's removal from Settings is still on record.
+/// nothing while the user's removal from Settings is still on record. The
+/// check runs while holding the install lock, so a removal that lands
+/// between the check and the install cannot be missed.
 pub async fn install_skill_on_launch(app: &AppHandle) -> SkillSetupResult {
-    match read_setup_state().await {
+    install_skill_inner(false, true, app).await
+}
+
+/// The result of a launch-time install that was skipped on purpose.
+fn launch_install_skipped() -> SkillSetupResult {
+    SkillSetupResult {
+        success: true,
+        agents_installed: vec![],
+        agents_skipped: vec![],
+        cli_on_path: true,
+        cli_warning: None,
+        error: None,
+        failure_is_new: false,
+    }
+}
+
+/// `Some(result)` when a launch-time install must not run because the setup
+/// file at `path` records the user's removal.
+async fn launch_install_gate(path: &Path) -> Option<SkillSetupResult> {
+    match read_setup_state_at(path).await {
         Ok(state) if state.suppresses_launch_install() => {
             tracing::debug!("Skill was removed by the user; skipping launch-time install");
-            SkillSetupResult {
-                success: true,
-                agents_installed: vec![],
-                agents_skipped: vec![],
-                cli_on_path: true,
-                cli_warning: None,
-                error: None,
-                failure_is_new: false,
-            }
+            Some(launch_install_skipped())
         }
-        _ => install_skill(false, app).await,
+        _ => None,
     }
 }
 
 /// Run the skill installer. If `force` is false, this is a no-op when
 /// `~/.nodespace/setup.json` already marks skill_installed = true.
 pub async fn install_skill(force: bool, app: &AppHandle) -> SkillSetupResult {
+    install_skill_inner(force, false, app).await
+}
+
+async fn install_skill_inner(force: bool, launch: bool, app: &AppHandle) -> SkillSetupResult {
     let _guard = INSTALL_LOCK.lock().await;
+
+    if launch {
+        if let Ok(path) = setup_path() {
+            if let Some(skipped) = launch_install_gate(&path).await {
+                return skipped;
+            }
+        }
+    }
 
     // Check idempotency guard unless forced.
     let mut previously_failed = false;
@@ -572,6 +607,8 @@ async fn finish_failed(
     cli_on_path: bool,
     error: String,
 ) -> SkillSetupResult {
+    // The removal flag is cleared here on purpose: only an explicit install
+    // (not the launch path, which is gated earlier) can reach this point.
     // agents_installed cleared, not preserved from an earlier success --
     // skill_installed: false already means "nothing is currently confirmed
     // installed," and a stale list under that flag would be misleading to
@@ -1120,6 +1157,35 @@ mod tests {
     fn removal_state_suppresses_launch_install() {
         assert!(SetupState::removed_by_user().suppresses_launch_install());
         assert!(!SetupState::default().suppresses_launch_install());
+    }
+
+    #[tokio::test]
+    async fn launch_gate_skips_only_after_a_recorded_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".nodespace/setup.json");
+
+        assert!(launch_install_gate(&path).await.is_none());
+
+        write_setup_state_at(&path, &SetupState::default())
+            .await
+            .unwrap();
+        assert!(launch_install_gate(&path).await.is_none());
+
+        record_skill_removed_at(&path).await.unwrap();
+        let skipped = launch_install_gate(&path).await.expect("gate must skip");
+        assert!(skipped.success && skipped.agents_installed.is_empty());
+
+        // A later real install writes fresh state, which lifts the gate.
+        write_setup_state_at(
+            &path,
+            &SetupState {
+                skill_installed: true,
+                ..SetupState::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(launch_install_gate(&path).await.is_none());
     }
 
     #[test]
