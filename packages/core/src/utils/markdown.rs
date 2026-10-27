@@ -7,6 +7,14 @@ use crate::models::SchemaField;
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// `__text__` where the opener follows a non-word character (or the start) and
+/// the closer is followed by optional trailing punctuation, then whitespace or
+/// the end. Captures: 1 = leading character, 2 = text, 3 = trailing text.
+const UNDERSCORE_BOLD: &str = r#"(^|[^\w])__([^_]+)__([.,;:!?)\]}"']*(?:\s|$))"#;
+
+/// `_text_` with the same boundary rules as [`UNDERSCORE_BOLD`].
+const UNDERSCORE_ITALIC: &str = r#"(^|[^\w])_([^_]+)_([.,;:!?)\]}"']*(?:\s|$))"#;
+
 /// Compiled regex patterns for markdown stripping
 ///
 /// The order of these patterns matters:
@@ -25,13 +33,19 @@ static MARKDOWN_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|
         (Regex::new(r"`([^`]+)`").unwrap(), "$1"),
         // Remove bold: **text** or __text__ -> text (process before italic)
         (Regex::new(r"\*\*([^*]+)\*\*").unwrap(), "$1"),
-        (Regex::new(r"__([^_]+)__").unwrap(), "$1"),
+        // Underscore emphasis only counts at word boundaries, so snake_case
+        // names and `__init__.py` keep their underscores. The delimiters are
+        // matched with their neighbours (no lookaround in `regex`), so each
+        // pattern runs twice to catch adjacent runs sharing a space.
+        (Regex::new(UNDERSCORE_BOLD).unwrap(), "$1$2$3"),
+        (Regex::new(UNDERSCORE_BOLD).unwrap(), "$1$2$3"),
         // Remove strikethrough: ~~text~~ -> text
         (Regex::new(r"~~([^~]+)~~").unwrap(), "$1"),
         // Remove italic: *text* or _text_ -> text
         // Process after bold to avoid conflicts
         (Regex::new(r"\*([^*]+)\*").unwrap(), "$1"),
-        (Regex::new(r"_([^_]+)_").unwrap(), "$1"),
+        (Regex::new(UNDERSCORE_ITALIC).unwrap(), "$1$2$3"),
+        (Regex::new(UNDERSCORE_ITALIC).unwrap(), "$1$2$3"),
         // Remove headers: # Header -> Header (up to 6 levels)
         (Regex::new(r"^#{1,6}\s+").unwrap(), ""),
         // Remove blockquote markers: > quote -> quote
@@ -701,6 +715,34 @@ mod tests {
         assert_eq!(
             interpolate_title_template_with_schema("{status}", &props, &[field]),
             "Core Label"
+        );
+    }
+
+    #[test]
+    fn test_strip_markdown_keeps_intra_word_underscores() {
+        assert_eq!(
+            strip_markdown("Review my_config_file.rs"),
+            "Review my_config_file.rs"
+        );
+        assert_eq!(
+            strip_markdown("Fix user_id and order_id"),
+            "Fix user_id and order_id"
+        );
+        assert_eq!(strip_markdown("__init__.py"), "__init__.py");
+        assert_eq!(strip_markdown("a_b_c"), "a_b_c");
+    }
+
+    #[test]
+    fn test_strip_markdown_underscore_emphasis_at_word_boundaries() {
+        assert_eq!(strip_markdown("_italic_"), "italic");
+        assert_eq!(strip_markdown("a _b_ c"), "a b c");
+        assert_eq!(strip_markdown("_a_ _b_ _c_"), "a b c");
+        assert_eq!(strip_markdown("see __this__, now"), "see this, now");
+        assert_eq!(strip_markdown("(_note_)"), "(note)");
+        assert_eq!(strip_markdown("end with _it_."), "end with it.");
+        assert_eq!(
+            strip_markdown("use my_var in _italic_ text"),
+            "use my_var in italic text"
         );
     }
 }
