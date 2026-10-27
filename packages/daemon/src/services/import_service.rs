@@ -1514,6 +1514,7 @@ fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMe
 
 fn to_title_case(s: &str) -> String {
     s.split(['-', '_'])
+        .filter(|word| !word.is_empty())
         .map(|word| {
             let mut chars = word.chars();
             match chars.next() {
@@ -2904,5 +2905,49 @@ mod tests {
             ],
             "every routed collection hangs under the single top collection",
         );
+    }
+
+    #[test]
+    fn separator_edges_do_not_leave_blanks_in_routed_names() {
+        let b = "/base";
+        assert_eq!(route(b, "_posts/a.md").0, "Posts");
+        assert_eq!(route(b, "notes-/a.md").0, "Notes");
+        assert_eq!(route(b, "_posts/archived-/a.md").0, "Posts:Archived");
+        assert_eq!(route(b, "my__notes/a.md").0, "My Notes");
+    }
+
+    /// Folders that start or end with a separator still receive their members.
+    #[tokio::test]
+    async fn auto_routing_keeps_membership_for_separator_edged_folders() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let mut files = Vec::new();
+        for rel in ["_posts/a.md", "_posts/archived-/b.md", "notes-/c.md"] {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "# Title\n\nBody.\n").unwrap();
+            files.push(p.to_str().unwrap().to_string());
+        }
+        let opts = ImportOptions {
+            base_directory: dir.path().to_str().unwrap().to_string(),
+            auto_collection_routing: true,
+            ..Default::default()
+        };
+        run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+
+        let entries = ns
+            .store()
+            .get_all_collections_with_member_counts()
+            .await
+            .unwrap();
+        let count = |name: &str| {
+            entries
+                .iter()
+                .find(|(n, _, _)| n.content == name)
+                .map(|(_, c, _)| *c)
+        };
+        assert_eq!(count("Posts"), Some(1));
+        assert_eq!(count("Archived"), Some(1));
+        assert_eq!(count("Notes"), Some(1));
     }
 }
