@@ -370,8 +370,28 @@ describe("bunCompileTarget", () => {
     expect(bunCompileTarget("x86_64-apple-darwin")).toBe("bun-darwin-x64");
   });
 
+  test("maps both Linux triples, so the ARM leg never builds a host binary", () => {
+    expect(bunCompileTarget("aarch64-unknown-linux-gnu")).toBe("bun-linux-arm64");
+    expect(bunCompileTarget("x86_64-unknown-linux-gnu")).toBe("bun-linux-x64");
+  });
+
+  test("release.yml headless matrix bun_target agrees with bunCompileTarget", () => {
+    const workflow = readFileSync(
+      join(import.meta.dir, "..", ".github", "workflows", "release.yml"),
+      "utf8",
+    );
+    const start = workflow.indexOf("  build-headless:");
+    const matrix = workflow.slice(start, workflow.indexOf("runs-on:", start));
+    const legs = [...matrix.matchAll(/target: (\S+)\n\s+bun_target: (\S+)\n/g)];
+    expect(legs.length).toBe(4);
+    for (const [, triple, bunTarget] of legs) {
+      expect(bunTarget).toBe(bunCompileTarget(triple));
+    }
+    expect(workflow).toContain('--target="${{ matrix.bun_target }}"');
+  });
+
   test("throws on a triple with no known Bun target", () => {
-    expect(() => bunCompileTarget("aarch64-unknown-linux-gnu")).toThrow(
+    expect(() => bunCompileTarget("riscv64-unknown-linux-gnu")).toThrow(
       /no Bun cross-compile target known/,
     );
   });
@@ -924,5 +944,56 @@ describe("STAGED_ENTRIES", () => {
       [...skillPkg.files].sort(),
     );
     expect(STAGED_ENTRIES).toContain("package.json");
+  });
+});
+
+describe("check-binary-arch.sh", () => {
+  const script = join(import.meta.dir, "check-binary-arch.sh");
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "arch-check-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Minimal 64-byte little-endian ELF64 executable header with the given e_machine.
+  function elf(machine: number): Buffer {
+    const h = Buffer.alloc(64);
+    h.write("\x7fELF", 0, "latin1");
+    h[4] = 2;
+    h[5] = 1;
+    h[6] = 1;
+    h.writeUInt16LE(2, 16);
+    h.writeUInt16LE(machine, 18);
+    h.writeUInt32LE(1, 20);
+    h.writeBigUInt64LE(0x400000n, 24);
+    h.writeBigUInt64LE(64n, 32);
+    h.writeUInt16LE(64, 52);
+    h.writeUInt16LE(56, 54);
+    h.writeUInt16LE(64, 58);
+    return h;
+  }
+
+  function check(machine: number, triple: string): number {
+    const bin = join(dir, "bin");
+    writeFileSync(bin, elf(machine));
+    return Bun.spawnSync(["bash", script, bin, triple]).exitCode;
+  }
+
+  test("accepts an ARM64 ELF for the aarch64 Linux target", () => {
+    expect(check(0xb7, "aarch64-unknown-linux-gnu")).toBe(0);
+  });
+
+  test("rejects an x86-64 ELF for the aarch64 Linux target", () => {
+    expect(check(0x3e, "aarch64-unknown-linux-gnu")).toBe(1);
+  });
+
+  test("rejects an ARM64 ELF for the x86-64 Linux target", () => {
+    expect(check(0xb7, "x86_64-unknown-linux-gnu")).toBe(1);
+  });
+
+  test("accepts an x86-64 ELF for the x86-64 Linux target", () => {
+    expect(check(0x3e, "x86_64-unknown-linux-gnu")).toBe(0);
   });
 });

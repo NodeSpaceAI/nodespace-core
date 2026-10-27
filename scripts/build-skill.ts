@@ -285,8 +285,7 @@ export function pruneEmptyDirs(dir: string, keepRoot: string = dir): void {
 
 // Host triple: matches whatever Tauri/rustc expects on this platform for its
 // externalBin lookup, same triples the sidecar cargo builds already use
-// (release.yml's per-platform steps, build-sidecars.ts locally). Compiled
-// natively on each CI runner's own platform — no cross-compilation. Only
+// (release.yml's per-platform steps, build-sidecars.ts locally). Only
 // macOS and Windows ship a Tauri desktop app at all (Linux is CLI+daemon
 // binaries only, no packaged GUI app, so no skill installer to run there).
 export function hostTriple(): string | null {
@@ -302,13 +301,12 @@ export function hostTriple(): string | null {
 /**
  * Maps a Rust target triple to the value `bun build --compile --target=`
  * expects for that platform. Only used when cross-compiling the skill
- * installer for a triple other than `hostTriple()` — e.g. the Tier 1 local
+ * installer for a triple other than the build host's — e.g. the Tier 1 local
  * Windows cross-compile (scripts/build-windows-quick.ts), which builds the
  * Rust sidecars for x86_64-pc-windows-msvc from a macOS host via cargo-xwin,
- * and needs the skill installer's compiled binary to match. CI never needs
- * this: every release.yml leg compiles natively on a runner whose host
- * already IS the target, so `bun build --compile` with no `--target` flag
- * (i.e. `hostTriple()` unchanged) is correct there.
+ * and needs the skill installer's compiled binary to match. The release
+ * workflow's headless legs carry the same mapping as the `bun_target` matrix
+ * field, because the Linux ARM leg runs on an x86_64 runner.
  */
 export function bunCompileTarget(rustTriple: string): string {
   switch (rustTriple) {
@@ -318,6 +316,10 @@ export function bunCompileTarget(rustTriple: string): string {
       return 'bun-darwin-arm64';
     case 'x86_64-apple-darwin':
       return 'bun-darwin-x64';
+    case 'aarch64-unknown-linux-gnu':
+      return 'bun-linux-arm64';
+    case 'x86_64-unknown-linux-gnu':
+      return 'bun-linux-x64';
     default:
       throw new Error(
         `bunCompileTarget: no Bun cross-compile target known for Rust triple '${rustTriple}'`,
