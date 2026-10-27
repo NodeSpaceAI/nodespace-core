@@ -1401,11 +1401,11 @@ Manage the daemon's registry of local databases (list, create, register, remove,
 **`nodespace database create`** — Create a brand-new database and register it
 
 - `<NAME>` — Human-facing label for the new database (required)
-- `--path <PATH>` — Explicit path for the new database file. When omitted the daemon places it under its managed database directory
+- `--path <PATH>` — Explicit path for the new database file; a relative path resolves against the current directory. When omitted the daemon places it under its managed database directory
 
 **`nodespace database register`** — Register an existing database file already present on disk
 
-- `<PATH>` — Absolute path to an existing database file to register (required)
+- `<PATH>` — Path to an existing database file to register (required)
 
 **`nodespace database remove`** — Unregister a database (never deletes the underlying file)
 

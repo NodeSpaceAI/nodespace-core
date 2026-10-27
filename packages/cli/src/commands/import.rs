@@ -8,6 +8,7 @@ use nodespace_daemon::nodespace::{
 use tokio_stream::StreamExt;
 use tonic::Request;
 
+use crate::paths;
 use crate::ImportClient;
 
 #[derive(Subcommand, Debug)]
@@ -117,6 +118,39 @@ fn results_to_json(results: &[FileImportResult]) -> serde_json::Value {
     )
 }
 
+/// Build the single-file import request with the file path resolved against
+/// the caller's `cwd`, since the daemon resolves paths against its own.
+fn import_file_request(
+    file: String,
+    options: ImportOptions,
+    cwd: &std::path::Path,
+) -> Result<ImportMarkdownRequest> {
+    Ok(ImportMarkdownRequest {
+        file_path: paths::absolute_in(&file, cwd)?,
+        options: Some(options),
+    })
+}
+
+/// Walk `dir` (as the user typed it, so `--exclude` patterns match exactly what
+/// the user sees and never the ancestors of the cwd) and return the absolute
+/// base directory plus the absolute paths of the files found. The daemon
+/// resolves paths against its own cwd, so only absolute paths go on the wire.
+fn scan_directory(
+    dir: &str,
+    cwd: &std::path::Path,
+    exclude_patterns: &[String],
+    filters: WalkFilters,
+) -> Result<(String, Vec<String>)> {
+    let base = paths::absolute_in(dir, cwd)?;
+    let files = walk_markdown_files(
+        std::path::Path::new(&base),
+        std::path::Path::new(dir),
+        exclude_patterns,
+        filters,
+    )?;
+    Ok((base, files))
+}
+
 async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -> Result<()> {
     let opts = ImportOptions {
         collection: args.collection.unwrap_or_default(),
@@ -132,11 +166,9 @@ async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -
         no_recursion: false,
     };
 
+    let request = import_file_request(args.file, opts, &std::env::current_dir()?)?;
     let mut stream = client
-        .import_markdown(Request::new(ImportMarkdownRequest {
-            file_path: args.file,
-            options: Some(opts),
-        }))
+        .import_markdown(Request::new(request))
         .await?
         .into_inner();
 
@@ -216,7 +248,12 @@ async fn run_one_dir(
     filters: WalkFilters,
     json: bool,
 ) -> Result<()> {
-    let file_paths = collect_markdown_files(&directory, &args.exclude_patterns, filters)?;
+    let (directory, file_paths) = scan_directory(
+        &directory,
+        &std::env::current_dir()?,
+        &args.exclude_patterns,
+        filters,
+    )?;
 
     if file_paths.is_empty() {
         if !json {
@@ -299,9 +336,10 @@ async fn run_multi_dir(
     let mut scanned: Vec<(String, Vec<String>)> = Vec::new();
     let mut all_results: Vec<FileImportResult> = Vec::new();
 
+    let cwd = std::env::current_dir()?;
     for directory in &args.directories {
-        match collect_markdown_files(directory, &args.exclude_patterns, filters) {
-            Ok(file_paths) => scanned.push((directory.clone(), file_paths)),
+        match scan_directory(directory, &cwd, &args.exclude_patterns, filters) {
+            Ok(scanned_dir) => scanned.push(scanned_dir),
             Err(e) => {
                 if !json {
                     eprintln!("✗ {}: {}", directory, e);
@@ -531,14 +569,29 @@ fn is_hidden(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn collect_markdown_files(
     dir: &str,
     exclude_patterns: &[String],
     filters: WalkFilters,
 ) -> Result<Vec<String>> {
+    let root = std::path::Path::new(dir);
+    walk_markdown_files(root, root, exclude_patterns, filters)
+}
+
+/// Walk `walk_root` and report its files, matching `--exclude` patterns
+/// against each entry's path as spelled under `display_root` (the directory as
+/// the user typed it) so ancestors of the walk root never match a pattern.
+fn walk_markdown_files(
+    walk_root: &std::path::Path,
+    display_root: &std::path::Path,
+    exclude_patterns: &[String],
+    filters: WalkFilters,
+) -> Result<Vec<String>> {
     let mut files = Vec::new();
     collect_recursive(
-        std::path::Path::new(dir),
+        walk_root,
+        (walk_root, display_root),
         &mut files,
         exclude_patterns,
         filters,
@@ -549,6 +602,7 @@ fn collect_markdown_files(
 
 fn collect_recursive(
     dir: &std::path::Path,
+    roots: (&std::path::Path, &std::path::Path),
     files: &mut Vec<String>,
     exclude_patterns: &[String],
     filters: WalkFilters,
@@ -556,12 +610,13 @@ fn collect_recursive(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        let path_str = path.to_string_lossy();
+        let shown = roots.1.join(path.strip_prefix(roots.0).unwrap_or(&path));
+        let path_str = shown.to_string_lossy();
 
         // User-supplied --exclude patterns (component name or path substring),
         // preserved and composed with the new default-on filters below.
         let excluded = exclude_patterns.iter().any(|p| {
-            path.components().any(|c| {
+            shown.components().any(|c| {
                 c.as_os_str()
                     .to_str()
                     .map(|s| s.eq_ignore_ascii_case(p))
@@ -580,7 +635,7 @@ fn collect_recursive(
 
         if path.is_dir() {
             if filters.recursive {
-                collect_recursive(&path, files, exclude_patterns, filters)?;
+                collect_recursive(&path, roots, files, exclude_patterns, filters)?;
             }
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
             if filters.exclude_agent_files && is_agent_file(&path) {
@@ -592,6 +647,79 @@ fn collect_recursive(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn file_request_path_is_resolved_against_cwd() {
+        let req = import_file_request(
+            "./adr.md".into(),
+            ImportOptions::default(),
+            Path::new("/home/u/project"),
+        )
+        .unwrap();
+        assert_eq!(req.file_path, "/home/u/project/adr.md");
+    }
+
+    fn filters() -> WalkFilters {
+        WalkFilters {
+            exclude_agent_files: true,
+            skip_hidden: true,
+            recursive: true,
+        }
+    }
+
+    #[test]
+    fn scan_sends_absolute_base_and_files_under_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("docs")).unwrap();
+        std::fs::write(tmp.path().join("docs/a.md"), "# a").unwrap();
+        let (base, files) = scan_directory("./docs", tmp.path(), &[], filters()).unwrap();
+        assert_eq!(base, tmp.path().join("docs").to_string_lossy());
+        assert_eq!(files.len(), 1);
+        assert!(Path::new(&files[0]).starts_with(&base));
+    }
+
+    #[test]
+    fn scan_is_run_per_directory_for_multi_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for d in ["one", "two"] {
+            std::fs::create_dir(tmp.path().join(d)).unwrap();
+            std::fs::write(tmp.path().join(d).join("x.md"), "# x").unwrap();
+        }
+        for d in ["one", "two"] {
+            let (base, files) = scan_directory(d, tmp.path(), &[], filters()).unwrap();
+            assert!(Path::new(&base).is_absolute());
+            assert!(files.iter().all(|f| Path::new(f).starts_with(&base)));
+            assert_eq!(files.len(), 1);
+        }
+    }
+
+    #[test]
+    fn exclude_does_not_match_cwd_ancestors() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cwd = tmp.path().join("archive");
+        std::fs::create_dir(&cwd).unwrap();
+        std::fs::write(cwd.join("a.md"), "# a").unwrap();
+        let (_, files) = scan_directory(".", &cwd, &["archive".to_string()], filters()).unwrap();
+        assert_eq!(files.len(), 1, "cwd ancestor name must not exclude files");
+    }
+
+    #[test]
+    fn exclude_still_matches_entries_under_the_walked_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("archive")).unwrap();
+        std::fs::write(tmp.path().join("archive/old.md"), "# o").unwrap();
+        std::fs::write(tmp.path().join("keep.md"), "# k").unwrap();
+        let (_, files) =
+            scan_directory(".", tmp.path(), &["archive".to_string()], filters()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("keep.md"));
+    }
 }
 
 #[cfg(test)]

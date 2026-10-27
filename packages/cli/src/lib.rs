@@ -6,6 +6,7 @@
 pub mod commands;
 pub mod journal;
 pub mod output;
+pub mod paths;
 pub mod terminal;
 
 pub use output::{exit_if_broken_pipe, install_broken_pipe_handler, BROKEN_PIPE_EXIT_CODE};
