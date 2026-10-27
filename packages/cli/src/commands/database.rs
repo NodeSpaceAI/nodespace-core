@@ -17,6 +17,8 @@ use nodespace_daemon::DatabaseServiceClient;
 use serde_json::json;
 use tonic::transport::Channel;
 
+use crate::paths;
+
 #[derive(Subcommand, Debug)]
 pub enum DatabaseAction {
     /// List every registered database with its status and the default marker.
@@ -37,7 +39,7 @@ pub enum DatabaseAction {
 pub struct CreateArgs {
     /// Human-facing label for the new database.
     pub name: String,
-    /// Explicit path for the new database file. When omitted the daemon places
+    /// Explicit path for the new database file (relative paths resolve against the current directory). When omitted the daemon places
     /// it under its managed database directory.
     #[arg(long)]
     pub path: Option<String>,
@@ -45,7 +47,7 @@ pub struct CreateArgs {
 
 #[derive(Args, Debug)]
 pub struct RegisterArgs {
-    /// Absolute path to an existing database file to register.
+    /// Path to an existing database file to register.
     pub path: String,
 }
 
@@ -213,16 +215,30 @@ async fn list(client: &mut DatabaseServiceClient<Channel>, json: bool) -> Result
     Ok(())
 }
 
+/// Build the create request with an explicit path resolved against the
+/// caller's `cwd`, since the daemon resolves paths against its own.
+fn create_request(args: CreateArgs, cwd: &std::path::Path) -> CreateDatabaseRequest {
+    CreateDatabaseRequest {
+        name: args.name,
+        path: args.path.map(|p| paths::absolute_in(&p, cwd)),
+    }
+}
+
+/// Build the register request with the path resolved against the caller's `cwd`.
+fn register_request(args: RegisterArgs, cwd: &std::path::Path) -> RegisterDatabaseRequest {
+    RegisterDatabaseRequest {
+        path: paths::absolute_in(&args.path, cwd),
+    }
+}
+
 async fn create(
     client: &mut DatabaseServiceClient<Channel>,
     args: CreateArgs,
     json: bool,
 ) -> Result<()> {
+    let request = create_request(args, &std::env::current_dir()?);
     let info = client
-        .create(CreateDatabaseRequest {
-            name: args.name,
-            path: args.path,
-        })
+        .create(request)
         .await
         .context("Create RPC failed")?
         .into_inner();
@@ -237,8 +253,9 @@ async fn register(
     args: RegisterArgs,
     json: bool,
 ) -> Result<()> {
+    let request = register_request(args, &std::env::current_dir()?);
     let info = client
-        .register(RegisterDatabaseRequest { path: args.path })
+        .register(request)
         .await
         .context("Register RPC failed")?
         .into_inner();
@@ -400,5 +417,46 @@ pub(crate) fn status_str(status: i32) -> &'static str {
         Ok(DatabaseStatus::Missing) => "missing",
         Ok(DatabaseStatus::RequiresExtension) => "requires_extension",
         Err(_) => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn create_resolves_explicit_path_against_cwd() {
+        let req = create_request(
+            CreateArgs {
+                name: "work".into(),
+                path: Some("./work.db".into()),
+            },
+            Path::new("/home/u/project"),
+        );
+        assert_eq!(req.path.as_deref(), Some("/home/u/project/work.db"));
+    }
+
+    #[test]
+    fn create_without_path_stays_unset() {
+        let req = create_request(
+            CreateArgs {
+                name: "work".into(),
+                path: None,
+            },
+            Path::new("/home/u/project"),
+        );
+        assert_eq!(req.path, None);
+    }
+
+    #[test]
+    fn register_resolves_path_against_cwd() {
+        let req = register_request(
+            RegisterArgs {
+                path: "notes.db".into(),
+            },
+            Path::new("/home/u/project"),
+        );
+        assert_eq!(req.path, "/home/u/project/notes.db");
     }
 }

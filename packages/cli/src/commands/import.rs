@@ -8,6 +8,7 @@ use nodespace_daemon::nodespace::{
 use tokio_stream::StreamExt;
 use tonic::Request;
 
+use crate::paths;
 use crate::ImportClient;
 
 #[derive(Subcommand, Debug)]
@@ -117,6 +118,27 @@ fn results_to_json(results: &[FileImportResult]) -> serde_json::Value {
     )
 }
 
+/// Build the single-file import request with the file path resolved against
+/// the caller's `cwd`, since the daemon resolves paths against its own.
+fn import_file_request(
+    file: String,
+    options: ImportOptions,
+    cwd: &std::path::Path,
+) -> ImportMarkdownRequest {
+    ImportMarkdownRequest {
+        file_path: paths::absolute_in(&file, cwd),
+        options: Some(options),
+    }
+}
+
+/// Resolve every directory argument against the caller's `cwd` so the walked
+/// file paths and `base_directory` sent to the daemon are absolute.
+fn absolutize_directories(directories: &mut [String], cwd: &std::path::Path) {
+    for d in directories.iter_mut() {
+        *d = paths::absolute_in(d, cwd);
+    }
+}
+
 async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -> Result<()> {
     let opts = ImportOptions {
         collection: args.collection.unwrap_or_default(),
@@ -132,11 +154,9 @@ async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -
         no_recursion: false,
     };
 
+    let request = import_file_request(args.file, opts, &std::env::current_dir()?);
     let mut stream = client
-        .import_markdown(Request::new(ImportMarkdownRequest {
-            file_path: args.file,
-            options: Some(opts),
-        }))
+        .import_markdown(Request::new(request))
         .await?
         .into_inner();
 
@@ -185,6 +205,7 @@ async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -
 /// directory. A per-directory scan or import failure there is recorded and
 /// the remaining directories still run.
 async fn run_dir(client: &mut ImportClient, mut args: ImportDirArgs, json: bool) -> Result<()> {
+    absolutize_directories(&mut args.directories, &std::env::current_dir()?);
     let filters = WalkFilters {
         exclude_agent_files: !args.include_agent_files,
         skip_hidden: !args.include_hidden,
@@ -592,6 +613,50 @@ fn collect_recursive(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn file_request_path_is_resolved_against_cwd() {
+        let req = import_file_request(
+            "./adr.md".into(),
+            ImportOptions::default(),
+            Path::new("/home/u/project"),
+        );
+        assert_eq!(req.file_path, "/home/u/project/adr.md");
+    }
+
+    #[test]
+    fn directories_are_resolved_against_cwd() {
+        let mut dirs = vec!["./docs".to_string(), "/abs/other".to_string()];
+        absolutize_directories(&mut dirs, Path::new("/home/u/project"));
+        assert_eq!(dirs, vec!["/home/u/project/docs", "/abs/other"]);
+    }
+
+    #[test]
+    fn scanned_files_and_base_directory_are_absolute() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.md"), "# a").unwrap();
+        let mut dirs = vec![".".to_string()];
+        absolutize_directories(&mut dirs, tmp.path());
+        let files = collect_markdown_files(
+            &dirs[0],
+            &[],
+            WalkFilters {
+                exclude_agent_files: true,
+                skip_hidden: true,
+                recursive: true,
+            },
+        )
+        .unwrap();
+        assert!(Path::new(&dirs[0]).is_absolute());
+        assert_eq!(files.len(), 1);
+        assert!(Path::new(&files[0]).is_absolute());
+    }
 }
 
 #[cfg(test)]
