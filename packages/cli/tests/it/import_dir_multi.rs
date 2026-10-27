@@ -359,15 +359,10 @@ async fn import_dir_single_directory_still_works() {
 }
 
 /// Two directories that each contain a same-named file at the same relative
-/// position (both have a top-level `README.md`) compute the identical
-/// deterministic root id server-side (derived from the path relative to
-/// each call's own `base_directory`). Silently proceeding would either skip
-/// the second file as "already imported" or, with `--replace`, overwrite
-/// the first's content with the second's. The whole call must instead
-/// refuse up front, before either RPC is even issued, so neither file is
-/// written.
+/// position (both have a top-level `README.md`) import as two separate
+/// documents: the root id is keyed by the source directory too.
 #[tokio::test]
-async fn import_dir_multi_refuses_a_cross_directory_identity_collision() {
+async fn import_dir_multi_keeps_same_named_files_from_different_directories() {
     let (sock, node_service, shutdown, _tempdir) = spawn_import_test_daemon().await;
     let mut client = connect_import(&sock, DatabaseIdInterceptor::none())
         .await
@@ -378,7 +373,7 @@ async fn import_dir_multi_refuses_a_cross_directory_identity_collision() {
     write_md(dir_a.path(), "README.md", "# Overview from team A");
     write_md(dir_b.path(), "README.md", "# Overview from team B");
 
-    let err = commands::import::run(
+    commands::import::run(
         &mut client,
         commands::import::ImportAction::Dir(dir_args(
             vec![
@@ -390,37 +385,20 @@ async fn import_dir_multi_refuses_a_cross_directory_identity_collision() {
         true,
     )
     .await
-    .expect_err("a cross-directory identity collision must be refused, not silently imported");
-    assert!(
-        err.to_string().contains("README.md"),
-        "expected the error to name the colliding file, got: {err}"
-    );
+    .expect("same-named files in different directories import");
 
-    // Neither file was written -- the refusal happens before any RPC.
-    let team_a = node_service
-        .query_nodes(NodeFilter::new().with_content_contains("Overview from team A".to_string()))
-        .await
-        .expect("query team a");
-    let team_b = node_service
-        .query_nodes(NodeFilter::new().with_content_contains("Overview from team B".to_string()))
-        .await
-        .expect("query team b");
-    assert_eq!(
-        team_a.len(),
-        0,
-        "colliding import must not have written team A's file"
-    );
-    assert_eq!(
-        team_b.len(),
-        0,
-        "colliding import must not have written team B's file"
-    );
+    for title in ["Overview from team A", "Overview from team B"] {
+        let found = node_service
+            .query_nodes(NodeFilter::new().with_content_contains(title.to_string()))
+            .await
+            .expect("query");
+        assert_eq!(found.len(), 1, "{title} imported exactly once");
+    }
 
     let _ = shutdown.send(());
 }
 
-/// The identity-collision check only fires on an actual key collision — two
-/// directories with differently-named files (even ones that happen to share
+/// Two directories with differently-named files (even ones that happen to share
 /// a subfolder name, like `notes/`) must import normally, matching the
 /// existing auto-collection-routing test's fixture shape.
 #[tokio::test]

@@ -73,19 +73,40 @@ const PHASE1_CHUNK_SIZE: usize = 32;
 const PHASE2_CHUNK_NODES: usize = 1_000;
 
 /// Stable namespace for deriving deterministic import root ids from a document's
-/// identity key (its base-directory-relative path). Re-importing the same file
-/// therefore addresses the same root node, which is what makes re-import
-/// idempotent (no duplicate documents, no orphan "ghost" roots). This UUID is
-/// arbitrary but MUST stay fixed — changing it re-keys every imported document.
+/// identity key (its source directory plus its path relative to it).
+/// Re-importing the same file from the same source therefore addresses the same
+/// root node, which is what makes re-import idempotent (no duplicate documents,
+/// no orphan "ghost" roots). This UUID is arbitrary but MUST stay fixed —
+/// changing it re-keys every imported document.
 const IMPORT_ROOT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x9a, 0x1d, 0x2b, 0x7c, 0x4e, 0x63, 0x5f, 0x81, 0xa2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18, 0x29,
 ]);
 
-/// Derive a document's root node id deterministically from its identity key.
-/// The key is the file's base-directory-relative path, so the same file yields
-/// the same root id across imports regardless of the absolute checkout path.
+/// Derive a document's root node id deterministically from its identity key
+/// (see [`import_identity_key`]): the same file of the same source directory
+/// always yields the same root id, and the same relative path in another
+/// source directory yields another.
 fn deterministic_root_id(key: &str) -> String {
     uuid::Uuid::new_v5(&IMPORT_ROOT_NAMESPACE, key.as_bytes()).to_string()
+}
+
+/// The source of an import: its base directory, symlinks resolved so that two
+/// spellings of one directory agree. A directory that cannot be resolved is
+/// used as given.
+fn canonical_source(base_dir: &Path) -> String {
+    std::fs::canonicalize(base_dir)
+        .unwrap_or_else(|_| base_dir.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The identity key of an imported document: its source directory (see
+/// [`canonical_source`]) and its path relative to it. Two trees that happen to
+/// hold a same-named file at the same relative position never share a root,
+/// whatever collection they import into; the same tree re-imported from the
+/// same location addresses the same root.
+fn import_identity_key(source: &str, relative_path: &str) -> String {
+    format!("{source}\u{0}{relative_path}")
 }
 
 /// The content of a document's root node: the plain title. A title taken from
@@ -249,18 +270,23 @@ async fn import_single_file(
             .unwrap_or_else(|| "Untitled".to_string())
     };
 
-    // Deterministic root id from the file's identity key (base-dir-relative
-    // path when a base is set, else the file path), so a re-import addresses
-    // the same document root.
-    let import_key = if opts.base_directory.is_empty() {
-        path.to_string_lossy().to_string()
+    // Deterministic root id from the file's identity key (source directory plus
+    // path relative to it; the file's own directory when no base is set), so a
+    // re-import addresses the same document root.
+    let source_dir = if opts.base_directory.is_empty() {
+        path.parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
-        path.strip_prefix(&opts.base_directory)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string()
+        PathBuf::from(&opts.base_directory)
     };
-    let root_id = deterministic_root_id(&import_key);
+    let import_key = path
+        .strip_prefix(&source_dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+    let root_id = deterministic_root_id(&import_identity_key(
+        &canonical_source(&source_dir),
+        &import_key,
+    ));
 
     match import_markdown_content(
         node_service,
@@ -330,6 +356,7 @@ async fn run_batch_import(
             })
             .unwrap_or_else(|| PathBuf::from("."))
     };
+    let source = canonical_source(&base_dir);
 
     // ========================================================================
     // PHASE 1: Read, parse and link-resolve every file (in memory)
@@ -402,10 +429,12 @@ async fn run_batch_import(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .to_string();
+            let identity_key = import_identity_key(&source, &relative_path);
             chunk_reads.push(FileReadResult {
                 path,
                 content,
                 relative_path,
+                identity_key,
                 collection_path,
                 is_archived,
             });
@@ -1193,7 +1222,7 @@ fn prepare_file_import(
             .unwrap_or_else(|| "Untitled".to_string())
     };
 
-    let root_id = deterministic_root_id(&file_read.relative_path);
+    let root_id = deterministic_root_id(&file_read.identity_key);
 
     let root_content = root_content_for_title(&title, use_filename_as_title);
 
@@ -1516,6 +1545,8 @@ struct FileReadResult {
     path: PathBuf,
     content: String,
     relative_path: String,
+    /// Key the root id is derived from; see [`import_identity_key`].
+    identity_key: String,
     collection_path: Option<String>,
     is_archived: bool,
 }
@@ -1741,6 +1772,11 @@ mod tests {
         drain.await.unwrap()
     }
 
+    /// Root id of the file at `relative` under the source directory `base`.
+    fn root_of(base: &Path, relative: &str) -> String {
+        deterministic_root_id(&import_identity_key(&canonical_source(base), relative))
+    }
+
     fn test_context() -> SharedContext {
         let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
         SharedContext {
@@ -1959,7 +1995,7 @@ mod tests {
 
         for i in 0..NOTES {
             let result = result_for(&done, i);
-            let root = deterministic_root_id(&note_name(i));
+            let root = root_of(&src, &note_name(i));
             let stored = ns.get_node(&root).await.unwrap();
             if i < FAILED_CHUNK_START {
                 assert!(result.success, "note {i} committed: {result:?}");
@@ -1992,7 +2028,7 @@ mod tests {
 
         // Note 0 links to note 60, in the next chunk: both committed, so the
         // cross-chunk link is a mention.
-        let target = deterministic_root_id(&note_name(60));
+        let target = root_of(&src, &note_name(60));
         assert_eq!(ns.get_mentioned_by(&target).await.unwrap().len(), 1);
     }
 
@@ -2027,7 +2063,7 @@ mod tests {
         );
 
         for i in 0..NOTES {
-            let root = deterministic_root_id(&note_name(i));
+            let root = root_of(&src, &note_name(i));
             let children = ns.get_descendants(&root).await.unwrap();
             assert_eq!(
                 children.len(),
@@ -2169,7 +2205,7 @@ mod tests {
         assert_eq!(failed[0].error, "File does not exist");
 
         for i in 0..FILES {
-            let root = deterministic_root_id(&name(i));
+            let root = root_of(&src, &name(i));
             assert!(
                 ns.get_node(&root).await.unwrap().is_some(),
                 "note {i} imported"
@@ -2179,11 +2215,8 @@ mod tests {
         }
 
         // The link text itself is rewritten to the target's root id.
-        let first_children = ns
-            .get_descendants(&deterministic_root_id(&name(0)))
-            .await
-            .unwrap();
-        let target_root = deterministic_root_id(&name(LINK_STRIDE));
+        let first_children = ns.get_descendants(&root_of(&src, &name(0))).await.unwrap();
+        let target_root = root_of(&src, &name(LINK_STRIDE));
         assert!(
             first_children
                 .iter()
@@ -2516,8 +2549,8 @@ mod tests {
 
         // First import: both roots exist and are assigned to a collection.
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
-        let id_a = deterministic_root_id("a.md");
-        let id_b = deterministic_root_id("b.md");
+        let id_a = root_of(&src, "a.md");
+        let id_b = root_of(&src, "b.md");
         for (id, title) in [(&id_a, "Doc A"), (&id_b, "Doc B")] {
             let root = ns.get_node(id).await.unwrap().expect("root created");
             assert!(CoreNodeType::Text.is_exactly(&root.node_type));
@@ -2574,6 +2607,105 @@ mod tests {
         );
     }
 
+    /// Import `README.md` of `base` as its own tree under the given options.
+    async fn import_readme(
+        ns: &Arc<CoreNodeService>,
+        base: &Path,
+        replace: bool,
+        collection: &str,
+        auto: bool,
+    ) {
+        let opts = ImportOptions {
+            base_directory: base.to_str().unwrap().to_string(),
+            collection: collection.to_string(),
+            auto_collection_routing: auto,
+            replace,
+            ..Default::default()
+        };
+        let files = vec![base.join("README.md").to_str().unwrap().to_string()];
+        run_batch_and_wait(Arc::clone(ns), files, opts).await;
+    }
+
+    fn write_readme(dir: &Path, name: &str, title: &str) -> PathBuf {
+        let d = dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("README.md"), format!("# {title}\n")).unwrap();
+        d
+    }
+
+    async fn titles(ns: &CoreNodeService) -> Vec<String> {
+        let mut t: Vec<String> = ns
+            .query_nodes_by_type("text", true)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.content)
+            .collect();
+        t.sort();
+        t
+    }
+
+    /// Two trees holding a same-named file at the same relative path stay two
+    /// documents whatever the collection mode (auto-routing, the same explicit
+    /// collection, none), with or without `--replace`: neither import skips or
+    /// overwrites the other. Re-importing a tree from its own location is
+    /// idempotent.
+    #[tokio::test]
+    async fn same_relative_path_in_different_trees_stays_distinct() {
+        for (collection, auto) in [("", true), ("shared", false), ("", false)] {
+            let (ns, dir) = new_service_and_dir().await;
+            let ns = Arc::new(ns);
+            let alpha = write_readme(dir.path(), "alpha", "Alpha Readme");
+            let beta = write_readme(dir.path(), "beta", "Beta Readme");
+
+            import_readme(&ns, &alpha, false, collection, auto).await;
+            import_readme(&ns, &beta, false, collection, auto).await;
+            assert_eq!(
+                titles(&ns).await,
+                ["Alpha Readme", "Beta Readme"],
+                "{collection:?} {auto}"
+            );
+
+            import_readme(&ns, &beta, true, collection, auto).await;
+            import_readme(&ns, &alpha, false, collection, auto).await;
+            assert_eq!(
+                titles(&ns).await,
+                ["Alpha Readme", "Beta Readme"],
+                "{collection:?} {auto}"
+            );
+            assert!(ns
+                .get_node(&root_of(&alpha, "README.md"))
+                .await
+                .unwrap()
+                .is_some());
+            assert!(ns
+                .get_node(&root_of(&beta, "README.md"))
+                .await
+                .unwrap()
+                .is_some());
+        }
+    }
+
+    /// Single-file import follows the same identity: same-named files of
+    /// different directories are different documents.
+    #[tokio::test]
+    async fn single_file_import_keys_by_source_directory() {
+        let (ns, dir) = new_service_and_dir().await;
+        for name in ["gamma", "delta"] {
+            let d = write_readme(dir.path(), name, &format!("{name} readme"));
+            let opts = ImportOptions {
+                base_directory: d.to_str().unwrap().to_string(),
+                ..Default::default()
+            };
+            let r = import_single_file(&ns, &d.join("README.md"), &opts).await;
+            assert!(r.success, "{:?}", r.error);
+            // Without a base directory the file's own directory is the source.
+            let r = import_single_file(&ns, &d.join("README.md"), &ImportOptions::default()).await;
+            assert!(r.success, "{:?}", r.error);
+        }
+        assert_eq!(titles(&ns).await.len(), 2);
+    }
+
     /// The demo-repair case: a document already in the store but MISSING its
     /// topic-collection membership (its content landed only in the default
     /// collection) regains that membership from a plain re-import — no
@@ -2599,7 +2731,7 @@ mod tests {
 
         // First import: the doc root joins its topic collection.
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
-        let root_id = deterministic_root_id("architecture/overview.md");
+        let root_id = root_of(dir.path(), "architecture/overview.md");
         let memberships_before = ns.store().get_node_memberships(&root_id).await.unwrap();
         assert!(
             !memberships_before.is_empty(),
