@@ -569,6 +569,7 @@ fn is_hidden(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn collect_markdown_files(
     dir: &str,
     exclude_patterns: &[String],
