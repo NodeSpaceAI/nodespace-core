@@ -997,21 +997,12 @@ impl Phase2Writer {
         // or retitles a document.
         for (root_id, content) in &refreshed_roots {
             let update = nodespace_core::NodeUpdate::new().with_content(content.clone());
-            if let Err(e) = self
-                .store
-                .update_node(
-                    root_id,
-                    update,
-                    Some("import".to_string()),
-                    nodespace_core::WriteContext::default(),
-                )
-                .await
-            {
+            if let Err(e) = refresh_root(&self.node_service, root_id, update).await {
                 tracing::warn!("Failed to refresh root {}: {}", root_id, e);
             }
         }
         if !prune.is_empty() {
-            if let Err(e) = self.store.delete_nodes_by_ids_unchecked(&prune).await {
+            if let Err(e) = self.node_service.bulk_delete(prune.clone()).await {
                 tracing::error!(
                     "Failed to prune {} stale node(s) after replace: {}",
                     prune.len(),
@@ -1082,6 +1073,25 @@ impl Phase2Writer {
             }
         }
     }
+}
+
+/// Apply `update` to an existing document root through the service, so its
+/// title is re-derived and search stays current, and the change is announced.
+async fn refresh_root(
+    node_service: &CoreNodeService,
+    root_id: &str,
+    update: nodespace_core::NodeUpdate,
+) -> Result<(), String> {
+    let root = node_service
+        .get_node(root_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("node {root_id} not found"))?;
+    node_service
+        .update_node(root_id, root.version, update)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// The generic update that archives a node.
@@ -1687,14 +1697,7 @@ async fn import_markdown_content(
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
         }
-        node_service
-            .store()
-            .update_node(
-                root_id,
-                update,
-                Some("import".to_string()),
-                nodespace_core::WriteContext::default(),
-            )
+        refresh_root(node_service, root_id, update)
             .await
             .map_err(|e| format!("Failed to refresh root node: {}", e))?;
     } else if is_archived {
@@ -1714,8 +1717,7 @@ async fn import_markdown_content(
     // and re-mark the (kept) root stale so it re-embeds with the new content.
     if exists {
         node_service
-            .store()
-            .delete_nodes_by_ids_unchecked(&prune_after_insert)
+            .bulk_delete(prune_after_insert)
             .await
             .map_err(|e| format!("Failed to prune stale subtree: {}", e))?;
         if let Err(e) = node_service
@@ -1955,6 +1957,147 @@ mod tests {
                 (1, "Run"),
                 (2, "quickly"),
             ]
+        );
+    }
+
+    /// Ids of the nodes deleted by events already queued on `rx`.
+    fn deleted_ids(
+        rx: &mut tokio::sync::broadcast::Receiver<nodespace_core::db::events::EventEnvelope>,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let nodespace_core::db::events::DomainEvent::NodeDeleted { id, .. } = envelope.event
+            {
+                ids.push(id);
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    async fn root_title_hits(ns: &CoreNodeService, term: &str, root_id: &str) -> bool {
+        let query = nodespace_core::NodeQuery {
+            title_contains: Some(term.to_string()),
+            ..Default::default()
+        };
+        ns.store()
+            .query_nodes(query)
+            .await
+            .unwrap()
+            .iter()
+            .any(|n| n.id == root_id)
+    }
+
+    /// `--replace` on one file whose heading changed retitles the document
+    /// for title search and announces every pruned child as deleted.
+    #[tokio::test]
+    async fn single_file_replace_retitles_root_and_emits_delete_events() {
+        let (ns, dir) = new_service_and_dir().await;
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let path = src.join("guide.md");
+        std::fs::write(&path, "# Oldtitle\n\nAlpha.\n\nBeta.\n").unwrap();
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        let r1 = import_single_file(&ns, &path, &opts).await;
+        assert!(r1.success, "{:?}", r1.error);
+        let root_id = r1.root_id.unwrap();
+        assert!(root_title_hits(&ns, "Oldtitle", &root_id).await);
+        let mut old_children: Vec<String> = ns
+            .get_descendants(&root_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        old_children.sort();
+        assert!(!old_children.is_empty());
+
+        std::fs::write(&path, "# Newtitle\n\nGamma.\n").unwrap();
+        let mut rx = ns.subscribe_to_events();
+        let r2 = import_single_file(
+            &ns,
+            &path,
+            &ImportOptions {
+                replace: true,
+                ..opts
+            },
+        )
+        .await;
+        assert!(r2.success, "{:?}", r2.error);
+
+        assert_eq!(
+            ns.get_node(&root_id).await.unwrap().unwrap().content,
+            "Newtitle"
+        );
+        assert!(
+            root_title_hits(&ns, "Newtitle", &root_id).await,
+            "title search finds the new title"
+        );
+        assert!(
+            !root_title_hits(&ns, "Oldtitle", &root_id).await,
+            "the old title no longer matches"
+        );
+        assert_eq!(
+            deleted_ids(&mut rx),
+            old_children,
+            "each pruned child is announced"
+        );
+    }
+
+    /// The batch path retitles a replaced root and announces its pruned
+    /// children the same way.
+    #[tokio::test]
+    async fn batch_replace_retitles_root_and_emits_delete_events() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("guide.md"), "# Oldtitle\n\nAlpha.\n\nBeta.\n").unwrap();
+        let files = vec![src.join("guide.md").to_str().unwrap().to_string()];
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+        run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
+        let root_id = root_of(&src, "guide.md");
+        assert!(root_title_hits(&ns, "Oldtitle", &root_id).await);
+        let mut old_children: Vec<String> = ns
+            .get_descendants(&root_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        old_children.sort();
+        assert!(!old_children.is_empty());
+
+        std::fs::write(src.join("guide.md"), "# Newtitle\n\nGamma.\n").unwrap();
+        let mut rx = ns.subscribe_to_events();
+        run_batch_and_wait(
+            Arc::clone(&ns),
+            files,
+            ImportOptions {
+                replace: true,
+                ..opts
+            },
+        )
+        .await;
+
+        assert!(
+            root_title_hits(&ns, "Newtitle", &root_id).await,
+            "title search finds the new title"
+        );
+        assert!(
+            !root_title_hits(&ns, "Oldtitle", &root_id).await,
+            "the old title no longer matches"
+        );
+        assert_eq!(
+            deleted_ids(&mut rx),
+            old_children,
+            "each pruned child is announced"
         );
     }
 
