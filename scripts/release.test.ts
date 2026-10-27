@@ -113,7 +113,7 @@ describe("prepareVersionBump", () => {
   const SHA = "a".repeat(40);
 
   /** Fake runner: records commands; `fail` is a command prefix that exits non-zero. */
-  function fake(opts: { dirty?: boolean; fail?: string; head?: string; remote?: string } = {}) {
+  function fake(opts: { dirty?: boolean; staged?: boolean; fail?: string; head?: string; remote?: string } = {}) {
     const calls: string[] = [];
     const run = (cmd: string[]) => {
       const line = cmd.join(" ");
@@ -123,7 +123,7 @@ describe("prepareVersionBump", () => {
         return { exitCode: 1, stdout: "", stderr: "boom" };
       }
       if (line === "git status --porcelain") return ok(opts.dirty === false ? "" : " M Cargo.toml\n");
-      if (line === "git diff --cached --quiet") return { exitCode: 1, stdout: "", stderr: "" };
+      if (line === "git diff --cached --quiet") return { exitCode: opts.staged === false ? 0 : 1, stdout: "", stderr: "" };
       if (line === "git rev-parse HEAD") return ok((opts.head ?? SHA) + "\n");
       if (line === "git rev-parse FETCH_HEAD") return ok((opts.remote ?? SHA) + "\n");
       return ok();
@@ -159,6 +159,19 @@ describe("prepareVersionBump", () => {
     const { calls, run } = fake({ dirty: false });
     expect(prepareVersionBump("1.2.3", run)).toBe(SHA);
     expect(calls.some((c) => c.startsWith("git commit") || c === "git push")).toBe(false);
+  });
+
+  test("skips the commit but still pushes when nothing is staged", () => {
+    const { calls, run } = fake({ staged: false });
+    expect(prepareVersionBump("1.2.3", run)).toBe(SHA);
+    expect(calls.some((c) => c.startsWith("git commit"))).toBe(false);
+    expect(calls).toContain("git push");
+  });
+
+  test("when behind origin/main, tells the releaser to use main, pull and merge the bump PR", () => {
+    const { calls, run } = fake({ head: "c".repeat(40) });
+    expect(() => prepareVersionBump("1.2.3", run)).toThrow(/switch to main.*git pull.*version-bump PR is merged/);
+    expect(calls.some((c) => c.startsWith("gh "))).toBe(false);
   });
 
   test("rejects an already-committed bump that is not on origin/main", () => {

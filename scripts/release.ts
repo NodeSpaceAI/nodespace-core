@@ -267,7 +267,8 @@ function prepareVersionBump(version: string, run: CommandRunner): string {
   if (!head || head !== remote) {
     throw new Error(
       `HEAD (${head.slice(0, 8)}) is not origin/main (${remote.slice(0, 8)}), so the version bump ` +
-        "is not published. No release or tag was created; push the bump to main and rerun."
+        "is not published. No release or tag was created. Release from main: switch to main if you are " +
+        "on a feature branch, `git pull`, make sure the version-bump PR is merged, then rerun."
     );
   }
   return head;
