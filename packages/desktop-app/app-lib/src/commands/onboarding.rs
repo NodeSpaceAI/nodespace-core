@@ -645,8 +645,9 @@ pub async fn get_integrations_status() -> Result<OnboardingStatus, String> {
 /// Remove the NodeSpace skill files from every installed-into agent's skill
 /// directory (Claude Code, Codex, Antigravity CLI, OpenCode -- whichever the
 /// installer's `AGENTS` config currently lists), by delegating to
-/// `install.ts`'s own `uninstall` command. Resets both setup.json
-/// (authoritative for get_skill_setup_status) and config.json.
+/// `install.ts`'s own `uninstall` command. Records the removal in setup.json
+/// (so launch-time installs skip it; authoritative for get_skill_setup_status)
+/// and clears skill_configured in config.json.
 #[tauri::command]
 pub async fn remove_skill(app_handle: tauri::AppHandle) -> Result<(), String> {
     skill_setup::uninstall_skill(&app_handle).await?;
