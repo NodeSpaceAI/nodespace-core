@@ -168,9 +168,10 @@ export function stripMarkdown(markdown: string): string {
       .replace(/^#{1,6}\s+/gm, '')
       // Remove bold/italic
       .replace(/\*\*(.*?)\*\*/g, '$1')
-      .replace(/__(.*?)__/g, '$1')
+      // Underscore emphasis only at word boundaries (snake_case and __init__.py survive)
+      .replace(/(?<![\p{L}\p{N}_])__(.+?)__(?=[.,;:!?)\]}"']*(?:\s|$))/gu, '$1')
       .replace(/\*([^*]+)\*/g, '$1')
-      .replace(/_([^_]+)_/g, '$1')
+      .replace(/(?<![\p{L}\p{N}_])_([^_]+)_(?=[.,;:!?)\]}"']*(?:\s|$))/gu, '$1')
       // Remove inline code
       .replace(/`([^`]+)`/g, '$1')
       // Remove links

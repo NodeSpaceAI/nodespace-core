@@ -405,6 +405,18 @@ describe('markdown-utils service', () => {
 			expect(stripMarkdown('**bold**')).toBe('bold');
 		});
 
+		it('should keep intra-word underscores', () => {
+			expect(stripMarkdown('Review my_config_file.rs')).toBe('Review my_config_file.rs');
+			expect(stripMarkdown('Fix user_id and order_id')).toBe('Fix user_id and order_id');
+			expect(stripMarkdown('__init__.py')).toBe('__init__.py');
+		});
+
+		it('should strip underscore emphasis at word boundaries', () => {
+			expect(stripMarkdown('_a_ _b_ _c_')).toBe('a b c');
+			expect(stripMarkdown('see __this__, now')).toBe('see this, now');
+			expect(stripMarkdown('use my_var in _italic_ text')).toBe('use my_var in italic text');
+		});
+
 		it('should strip bold markers (underscores)', () => {
 			expect(stripMarkdown('__bold__')).toBe('bold');
 		});
