@@ -2306,6 +2306,48 @@ mod tests {
         assert_eq!(query_service.count(&upcoming).await.unwrap(), 1);
     }
 
+    /// A negated ordering keeps a node with no value for the field: "not due
+    /// by today" lists the upcoming task and the task with no due date, which
+    /// is why the description reads it as "is not on or before today" and
+    /// never as "is after today".
+    #[tokio::test]
+    async fn test_a_negated_ordering_keeps_a_node_with_no_value() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let today = chrono::Local::now().date_naive();
+        for (content, offset) in [
+            ("Overdue", Some(-2)),
+            ("Upcoming", Some(2)),
+            ("Undated", None),
+        ] {
+            let mut task = json!({"status": "open"});
+            if let Some(offset) = offset {
+                task["due_date"] = json!((today + chrono::Duration::days(offset))
+                    .format("%Y-%m-%d")
+                    .to_string());
+            }
+            node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "task".to_string(),
+                    content: content.to_string(),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({ "task": task }),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let mut due_by_today = relative("due_date", FilterOperator::LessThanOrEqual, 0);
+        due_by_today.negate = Some(true);
+        let not_due_by_today = tasks_where(vec![due_by_today]);
+        let results = query_service.execute(&not_due_by_today).await.unwrap();
+        let mut names: Vec<&str> = results.iter().map(|n| n.content.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["Undated", "Upcoming"]);
+    }
+
     /// A relative date stands in for a fixed value on a property comparison,
     /// and nowhere else.
     #[test]

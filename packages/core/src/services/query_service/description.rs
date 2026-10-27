@@ -190,25 +190,21 @@ fn comparison(filter: &QueryFilter) -> String {
             | FilterOperator::LessThanOrEqual),
             Some(object),
         ) => {
-            // Negating an ordering flips it: "not after" is "on or before".
-            let order = match (order, negated) {
-                (FilterOperator::GreaterThan, true) => &FilterOperator::LessThanOrEqual,
-                (FilterOperator::GreaterThanOrEqual, true) => &FilterOperator::LessThan,
-                (FilterOperator::LessThan, true) => &FilterOperator::GreaterThanOrEqual,
-                (FilterOperator::LessThanOrEqual, true) => &FilterOperator::GreaterThan,
-                (order, _) => order,
-            };
+            // Negated, an ordering reads as "is not ...", never as the
+            // opposite comparison: a node with no value for the field meets
+            // neither, and a negated filter keeps it, so "is not on or before
+            // today" is what it lists and "is after today" is not.
             let words = match (order, dated) {
-                (FilterOperator::GreaterThan, true) => "is after",
-                (FilterOperator::GreaterThanOrEqual, true) => "is on or after",
-                (FilterOperator::LessThan, true) => "is before",
-                (FilterOperator::LessThanOrEqual, true) => "is on or before",
-                (FilterOperator::GreaterThan, false) => "is greater than",
-                (FilterOperator::GreaterThanOrEqual, false) => "is at least",
-                (FilterOperator::LessThan, false) => "is less than",
-                _ => "is at most",
+                (FilterOperator::GreaterThan, true) => "after",
+                (FilterOperator::GreaterThanOrEqual, true) => "on or after",
+                (FilterOperator::LessThan, true) => "before",
+                (FilterOperator::LessThanOrEqual, true) => "on or before",
+                (FilterOperator::GreaterThan, false) => "greater than",
+                (FilterOperator::GreaterThanOrEqual, false) => "at least",
+                (FilterOperator::LessThan, false) => "less than",
+                _ => "at most",
             };
-            format!("{words} {object}")
+            format!("{} {words} {object}", if negated { "is not" } else { "is" })
         }
         // A comparison with no value to compare against.
         (_, None) => {
@@ -399,8 +395,20 @@ mod tests {
                 "whose estimate is at least 3",
             ),
             (
+                json!({ "type": "property", "operator": "gt", "property": "estimate", "value": 3, "negate": true }),
+                "whose estimate is not greater than 3",
+            ),
+            (
+                json!({ "type": "property", "operator": "gte", "property": "estimate", "value": 3, "negate": true }),
+                "whose estimate is not at least 3",
+            ),
+            (
                 json!({ "type": "property", "operator": "lt", "property": "estimate", "value": 3, "negate": true }),
-                "whose estimate is at least 3",
+                "whose estimate is not less than 3",
+            ),
+            (
+                json!({ "type": "property", "operator": "lte", "property": "estimate", "value": 3, "negate": true }),
+                "whose estimate is not at most 3",
             ),
         ];
         for (filter, clause) in cases {
@@ -451,6 +459,41 @@ mod tests {
         assert_eq!(
             on("equals", Some(14)),
             "Lists tasks whose due_date is 14 days after today."
+        );
+    }
+
+    /// A negated ordering keeps the nodes with no value for the field, as
+    /// every negated filter does, so it reads as "is not ..." rather than as
+    /// the opposite comparison, which a node with no value does not meet.
+    #[test]
+    fn a_negated_ordering_reads_as_not_rather_than_the_opposite_comparison() {
+        let not_on = |operator: &str| {
+            filters(json!([{
+                "type": "property", "operator": operator, "property": "due_date",
+                "relative_date": { "anchor": "today" }, "negate": true
+            }]))
+        };
+        assert_eq!(
+            not_on("lte"),
+            "Lists tasks whose due_date is not on or before today."
+        );
+        assert_eq!(
+            not_on("lt"),
+            "Lists tasks whose due_date is not before today."
+        );
+        assert_eq!(
+            not_on("gte"),
+            "Lists tasks whose due_date is not on or after today."
+        );
+        assert_eq!(
+            not_on("gt"),
+            "Lists tasks whose due_date is not after today."
+        );
+        assert_eq!(
+            filters(json!([
+                { "type": "metadata", "operator": "gt", "property": "created_at", "value": "2026-01-01", "negate": true }
+            ])),
+            "Lists tasks whose created_at is not after 2026-01-01."
         );
     }
 
