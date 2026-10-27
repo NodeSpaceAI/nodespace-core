@@ -1589,8 +1589,6 @@ async fn import_markdown_content(
     is_archived: bool,
     replace: bool,
 ) -> Result<(String, usize), String> {
-    use nodespace_core::services::CreateNodeParams;
-
     let root_content = root_content_for_title(title, title_from_filename);
 
     let content_for_children = {
@@ -1629,16 +1627,62 @@ async fn import_markdown_content(
         return Ok((root_id.to_string(), 0));
     }
 
-    let mut nodes_created = 0;
+    // A new document's root and body go in one transaction, so a rejected
+    // body leaves no bodiless root behind. A replaced document's body lands
+    // first and its root is refreshed only afterwards, so a failed insert
+    // leaves the previous title, archival and content intact.
+    let mut rows: Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        f64,
+        serde_json::Value,
+    )> = Vec::with_capacity(prepared_nodes.len() + 1);
+    if !exists {
+        rows.push((
+            root_id.to_string(),
+            CoreNodeType::Text.as_str().to_string(),
+            root_content.clone(),
+            None,
+            1.0,
+            serde_json::json!({}),
+        ));
+    }
+    rows.extend(prepared_nodes.iter().map(|n| {
+        (
+            n.id.clone(),
+            n.node_type.clone(),
+            n.content.clone(),
+            n.parent_id.clone(),
+            n.order,
+            n.properties.clone(),
+        )
+    }));
 
     // Old child ids captured before insert; pruned only after the fresh subtree
     // lands, so a failed insert leaves the previous content intact.
     let mut prune_after_insert: Vec<String> = Vec::new();
+    if exists {
+        let descendants = node_service
+            .get_descendants(root_id)
+            .await
+            .map_err(|e| format!("Failed to read existing subtree: {}", e))?;
+        prune_after_insert.extend(descendants.into_iter().map(|n| n.id));
+    }
+
+    // Lifecycle is the node's envelope field and nothing else, never a
+    // property (ADR-087 §4). The bulk insert creates the root active, so
+    // archival is applied below, once the document's rows have committed.
+    let nodes_created = node_service
+        .bulk_create_hierarchy_trusted(rows)
+        .await
+        .map_err(|e| format!("Failed to bulk create nodes: {}", e))?
+        .len();
 
     if exists {
         // Refresh in place: keep + update the root (non-destructive) so inbound
-        // links/mentions survive, and capture its current children to prune only
-        // after the fresh subtree is inserted below.
+        // links/mentions survive.
         let mut update = nodespace_core::NodeUpdate::new().with_content(root_content);
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
@@ -1653,58 +1697,17 @@ async fn import_markdown_content(
             )
             .await
             .map_err(|e| format!("Failed to refresh root node: {}", e))?;
-        let descendants = node_service
-            .get_descendants(root_id)
-            .await
-            .map_err(|e| format!("Failed to read existing subtree: {}", e))?;
-        prune_after_insert.extend(descendants.into_iter().map(|n| n.id));
-    } else {
-        // Lifecycle is the node's envelope field and nothing else: an archived
-        // document is created archived, never given a property (ADR-087 §4).
+    } else if is_archived {
         node_service
-            .create_node_with_parent(CreateNodeParams {
-                id: Some(root_id.to_string()),
-                node_type: CoreNodeType::Text.as_str().to_string(),
-                content: root_content,
-                parent_id: None,
-                position: nodespace_core::services::InsertPositionOwned::End,
-                properties: serde_json::json!({}),
-                lifecycle_status: is_archived
-                    .then(|| nodespace_core::governance::ARCHIVED.to_string()),
-            })
+            .store()
+            .update_node(
+                root_id,
+                archive_update(),
+                Some("import".to_string()),
+                nodespace_core::WriteContext::default(),
+            )
             .await
-            .map_err(|e| format!("Failed to create root node: {}", e))?;
-        nodes_created += 1;
-    }
-
-    if !prepared_nodes.is_empty() {
-        let nodes_for_bulk: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )> = prepared_nodes
-            .iter()
-            .map(|n| {
-                (
-                    n.id.clone(),
-                    n.node_type.clone(),
-                    n.content.clone(),
-                    n.parent_id.clone(),
-                    n.order,
-                    n.properties.clone(),
-                )
-            })
-            .collect();
-
-        let created_ids = node_service
-            .bulk_create_hierarchy(nodes_for_bulk)
-            .await
-            .map_err(|e| format!("Failed to bulk create nodes: {}", e))?;
-
-        nodes_created += created_ids.len();
+            .map_err(|e| format!("Failed to archive imported root: {}", e))?;
     }
 
     // On replace, prune the OLD children now that the fresh subtree is in place,
@@ -1953,6 +1956,86 @@ mod tests {
                 (2, "quickly"),
             ]
         );
+    }
+
+    /// A single-file import whose body insert is rejected writes nothing: no
+    /// bodiless root is left behind, so importing the fixed file again
+    /// creates the document instead of reporting an empty success.
+    #[tokio::test]
+    async fn single_file_import_with_rejected_body_leaves_no_root() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let _engine = activate_poison_rule(&ns);
+        let root_id = deterministic_root_id("plan.md");
+
+        let result = import_markdown_content(
+            &ns,
+            &root_id,
+            "# Plan",
+            false,
+            "# Plan\n\nfine\n\nPOISON line\n",
+            false,
+            false,
+        )
+        .await;
+        assert!(result.is_err(), "the rejected body fails the import");
+        assert!(
+            ns.get_node(&root_id).await.unwrap().is_none(),
+            "a failed import must not leave its root behind"
+        );
+
+        let (_, created) = import_markdown_content(
+            &ns,
+            &root_id,
+            "# Plan",
+            false,
+            "# Plan\n\nfine\n",
+            false,
+            false,
+        )
+        .await
+        .expect("the corrected file imports");
+        assert_eq!(created, 2, "root plus its body");
+        assert_eq!(ns.get_children(&root_id).await.unwrap().len(), 1);
+    }
+
+    /// A `--replace` whose body insert is rejected leaves the existing
+    /// document exactly as it was: same root content, same children.
+    #[tokio::test]
+    async fn single_file_replace_with_rejected_body_keeps_the_previous_document() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let root_id = deterministic_root_id("plan.md");
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# Old Plan",
+            false,
+            "# Old Plan\n\nold body\n",
+            false,
+            false,
+        )
+        .await
+        .expect("first import");
+        let _engine = activate_poison_rule(&ns);
+
+        let result = import_markdown_content(
+            &ns,
+            &root_id,
+            "# New Plan",
+            false,
+            "# New Plan\n\nPOISON body\n",
+            true,
+            true,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let root = ns.get_node(&root_id).await.unwrap().unwrap();
+        assert_eq!(root.content, "Old Plan", "root must not be retitled");
+        let children = ns.get_children(&root_id).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].content, "old body");
     }
 
     /// A failed insert in a later chunk makes the import an explicit partial
