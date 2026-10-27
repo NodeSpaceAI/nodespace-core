@@ -88,6 +88,20 @@ fn deterministic_root_id(key: &str) -> String {
     uuid::Uuid::new_v5(&IMPORT_ROOT_NAMESPACE, key.as_bytes()).to_string()
 }
 
+/// The identity key of an imported document: its base-directory-relative path,
+/// qualified by the explicitly chosen target collection. Two source trees
+/// imported into different collections therefore never share a root, while the
+/// same tree re-imported from another checkout path into the same collection
+/// still addresses the same root. Auto-routed collections derive from the path
+/// itself, so they add nothing to the key.
+fn import_identity_key(explicit_collection: &str, relative_path: &str) -> String {
+    if explicit_collection.is_empty() {
+        relative_path.to_string()
+    } else {
+        format!("{explicit_collection}\u{0}{relative_path}")
+    }
+}
+
 /// The content of a document's root node: the plain title. A title taken from
 /// the file's first line loses a leading Markdown heading marker (`#` to
 /// `######` and the space after it); a filename-derived title is used as is.
@@ -260,7 +274,12 @@ async fn import_single_file(
             .to_string_lossy()
             .to_string()
     };
-    let root_id = deterministic_root_id(&import_key);
+    let explicit_collection = if opts.auto_collection_routing {
+        ""
+    } else {
+        opts.collection.as_str()
+    };
+    let root_id = deterministic_root_id(&import_identity_key(explicit_collection, &import_key));
 
     match import_markdown_content(
         node_service,
@@ -402,10 +421,17 @@ async fn run_batch_import(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .to_string();
+            let explicit_collection = if opts.auto_collection_routing {
+                ""
+            } else {
+                opts.collection.as_str()
+            };
+            let identity_key = import_identity_key(explicit_collection, &relative_path);
             chunk_reads.push(FileReadResult {
                 path,
                 content,
                 relative_path,
+                identity_key,
                 collection_path,
                 is_archived,
             });
@@ -1193,7 +1219,7 @@ fn prepare_file_import(
             .unwrap_or_else(|| "Untitled".to_string())
     };
 
-    let root_id = deterministic_root_id(&file_read.relative_path);
+    let root_id = deterministic_root_id(&file_read.identity_key);
 
     let root_content = root_content_for_title(&title, use_filename_as_title);
 
@@ -1516,6 +1542,8 @@ struct FileReadResult {
     path: PathBuf,
     content: String,
     relative_path: String,
+    /// Key the root id is derived from; see [`import_identity_key`].
+    identity_key: String,
     collection_path: Option<String>,
     is_archived: bool,
 }
@@ -2572,6 +2600,88 @@ mod tests {
                 .is_empty(),
             "collection membership survives replace",
         );
+    }
+
+    /// Two directories imported into different collections each keep their own
+    /// same-named document: the second import neither skips nor overwrites the
+    /// first, with or without `--replace`. Re-importing the same tree from a
+    /// different checkout path into the same collection stays idempotent.
+    #[tokio::test]
+    async fn same_named_documents_from_different_sources_stay_distinct() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let mk = |name: &str, title: &str| {
+            let d = dir.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("README.md"), format!("# {title}\n")).unwrap();
+            d
+        };
+        let alpha = mk("alpha", "Alpha Readme");
+        let beta = mk("beta", "Beta Readme");
+        let opts_for = |base: &Path, collection: &str, replace: bool| ImportOptions {
+            base_directory: base.to_str().unwrap().to_string(),
+            collection: collection.to_string(),
+            replace,
+            ..Default::default()
+        };
+        let files_of = |base: &Path| vec![base.join("README.md").to_str().unwrap().to_string()];
+
+        run_batch_and_wait(
+            Arc::clone(&ns),
+            files_of(&alpha),
+            opts_for(&alpha, "alpha", false),
+        )
+        .await;
+        run_batch_and_wait(
+            Arc::clone(&ns),
+            files_of(&beta),
+            opts_for(&beta, "beta", false),
+        )
+        .await;
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 2);
+
+        // Replacing beta must not touch alpha's document.
+        run_batch_and_wait(
+            Arc::clone(&ns),
+            files_of(&beta),
+            opts_for(&beta, "beta", true),
+        )
+        .await;
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 2);
+        let texts = ns.query_nodes_by_type("text", true).await.unwrap();
+        let mut titles: Vec<String> = texts.into_iter().map(|n| n.content).collect();
+        titles.sort();
+        assert_eq!(titles, vec!["Alpha Readme", "Beta Readme"]);
+
+        // Same tree from another checkout path, same collection: same document.
+        let alpha_copy = mk("alpha-copy", "Alpha Readme");
+        run_batch_and_wait(
+            Arc::clone(&ns),
+            files_of(&alpha_copy),
+            opts_for(&alpha_copy, "alpha", false),
+        )
+        .await;
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 2);
+
+        // Single-file import follows the same identity.
+        let gamma = mk("gamma", "Gamma Readme");
+        let r = import_single_file(
+            &ns,
+            &gamma.join("README.md"),
+            &opts_for(&gamma, "gamma", false),
+        )
+        .await;
+        assert!(r.success, "{:?}", r.error);
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 3);
+        let delta = mk("delta", "Delta Readme");
+        let r = import_single_file(
+            &ns,
+            &delta.join("README.md"),
+            &opts_for(&delta, "delta", false),
+        )
+        .await;
+        assert!(r.success, "{:?}", r.error);
+        assert_eq!(ns.store().count_nodes_by_type("text").await.unwrap(), 4);
     }
 
     /// The demo-repair case: a document already in the store but MISSING its
