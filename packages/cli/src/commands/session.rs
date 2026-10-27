@@ -8,10 +8,11 @@ use crossterm::terminal;
 use nodespace_agent::agent_types::AgentType;
 use nodespace_agent::pty::SESSION_ENV_VAR;
 use nodespace_daemon::nodespace::{
-    LaunchSessionRequest, ListSessionsRequest, ReportHarnessSessionRequest, StreamOutputRequest,
-    TerminateSessionRequest, WriteInputRequest,
+    LaunchSessionRequest, ListSessionsRequest, OutputChunk, ReportHarnessSessionRequest,
+    StreamOutputRequest, TerminateSessionRequest, WriteInputRequest,
 };
 use tokio::io::AsyncReadExt;
+use tokio_stream::{Stream, StreamExt};
 use tonic::Request;
 
 use crate::terminal::{write_stdout, RawMode};
@@ -231,7 +232,7 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
     let input_session = session_id.clone();
 
     // Spawn stdin → WriteInput task.
-    let input_task = tokio::spawn(async move {
+    let mut input_task = tokio::spawn(async move {
         let mut stdin = tokio::io::stdin();
         let mut buf = [0u8; 256];
         loop {
@@ -239,16 +240,7 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let data = buf[..n].to_vec();
-
-            // Ctrl+D (0x04) and Ctrl+C (0x03) detach without killing the session.
-            // Filter them out before forwarding so the agent's PTY does not receive
-            // SIGINT or EOF — we are detaching the CLI, not signalling the agent.
-            let should_detach = data.iter().any(|&b| b == 0x04 || b == 0x03);
-            let forwarded: Vec<u8> = data
-                .into_iter()
-                .filter(|&b| b != 0x03 && b != 0x04)
-                .collect();
+            let (forwarded, should_detach) = split_detach(&buf[..n]);
 
             if !forwarded.is_empty() {
                 let _ = input_client
@@ -265,28 +257,53 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
         }
     });
 
-    // Drive the output stream to stdout.
-    loop {
-        match output_stream.message().await {
-            Ok(Some(chunk)) if chunk.dropped_chunks > 0 => {
-                write_stdout(dropped_notice(chunk.dropped_chunks).as_bytes())?;
-            }
-            Ok(Some(chunk)) => {
-                write_stdout(&chunk.data)?;
-            }
-            Ok(None) => break, // stream ended cleanly
-            Err(e) => {
-                input_task.abort();
-                let _ = input_task.await;
-                return Err(e).context("StreamOutput error");
-            }
-        }
-    }
+    let result = pump_output(&mut output_stream, &mut input_task, write_stdout).await;
 
     // Abort the stdin task and wait for it to exit before raw mode is restored.
     input_task.abort();
     let _ = input_task.await;
-    Ok(())
+    result
+}
+
+/// Splits raw terminal input into the bytes to forward to the agent and
+/// whether the user asked to detach. Ctrl+D (0x04) and Ctrl+C (0x03) detach
+/// without killing the session; they are filtered out so the agent's PTY
+/// receives neither SIGINT nor EOF -- we are detaching the CLI, not
+/// signalling the agent.
+fn split_detach(data: &[u8]) -> (Vec<u8>, bool) {
+    let should_detach = data.iter().any(|&b| b == 0x04 || b == 0x03);
+    let forwarded = data
+        .iter()
+        .copied()
+        .filter(|&b| b != 0x03 && b != 0x04)
+        .collect();
+    (forwarded, should_detach)
+}
+
+/// Writes the session output to `sink` until the stream ends, errors, or the
+/// input task finishes (the user detached, or stdin closed).
+async fn pump_output<S, W>(
+    output: &mut S,
+    input_task: &mut tokio::task::JoinHandle<()>,
+    mut sink: W,
+) -> Result<()>
+where
+    S: Stream<Item = std::result::Result<OutputChunk, tonic::Status>> + Unpin,
+    W: FnMut(&[u8]) -> Result<()>,
+{
+    loop {
+        tokio::select! {
+            _ = &mut *input_task => return Ok(()),
+            msg = output.next() => match msg {
+                Some(Ok(chunk)) if chunk.dropped_chunks > 0 => {
+                    sink(dropped_notice(chunk.dropped_chunks).as_bytes())?;
+                }
+                Some(Ok(chunk)) => sink(&chunk.data)?,
+                None => return Ok(()), // stream ended cleanly
+                Some(Err(e)) => return Err(e).context("StreamOutput error"),
+            },
+        }
+    }
 }
 
 /// Text written in place of output the daemon dropped because this stream fell
@@ -321,10 +338,11 @@ fn format_unix_time(unix_secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::dropped_notice;
+    use super::{dropped_notice, pump_output, split_detach};
     use super::{LaunchArgs, ReportHarnessSessionArgs, SESSION_ENV_VAR};
     use clap::{CommandFactory, Parser};
     use nodespace_agent::agent_types::AgentType;
+    use nodespace_daemon::nodespace::OutputChunk;
 
     #[derive(Parser)]
     struct Launch {
@@ -400,5 +418,55 @@ mod tests {
             "\r\n\x1b[33m[output truncated: 1 chunk dropped]\x1b[0m\r\n"
         );
         assert!(dropped_notice(42).contains("[output truncated: 42 chunks dropped]"));
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_d_detach_and_are_not_forwarded() {
+        assert_eq!(split_detach(b"ab"), (b"ab".to_vec(), false));
+        assert_eq!(split_detach(&[b'a', 0x03, b'b']), (b"ab".to_vec(), true));
+        assert_eq!(split_detach(&[0x04]), (Vec::new(), true));
+    }
+
+    fn chunk(data: &[u8]) -> OutputChunk {
+        OutputChunk {
+            data: data.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// A live, idle session never ends its stream: the pump must still return
+    /// once the input side finishes (the user detached).
+    #[tokio::test]
+    async fn pump_returns_when_input_task_finishes_while_output_is_idle() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<OutputChunk, tonic::Status>>(4);
+        let mut stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        tx.send(Ok(chunk(b"hello"))).await.unwrap();
+        let mut input = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        });
+        let mut written = Vec::new();
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pump_output(&mut stream, &mut input, |d| {
+                written.extend_from_slice(d);
+                Ok(())
+            }),
+        )
+        .await
+        .expect("pump must not hang after detach");
+        assert!(res.is_ok());
+        assert_eq!(written, b"hello");
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn pump_returns_when_output_stream_ends() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<OutputChunk, tonic::Status>>(4);
+        let mut stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let mut input = tokio::spawn(std::future::pending::<()>());
+        drop(tx);
+        let res = pump_output(&mut stream, &mut input, |_| Ok(())).await;
+        assert!(res.is_ok());
+        input.abort();
     }
 }
