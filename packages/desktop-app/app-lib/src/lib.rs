@@ -723,7 +723,8 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     );
 
                     // First-launch: install NodeSpace skill into detected agents.
-                    // Idempotent — no-op once ~/.nodespace/setup.json marks skill_installed.
+                    // Idempotent — no-op once ~/.nodespace/setup.json marks skill_installed,
+                    // and skipped while it records that the user removed the skill.
                     {
                         use crate::skill_setup;
                         // WARN logging (once per new failure, DEBUG on repeats) happens
@@ -733,7 +734,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                         // manual-retry commands already return their result synchronously
                         // to an awaiting caller, so emitting there too would show the same
                         // failure twice).
-                        let result = skill_setup::install_skill(false, &app_handle).await;
+                        let result = skill_setup::install_skill_on_launch(&app_handle).await;
                         if result.success {
                             if !result.agents_installed.is_empty() {
                                 tracing::info!(

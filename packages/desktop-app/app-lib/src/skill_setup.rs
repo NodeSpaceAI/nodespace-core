@@ -96,6 +96,25 @@ pub struct SetupState {
     /// tell which harnesses actually have the skill without checking the
     /// filesystem by hand.
     pub agents_installed: Vec<String>,
+    /// Set when the user removed the skill from Settings and cleared by the
+    /// next install. The launch-time install checks it so an explicit
+    /// removal is not silently undone by the next app start.
+    pub skill_removed_by_user: bool,
+}
+
+impl SetupState {
+    /// State persisted after a successful user-initiated removal.
+    fn removed_by_user() -> Self {
+        Self {
+            skill_removed_by_user: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the launch-time install must stay out of the way.
+    fn suppresses_launch_install(&self) -> bool {
+        self.skill_removed_by_user
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -162,8 +181,9 @@ pub async fn read_setup_state() -> Result<SetupState> {
     serde_json::from_str(&raw).context("Failed to parse ~/.nodespace/setup.json")
 }
 
-pub async fn reset_skill_state() -> Result<()> {
-    write_setup_state(&SetupState::default()).await
+/// Record that the user removed the skill, so launch-time installs skip it.
+pub async fn record_skill_removed() -> Result<()> {
+    write_setup_state(&SetupState::removed_by_user()).await
 }
 
 async fn write_setup_state(state: &SetupState) -> Result<()> {
@@ -418,8 +438,9 @@ pub async fn detect_agents(app: &AppHandle) -> Option<Vec<String>> {
 /// Code) by delegating to `install.ts`'s own `uninstall` command — the same
 /// `AGENTS`-driven logic `install`/`status` already use, so this can never
 /// drift out of sync with which harnesses the installer actually supports.
-/// Resets `~/.nodespace/setup.json` on success so the next read reflects
-/// nothing being installed.
+/// Records the removal in `~/.nodespace/setup.json` on success so the next
+/// read reflects nothing being installed and launch-time installs skip it
+/// until the user installs again.
 pub async fn uninstall_skill(app: &AppHandle) -> Result<(), String> {
     let _guard = INSTALL_LOCK.lock().await;
 
@@ -431,13 +452,33 @@ pub async fn uninstall_skill(app: &AppHandle) -> Result<(), String> {
 
     match result {
         Ok(Ok(_outcome)) => {
-            reset_skill_state()
+            record_skill_removed()
                 .await
                 .map_err(|e: anyhow::Error| e.to_string())?;
             Ok(())
         }
         Ok(Err(e)) => Err(e),
         Err(join_err) => Err(format!("Uninstaller task panicked: {join_err}")),
+    }
+}
+
+/// Launch-time install: [`install_skill`] without force, except that it does
+/// nothing while the user's removal from Settings is still on record.
+pub async fn install_skill_on_launch(app: &AppHandle) -> SkillSetupResult {
+    match read_setup_state().await {
+        Ok(state) if state.suppresses_launch_install() => {
+            tracing::debug!("Skill was removed by the user; skipping launch-time install");
+            SkillSetupResult {
+                success: true,
+                agents_installed: vec![],
+                agents_skipped: vec![],
+                cli_on_path: true,
+                cli_warning: None,
+                error: None,
+                failure_is_new: false,
+            }
+        }
+        _ => install_skill(false, app).await,
     }
 }
 
@@ -504,6 +545,7 @@ pub async fn install_skill(force: bool, app: &AppHandle) -> SkillSetupResult {
                 skill_installed: true,
                 skill_install_failed: false,
                 agents_installed: outcome.marked.clone(),
+                skill_removed_by_user: false,
             };
             if let Err(e) = write_setup_state(&state).await {
                 tracing::warn!("Failed to persist setup state: {:#}", e);
@@ -538,6 +580,7 @@ async fn finish_failed(
         skill_installed: false,
         skill_install_failed: true,
         agents_installed: vec![],
+        skill_removed_by_user: false,
     };
     if let Err(e) = write_setup_state(&state).await {
         tracing::warn!("Failed to persist setup state: {:#}", e);
@@ -1071,6 +1114,23 @@ mod tests {
         }
 
         folder.into_os_string()
+    }
+
+    #[test]
+    fn removal_state_suppresses_launch_install() {
+        assert!(SetupState::removed_by_user().suppresses_launch_install());
+        assert!(!SetupState::default().suppresses_launch_install());
+    }
+
+    #[test]
+    fn removal_flag_survives_a_serde_round_trip_and_defaults_off() {
+        let json = serde_json::to_string(&SetupState::removed_by_user()).unwrap();
+        let back: SetupState = serde_json::from_str(&json).unwrap();
+        assert!(back.suppresses_launch_install());
+        assert!(!back.skill_installed);
+
+        let legacy: SetupState = serde_json::from_str(r#"{"skill_installed":true}"#).unwrap();
+        assert!(!legacy.suppresses_launch_install());
     }
 
     /// The CLI-missing warning must point at the actual current install
