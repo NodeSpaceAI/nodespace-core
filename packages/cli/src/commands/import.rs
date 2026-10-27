@@ -324,17 +324,10 @@ async fn run_multi_dir(
     filters: WalkFilters,
     json: bool,
 ) -> Result<()> {
-    // Phase 1: scan every directory before issuing any RPC. The daemon
-    // derives each document's deterministic id from its path *relative to
-    // that call's own base_directory*, qualified by the target collection
-    // (one independent RPC per directory here, all sharing this invocation's
-    // collection options, and an auto-routed collection is itself a function
-    // of that relative path), so two different directories that each contain a same-named
-    // file (e.g. both have a top-level README.md) would otherwise collide on
-    // identity: the second either gets silently skipped as "already
-    // imported" or, with --replace, silently overwrites the first's content.
-    // Scanning everything up front lets that collision be caught and
-    // reported before anything is written, rather than after.
+    // Phase 1: scan every directory before issuing any RPC, so an unreadable
+    // directory is reported alongside the others. The daemon keys each
+    // document by its source directory as well as its relative path, so
+    // same-named files in different directories import as separate documents.
     let mut scanned: Vec<(String, Vec<String>)> = Vec::new();
     let mut all_results: Vec<FileImportResult> = Vec::new();
 
@@ -352,16 +345,6 @@ async fn run_multi_dir(
                 ));
             }
         }
-    }
-
-    if let Some(collisions) = find_cross_directory_collisions(&scanned) {
-        return Err(anyhow::anyhow!(
-            "Refusing to import: {} file(s) share the same identity across directories \
-             (same path relative to their own directory's root) — importing would silently \
-             skip or overwrite one with the other:\n{}",
-            collisions.len(),
-            collisions.join("\n")
-        ));
     }
 
     // Phase 2: one ImportMarkdownFiles RPC per directory that scanned
@@ -441,50 +424,6 @@ async fn run_multi_dir(
     }
 
     Ok(())
-}
-
-/// A file's import identity key as the daemon computes it: its path relative
-/// to the `base_directory` that will accompany it on the wire (mirrors
-/// `import_key` in `packages/daemon/src/services/import_service.rs`).
-fn relative_identity_key(file_path: &str, base_directory: &str) -> String {
-    std::path::Path::new(file_path)
-        .strip_prefix(base_directory)
-        .unwrap_or_else(|_| std::path::Path::new(file_path))
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Cross-directory identity collisions among files that already scanned
-/// successfully: two different directories each holding a file whose path
-/// *relative to its own directory* is identical (e.g. both have a top-level
-/// `README.md`), which would compute the same deterministic root id server
-/// side. Returns `None` when there are none.
-fn find_cross_directory_collisions(scanned: &[(String, Vec<String>)]) -> Option<Vec<String>> {
-    let mut seen: std::collections::HashMap<String, (&str, &str)> =
-        std::collections::HashMap::new();
-    let mut collisions = Vec::new();
-
-    for (directory, file_paths) in scanned {
-        for file_path in file_paths {
-            let key = relative_identity_key(file_path, directory);
-            match seen.get(&key) {
-                Some((prev_dir, prev_file)) => {
-                    collisions.push(format!(
-                        "  \"{key}\": {prev_file} (under {prev_dir}) and {file_path} (under {directory})"
-                    ));
-                }
-                None => {
-                    seen.insert(key, (directory.as_str(), file_path.as_str()));
-                }
-            }
-        }
-    }
-
-    if collisions.is_empty() {
-        None
-    } else {
-        Some(collisions)
-    }
 }
 
 /// Stream one `ImportMarkdownFiles` call to completion, printing per-step
