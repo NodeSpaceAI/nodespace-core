@@ -7,7 +7,6 @@ import {
   SimplePersistenceCoordinator
 } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
-import { getClientId } from '$lib/services/client-id';
 import { onRelationshipChanged } from '$lib/services/relationship-changes';
 import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types';
@@ -705,32 +704,9 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
   describe('ClientId Filtering', () => {
     /**
-     * SSE ClientId Filtering Architecture
-     *
-     * The clientId filtering is implemented SERVER-SIDE in dev-proxy.rs:
-     * 1. Browser connects to SSE endpoint with ?clientId=xxx query param
-     * 2. Server stores clientId per SSE connection
-     * 3. When backend emits events, server checks event.clientId vs connection.clientId
-     * 4. Events from same clientId are NOT sent to that client (prevents echo)
-     *
-     * This means:
-     * - BrowserSyncService is responsible for SENDING clientId on connect
-     * - Server is responsible for FILTERING events
-     * - Client-side tests verify correct clientId handling in received events
+     * Echo suppression is handled server-side by the dev proxy; the browser sync
+     * service does not send a client id. These tests verify handling of received events.
      */
-
-    it('should pass clientId to SSE endpoint via getClientId()', () => {
-      // Verify that getClientId returns a value (imported at top of file)
-      // The actual filtering happens server-side, but the client must provide the clientId
-      const clientId = getClientId();
-
-      // Should return a valid UUID (from sessionStorage or newly generated)
-      // When window.sessionStorage is available (happy-dom), returns UUID
-      // When window is undefined (SSR), returns 'test-client'
-      expect(clientId).toBeTruthy();
-      expect(typeof clientId).toBe('string');
-      expect(clientId.length).toBeGreaterThan(0);
-    });
 
     it('should process events with different clientId (from other clients)', async () => {
       // When an event arrives with a different clientId (or no clientId),

@@ -1,30 +1,8 @@
 /**
- * Simple Markdown Utilities
+ * Markdown Utilities
  *
- * Provides basic markdown parsing for TextNode components.
- * Supports headers, bold, italic, and basic formatting.
- * Lightweight implementation focused on essential features.
+ * Header-level detection and plain-text extraction for markdown content.
  */
-
-import { isSafeLinkHref } from '$lib/utils/safe-link';
-
-export interface MarkdownOptions {
-  allowHeadings: boolean;
-  allowBold: boolean;
-  allowItalic: boolean;
-  allowLinks: boolean;
-  allowCode: boolean;
-  allowLineBreaks: boolean;
-}
-
-const defaultOptions: MarkdownOptions = {
-  allowHeadings: true,
-  allowBold: true,
-  allowItalic: true,
-  allowLinks: true,
-  allowCode: true,
-  allowLineBreaks: true
-};
 
 /**
  * Header level (1-6) of a line starting with `#` syntax, or 0 when it isn't a header.
@@ -33,127 +11,6 @@ const defaultOptions: MarkdownOptions = {
 export function parseHeaderLevel(content: string): number {
   const match = content.match(/^(#{1,6})\s/);
   return match ? match[1].length : 0;
-}
-
-/**
- * Convert markdown text to HTML
- */
-export function parseMarkdown(markdown: string, options: Partial<MarkdownOptions> = {}): string {
-  if (!markdown) return '';
-
-  const opts = { ...defaultOptions, ...options };
-  let html = markdown;
-
-  // Escape HTML entities first
-  html = escapeHtml(html);
-
-  // Process block elements first (headers, paragraphs)
-  if (opts.allowHeadings) {
-    html = processHeadings(html);
-  }
-
-  // Process inline elements
-  if (opts.allowBold) {
-    html = processBold(html);
-  }
-
-  if (opts.allowItalic) {
-    html = processItalic(html);
-  }
-
-  if (opts.allowCode) {
-    html = processInlineCode(html);
-  }
-
-  if (opts.allowLinks) {
-    html = processLinks(html);
-  }
-
-  // Process line breaks last
-  if (opts.allowLineBreaks) {
-    html = processLineBreaks(html);
-  }
-
-  return html.trim();
-}
-
-/**
- * Escape HTML entities to prevent XSS
- */
-function escapeHtml(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-/**
- * Process markdown headings (# ## ###)
- */
-function processHeadings(html: string): string {
-  return html.replace(/^(#{1,6})\s+(.+)$/gm, (match, hashes, content) => {
-    const level = hashes.length;
-    return `<h${level} class="ns-markdown-heading ns-markdown-h${level}">${content.trim()}</h${level}>`;
-  });
-}
-
-/**
- * Process bold text (**text** or __text__)
- */
-function processBold(html: string): string {
-  return html
-    .replace(/\*\*(.*?)\*\*/g, '<strong class="ns-markdown-bold">$1</strong>')
-    .replace(/__(.*?)__/g, '<strong class="ns-markdown-bold">$1</strong>');
-}
-
-/**
- * Process italic text (*text* or _text_)
- */
-function processItalic(html: string): string {
-  return html
-    .replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, '<em class="ns-markdown-italic">$1</em>')
-    .replace(/(?<!_)_(?!_)([^_]+)_(?!_)/g, '<em class="ns-markdown-italic">$1</em>');
-}
-
-/**
- * Process inline code (`code`)
- */
-function processInlineCode(html: string): string {
-  return html.replace(/`([^`]+)`/g, '<code class="ns-markdown-code">$1</code>');
-}
-
-/**
- * Process simple links [text](url)
- */
-function processLinks(html: string): string {
-  return html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) =>
-    isSafeLinkHref(url)
-      ? `<a href="${url.replace(/"/g, '&quot;')}" class="ns-markdown-link" target="_blank" rel="noopener noreferrer">${text}</a>`
-      : text
-  );
-}
-
-/**
- * Process line breaks (convert double newlines to paragraphs, single to <br>)
- */
-function processLineBreaks(html: string): string {
-  // Split by double newlines for paragraphs
-  const paragraphs = html.split(/\n\s*\n/);
-
-  return paragraphs
-    .map((p) => {
-      if (!p.trim()) return '';
-
-      // Check if this is already wrapped in a block element
-      if (p.trim().startsWith('<h') || p.trim().startsWith('<p')) {
-        return p.replace(/\n/g, '<br>');
-      }
-
-      // Wrap in paragraph and convert single newlines to <br>
-      const content = p.replace(/\n/g, '<br>');
-      return `<p class="ns-markdown-paragraph">${content}</p>`;
-    })
-    .filter((p) => p.length > 0)
-    .join('');
 }
 
 /**
@@ -180,27 +37,4 @@ export function stripMarkdown(markdown: string): string {
       .replace(/\s+/g, ' ')
       .trim()
   );
-}
-
-/**
- * Get word count from markdown text
- */
-export function getWordCount(markdown: string): number {
-  const plainText = stripMarkdown(markdown);
-  if (!plainText) return 0;
-
-  return plainText.split(/\s+/).filter((word) => word.length > 0).length;
-}
-
-/**
- * Preview markdown without full parsing (for performance)
- */
-export function previewMarkdown(markdown: string, maxLength: number = 150): string {
-  const plainText = stripMarkdown(markdown);
-
-  if (plainText.length <= maxLength) {
-    return plainText;
-  }
-
-  return plainText.substring(0, maxLength).trim() + '...';
 }

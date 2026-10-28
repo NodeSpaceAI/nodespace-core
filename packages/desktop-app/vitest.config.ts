@@ -229,10 +229,7 @@ export default defineConfig({
         'src/lib/contexts/**', // Svelte context providers - tightly coupled to components
         'src/lib/constants/**', // Constants and event definitions - no logic to test
         'src/routes/**', // SvelteKit routes - integration test territory
-        'src/lib/services/developer-inspector.ts', // Dev-only debugging tool
-        'src/lib/services/performance-tracker.ts', // Dev-only performance monitoring
         'src/lib/services/app-initialization.ts', // Bootstrap code with Tauri dependencies
-        'src/lib/services/index.ts', // Re-export barrel file
         'src/lib/utils.ts', // SvelteKit generated utils
         'src/lib/plugins/extension-outlet.svelte', // Svelte component - tested via browser-mode tests
         'src/lib/utils/is-vitest.ts', // Env-detection flag - false branch unreachable from inside a Vitest run

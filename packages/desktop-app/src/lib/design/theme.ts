@@ -109,26 +109,3 @@ export function toggleTheme() {
 export function resetThemeToSystem() {
   setTheme('system');
 }
-
-// Utility functions for components
-export function getThemeIcon(theme: Theme, currentResolvedTheme: 'light' | 'dark'): string {
-  switch (theme) {
-    case 'light':
-      return '☀️';
-    case 'dark':
-      return '🌙';
-    case 'system':
-      return currentResolvedTheme === 'dark' ? '🌙' : '☀️';
-  }
-}
-
-export function getThemeLabel(theme: Theme): string {
-  switch (theme) {
-    case 'light':
-      return 'Light';
-    case 'dark':
-      return 'Dark';
-    case 'system':
-      return 'System';
-  }
-}

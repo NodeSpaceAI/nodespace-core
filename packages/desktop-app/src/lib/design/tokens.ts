@@ -13,9 +13,6 @@
 // Theme types for runtime theme switching
 export type Theme = 'light' | 'dark' | 'system';
 
-// Processing state opacity for animations
-export const processingOpacity = 0.7;
-
 // Theme switching utility functions
 export function getResolvedTheme(theme: Theme, systemTheme?: 'light' | 'dark'): 'light' | 'dark' {
   if (theme === 'system') {
