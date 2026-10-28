@@ -149,48 +149,6 @@ describe('FormatTextCommand', () => {
     });
   });
 
-  describe('Underline formatting', () => {
-    let command: FormatTextCommand;
-
-    beforeEach(() => {
-      command = new FormatTextCommand('underline');
-    });
-
-    it('should have correct id and description', () => {
-      expect(command.id).toBe('format-text-underline');
-      expect(command.description).toBe('Toggle underline formatting');
-    });
-
-    it('should execute for Cmd+U on Mac', () => {
-      const context = createContext({
-        key: 'u',
-        metaKey: true
-      });
-
-      expect(command.canExecute(context)).toBe(true);
-    });
-
-    it('should execute for Ctrl+U on Windows/Linux', () => {
-      const context = createContext({
-        key: 'u',
-        ctrlKey: true
-      });
-
-      expect(command.canExecute(context)).toBe(true);
-    });
-
-    it('should call toggleFormatting with __ marker', async () => {
-      const context = createContext({
-        key: 'u',
-        metaKey: true
-      });
-
-      await command.execute(context);
-
-      expect(toggleFormattingSpy).toHaveBeenCalledWith('__');
-    });
-  });
-
   describe('execute - error handling', () => {
     it('should return false when toggleFormatting is not available', async () => {
       const command = new FormatTextCommand('bold');

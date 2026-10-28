@@ -54,7 +54,7 @@ const KEYBOARD_COMMANDS = {
   createNode: new CreateNodeCommand(),
   indent: new IndentNodeCommand(),
   outdent: new OutdentNodeCommand(),
-  mergeUp: new MergeNodesCommand('up'),
+  mergeUp: new MergeNodesCommand(),
   navigateUp: new NavigateUpCommand(),
   navigateDown: new NavigateDownCommand(),
   formatBold: new FormatTextCommand('bold'),
