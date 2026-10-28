@@ -1088,6 +1088,21 @@ function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
  * Throws `EnvironmentError` if the daemon dies mid-rep; the caller decides
  * whether that voids the whole run (it does — see `runEval`).
  */
+/**
+ * The id of the group's first failed setup turn, or the current one when none
+ * failed here. A setup turn that was excluded (empty generation, tool never
+ * offered) established nothing, so it counts as failed exactly like one whose
+ * assertion failed: the scenarios after it depend on state that never existed.
+ */
+export function withSetupFailure(
+  current: string | null,
+  scenario: { id: string; setup?: boolean },
+  established: boolean,
+): string | null {
+  if (scenario.setup === true && !established) return current ?? scenario.id;
+  return current;
+}
+
 function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
   const results: ScenarioResult[] = [];
 
@@ -1323,6 +1338,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
           extra: fixture.extra?.(scenario, [scored]),
           excludedAsEmptyGeneration: true,
         });
+        setupFailed = withSetupFailure(setupFailed, scenario, false);
         console.error(
           `[${fixture.name}]   ⊘ excluded (empty generation) ${scored.latencyMs}ms`,
         );
@@ -1359,6 +1375,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
           extra: fixture.extra?.(scenario, [scored]),
           excludedAsToolNotOffered: true,
         });
+        setupFailed = withSetupFailure(setupFailed, scenario, false);
         console.error(
           `[${fixture.name}]   ⊗ excluded (tool not offered: ${missingTools.join(", ")}) ${scored.latencyMs}ms`,
         );
@@ -1408,7 +1425,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
           `[${fixture.name}]     ⚠ setup did not establish its state — ` +
             `later scenarios in this group are excluded, not scored`,
         );
-        setupFailed ??= scenario.id;
+        setupFailed = withSetupFailure(setupFailed, scenario, false);
       }
     }
   }

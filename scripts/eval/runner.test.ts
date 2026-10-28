@@ -31,6 +31,7 @@ import {
   readBaselineReliability,
   selectScenarios,
   UnknownScenarioError,
+  withSetupFailure,
 } from "./runner.ts";
 import { assertExpectation } from "./fixtures/agent-matrix.ts";
 import { EnvironmentError } from "./preflight.ts";
@@ -128,6 +129,21 @@ describe("partitionExcluded", () => {
     expect(scored.map((r) => r.id)).toEqual(["11c"]);
     expect(excludedCount).toBe(1);
     expect(setupCount).toBe(0);
+  });
+});
+
+describe("withSetupFailure", () => {
+  test("an excluded or failed setup turn marks the group's setup as failed", () => {
+    expect(withSetupFailure(null, { id: "11a", setup: true }, false)).toBe("11a");
+  });
+
+  test("keeps the first failed setup turn", () => {
+    expect(withSetupFailure("11a", { id: "11b", setup: true }, false)).toBe("11a");
+  });
+
+  test("a scored scenario or an established setup turn never marks the setup failed", () => {
+    expect(withSetupFailure(null, { id: "11c" }, false)).toBeNull();
+    expect(withSetupFailure(null, { id: "11a", setup: true }, true)).toBeNull();
   });
 });
 
