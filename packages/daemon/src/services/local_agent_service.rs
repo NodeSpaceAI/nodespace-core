@@ -1656,21 +1656,10 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             .ok_or_else(|| Status::unavailable(MODEL_MANAGER_UNAVAILABLE))?
             .clone();
 
-        let tx_gguf = tx.clone();
-        let mid_gguf = model_id.clone();
         manager
             .set_progress_callback(
                 &model_id,
-                Box::new(move |evt| {
-                    let event = ModelLoadProgressEvent {
-                        event_type: "downloading".to_string(),
-                        model_id: mid_gguf.clone(),
-                        bytes_downloaded: Some(evt.bytes_downloaded as i64),
-                        bytes_total: Some(evt.bytes_total as i64),
-                        ..Default::default()
-                    };
-                    let _ = tx_gguf.try_send(Ok(event));
-                }),
+                download_progress_forwarder(&model_id, tx.clone()),
             )
             .await;
 
@@ -1925,12 +1914,11 @@ impl LocalAgentServiceImpl {
 
     /// Load a model, both collecting every emitted event (for callers that
     /// want the full sequence, e.g. tests) and — when `live_tx` is provided —
-    /// sending each event on it as soon as it happens. Phases like model
-    /// download already report progress live via their own callback
-    /// (`download`'s `set_progress_callback`); `live_tx` is what lets a
-    /// caller *also* see the "verifying" / "loading" / "ready" phase
-    /// transitions in real time instead of only after the whole load
-    /// finishes, which is what made "preparing model" read as a hang when
+    /// sending each event on it as soon as it happens. With `live_tx`, a model
+    /// download also forwards its byte progress on it (via `download`'s
+    /// `set_progress_callback`), and the caller sees the "verifying" /
+    /// "loading" / "ready" phase transitions in real time instead of only
+    /// after the whole load finishes, which is what made "preparing model" read as a hang when
     /// integrity verification took minutes (see `EnsureModelReady`'s use
     /// below).
     async fn load_model_and_collect_events(
@@ -2193,7 +2181,22 @@ impl LocalAgentServiceImpl {
                     ..Default::default()
                 });
 
-                if let Err(e) = manager.download(model_id).await {
+                // Byte progress reaches the caller only through a callback
+                // registered for this model id. The callback holds a sender
+                // clone, so it is cleared again once the download returns.
+                if let Some(tx) = live_tx {
+                    manager
+                        .set_progress_callback(
+                            model_id,
+                            download_progress_forwarder(model_id, tx.clone()),
+                        )
+                        .await;
+                }
+                let downloaded = manager.download(model_id).await;
+                if live_tx.is_some() {
+                    manager.clear_progress_callback(model_id).await;
+                }
+                if let Err(e) = downloaded {
                     emit!(ModelLoadProgressEvent {
                         event_type: "error".to_string(),
                         model_id: model_id.to_string(),
@@ -3423,6 +3426,26 @@ async fn build_workspace_context(
         _ => Vec::new(),
     };
     Ok((context.format_for_prompt(4000), mentioned_entities))
+}
+
+/// A download-progress callback that forwards each byte count as a
+/// `downloading` event on `tx`. Uses `try_send` so a slow consumer never
+/// stalls the download.
+fn download_progress_forwarder(
+    model_id: &str,
+    tx: tokio::sync::mpsc::Sender<Result<ModelLoadProgressEvent, Status>>,
+) -> Box<dyn Fn(nodespace_agent::agent_types::DownloadEvent) + Send + Sync> {
+    let model_id = model_id.to_string();
+    Box::new(move |evt| {
+        let event = ModelLoadProgressEvent {
+            event_type: "downloading".to_string(),
+            model_id: model_id.clone(),
+            bytes_downloaded: Some(evt.bytes_downloaded as i64),
+            bytes_total: Some(evt.bytes_total as i64),
+            ..Default::default()
+        };
+        let _ = tx.try_send(Ok(event));
+    })
 }
 
 #[cfg(test)]
@@ -6744,6 +6767,23 @@ mod tests {
             .collect();
         assert_eq!(assistants.len(), 2);
         assert!(assistants.iter().all(|m| m.reasoning.is_none()));
+    }
+
+    #[tokio::test]
+    async fn download_progress_forwarder_emits_byte_counts_as_downloading_events() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let forward = download_progress_forwarder("m1", tx);
+        forward(nodespace_agent::agent_types::DownloadEvent {
+            model_id: "m1".to_string(),
+            bytes_downloaded: 10,
+            bytes_total: 40,
+            speed_bps: 0,
+        });
+        let event = rx.recv().await.expect("event").expect("ok");
+        assert_eq!(event.event_type, "downloading");
+        assert_eq!(event.model_id, "m1");
+        assert_eq!(event.bytes_downloaded, Some(10));
+        assert_eq!(event.bytes_total, Some(40));
     }
 
     #[tokio::test]
