@@ -334,6 +334,11 @@ pub struct DatabaseManager {
     /// the registry, so this tracks only currently-registered ids — it does
     /// not grow across register/remove churn.
     opening: StdMutex<HashMap<DatabaseId, Arc<AsyncMutex<()>>>>,
+    /// Serializes [`Self::create`]. A create checks that its path is free,
+    /// builds the database file, and only then inserts the registry entry, so
+    /// without this two creates of one path could both pass the check, and the
+    /// loser's rollback would delete the winner's file.
+    create_lock: AsyncMutex<()>,
     /// Process-global build context (PTY manager + embedding model) every
     /// per-database service set is assembled from.
     context: SharedContext,
@@ -412,6 +417,7 @@ impl DatabaseManager {
             open: RwLock::new(HashMap::new()),
             last_activity: RwLock::new(HashMap::new()),
             opening: StdMutex::new(HashMap::new()),
+            create_lock: AsyncMutex::new(()),
             context,
             change_tx: watch::channel(0).0,
             #[cfg(test)]
@@ -546,6 +552,7 @@ impl DatabaseManager {
     /// back — the handle is closed and the just-created file removed — leaving
     /// the daemon exactly as it was before the call.
     pub async fn create(&self, name: String, path: Option<PathBuf>) -> Result<DatabaseEntry> {
+        let _creating = self.create_lock.lock().await;
         let id = DatabaseId::generate();
         let path = match path {
             Some(path) => path,
@@ -560,6 +567,20 @@ impl DatabaseManager {
                 "a file already exists at {}; use register to add an existing database",
                 path.display()
             ));
+        }
+
+        // An entry whose file is missing still owns its path: a second entry
+        // there would become two independent databases on one file once the
+        // first file reappears.
+        let wanted = file_identity(&path).await;
+        for entry in &self.registry.read().await.databases {
+            if file_identity(&entry.path).await == wanted {
+                return Err(anyhow!(
+                    "{} is already registered as database '{}'",
+                    path.display(),
+                    entry.name
+                ));
+            }
         }
 
         // Create and open the database (file, schema, service set) first.
@@ -950,8 +971,19 @@ impl DatabaseManager {
     /// failure here is not a rare edge path.
     async fn set_standard_default(&self, standard_path: &Path) -> Result<DatabaseId> {
         let registry = self.registry.write().await;
-        let id = DatabaseId::generate();
         let standard_path = standard_path.to_path_buf();
+        // An entry that already names the standard file becomes the default
+        // instead of gaining a twin: two entries on one file are two
+        // independent open databases.
+        let standard_identity = file_identity(&standard_path).await;
+        let mut existing = None;
+        for entry in &registry.databases {
+            if file_identity(&entry.path).await == standard_identity {
+                existing = Some(entry.id.clone());
+                break;
+            }
+        }
+        let id = existing.clone().unwrap_or_else(DatabaseId::generate);
         self.mutate_and_save(registry, {
             let id = id.clone();
             move |registry| {
@@ -959,18 +991,22 @@ impl DatabaseManager {
                 // `id`s are unique (see `DatabaseId`'s docs), so at most one
                 // entry matches the previous default.
                 if let Some(prev) = next.default_database.take() {
-                    if let Some(index) = next.databases.iter().position(|e| e.id == prev) {
-                        next.databases.remove(index);
+                    if prev != id {
+                        if let Some(index) = next.databases.iter().position(|e| e.id == prev) {
+                            next.databases.remove(index);
+                        }
                     }
                 }
-                next.databases.push(DatabaseEntry {
-                    id: id.clone(),
-                    name: "Default".to_string(),
-                    path: standard_path.clone(),
-                    created_at: Utc::now(),
-                    last_opened_at: None,
-                    extensions: BTreeMap::new(),
-                });
+                if existing.is_none() {
+                    next.databases.push(DatabaseEntry {
+                        id: id.clone(),
+                        name: "Default".to_string(),
+                        path: standard_path.clone(),
+                        created_at: Utc::now(),
+                        last_opened_at: None,
+                        extensions: BTreeMap::new(),
+                    });
+                }
                 next.default_database = Some(id.clone());
                 next
             }
@@ -1292,6 +1328,23 @@ impl DatabaseManager {
     }
 }
 
+/// A key that two registry paths share exactly when they name the same
+/// database file. An existing file resolves through symlinks; a missing one
+/// resolves its parent folder and keeps the file name, so a registered entry
+/// whose file is gone still matches a path that would recreate it.
+async fn file_identity(path: &Path) -> PathBuf {
+    if let Ok(canonical) = tokio::fs::canonicalize(path).await {
+        return canonical;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => match tokio::fs::canonicalize(parent).await {
+            Ok(parent) => parent.join(name),
+            Err(_) => path.to_path_buf(),
+        },
+        _ => path.to_path_buf(),
+    }
+}
+
 /// Best-effort removal of a database file and its SQLite sidecars (`-wal`,
 /// `-shm`) while rolling back a failed create. Failures are logged rather than
 /// returned — the caller is already unwinding a more meaningful error.
@@ -1480,6 +1533,69 @@ mod tests {
         assert_eq!(snap.databases.len(), 1);
         assert_eq!(snap.default_database.as_ref(), Some(&new_id));
         assert_eq!(mgr.default_database_path().await.as_ref(), Some(&standard));
+    }
+
+    #[tokio::test]
+    async fn set_standard_default_reuses_an_entry_already_at_the_standard_path() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let standard = dir.path().join("database").join("nodespace.db");
+        let existing = mgr
+            .ensure_default_registered("Default".into(), standard.clone())
+            .await
+            .unwrap();
+        let doomed = std::env::temp_dir()
+            .join("doomed-scratch")
+            .join("scratch.db");
+        let doomed_id = mgr
+            .insert_entry(DatabaseId::generate(), "scratch".into(), doomed)
+            .await
+            .unwrap()
+            .id;
+        mgr.set_default(&doomed_id).await.unwrap();
+
+        let id = mgr.set_standard_default(&standard).await.unwrap();
+
+        let snap = mgr.list().await;
+        let at_standard = snap
+            .databases
+            .iter()
+            .filter(|d| d.entry.path == standard)
+            .count();
+        assert_eq!(at_standard, 1, "one file must have exactly one entry");
+        assert_eq!(id, existing);
+        assert_eq!(snap.default_database.as_ref(), Some(&existing));
+        assert!(snap.databases.iter().all(|d| d.entry.id != doomed_id));
+    }
+
+    #[tokio::test]
+    async fn create_refuses_the_path_of_a_registered_entry_whose_file_is_missing() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let path = dir.path().join("gone.db");
+        mgr.insert_entry(DatabaseId::generate(), "Gone".into(), path.clone())
+            .await
+            .unwrap();
+        assert!(!path.exists());
+
+        let err = mgr.create("Again".into(), Some(path.clone())).await;
+
+        assert!(err.is_err(), "second entry for one file must be refused");
+        assert_eq!(mgr.list().await.databases.len(), 1);
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_creates_of_one_path_yield_one_entry() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let path = dir.path().join("race.db");
+
+        let (a, b) = tokio::join!(
+            mgr.create("A".into(), Some(path.clone())),
+            mgr.create("B".into(), Some(path.clone()))
+        );
+
+        assert_eq!(a.is_ok() as u8 + b.is_ok() as u8, 1);
+        assert_eq!(mgr.list().await.databases.len(), 1);
+        assert!(path.exists(), "the winner's file must survive the loser");
     }
 
     #[tokio::test]
