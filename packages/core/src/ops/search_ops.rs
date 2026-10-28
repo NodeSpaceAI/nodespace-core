@@ -689,33 +689,13 @@ pub async fn search_semantic(
         };
 
     // Resolve excluded collections
-    let excluded_node_ids: HashSet<String> = if let Some(exclude_paths) = &input.exclude_collections
-    {
-        let collection_service = CollectionService::new(embedding_service.store(), node_service);
-        let mut excluded = HashSet::new();
-        for path in exclude_paths {
-            match collection_service.resolve_path(path).await {
-                Ok(resolved) => {
-                    let coll_id = resolved.leaf_id().to_string();
-                    // Everything in an excluded collection is excluded, archived or not.
-                    if let Ok(members) = collection_service
-                        .get_collection_members(&coll_id, true)
-                        .await
-                    {
-                        excluded.extend(members.into_iter().map(|n| n.id));
-                    }
-                }
-                Err(NodeServiceError::CollectionNotFound(_)) => {
-                    tracing::debug!("Excluded collection '{}' not found, skipping", path);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to resolve excluded collection '{}': {}", path, e);
-                }
-            }
+    let excluded_node_ids: HashSet<String> = match &input.exclude_collections {
+        Some(exclude_paths) => {
+            let collection_service =
+                CollectionService::new(embedding_service.store(), node_service);
+            excluded_member_ids(&collection_service, exclude_paths).await?
         }
-        excluded
-    } else {
-        HashSet::new()
+        None => HashSet::new(),
     };
 
     tracing::info!(
@@ -1049,9 +1029,83 @@ pub async fn search_semantic(
     })
 }
 
+/// Ids of every node (archived or not) in the named collections. A collection
+/// that does not exist excludes nothing; any other failure is returned, because
+/// swallowing it would silently stop the exclusion from applying.
+async fn excluded_member_ids(
+    collection_service: &CollectionService<'_>,
+    exclude_paths: &[String],
+) -> Result<HashSet<String>, OpsError> {
+    let mut excluded = HashSet::new();
+    for path in exclude_paths {
+        match collection_service.resolve_path(path).await {
+            Ok(resolved) => {
+                let coll_id = resolved.leaf_id().to_string();
+                let members = collection_service
+                    .get_collection_members(&coll_id, true)
+                    .await
+                    .map_err(|e| {
+                        OpsError::Internal(format!(
+                            "Failed to get members of excluded collection '{}': {}",
+                            path, e
+                        ))
+                    })?;
+                excluded.extend(members.into_iter().map(|n| n.id));
+            }
+            Err(NodeServiceError::CollectionNotFound(_)) => {
+                tracing::debug!("Excluded collection '{}' not found, skipping", path);
+            }
+            Err(e) => {
+                return Err(OpsError::Internal(format!(
+                    "Failed to resolve excluded collection '{}': {}",
+                    path, e
+                )));
+            }
+        }
+    }
+    Ok(excluded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::SqliteStore;
+    use crate::services::NodeService;
+
+    async fn exclusion_fixture() -> (Arc<NodeService>, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("t.db")).await.unwrap());
+        let svc = Arc::new(NodeService::new(&mut store).await.unwrap());
+        (svc, tmp)
+    }
+
+    #[tokio::test]
+    async fn excluded_members_are_collected_and_unknown_collections_skipped() {
+        let (svc, _tmp) = exclusion_fixture().await;
+        let cs = CollectionService::new(svc.store(), &svc);
+        let paths = vec!["Private".to_string()];
+        let ids = excluded_member_ids(&cs, &paths).await.unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failure_reading_excluded_members_is_returned_not_swallowed() {
+        let (svc, _tmp) = exclusion_fixture().await;
+        let cs = CollectionService::new(svc.store(), &svc);
+        let paths = vec!["Private".to_string()];
+        excluded_member_ids(&cs, &paths).await.unwrap();
+        svc.store()
+            .write()
+            .await
+            .execute("DROP TABLE relationship", ())
+            .await
+            .unwrap();
+        let err = excluded_member_ids(&cs, &paths).await.unwrap_err();
+        assert!(
+            matches!(&err, OpsError::Internal(m) if m.contains("excluded collection 'Private'")),
+            "{err:?}"
+        );
+    }
 
     #[test]
     fn semantic_search_error_classifies_by_variant_not_message_text() {
