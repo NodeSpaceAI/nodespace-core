@@ -116,12 +116,17 @@ impl NodeService {
                     .await
                     .map_err(NodeServiceError::from_store)?
                     .ok_or_else(|| NodeServiceError::node_not_found(&update.node_id))?;
-                let fields = node
-                    .properties
-                    .get(node.node_type.as_str())
-                    .filter(|bucket| bucket.is_object())
-                    .unwrap_or(&node.properties);
-                config_text(&node.content, fields)
+                // The node's own scope is its whole `extends` chain: an
+                // inherited field is stored in the bucket of the type that
+                // declares it (ADR-078), and the shipped side lists every
+                // field the template sets.
+                let chain = self.resolve_type_chain(&node.node_type).await?;
+                let scope: Vec<&str> = chain.iter().map(String::as_str).collect();
+                let fields = nodespace_types::flatten_namespaced_properties_at_scope(
+                    &node.properties,
+                    &scope,
+                );
+                config_text(&node.content, &fields)
             }
             SeedAspect::Guidance => {
                 let (_, node_map, adjacency_list) = self.get_subtree_data(&update.node_id).await?;
