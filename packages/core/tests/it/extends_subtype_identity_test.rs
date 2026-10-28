@@ -1123,6 +1123,103 @@ async fn a_base_scoped_filter_compares_a_subtypes_non_enum_value_as_stored() {
     }
 }
 
+/// A property filter with no type reads each row in its own type's chain:
+/// a bug keeps the `status` it inherits from ticket in the ticket bucket, and
+/// the filter finds it there as it finds a ticket's.
+#[tokio::test]
+async fn an_untyped_property_filter_reads_an_inherited_field_in_the_ancestor_bucket() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let ticket = create_instance(&svc, "ticket", json!({ "status": "open" })).await;
+    let bug = create_instance(&svc, "bug", json!({ "status": "open" })).await;
+    create_instance(&svc, "bug", json!({ "status": "closed" })).await;
+
+    let filter = nodespace_core::models::NodeFilter {
+        property_filters: Some(vec![nodespace_core::models::PropertyFilter::new(
+            "$.status".to_string(),
+            nodespace_core::models::FilterOperator::Equals,
+            json!("open"),
+        )
+        .expect("filter construction failed")]),
+        ..Default::default()
+    };
+    let mut ids: Vec<String> = svc
+        .query_nodes(filter)
+        .await
+        .expect("query failed")
+        .into_iter()
+        .map(|node| node.id)
+        .collect();
+    ids.sort();
+    let mut expected = vec![ticket, bug];
+    expected.sort();
+    assert_eq!(ids, expected);
+}
+
+/// A bucket left behind by a type change is not the node's value: a node
+/// changed from epic to ticket keeps its old epic `status`, and a
+/// ticket-scoped filter must not read it as the ticket's status, which is
+/// unset.
+#[tokio::test]
+async fn a_typed_property_filter_does_not_read_a_bucket_left_by_a_type_change() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Epic",
+            "fields": [
+                { "name": "status", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("epic schema creation failed");
+    let id = create_instance(&svc, "epic", json!({ "status": "open" })).await;
+    svc.update_node_unchecked(
+        &id,
+        nodespace_core::models::NodeUpdate {
+            node_type: Some("ticket".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("type change failed");
+    let retyped = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+    assert_eq!(retyped.node_type, "ticket");
+    assert_eq!(
+        retyped.properties["epic"]["status"], "open",
+        "the old bucket stays behind: {:?}",
+        retyped.properties
+    );
+    assert!(
+        retyped.properties["ticket"].get("status").is_none(),
+        "the ticket has no status of its own: {:?}",
+        retyped.properties
+    );
+
+    let filter = nodespace_core::models::NodeFilter {
+        node_type: Some("ticket".to_string()),
+        property_filters: Some(vec![nodespace_core::models::PropertyFilter::new(
+            "$.status".to_string(),
+            nodespace_core::models::FilterOperator::Equals,
+            json!("open"),
+        )
+        .expect("filter construction failed")]),
+        ..Default::default()
+    };
+    let results = svc.query_nodes(filter).await.expect("query failed");
+    assert!(
+        results.is_empty(),
+        "a ticket-scoped filter read the old epic bucket: {:?}",
+        results.iter().map(|n| &n.properties).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn a_native_scoped_query_sees_the_raw_extended_value() {
     let (svc, _tmp) = test_service().await;
