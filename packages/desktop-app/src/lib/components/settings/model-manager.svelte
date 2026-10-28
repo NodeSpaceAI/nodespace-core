@@ -53,6 +53,8 @@
   let editingConfig = $state<ProviderConfig | null>(null);
   let editForm = $state({ name: '', base_url: '', api_key: '', model: '' });
   let isNewConfig = $state(false);
+  // Set when the database refused a provider change; cleared by the next attempt.
+  let providerError = $state<string | null>(null);
 
   // The models discovered at the endpoint being edited, offered as
   // suggestions for the Model field. Discovery covers saved providers, so a
@@ -151,20 +153,37 @@
   async function saveConfig() {
     if (!editingConfig) return;
     const updated = { ...editingConfig, ...editForm };
+    const previous = openAiConfigs;
+    providerError = null;
     if (isNewConfig) {
       openAiConfigs = [...openAiConfigs, updated];
     } else {
       openAiConfigs = openAiConfigs.map((c) => (c.id === updated.id ? updated : c));
     }
-    await settingsStore.saveProviders(openAiConfigs);
+    try {
+      await settingsStore.saveProviders(openAiConfigs);
+    } catch (e) {
+      // Roll the list back and keep the editor open so the input is not lost.
+      openAiConfigs = previous;
+      providerError = `Could not save the provider: ${errorMessage(e)}`;
+      return;
+    }
     editingConfig = null;
     buildDefaultOptions();
     await refreshRemoteModels(true);
   }
 
   async function deleteConfig(id: string) {
+    const previous = openAiConfigs;
+    providerError = null;
     openAiConfigs = openAiConfigs.filter((c) => c.id !== id);
-    await settingsStore.saveProviders(openAiConfigs);
+    try {
+      await settingsStore.saveProviders(openAiConfigs);
+    } catch (e) {
+      openAiConfigs = previous;
+      providerError = `Could not remove the provider: ${errorMessage(e)}`;
+      return;
+    }
     if (defaultModel?.configId === id) {
       defaultModel = null;
       saveDefaultModelSelection(null);
@@ -173,7 +192,12 @@
     await refreshRemoteModels(true);
   }
 
+  function errorMessage(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
+
   function cancelEdit() {
+    providerError = null;
     editingConfig = null;
   }
 
@@ -291,6 +315,10 @@
       <h3>OpenAI-compatible providers</h3>
       <button class="btn btn--primary btn--sm" onclick={startAdd}>Add</button>
     </div>
+
+    {#if providerError}
+      <p class="mm-error" role="alert">{providerError}</p>
+    {/if}
 
     {#if openAiConfigs.length === 0 && !editingConfig}
       <p class="mm-empty">No providers configured. Add an API key to use external models.</p>
@@ -412,6 +440,12 @@
     font-size: 0.875rem;
     font-weight: 600;
     color: hsl(var(--foreground));
+  }
+
+  .mm-error {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: hsl(var(--destructive));
   }
 
   .mm-divider {

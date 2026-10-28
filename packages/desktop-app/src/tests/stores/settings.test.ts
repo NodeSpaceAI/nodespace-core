@@ -208,11 +208,11 @@ describe('Settings Store', () => {
       expect(JSON.stringify(localStorage.getItem('nodespace-settings'))).not.toContain('sk-test');
     });
 
-    it('keeps the previous providers when the write fails', async () => {
+    it('keeps the previous providers and rejects when the write fails', async () => {
       settingsStore.openAiConfigs = [provider];
       updateDatabaseSettings.mockRejectedValue(new Error('conflict'));
 
-      await settingsStore.saveProviders([]);
+      await expect(settingsStore.saveProviders([])).rejects.toThrow('conflict');
 
       expect(settingsStore.openAiConfigs).toEqual([provider]);
     });
