@@ -21,6 +21,7 @@ use nodespace_agent::pty::{PtySession, PtySessionManager, SessionLaunch, LAUNCHE
 use nodespace_core::models::{CoreNodeType, NodeUpdate};
 use nodespace_core::services::NodeService as CoreNodeService;
 use tokio::sync::broadcast::error::RecvError;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -42,6 +43,10 @@ pub struct AgentSessionHandler {
     node_service: Arc<CoreNodeService>,
     /// Derives a finished session's summary, when capture saves one.
     summarizer: Arc<dyn SessionSummarizer>,
+    /// Cancelled when the daemon stops serving. Open `StreamOutput` streams end
+    /// on it: the PTY session set outlives the server's drain, and the drain
+    /// waits for every open stream.
+    serving_ended: CancellationToken,
 }
 
 impl AgentSessionHandler {
@@ -54,7 +59,14 @@ impl AgentSessionHandler {
             manager,
             node_service,
             summarizer,
+            serving_ended: CancellationToken::new(),
         }
+    }
+
+    /// Ends this handler's output streams when `serving_ended` is cancelled.
+    pub fn with_serving_ended(mut self, serving_ended: CancellationToken) -> Self {
+        self.serving_ended = serving_ended;
+        self
     }
 
     /// Resolve which database this request targets (ADR-053) and return that
@@ -427,9 +439,14 @@ impl AgentSessionService for AgentSessionHandler {
 
         let mut rx = session.subscribe_output();
 
+        let serving_ended = self.serving_ended.clone();
         let stream = async_stream::stream! {
             loop {
-                match rx.recv().await {
+                let received = tokio::select! {
+                    received = rx.recv() => received,
+                    _ = serving_ended.cancelled() => break,
+                };
+                match received {
                     Ok(chunk) => {
                         let timestamp_ms = chunk.timestamp.timestamp_millis();
                         yield Ok(OutputChunk {

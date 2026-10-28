@@ -480,7 +480,8 @@ pub async fn build_database_services(
         shared.pty_manager.clone(),
         node_service.clone(),
         Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
-    );
+    )
+    .with_serving_ended(shared.serving_ended.clone());
 
     let import = ImportServiceImpl::new(node_service.clone());
     // The engine and model catalog come from the process-global
@@ -616,7 +617,8 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
         shared.pty_manager.clone(),
         node_service.clone(),
         Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
-    );
+    )
+    .with_serving_ended(shared.serving_ended.clone());
     let import = ImportServiceImpl::new(node_service.clone());
     let local_agent = LocalAgentServiceImpl::new(
         shared.local_agent.clone(),

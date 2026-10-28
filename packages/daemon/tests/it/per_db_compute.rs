@@ -248,6 +248,57 @@ async fn every_watch_stream_ends_when_the_daemon_stops_serving() {
     );
 }
 
+/// An attached agent session's output stream ends when the daemon stops
+/// serving, while the agent process is still running. The PTY session set is
+/// process-global and outlives the drain, so without this the open stream would
+/// hold the drain until its watchdog.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_attached_session_stream_ends_when_the_daemon_stops_serving() {
+    use nodespace_agent::pty::PtySession;
+    use nodespace_daemon::nodespace::agent_session_service_server::AgentSessionService as _;
+    use nodespace_daemon::nodespace::StreamOutputRequest;
+    use tokio_stream::StreamExt;
+
+    let dir = TempDir::new().unwrap();
+    let (context, _scheduler) = test_context();
+    let serving_ended = context.serving_ended.clone();
+    let pty_manager = context.pty_manager.clone();
+    let manager = Arc::new(
+        DatabaseManager::load(dir.path().join("databases.toml"), context)
+            .await
+            .unwrap(),
+    );
+    manager
+        .ensure_default_registered("Default".into(), dir.path().join("default.db"))
+        .await
+        .unwrap();
+    let default_id = manager.list().await.default_database.unwrap();
+    let services = manager.get_or_open(&default_id).await.unwrap();
+
+    let session = PtySession::launch_for_test("sleep", vec!["30".into()]).expect("launch sleep");
+    let id = pty_manager.insert(session).await;
+
+    let mut stream = services
+        .agent_session
+        .stream_output(Request::new(StreamOutputRequest {
+            session_id: id.to_string(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    let parked = tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+    assert!(parked.is_err(), "an idle stream stays open");
+
+    serving_ended.cancel();
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("the stream must end once the daemon stops serving");
+    assert!(ended.is_none(), "the stream ends without yielding output");
+    pty_manager.terminate(&id).await.ok();
+}
+
 /// Per-database routing isolates compute state: an ai-chat node created against
 /// one database is invisible to another — no cross-database leak.
 #[tokio::test]
