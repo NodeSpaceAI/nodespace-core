@@ -6,6 +6,7 @@
 //! build and cache per-database service sets, and the `nodespaced` binary just
 //! calls these entry points.
 
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -340,6 +341,24 @@ pub async fn build_shared_services(
     ))
 }
 
+/// Make sure the directory that will hold a database file exists.
+///
+/// A directory under the daemon's state directory is daemon-owned: it is
+/// created owner-only and re-restricted if it was left wider, since it holds
+/// the raw SQLite file next to the socket and the registry. Any other
+/// directory was chosen by the caller (`register`, `create --path`) and may be
+/// a project folder or a shared folder owned by another user, so a missing one
+/// is created with the ambient umask and an existing one is never re-moded.
+async fn prepare_database_parent(parent: &Path, state_dir: Option<&Path>) -> Result<()> {
+    if state_dir.is_some_and(|state| parent.starts_with(state)) {
+        crate::create_dir_owner_only(parent).await
+    } else {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create dir {}", parent.display()))
+    }
+}
+
 /// Open one database and assemble its gRPC service implementations, sharing the
 /// process-global services from `shared` (ADR-053).
 ///
@@ -381,10 +400,7 @@ pub async fn build_database_services(
     }
 
     if let Some(parent) = db_path.parent() {
-        // Owner-only from birth (and re-restricted if it already existed at a
-        // wider mode): this directory holds the raw SQLite file for every
-        // database the daemon opens, default or otherwise registered.
-        crate::create_dir_owner_only(parent)
+        prepare_database_parent(parent, crate::nodespace_dir().ok().as_deref())
             .await
             .with_context(|| {
                 format!("Failed to create database parent dir: {}", parent.display())
@@ -907,6 +923,31 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const MODEL_FILE: &str = "nomic-embed-text-v1.5.Q8_0.gguf";
+
+    /// A database folder under the state directory is narrowed to owner-only
+    /// even when it already existed wider; one outside it keeps its mode.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepare_database_parent_narrows_only_the_state_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        let owned = state.join("database");
+        let foreign = root.path().join("project");
+        for dir in [&owned, &foreign] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        prepare_database_parent(&owned, Some(&state)).await.unwrap();
+        prepare_database_parent(&foreign, Some(&state))
+            .await
+            .unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&owned), 0o700);
+        assert_eq!(mode(&foreign), 0o755);
+    }
 
     /// `resolve_model_path` with `NODESPACE_HOME` at `nodespace_home`, `HOME` at
     /// `user_home` and `NODESPACED_MODEL_PATH` unset, every variable restored

@@ -1535,6 +1535,37 @@ mod tests {
         assert_eq!(mgr.default_database_path().await.as_ref(), Some(&standard));
     }
 
+    /// Opening a database in a folder the user chose must not change that
+    /// folder's mode: only daemon-owned directories are narrowed to owner-only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_leaves_the_mode_of_a_caller_chosen_folder_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        std::fs::set_permissions(&project, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        mgr.create("Work".into(), Some(project.join("work.db")))
+            .await
+            .unwrap();
+
+        let mode = std::fs::metadata(&project).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    /// A missing parent of a caller-chosen path is created, so create still
+    /// works for a new folder.
+    #[tokio::test]
+    async fn create_makes_a_missing_parent_of_a_caller_chosen_path() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let path = dir.path().join("new").join("nested").join("work.db");
+
+        mgr.create("Work".into(), Some(path.clone())).await.unwrap();
+
+        assert!(path.exists());
+    }
+
     #[tokio::test]
     async fn set_standard_default_reuses_an_entry_already_at_the_standard_path() {
         let (mgr, dir, _registry_path) = temp_manager().await;
