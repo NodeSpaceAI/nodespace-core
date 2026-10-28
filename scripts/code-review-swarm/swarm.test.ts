@@ -216,6 +216,12 @@ describe("make-units.ts", () => {
     put(core, "packages/desktop-app/src/tests/skipped.test.ts"); // frontend unit tests are not reviewed
     put(core, "packages/core/src/db/generated/skip.rs"); // generated code is not reviewed
     put(core, "scripts/build-pkg.sh");
+    put(core, "packages/core/src/models/node.rs"); // a source directory named models is reviewed
+    put(core, "packages/core/src/ops/entity_types_block.rs"); // block/lock in a name is not a lockfile
+    put(core, "scripts/gate-lock.ts");
+    put(core, "packages/core/Cargo.lock"); // real lockfiles stay out (extension not collected anyway)
+    put(core, "scripts/pkg-resources/postinstall"); // extension-less root-run installer scripts
+    put(core, "scripts/pkg-resources/component.plist");
     put(sync, "nodespaced-sync/src/lib.rs");
     put(sync, "nodespaced-sync/tests/e2e.rs");
     put(sync, "examples/demo.rs");
@@ -234,6 +240,11 @@ describe("make-units.ts", () => {
     expect(where("packages/desktop-app/src/lib/stores/nodes.ts")).toMatchObject({ part: 3, tier: "high" });
     expect(where("packages/core/tests/db_test.rs")).toMatchObject({ part: 3, tier: "tests", lenses: ["tests"] });
     expect(where("scripts/build-pkg.sh")).toMatchObject({ part: 2, tier: "infra", model: "opus", lenses: ["deep"] });
+    expect(where("packages/core/src/models/node.rs")).toMatchObject({ repo: "core", part: 2 });
+    expect(where("packages/core/src/ops/entity_types_block.rs")).toMatchObject({ repo: "core", part: 2 });
+    expect(where("scripts/gate-lock.ts")).toMatchObject({ repo: "core", tier: "infra" });
+    expect(where("scripts/pkg-resources/postinstall")).toMatchObject({ repo: "core", tier: "infra" });
+    expect(where("scripts/pkg-resources/component.plist")).toBeUndefined();
     expect(where("nodespaced-sync/src/lib.rs")).toMatchObject({ repo: "sync", part: 1, tier: "critical" });
     expect(where("examples/demo.rs")).toMatchObject({ repo: "sync", part: 1, tier: "high" });
     expect(where("nodespaced-sync/tests/e2e.rs")).toMatchObject({ repo: "sync", part: 3, tier: "tests" });
@@ -422,7 +433,9 @@ describe.skipIf(!haveTools)("preflight.sh and teardown.sh", () => {
     expect(JSON.parse(readFileSync(join(dir, "existing-issues.json"), "utf8"))).toHaveLength(3);
     const ghCalls = readFileSync(join(tmp, "gh.log"), "utf8");
     for (const r of ["core", "sync", "cloud"]) expect(ghCalls).toContain(`NodeSpaceAI/nodespace-${r}`);
-    expect(ghCalls).toContain("--state all");
+    expect(ghCalls).toContain("state=all");
+    expect(ghCalls).toContain("--paginate");
+    expect(ghCalls).not.toContain("--limit");
     expect(JSON.parse(readFileSync(join(dir, "config.json"), "utf8"))).toMatchObject({ coreRepo: core, syncRepo: sync });
 
     // A new commit on origin must NOT move the snapshots on a re-run.

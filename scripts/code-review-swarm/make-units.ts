@@ -9,7 +9,10 @@ import { argValue, parsePart, stateDirFor } from "./config";
 // Built from fragments: the repo-boundary check bans the literal name in core.
 const PRO_DIR = ["nodespaced", "pro"].join("-");
 const EXT = new Set([".rs", ".ts", ".svelte", ".sh", ".sql", ".js", ".mjs", ".yml", ".yaml"]);
-const SKIP_DIR = new Set(["node_modules", "target", "dist", "build", ".svelte-kit", "gen", "generated", "bindings", ".core", "sync-worktrees", "core-worktrees", "archive", "canary", "fixtures", "snapshots", "coverage", ".git", "playwright-report", "test-results", "models", "resources", "reference", "goldens", ".claude"]);
+const SKIP_DIR = new Set(["node_modules", "target", "dist", "build", ".svelte-kit", "gen", "generated", "bindings", ".core", "sync-worktrees", "core-worktrees", "archive", "canary", "fixtures", "snapshots", "coverage", ".git", "playwright-report", "test-results", "resources", "reference", "goldens", ".claude"]);
+
+// Installer scripts that run as root and have no extension.
+const EXTENSIONLESS_SCRIPT = /(^|\/)pkg-resources\/(preinstall|postinstall)$/;
 
 export type SourceFile = { f: string; n: number };
 export type Tier = "tests" | "critical" | "high" | "low" | "infra";
@@ -28,8 +31,8 @@ function walk(root: string, dir: string, out: SourceFile[]) {
       if (!SKIP_DIR.has(e.name)) walk(root, p, out);
       continue;
     }
-    if (!EXT.has(extname(e.name))) continue;
-    if (/\.generated\.|\.d\.ts$|\.min\.|lock/.test(e.name)) continue;
+    if (!EXT.has(extname(e.name)) && !EXTENSIONLESS_SCRIPT.test(relative(root, p))) continue;
+    if (/\.generated\.|\.d\.ts$|\.min\.|(^|[-.])lock\.ya?ml$|\.lock$/.test(e.name)) continue;
     const n = readFileSync(p, "utf8").split("\n").length;
     if (n > 40000) continue;
     out.push({ f: relative(root, p), n });
