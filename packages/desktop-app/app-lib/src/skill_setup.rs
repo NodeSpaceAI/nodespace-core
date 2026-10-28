@@ -233,6 +233,18 @@ pub fn check_cli_on_path() -> bool {
         .unwrap_or(false)
 }
 
+/// [`check_cli_on_path`] on the blocking thread pool, for callers on an async
+/// task: the two subprocess spawns must not hold a runtime worker thread.
+pub async fn check_cli_on_path_async() -> bool {
+    run_blocking_bool(check_cli_on_path).await
+}
+
+/// Run a blocking probe off the async worker threads; a panicked probe is
+/// reported as `false`.
+async fn run_blocking_bool(probe: impl FnOnce() -> bool + Send + 'static) -> bool {
+    tokio::task::spawn_blocking(probe).await.unwrap_or(false)
+}
+
 /// Builds the augmented PATH used by [`check_cli_on_path`]. Mirrors
 /// `packages/agent/src/pty/detection.rs`'s `augmented_path()`, which solves
 /// the identical problem for AI-agent-CLI detection (`claude`, `codex`,
@@ -527,7 +539,7 @@ async fn install_skill_inner(force: bool, launch: bool, app: &AppHandle) -> Skil
     if !force {
         match read_setup_state().await {
             Ok(state) if state.skill_installed => {
-                let cli_on_path = check_cli_on_path();
+                let cli_on_path = check_cli_on_path_async().await;
                 let agents_installed =
                     revalidate_agents_installed(state.agents_installed, app).await;
                 return SkillSetupResult {
@@ -547,7 +559,7 @@ async fn install_skill_inner(force: bool, launch: bool, app: &AppHandle) -> Skil
         }
     }
 
-    let cli_on_path = check_cli_on_path();
+    let cli_on_path = check_cli_on_path_async().await;
 
     let installer = match resolve_installer(app) {
         Ok(installer) => installer,
@@ -1212,6 +1224,29 @@ mod tests {
             warning.contains("nodespace.ai/install.sh"),
             "expected the install.sh one-liner in the warning, got: {warning}"
         );
+    }
+
+    /// A slow probe must leave the runtime free: on a single-threaded runtime
+    /// a concurrent ticker keeps running while the probe blocks its own thread.
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocking_probe_does_not_stall_the_runtime() {
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let t = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                t.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let ok = run_blocking_bool(|| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            true
+        })
+        .await;
+        ticker.abort();
+        assert!(ok);
+        assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) >= 5);
+        assert!(!run_blocking_bool(|| panic!("probe panicked")).await);
     }
 
     #[test]
