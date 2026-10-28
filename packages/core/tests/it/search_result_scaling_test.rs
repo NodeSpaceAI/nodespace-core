@@ -9,11 +9,11 @@
 //! are all work that grows with the result count rather than with the corpus,
 //! and they are the shape a per-result latency slope takes.
 //!
-//! These tests pin that shape rather than an absolute number. Wall-clock budgets
-//! on a developer machine are noisy (a loaded local test gate runs these
-//! alongside everything else), so the budgets below are deliberately generous —
-//! they are sized to catch a per-result N+1 coming back, not to police
-//! single-digit-percent drift.
+//! These tests pin that shape without any timing: wall-clock budgets on a
+//! developer machine are noisy (a loaded local test gate runs these alongside
+//! everything else). Instead the hydration test makes work on a discarded
+//! candidate observable by giving every candidate but the returned ones a node
+//! row that cannot be read, so fetching one fails the search.
 
 #[cfg(test)]
 mod search_result_scaling_tests {
@@ -22,24 +22,29 @@ mod search_result_scaling_tests {
     use nodespace_core::models::{NewEmbedding, Node};
     use nodespace_core::services::NodeService;
     use serde_json::json;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
 
     const DIM: usize = 768;
 
-    /// Nodes seeded into the corpus. Large enough that the KNN window and the
-    /// connection pool behave like they do in a real database (the pool holds 8
-    /// idle readers, so a per-result fetch loop past that depth pays repeated
-    /// connection opens), while still seeding in a few seconds under a debug
-    /// test build.
-    const CORPUS: usize = 2_000;
+    /// Nodes seeded into the corpus. Under 100 so every node has a distinct
+    /// score (see `seeded_vector`), and well above the 5 results the hydration
+    /// test asks for, so the KNN window holds many candidates that truncation
+    /// must discard.
+    const CORPUS: usize = 90;
 
     async fn create_test_store() -> Result<(Arc<SqliteStore>, TempDir)> {
+        let (store, temp_dir, _db_path) = create_test_store_with_path().await?;
+        Ok((store, temp_dir))
+    }
+
+    async fn create_test_store_with_path() -> Result<(Arc<SqliteStore>, TempDir, PathBuf)> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let mut store = Arc::new(SqliteStore::new(db_path).await?);
+        let mut store = Arc::new(SqliteStore::new(db_path.clone()).await?);
         let _service = NodeService::new(&mut store).await?;
-        Ok((store, temp_dir))
+        Ok((store, temp_dir, db_path))
     }
 
     /// A vector clustered near axis 0, offset by `i` so that every node has a
@@ -77,8 +82,9 @@ mod search_result_scaling_tests {
     }
 
     /// Seed a corpus of embedded text nodes, each with enough content that
-    /// hydrating a result is not free.
-    async fn seed_corpus(store: &SqliteStore, count: usize) -> Result<()> {
+    /// hydrating a result is not free. Returns the ids in seeding order.
+    async fn seed_corpus(store: &SqliteStore, count: usize) -> Result<Vec<String>> {
+        let mut ids = Vec::with_capacity(count);
         for i in 0..count {
             let content = format!(
                 "Seeded search corpus document {i}. It carries several sentences of \
@@ -92,8 +98,9 @@ mod search_result_scaling_tests {
             store
                 .upsert_embeddings(&id, vec![embedding_for(&id, i)], chrono::Utc::now())
                 .await?;
+            ids.push(id);
         }
-        Ok(())
+        Ok(ids)
     }
 
     /// Every result the store ranks must carry its node.
@@ -137,12 +144,17 @@ mod search_result_scaling_tests {
     /// Hydration must not fetch nodes that ranking is about to discard. KNN
     /// over-fetches by design and callers inflate `limit` further for their own
     /// post-filters, so hydrating before truncation did work that was thrown
-    /// away. Asserting the returned count equals `limit` (not the much larger
-    /// candidate set) pins that ordering.
+    /// away.
+    ///
+    /// The result of `search_embeddings` cannot tell the two orders apart, so the
+    /// test observes the fetch itself: after the top five are known, every other
+    /// node gets an unreadable `created_at`, which makes any batch fetch that
+    /// includes it fail. Truncating before hydrating never touches those rows; a
+    /// regression that hydrates the whole candidate window fails the search.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn hydration_is_bounded_by_limit_not_candidates() -> Result<()> {
-        let (store, _t) = create_test_store().await?;
-        seed_corpus(&store, CORPUS).await?;
+        let (store, _t, db_path) = create_test_store_with_path().await?;
+        let ids = seed_corpus(&store, CORPUS).await?;
 
         let q = query_vector();
         let results = store.search_embeddings(&q, 5, Some(0.5)).await?;
@@ -160,6 +172,41 @@ mod search_result_scaling_tests {
                 "results are ranked by descending score"
             );
         }
+
+        // Make every node outside the top five unreadable.
+        let top: std::collections::HashSet<&str> =
+            results.iter().map(|r| r.node_id.as_str()).collect();
+        nodespace_core::db::ensure_sqlite_vec_registered().await;
+        let raw = libsql::Builder::new_local(&db_path)
+            .build()
+            .await?
+            .connect()?;
+        let mut poisoned = 0;
+        for id in ids.iter().filter(|id| !top.contains(id.as_str())) {
+            raw.execute(
+                "UPDATE node SET created_at = 'not-a-timestamp' WHERE id = ?1",
+                libsql::params![id.clone()],
+            )
+            .await?;
+            poisoned += 1;
+        }
+        assert_eq!(poisoned, CORPUS - 5);
+
+        // Control: a search wide enough to hydrate a poisoned row must fail, so
+        // the poison is known to bite.
+        assert!(
+            store
+                .search_embeddings(&q, CORPUS as i64, Some(0.5))
+                .await
+                .is_err(),
+            "hydrating an unreadable candidate fails the search"
+        );
+
+        // Hydrate-after-truncate only ever reads the top five.
+        let again = store.search_embeddings(&q, 5, Some(0.5)).await?;
+        let again_ids: Vec<&str> = again.iter().map(|r| r.node_id.as_str()).collect();
+        let first_ids: Vec<&str> = results.iter().map(|r| r.node_id.as_str()).collect();
+        assert_eq!(again_ids, first_ids, "the same five results come back");
         Ok(())
     }
 }
