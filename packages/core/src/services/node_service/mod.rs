@@ -1817,29 +1817,24 @@ impl NodeService {
             .next();
 
         if let Some(ref settings) = existing_settings {
-            let local_person_id = self
-                .query_nodes_by_type("person", true)
+            // Owned once ANY person holds the edge: which one is the local
+            // user is `get_local_person`'s question, and a merge moves the
+            // edge onto the survivor. Asking about one particular person
+            // would add a second owner whenever another person holds it.
+            let has_owner_edge = !self
+                .get_related_nodes(&settings.id, "has_role", "in")
                 .await?
-                .into_iter()
-                .next()
-                .map(|p| p.id);
-            if let Some(ref local_person_id) = local_person_id {
-                let has_owner_edge = self
-                    .store()
-                    .get_relationship_record(local_person_id, &settings.id, "has_role")
-                    .await
-                    .map_err(NodeServiceError::from_store)?
-                    .is_some();
-                if has_owner_edge {
-                    return Ok(());
-                }
-                // Node exists, edge does not — fall through and repair it.
-            } else {
+                .is_empty();
+            if has_owner_edge {
+                return Ok(());
+            }
+            if self.first_person().await?.is_none() {
                 // No local person yet to own the edge; nothing to repair
                 // until seeding order creates one. Existing behavior: do
                 // not error, just skip until a later open can retry.
                 return Ok(());
             }
+            // Node exists, edge does not — fall through and repair it.
         }
 
         let settings_id = match existing_settings {
@@ -1855,13 +1850,11 @@ impl NodeService {
             }
         };
 
-        // Attach the owner edge from the local PersonNode. Seeding order
-        // guarantees exactly one local person exists at this point.
+        // Attach the owner edge from the local PersonNode: the first person,
+        // the one `get_local_person` falls back to without an edge.
         let local_person_id = self
-            .query_nodes_by_type("person", true)
+            .first_person()
             .await?
-            .into_iter()
-            .next()
             .ok_or_else(|| {
                 NodeServiceError::InitializationError(
                     "cannot seed DatabaseSettingsNode owner edge: no local PersonNode".to_string(),
@@ -1922,11 +1915,25 @@ impl NodeService {
             "no has_role edge found on DatabaseSettingsNode; \
              falling back to the first person node"
         );
+        self.first_person().await
+    }
+
+    /// The first person node: the earliest created, then the lowest id, a
+    /// person subtype's and an archived one included. The local user when no
+    /// `has_role` edge says otherwise, and the one seeding attaches a missing
+    /// owner edge to; the same rule as the `current_person` query anchor.
+    /// A query by type returns rows in no particular order, so taking its
+    /// first row would pick whichever person the index reached first.
+    async fn first_person(&self) -> Result<Option<Node>, NodeServiceError> {
         Ok(self
             .query_nodes_by_type("person", true)
             .await?
             .into_iter()
-            .next())
+            .min_by(|a, b| {
+                a.created_at
+                    .cmp(&b.created_at)
+                    .then_with(|| a.id.cmp(&b.id))
+            }))
     }
 
     /// ADR-037: write the local user's first/last name and email
@@ -11382,6 +11389,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(settings.len(), 1);
+    }
+
+    /// The `has_role` edges into the settings singleton, by holder.
+    async fn owner_edge_holders(service: &NodeService) -> Vec<String> {
+        let mut holders: Vec<String> = service
+            .get_related_nodes(DATABASE_SETTINGS_NODE_ID, "has_role", "in")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        holders.sort();
+        holders
+    }
+
+    /// A user type extending `person` whose id sorts before it, and one
+    /// instance of it created after the seeded local person.
+    async fn person_subtype_instance(service: &NodeService) -> String {
+        crate::schema::handle_create_schema(
+            &Arc::new(service.clone()),
+            json!({ "name": "Customer", "extends": "person", "fields": [] }),
+        )
+        .await
+        .unwrap();
+        service
+            .create_node(Node::new("customer".to_string(), String::new(), json!({})))
+            .await
+            .unwrap()
+    }
+
+    /// A query by type returns a subtype's rows before `person`'s when its id
+    /// sorts first. The guard asks whether anyone holds the owner edge, not
+    /// whether that first row does, so a reopen adds no second owner.
+    #[tokio::test]
+    async fn test_seed_database_settings_adds_no_owner_for_a_person_subtype_instance() {
+        let (service, _temp) = create_test_service().await;
+        let seeded_id = service.get_local_person().await.unwrap().unwrap().id;
+        person_subtype_instance(&service).await;
+
+        service.seed_database_settings_if_needed().await.unwrap();
+
+        assert_eq!(owner_edge_holders(&service).await, [seeded_id]);
+    }
+
+    /// A merge moves the owner edge from the merged-away seed onto the
+    /// survivor; the next open keeps it there and adds none to the archived
+    /// seed, so the local user stays the survivor.
+    #[tokio::test]
+    async fn test_seed_database_settings_keeps_the_owner_a_merge_moved() {
+        let (service, _temp) = create_test_service().await;
+        let seeded_id = service.get_local_person().await.unwrap().unwrap().id;
+        let survivor_id = service
+            .create_node(Node::new("person".to_string(), String::new(), json!({})))
+            .await
+            .unwrap();
+        service
+            .merge_nodes(&survivor_id, &seeded_id, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            owner_edge_holders(&service).await,
+            std::slice::from_ref(&survivor_id)
+        );
+
+        service.seed_database_settings_if_needed().await.unwrap();
+
+        assert_eq!(
+            owner_edge_holders(&service).await,
+            std::slice::from_ref(&survivor_id)
+        );
+        assert_eq!(
+            service.get_local_person().await.unwrap().unwrap().id,
+            survivor_id
+        );
+    }
+
+    /// With no owner edge, the local user is the first person by creation,
+    /// whatever order a query by type returns rows in, and seeding repairs
+    /// the edge onto that same person.
+    #[tokio::test]
+    async fn test_missing_owner_edge_resolves_and_repairs_to_the_first_created_person() {
+        let (service, _temp) = create_test_service().await;
+        let seeded_id = service.get_local_person().await.unwrap().unwrap().id;
+        person_subtype_instance(&service).await;
+        service
+            .delete_relationship(&seeded_id, "has_role", DATABASE_SETTINGS_NODE_ID)
+            .await
+            .unwrap();
+        assert!(owner_edge_holders(&service).await.is_empty());
+
+        assert_eq!(
+            service.get_local_person().await.unwrap().unwrap().id,
+            seeded_id
+        );
+        service.seed_database_settings_if_needed().await.unwrap();
+        assert_eq!(owner_edge_holders(&service).await, [seeded_id]);
     }
 
     // --- AI chats are plain nodes (ADR-083 §7) ---
