@@ -1008,6 +1008,121 @@ async fn a_base_scoped_query_matches_an_extended_value_through_maps_to() {
     );
 }
 
+/// A filter authored against the base type compares a subtype node's value
+/// of a field that is not an enum as stored: only an enum's values carry a
+/// vocabulary a subtype extends and maps back, so a text or date value means
+/// the same at every scope. The enum in the same chain still reads through
+/// its `maps_to`.
+#[tokio::test]
+async fn a_base_scoped_filter_compares_a_subtypes_non_enum_value_as_stored() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [
+                {
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "extensible": true,
+                    "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "done", "label": "Done" }
+                    ]
+                },
+                { "name": "summary", "type": "text", "protection": "user", "indexed": false },
+                { "name": "due", "type": "date", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("ticket schema creation failed");
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+            }]
+        }),
+    )
+    .await
+    .expect("extending the inherited enum should succeed");
+
+    let ticket = create_instance(
+        &svc,
+        "ticket",
+        json!({ "state": "open", "summary": "login fails", "due": "2026-03-01" }),
+    )
+    .await;
+    let bug = create_instance(
+        &svc,
+        "bug",
+        json!({ "state": "backlog", "summary": "login fails", "due": "2026-03-01" }),
+    )
+    .await;
+    create_instance(
+        &svc,
+        "bug",
+        json!({ "state": "done", "summary": "slow export", "due": "2026-05-01" }),
+    )
+    .await;
+
+    let ticket_scoped = |path: &str, operator, value| nodespace_core::models::NodeFilter {
+        node_type: Some("ticket".to_string()),
+        property_filters: Some(vec![nodespace_core::models::PropertyFilter::new(
+            path.to_string(),
+            operator,
+            value,
+        )
+        .expect("filter construction failed")]),
+        ..Default::default()
+    };
+    let mut expected = vec![ticket, bug];
+    expected.sort();
+    for (path, operator, value) in [
+        (
+            "$.summary",
+            nodespace_core::models::FilterOperator::Equals,
+            json!("login fails"),
+        ),
+        (
+            "$.summary",
+            nodespace_core::models::FilterOperator::Contains,
+            json!("login"),
+        ),
+        (
+            "$.due",
+            nodespace_core::models::FilterOperator::LessThan,
+            json!("2026-04-01"),
+        ),
+        (
+            "$.state",
+            nodespace_core::models::FilterOperator::Equals,
+            json!("open"),
+        ),
+    ] {
+        let mut ids: Vec<String> = svc
+            .query_nodes(ticket_scoped(path, operator.clone(), value.clone()))
+            .await
+            .expect("query failed")
+            .into_iter()
+            .map(|node| node.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, expected, "{path} {operator:?} {value}");
+    }
+}
+
 #[tokio::test]
 async fn a_native_scoped_query_sees_the_raw_extended_value() {
     let (svc, _tmp) = test_service().await;
