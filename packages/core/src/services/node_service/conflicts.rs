@@ -575,25 +575,37 @@ impl NodeService {
         Ok(false)
     }
 
+    /// Whether the record's participants still collide on its name: each one
+    /// is still an active collection whose name folds to the recorded one.
+    ///
+    /// Re-derived from the participants themselves. The record's ids are
+    /// sorted, so which one comes first says nothing about the collision, and
+    /// a lookup by name returns whichever matching collection it reaches
+    /// first, so comparing the two would keep or close a record by id order.
     async fn collection_name_collision_still_holds(
         &self,
         record: &ConflictRecord,
     ) -> Result<bool, NodeServiceError> {
         let Some(name) = record.detail.get("name").and_then(|v| v.as_str()) else {
-            return Ok(true);
+            return Ok(true); // malformed detail — leave it for a human, don't guess
         };
-        let Some(subject_id) = record.node_ids.first() else {
+        if record.node_ids.len() < 2 {
             return Ok(true);
-        };
-        let existing = self
-            .store
-            .get_collection_by_name(name)
-            .await
-            .map_err(NodeServiceError::from_store)?;
-        Ok(match existing {
-            // A different active collection still holds the name -> still colliding.
-            Some(node) => &node.id != subject_id,
-            None => false,
-        })
+        }
+        for node_id in &record.node_ids {
+            let Some(node) = self.get_node(node_id).await? else {
+                return Ok(false);
+            };
+            let still_named = crate::governance::participates(&node)
+                && self
+                    .type_is_a(&node.node_type, crate::models::CoreNodeType::Collection)
+                    .await?
+                && crate::services::collection_service::normalize_collection_name(&node.content)
+                    == name;
+            if !still_named {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
