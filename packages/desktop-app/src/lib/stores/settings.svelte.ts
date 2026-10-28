@@ -123,7 +123,9 @@ class SettingsStore {
   /**
    * Replace the database's providers through the settings node's typed
    * update. The store holds what the node holds afterward: the verdicts the
-   * daemon keeps or drops are its own to decide.
+   * daemon keeps or drops are its own to decide. A failed write is logged and
+   * rethrown, leaving the store's previous providers in place, so callers can
+   * tell the user the change was not saved.
    */
   async saveProviders(providers: ProviderConfig[]): Promise<void> {
     try {
@@ -131,6 +133,7 @@ class SettingsStore {
       this.openAiConfigs = node.providers;
     } catch (err) {
       log.error("Failed to save the database's providers:", err);
+      throw err;
     }
   }
 
