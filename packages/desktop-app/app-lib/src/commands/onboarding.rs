@@ -562,9 +562,7 @@ pub async fn configure_path() -> Result<PathConfigResult, String> {
 /// per-user bin directories, not the user's own rc files). Runs the CLI, so it
 /// is kept off the async worker threads.
 async fn cli_resolves_on_path() -> bool {
-    tokio::task::spawn_blocking(skill_setup::check_cli_on_path)
-        .await
-        .unwrap_or(false)
+    skill_setup::check_cli_on_path_async().await
 }
 
 /// Install the NodeSpace skill into detected agents (delegates to skill_setup).
@@ -610,7 +608,7 @@ pub async fn get_skill_setup_status(
     let state = skill_setup::read_setup_state()
         .await
         .map_err(|e| e.to_string())?;
-    let cli_on_path = skill_setup::check_cli_on_path();
+    let cli_on_path = skill_setup::check_cli_on_path_async().await;
     let agents_installed =
         skill_setup::revalidate_agents_installed_locked(state.agents_installed, &app_handle).await;
     Ok(SkillSetupResult {
