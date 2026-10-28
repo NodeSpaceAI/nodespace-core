@@ -1248,27 +1248,43 @@ impl NodeService {
         let date_id = node_id.to_string();
         let service = self.clone();
         self.with_transaction(move |tx| {
-            Box::pin(async move {
-                let exists = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &date_id)
-                    .await
-                    .map_err(NodeServiceError::from_store)?
-                    .is_some();
-                if exists {
-                    return Ok(());
-                }
-                let date_node = Node::new_with_id(
-                    date_id.clone(),
-                    crate::models::CoreNodeType::Date.as_str().to_string(),
-                    date_id, // Default content to date
-                    serde_json::json!({}),
-                );
-                service
-                    .create_node_in_tx(tx, date_node, true)
-                    .await
-                    .map(|_| ())
-            })
+            Box::pin(async move { service.ensure_date_exists_in_tx(tx, &date_id).await })
         })
         .await
+    }
+
+    /// [`Self::ensure_date_exists`] inside a transaction: saves the date page
+    /// `node_id` names when it has no row yet, so what the same transaction
+    /// writes next can point at it. A date page with no row is a valid
+    /// endpoint, read as a virtual node until then, but an edge's foreign
+    /// keys need the row. Anything that is not a date id, and a page that
+    /// already has its row, is left as it is.
+    pub(crate) async fn ensure_date_exists_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        if !is_date_node_id(node_id) {
+            return Ok(());
+        }
+        let exists = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), node_id)
+            .await
+            .map_err(NodeServiceError::from_store)?
+            .is_some();
+        if exists {
+            return Ok(());
+        }
+        let date_node = Node::new_with_id(
+            node_id.to_string(),
+            crate::models::CoreNodeType::Date.as_str().to_string(),
+            node_id.to_string(), // Default content to date
+            serde_json::json!({}),
+        );
+        // Boxed: creating a node can run rules that write edges, which come
+        // back here for their own endpoints.
+        Box::pin(self.create_node_in_tx(tx, date_node, true))
+            .await
+            .map(|_| ())
     }
 
     /// Get a node by ID

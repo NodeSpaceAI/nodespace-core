@@ -720,8 +720,8 @@ impl NodeService {
     ///
     /// A date node (`YYYY-MM-DD`) with no row yet is still a legitimate
     /// endpoint — it auto-persists the first time something is actually
-    /// filed under it, and until then `get_node` synthesizes it on read
-    /// rather than reporting `NodeNotFound`. The raw
+    /// filed under it or an edge is written to it, and until then `get_node`
+    /// synthesizes it on read rather than reporting `NodeNotFound`. The raw
     /// `SqliteStore::get_node_in_tx` has no such fallback, so a declared
     /// relationship's tx-scoped source/target lookup needs this wrapper —
     /// without it, any custom-relationship create touching an
@@ -969,6 +969,12 @@ impl NodeService {
                 }
             }
         }
+
+        // An endpoint the checks above accepted as an unvisited date page has
+        // no row yet; the edge's foreign keys need one. A `has_child` source
+        // is not checked above, and a date page is the usual parent.
+        self.ensure_date_exists(source_id).await?;
+        self.ensure_date_exists(target_id).await?;
 
         // For member_of relationships with auto-order, use the atomic
         // add_to_collection method to prevent race conditions. This ensures the
@@ -1595,6 +1601,11 @@ impl NodeService {
         if is_builtin {
             normalize_edge_order(relationship_name, &mut final_edge_data)?;
         }
+
+        // An endpoint accepted above as an unvisited date page has no row
+        // yet; the edge's foreign keys need one.
+        self.ensure_date_exists_in_tx(tx, source_id).await?;
+        self.ensure_date_exists_in_tx(tx, target_id).await?;
 
         let rel_id = crate::db::SqliteStore::create_generic_relationship_in_tx(
             tx.store_tx(),
