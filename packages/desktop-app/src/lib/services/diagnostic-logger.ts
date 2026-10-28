@@ -179,15 +179,18 @@ export async function withDiagnosticLogging<T>(
   const startTime = performance.now();
   const timestamp = new Date().toISOString();
 
+  // Truncation serializes objects to measure them, so do it once per call
+  const loggedArgs = truncateArgs(args);
+
   // Log start
-  log.debug(`[CALL] ${methodName}`, { args: truncateArgs(args) });
+  log.debug(`[CALL] ${methodName}`, { args: loggedArgs });
 
   // Add pending entry
   addLogEntry({
     id: entryId,
     timestamp,
     method: methodName,
-    args: truncateArgs(args),
+    args: loggedArgs,
     durationMs: 0,
     status: 'pending'
   });
@@ -196,25 +199,27 @@ export async function withDiagnosticLogging<T>(
     const result = await fn();
     const durationMs = performance.now() - startTime;
 
+    const loggedResult = truncateResult(result);
+
     // Update entry with success
     updateLogEntry(entryId, {
-      result: truncateResult(result),
+      result: loggedResult,
       durationMs,
       status: 'success'
     });
 
     log.debug(`[SUCCESS] ${methodName} (${durationMs.toFixed(2)}ms)`, {
-      result: truncateResult(result)
+      result: loggedResult
     });
 
     debugChannelWrite({
       kind: 'invoke',
       timestamp: new Date().toISOString(),
       method: methodName,
-      args: truncateArgs(args),
+      args: loggedArgs,
       durationMs,
       status: 'success',
-      result: truncateResult(result)
+      result: loggedResult
     });
 
     return result;
@@ -231,14 +236,14 @@ export async function withDiagnosticLogging<T>(
 
     log.error(`[ERROR] ${methodName} (${durationMs.toFixed(2)}ms)`, {
       error: errorMessage,
-      args: truncateArgs(args)
+      args: loggedArgs
     });
 
     debugChannelWrite({
       kind: 'invoke',
       timestamp: new Date().toISOString(),
       method: methodName,
-      args: truncateArgs(args),
+      args: loggedArgs,
       durationMs,
       status: 'error',
       error: errorMessage

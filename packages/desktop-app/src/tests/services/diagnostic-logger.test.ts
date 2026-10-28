@@ -195,4 +195,32 @@ describe('Diagnostic Logger', () => {
     });
   });
 
+  describe('serialization cost', () => {
+    it('serializes a call result and its arguments at most once each', async () => {
+      const result = { rows: Array.from({ length: 5 }, (_, i) => ({ id: i, text: 'x'.repeat(40) })) };
+      const arg = { filter: { name: 'y'.repeat(40) } };
+      const stringify = vi.spyOn(JSON, 'stringify');
+
+      try {
+        await withDiagnosticLogging('measured', async () => result, [arg]);
+
+        const serialized = stringify.mock.calls.map(([value]) => value);
+        expect(serialized.filter((v) => v === result)).toHaveLength(1);
+        expect(serialized.filter((v) => v === arg)).toHaveLength(1);
+      } finally {
+        stringify.mockRestore();
+      }
+    });
+
+    it('still records the truncated result and arguments', async () => {
+      const big = { data: 'z'.repeat(1000) };
+
+      await withDiagnosticLogging('big', async () => big, [big]);
+
+      const [entry] = getLogEntries();
+      expect(entry.status).toBe('success');
+      expect(String(entry.result)).toMatch(/^\[Object: /);
+      expect(String(entry.args[0])).toMatch(/^\[Object truncated: /);
+    });
+  });
 });
