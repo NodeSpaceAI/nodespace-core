@@ -67,6 +67,9 @@ impl ScopeContext {
     }
 }
 
+/// Each row type's `extends` chain, nearest first, keyed by node type.
+type TypeChains = std::collections::HashMap<String, Vec<String>>;
+
 /// What a node query leaves out in the statement, beyond its filter.
 enum QueryNarrowing<'a> {
     /// These types, and every type extending one of them.
@@ -253,8 +256,16 @@ impl NodeService {
             let scope = self
                 .build_scope_context(filter.node_type.as_deref())
                 .await?;
+            // Each row's own chain, resolved once per distinct type: a field
+            // a row inherits is stored in the bucket of the ancestor that
+            // declares it.
+            let distinct_types: std::collections::HashSet<&str> =
+                nodes.iter().map(|node| node.node_type.as_str()).collect();
+            let chains =
+                crate::services::resolve_type_chains_from_store(&self.store, distinct_types)
+                    .await?;
             let mut filtered =
-                Self::apply_property_filters(nodes, property_filters, scope.as_ref());
+                Self::apply_property_filters(nodes, property_filters, scope.as_ref(), &chains);
             // Apply offset in memory
             if let Some(offset) = filter.offset {
                 if offset < filtered.len() {
@@ -326,19 +337,22 @@ impl NodeService {
     /// PropertyFilter paths use JSONPath: `"$.status"`.
     /// This resolves the path against each node's type namespace.
     /// `scope` is the query's own read scope (ADR-078) — resolved once per
-    /// query, not per row. `None` falls back to each node's own type, which is
-    /// the untyped-query case and the pre-`extends` behavior.
+    /// query, not per row. `None` reads each node in its own type's chain,
+    /// which is the untyped-query case. `chains` is each row type's `extends`
+    /// chain, nearest first, resolved once per distinct type; a type it does
+    /// not hold reads as a chain of itself alone.
     fn apply_property_filters(
         nodes: Vec<Node>,
         filters: &[PropertyFilter],
         scope: Option<&ScopeContext>,
+        chains: &TypeChains,
     ) -> Vec<Node> {
         nodes
             .into_iter()
             .filter(|node| {
                 filters
                     .iter()
-                    .all(|f| Self::node_matches_property_filter(node, f, scope))
+                    .all(|f| Self::node_matches_property_filter(node, f, scope, chains))
             })
             .collect()
     }
@@ -348,6 +362,7 @@ impl NodeService {
         node: &Node,
         filter: &PropertyFilter,
         scope: Option<&ScopeContext>,
+        chains: &TypeChains,
     ) -> bool {
         // Extract property path from JSONPath "$.field" or "$.field.subfield"
         // PropertyFilter::new() validates the "$." prefix, so strip_prefix should always succeed.
@@ -376,35 +391,28 @@ impl NodeService {
         // A field the query's scope does NOT declare stays invisible, which is
         // what keeps a base-scoped query from depending on a subtype's own
         // fields.
-        let own_chain = std::slice::from_ref(&node.node_type);
+        //
+        // The row's own chain holds every bucket the row's type stores a field
+        // in: its own, for a field it declares or an enum it extends, and its
+        // ancestors', for a field it inherits. No other bucket is the row's: a
+        // bucket a type change left behind is not read, by a typed query or an
+        // untyped one.
+        let own_chain = chains
+            .get(&node.node_type)
+            .map_or(std::slice::from_ref(&node.node_type), Vec::as_slice);
         let search_chain = match (scope, segments.as_slice()) {
             (Some(ctx), [field]) if ctx.declares_field(field) => own_chain,
             (Some(ctx), _) => ctx.chain(),
             (None, _) => own_chain,
         };
-        // `find_namespaced_property` itself already falls back to a flat
-        // top-level lookup (for a `schema`-type node's own fields and
-        // `_`-prefixed bookkeeping keys — see its doc) after every bucket in
-        // `search_chain` misses, so that fallback runs BEFORE the
-        // every-bucket fallback just below. In practice the two never
-        // compete: a flat top-level key and a namespace bucket are disjoint
-        // by construction (`NodeService::normalize_flat_properties_to_namespace`),
-        // so at most one of the two fallbacks can ever find anything for a
-        // given node.
-        let mut current =
+        // `find_namespaced_property` falls back to a flat top-level lookup
+        // (for a `schema`-type node's own fields and `_`-prefixed bookkeeping
+        // keys — see its doc) after every bucket in `search_chain` misses. A
+        // flat top-level key and a namespace bucket are disjoint by
+        // construction (`NodeService::normalize_flat_properties_to_namespace`),
+        // so that fallback never finds a bucket's field.
+        let current =
             crate::services::find_namespaced_property(&node.properties, &segments, search_chain);
-        // Fall back to every bucket when the scope declares the field but the
-        // node's own chain does not hold it — a deeper descendant may own it.
-        if current.is_none() {
-            if let (Some(ctx), [field]) = (scope, segments.as_slice()) {
-                if ctx.declares_field(field) {
-                    current = node
-                        .properties
-                        .as_object()
-                        .and_then(|obj| obj.values().find_map(|b| b.get(field)));
-                }
-            }
-        }
 
         let Some(actual_value) = current else {
             return false; // Property not found = doesn't match
@@ -869,11 +877,12 @@ mod scope_context_tests {
 
     /// The signature `apply_property_filters` must keep: synchronous, and
     /// carrying no `NodeService` or store handle.
-    type ApplyFilters = fn(Vec<Node>, &[PropertyFilter], Option<&ScopeContext>) -> Vec<Node>;
+    type ApplyFilters =
+        fn(Vec<Node>, &[PropertyFilter], Option<&ScopeContext>, &TypeChains) -> Vec<Node>;
 
     /// The signature `node_matches_property_filter` must keep — the body that
     /// runs once per row.
-    type MatchesFilter = fn(&Node, &PropertyFilter, Option<&ScopeContext>) -> bool;
+    type MatchesFilter = fn(&Node, &PropertyFilter, Option<&ScopeContext>, &TypeChains) -> bool;
 
     /// The filter path must stay a plain synchronous function that receives
     /// no `NodeService` and no store handle.
