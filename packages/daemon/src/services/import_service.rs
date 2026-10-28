@@ -998,7 +998,8 @@ impl Phase2Writer {
         for (root_id, content) in &refreshed_roots {
             let update = nodespace_core::NodeUpdate::new().with_content(content.clone());
             if let Err(e) = refresh_root(&self.node_service, root_id, update).await {
-                tracing::warn!("Failed to refresh root {}: {}", root_id, e);
+                tracing::error!("Failed to refresh root {}: {}", root_id, e);
+                self.fail(root_id, &format!("Root refresh failed: {e}"));
             }
         }
         if !prune.is_empty() {
@@ -1069,7 +1070,8 @@ impl Phase2Writer {
                 )
                 .await
             {
-                tracing::warn!("Failed to archive imported root {}: {}", root_id, e);
+                tracing::error!("Failed to archive imported root {}: {}", root_id, e);
+                self.fail(root_id, &format!("Archive failed: {e}"));
             }
         }
     }
@@ -1836,6 +1838,66 @@ mod tests {
             Some("Node insertion failed: rejected"),
             "a file's own failure is not overwritten",
         );
+    }
+
+    /// A phase-2 writer over a fresh store plus one body-less document whose
+    /// root is claimed to exist already but is absent from the store, so any
+    /// follow-up update of that root fails.
+    async fn writer_with_vanished_root(
+        replace: bool,
+        is_archived: bool,
+    ) -> (Phase2Writer, PreparedFileImport, tempfile::TempDir) {
+        let (ns, dir) = new_service_and_dir().await;
+        let store = Arc::clone(ns.store());
+        let root_id = deterministic_root_id("vanished.md");
+        let mut writer = Phase2Writer::new(ns, store, replace);
+        writer.existing_roots.insert(root_id.clone());
+        let file = PreparedFileImport {
+            file_path: PathBuf::from("vanished.md"),
+            root_id,
+            root_content: "Vanished".to_string(),
+            is_archived,
+            collection_path: None,
+            children: Vec::new(),
+            mentions: Vec::new(),
+        };
+        (writer, file, dir)
+    }
+
+    /// A replaced root whose refresh update fails is reported failed, not
+    /// written.
+    #[tokio::test]
+    async fn batch_root_refresh_failure_fails_the_document() {
+        let (mut writer, file, _dir) = writer_with_vanished_root(true, false).await;
+        let root_id = file.root_id.clone();
+
+        writer.write_chunk(vec![file]).await;
+
+        match writer.outcomes.get(&root_id) {
+            Some(DocOutcome::Failed { error, .. }) => {
+                assert!(error.starts_with("Root refresh failed"), "got: {error}")
+            }
+            other => panic!("expected a failed outcome, got {:?}", other.is_some()),
+        }
+        assert!(writer.first_error.is_some());
+    }
+
+    /// An imported document whose archive update fails is reported failed
+    /// instead of silently staying active.
+    #[tokio::test]
+    async fn batch_archive_failure_fails_the_document() {
+        let (mut writer, file, _dir) = writer_with_vanished_root(false, true).await;
+        let root_id = file.root_id.clone();
+
+        writer.write_chunk(vec![file]).await;
+
+        match writer.outcomes.get(&root_id) {
+            Some(DocOutcome::Failed { error, .. }) => {
+                assert!(error.starts_with("Archive failed"), "got: {error}")
+            }
+            other => panic!("expected a failed outcome, got {:?}", other.is_some()),
+        }
+        assert!(writer.first_error.is_some());
     }
 
     /// Paragraphs per test note. With its root and link paragraph a note is
