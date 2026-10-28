@@ -21,12 +21,12 @@
   - Keyboard accessible: Tab key navigation with focus indicators
   
   Integration:
-  - Uses navigation store (tabState, setActiveTab, closeTab)
-  - Slot pattern for content with activeTab prop
+  - Uses navigation store (setActiveTab, closeTab, reorderTab, moveTabBetweenPanes)
+  - Snippet for content with activeTab prop
   - Design system compliant colors and styling
   
-  Usage:
-  <TabSystem>
+  Usage (one instance per pane):
+  <TabSystem {tabs} {activeTabId} {pane}>
     Snippet: children({ activeTab })
       Content based on activeTab
   </TabSystem>
@@ -37,8 +37,7 @@
     setActiveTab,
     closeTab,
     reorderTab,
-    moveTabBetweenPanes,
-    getOrderedTabsForPane
+    moveTabBetweenPanes
   } from '$lib/stores/navigation.svelte';
   import { cn } from '$lib/utils.js';
   import type { Tab, Pane } from '$lib/stores/navigation.svelte';
@@ -52,29 +51,25 @@
   // Logger instance for TabSystem component
   const log = createLogger('TabSystem');
 
-  // Props - when used inside PaneManager
+  // Props - one TabSystem renders one pane
   let {
-    tabs = undefined,
-    activeTabId = undefined,
-    pane = undefined,
+    tabs,
+    activeTabId,
+    pane,
     children
   }: {
-    tabs?: Tab[];
-    activeTabId?: string;
-    pane?: Pane;
+    tabs: Tab[];
+    activeTabId: string;
+    pane: Pane;
     children?: Snippet<[{ activeTab: Tab | undefined }]>;
   } = $props();
 
-  // Fallback to global state when not pane-specific (backwards compatibility)
-  const currentPaneId = $derived(pane?.id || navigationStore.state.activePaneId);
+  const currentPaneId = $derived(pane.id);
 
-  // Get tabs in the correct order based on pane's tabIds array
-  // Use the optimized utility function for consistent tab ordering
-  const displayTabs = $derived(tabs || getOrderedTabsForPane(navigationStore.state, currentPaneId));
+  // Tabs arrive already ordered by the pane's tabIds array
+  const displayTabs = $derived(tabs);
 
-  const currentActiveTabId = $derived(
-    activeTabId || navigationStore.state.activeTabIds[navigationStore.state.activePaneId]
-  );
+  const currentActiveTabId = $derived(activeTabId);
 
   // Check if close button should be disabled (last tab in last pane)
   const isCloseDisabled = $derived(displayTabs.length === 1 && navigationStore.state.panes.length === 1);
