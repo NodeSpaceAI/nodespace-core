@@ -79,7 +79,8 @@ fi
 
 if [ ! -f "$S/existing-issues.json" ]; then
   tmp="$S/existing-issues.json.tmp"
-  { for r in core sync cloud; do gh issue list -R "NodeSpaceAI/nodespace-$r" --state all --limit 1500 --json number,title,state -q ".[]|{repo:\"$r\",number,title,state}"; done; } | jq -s . > "$tmp"
+  # The issues endpoint also returns pull requests, so those are filtered out; paginating has no cap.
+  { for r in core sync cloud; do gh api --paginate "repos/NodeSpaceAI/nodespace-$r/issues?state=all&per_page=100" --jq ".[]|select(has(\"pull_request\")|not)|{repo:\"$r\",number,title,state:(.state|ascii_upcase)}"; done; } | jq -s . > "$tmp"
   mv "$tmp" "$S/existing-issues.json"
 fi
 
