@@ -57,6 +57,22 @@ pub const STATE_DIR: &str = ".nodespace";
 /// actually running, since it is a single binary that may be driving either.
 pub const DAEMON_SOCKET_NAMES: [&str; 2] = ["daemon.sock", "daemon-dev.sock"];
 
+/// Every sidecar install directory name under the state directory, ordered
+/// release first, then debug. A debug build installs into its own directory so
+/// that the two flavours' launchd jobs, source stamps and stale-daemon checks
+/// never share a binary. Exposed for callers that must consider both flavours
+/// at once, such as uninstall.
+pub const DAEMON_BIN_DIR_NAMES: [&str; 2] = ["bin", "bin-dev"];
+
+/// The sidecar install directory name for one build flavour.
+pub const fn daemon_bin_dir_name(is_debug: bool) -> &'static str {
+    if is_debug {
+        DAEMON_BIN_DIR_NAMES[1]
+    } else {
+        DAEMON_BIN_DIR_NAMES[0]
+    }
+}
+
 /// The daemon socket filename for one build flavour.
 ///
 /// `is_debug` should come from the caller's own `cfg!(debug_assertions)` — see

@@ -196,8 +196,13 @@ fn stop_daemon() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn stop_daemon() {}
 
+/// Remove both build flavours' sidecar install directories, for the same
+/// reason as [`remove_sock`]: this binary cannot tell which flavour installed
+/// what is on disk.
 fn remove_bin_dir(state_dir: &Path) {
-    let _ = fs::remove_dir_all(state_dir.join("bin"));
+    for name in nodespace_proto::socket::DAEMON_BIN_DIR_NAMES {
+        let _ = fs::remove_dir_all(state_dir.join(name));
+    }
 }
 
 /// Remove both build flavours' sockets, not just the release one. A single
@@ -428,6 +433,27 @@ mod tests {
         );
         #[cfg(target_os = "macos")]
         assert_eq!(INSTALLED_APP, Some("/Applications/NodeSpace.app"));
+    }
+
+    /// Both flavours' install directories go, and nothing beside them.
+    #[test]
+    fn remove_bin_dir_removes_both_flavours_directories_only() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let state_dir = home.path().join(nodespace_proto::socket::STATE_DIR);
+        let bystander = state_dir.join("database");
+        fs::create_dir_all(&bystander).expect("create bystander");
+        for name in nodespace_proto::socket::DAEMON_BIN_DIR_NAMES {
+            let dir = state_dir.join(name);
+            fs::create_dir_all(&dir).expect("create bin dir");
+            fs::write(dir.join("nodespaced"), "").expect("write binary");
+        }
+
+        remove_bin_dir(&state_dir);
+
+        for name in nodespace_proto::socket::DAEMON_BIN_DIR_NAMES {
+            assert!(!state_dir.join(name).exists(), "{name} survived");
+        }
+        assert!(bystander.exists(), "unrelated state must be left alone");
     }
 
     /// Every flavour's socket and lock file must go, and nothing beside them.
