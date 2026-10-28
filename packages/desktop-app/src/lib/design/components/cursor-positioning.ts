@@ -148,43 +148,6 @@ export function findCharacterFromClick(
 }
 
 /**
- * Handle complex text scenarios (emojis, RTL, etc.) for ContentEditable
- * @param content - Text content to analyze
- * @returns Information about text complexity
- */
-export function analyzeTextComplexity(content: string): {
-  hasEmojis: boolean;
-  hasRTL: boolean;
-  hasComplexGraphemes: boolean;
-  estimatedComplexity: 'low' | 'medium' | 'high';
-} {
-  const emojiRegex =
-    /[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu;
-  const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/;
-  const complexGraphemeRegex =
-    /[\u0300-\u036F]|[\u1AB0-\u1AFF]|[\u1DC0-\u1DFF]|[\u20D0-\u20FF]|[\uFE20-\uFE2F]/;
-
-  const hasEmojis = emojiRegex.test(content);
-  const hasRTL = rtlRegex.test(content);
-  const hasComplexGraphemes = complexGraphemeRegex.test(content);
-
-  let estimatedComplexity: 'low' | 'medium' | 'high' = 'low';
-
-  if (hasEmojis || hasComplexGraphemes) {
-    estimatedComplexity = hasRTL ? 'high' : 'medium';
-  } else if (hasRTL) {
-    estimatedComplexity = 'medium';
-  }
-
-  return {
-    hasEmojis,
-    hasRTL,
-    hasComplexGraphemes,
-    estimatedComplexity
-  };
-}
-
-/**
  * Performance monitoring utility for cursor positioning operations
  */
 export class PositioningPerformanceMonitor {
@@ -405,27 +368,4 @@ export function createMockElementForView(
   }
   document.body.appendChild(mockElement);
   return mockElement;
-}
-
-/**
- * Validate if click is within reasonable bounds of the text area
- * @param clickX - Click X coordinate
- * @param clickY - Click Y coordinate
- * @param editableRect - Bounding rectangle of editable element (textarea or contenteditable)
- * @returns True if click is within extended bounds
- */
-export function isClickWithinTextBounds(
-  clickX: number,
-  clickY: number,
-  editableRect: { left: number; top: number; width: number; height: number }
-): boolean {
-  // Allow some padding around the editable element for better UX
-  const padding = 10;
-
-  return (
-    clickX >= editableRect.left - padding &&
-    clickX <= editableRect.left + editableRect.width + padding &&
-    clickY >= editableRect.top - padding &&
-    clickY <= editableRect.top + editableRect.height + padding
-  );
 }

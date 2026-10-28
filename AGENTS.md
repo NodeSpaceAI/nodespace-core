@@ -310,7 +310,7 @@ import { createLogger } from '$lib/utils/logger';
 const log = createLogger('ServiceName');
 log.debug() / log.info() / log.warn() / log.error()
 ```
-Test files and DeveloperInspector are exempt.
+Test files are exempt.
 
 **Runtime:** Bun-only. `npm`/`yarn`/`pnpm` are blocked. Use `bun install`, `bun run dev`, `bun run test`, `bunx` for one-off tools.
 
