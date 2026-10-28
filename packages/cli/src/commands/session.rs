@@ -11,7 +11,6 @@ use nodespace_daemon::nodespace::{
     LaunchSessionRequest, ListSessionsRequest, OutputChunk, ReportHarnessSessionRequest,
     StreamOutputRequest, TerminateSessionRequest, WriteInputRequest,
 };
-use tokio::io::AsyncReadExt;
 use tokio_stream::{Stream, StreamExt};
 use tonic::Request;
 
@@ -232,15 +231,10 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
     let input_session = session_id.clone();
 
     // Spawn stdin → WriteInput task.
+    let mut stdin_chunks = spawn_stdin_reader(std::io::stdin());
     let input_task = tokio::spawn(async move {
-        let mut stdin = tokio::io::stdin();
-        let mut buf = [0u8; 256];
-        loop {
-            let n = match stdin.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
-            };
-            let (forwarded, should_detach) = split_detach(&buf[..n]);
+        while let Some(chunk) = stdin_chunks.recv().await {
+            let (forwarded, should_detach) = split_detach(&chunk);
 
             if !forwarded.is_empty() {
                 let _ = input_client
@@ -259,6 +253,35 @@ async fn stream_bridge(client: &mut SessionClient, session_id: String) -> Result
 
     // Returns only once the stdin task has exited, i.e. before raw mode is restored.
     pump_output(&mut output_stream, input_task, write_stdout).await
+}
+
+/// Reads `reader` on a dedicated OS thread and hands each chunk to the
+/// returned receiver. A blocking read cannot be cancelled; on a runtime
+/// blocking-pool thread (as with `tokio::io::stdin`) it would hold the runtime
+/// shutdown until a line arrived. This thread is never joined, so a read still
+/// in flight when the session ends does not delay process exit.
+fn spawn_stdin_reader<R>(mut reader: R) -> tokio::sync::mpsc::Receiver<Vec<u8>>
+where
+    R: std::io::Read + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    std::thread::Builder::new()
+        .name("session-stdin".into())
+        .spawn(move || {
+            let mut buf = [0u8; 256];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .expect("spawn stdin reader thread");
+    rx
 }
 
 /// Splits raw terminal input into the bytes to forward to the agent and
@@ -354,7 +377,7 @@ fn format_unix_time(unix_secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{dropped_notice, pump_output, split_detach};
+    use super::{dropped_notice, pump_output, spawn_stdin_reader, split_detach};
     use super::{LaunchArgs, ReportHarnessSessionArgs, SESSION_ENV_VAR};
     use clap::{CommandFactory, Parser};
     use nodespace_agent::agent_types::AgentType;
@@ -508,5 +531,44 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
+    }
+
+    /// A stdin read still blocked when the session ends must not hold the
+    /// runtime's shutdown (the process would hang until Enter).
+    #[test]
+    fn runtime_shutdown_does_not_wait_for_a_blocked_stdin_read() {
+        struct BlockedForever(std::sync::mpsc::Receiver<()>);
+        impl std::io::Read for BlockedForever {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv(); // never signalled while the test runs
+                Ok(0)
+            }
+        }
+
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<OutputChunk, tonic::Status>>(4);
+                let mut stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+                let mut chunks = spawn_stdin_reader(BlockedForever(blocked));
+                let input = tokio::spawn(async move { while chunks.recv().await.is_some() {} });
+                drop(tx); // the session ended on its own
+                pump_output(&mut stream, input, |_| Ok(())).await.unwrap();
+            });
+            drop(rt);
+            let _ = done_tx.send(());
+        });
+        let finished = done_rx.recv_timeout(std::time::Duration::from_secs(5));
+        drop(release);
+        assert!(finished.is_ok(), "runtime shutdown hung on a blocked read");
+    }
+
+    #[tokio::test]
+    async fn stdin_reader_delivers_chunks_then_closes_at_eof() {
+        let mut rx = spawn_stdin_reader(std::io::Cursor::new(b"hello".to_vec()));
+        assert_eq!(rx.recv().await.unwrap(), b"hello");
+        assert!(rx.recv().await.is_none());
     }
 }
