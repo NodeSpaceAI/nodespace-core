@@ -163,7 +163,7 @@ committing.
 WKWebView the app ships with, not Chrome. Drive it with `tauri-mcp`.
 
 **Launching the app cannot be isolated from the user's service registration.**
-It installs the sidecars into `~/.nodespace/bin`, kills a daemon on the default
+It installs the sidecars into `~/.nodespace/bin-dev`, kills a daemon on the default
 socket, and registers the debug launchd label (`app.nodespace.daemon.dev`). That
 label is per user, so neither `HOME` nor `NODESPACE_HOME` scopes it, and the app
 re-registers it whenever it rebuilds or finds a changed sidecar. A scratch
@@ -177,7 +177,7 @@ Get the user's go-ahead before launching it, and restore afterwards.
    (its `path`, `program` and `pid`).
 2. Pick a short scratch home (`/tmp/nsh`) and pre-seed it: copy
    `target/debug/binaries/nodespaced-<triple>` and `nodespace-<triple>` to
-   `/tmp/nsh/.nodespace/bin/nodespaced` and `nodespace`.
+   `/tmp/nsh/.nodespace/bin-dev/nodespaced` and `nodespace`.
 3. Start that daemon with `HOME=/tmp/nsh`,
    `NODESPACED_SOCKET=/tmp/nsh/.nodespace/daemon-dev.sock`, `NODESPACE_HOME=/tmp/nsh/.nodespace`.
    The log must say `/tmp/nsh/...`, never `/Users/<you>/.nodespace/`.
