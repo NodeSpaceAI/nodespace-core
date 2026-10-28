@@ -159,6 +159,17 @@ async function waitForSsh(timeoutMs = 120_000): Promise<void> {
  * (`runRemoteBuild`) is what's actually unverified against a real VM (see
  * module doc); this at least pins down exactly which commands it would run.
  */
+/**
+ * Quote a path for the remote POSIX shell while keeping a leading `~` live:
+ * tilde expansion does not happen inside quotes, so `~/a b` becomes `~/'a b'`.
+ */
+export function quoteRemotePath(path: string): string {
+  const quote = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
+  if (path === '~') return '~';
+  if (path.startsWith('~/')) return `~/${quote(path.slice(2))}`;
+  return quote(path);
+}
+
 export function buildRemoteScript(repoPath: string): string {
   return [
     // Single-quoted: the whole joined script is sent as one command line to
@@ -168,7 +179,7 @@ export function buildRemoteScript(repoPath: string): string {
     // `/c/Users/Build Machine/nodespace-core` are exactly this) would word-
     // split into an unexpected extra `cd` argument and fail the whole
     // `&&`-chained build at the very first step.
-    `cd '${repoPath}'`,
+    `cd ${quoteRemotePath(repoPath)}`,
     'git pull',
     'bun install --frozen-lockfile',
     'bun run --cwd packages/desktop-app sync',

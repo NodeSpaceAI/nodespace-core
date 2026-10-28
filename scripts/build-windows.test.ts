@@ -5,7 +5,7 @@
 // verify `runRemoteBuild`/`waitForSsh`/`copyArtifactsBack` against; this
 // tests the one part of Tier 2 that doesn't need one.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { buildRemoteScript, buildScpSources, envOrDefault, setupInstructions, VM_NAME } from "./build-windows";
+import { buildRemoteScript, buildScpSources, quoteRemotePath, envOrDefault, setupInstructions, VM_NAME } from "./build-windows";
 
 describe("setupInstructions", () => {
   test("names the VM and points at the one-time setup doc", () => {
@@ -55,10 +55,22 @@ describe("envOrDefault", () => {
   });
 });
 
+describe("quoteRemotePath", () => {
+  test("keeps a leading tilde outside the quotes so the remote shell expands it", () => {
+    expect(quoteRemotePath("~/nodespace-core")).toBe("~/'nodespace-core'");
+    expect(quoteRemotePath("~/Build Machine/repo")).toBe("~/'Build Machine/repo'");
+    expect(quoteRemotePath("~")).toBe("~");
+  });
+
+  test("escapes embedded single quotes", () => {
+    expect(quoteRemotePath("/c/it's")).toBe("'/c/it'\\''s'");
+  });
+});
+
 describe("buildRemoteScript", () => {
   test("cds into the given repo path before anything else", () => {
     const script = buildRemoteScript("~/nodespace-core");
-    expect(script.startsWith("cd '~/nodespace-core' &&")).toBe(true);
+    expect(script.startsWith("cd ~/'nodespace-core' &&")).toBe(true);
   });
 
   // Regression coverage for a real bug caught by post-merge review: an
@@ -81,7 +93,7 @@ describe("buildRemoteScript", () => {
     // first real failure and one that silently limps past it.
     const steps = script.split(" && ");
     expect(steps).toEqual([
-      "cd '~/nodespace-core'",
+      "cd ~/'nodespace-core'",
       "git pull",
       "bun install --frozen-lockfile",
       "bun run --cwd packages/desktop-app sync",
