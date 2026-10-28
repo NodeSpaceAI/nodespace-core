@@ -1222,7 +1222,7 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
         let service_path = systemd_user_service_dir(&home).join(SYSTEMD_SERVICE_NAME);
         write_systemd_service(&home, &service_path, &daemon_bin)
             .context("Failed to write systemd service file")?;
-        enable_systemd_service()?;
+        enable_systemd_service(binary_updated)?;
     }
 
     // Windows: spawn the daemon process directly and register it in HKCU autorun
@@ -2553,9 +2553,33 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
         .with_context(|| format!("Cannot write service file to {}", service_path.display()))
 }
 
-/// Enable and start the systemd user service.
+/// The `systemctl --user` invocation that enables the service and makes sure
+/// the unit is running the current binary.
+///
+/// `enable --now` starts an inactive unit but does nothing to an active one, so
+/// a daemon that was started with the previous binary and has not bound its
+/// socket yet (invisible to the socket-gated kill) would keep running it.
+/// After a binary update the unit is therefore enabled and then restarted,
+/// which starts it when inactive and replaces it when active.
+#[cfg(any(target_os = "linux", test))]
+fn systemd_enable_args(binary_updated: bool, unit: &str) -> Vec<Vec<String>> {
+    let args = |parts: &[&str]| parts.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+    if binary_updated {
+        vec![
+            args(&["--user", "enable", unit]),
+            args(&["--user", "restart", unit]),
+        ]
+    } else {
+        // Enable and start atomically; --now avoids a separate start call and
+        // handles the "never started before" case correctly on all systemd versions.
+        vec![args(&["--user", "enable", "--now", unit])]
+    }
+}
+
+/// Enable and start the systemd user service, restarting it when the daemon
+/// binary was replaced.
 #[cfg(target_os = "linux")]
-fn enable_systemd_service() -> Result<()> {
+fn enable_systemd_service(binary_updated: bool) -> Result<()> {
     // Reload unit files so systemd picks up the newly written service.
     let reload = std::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
@@ -2566,24 +2590,25 @@ fn enable_systemd_service() -> Result<()> {
         tracing::warn!("systemctl daemon-reload failed: {}", err);
     }
 
-    // Enable and start atomically; --now avoids a separate start call and
-    // handles the "never started before" case correctly on all systemd versions.
-    let enable = std::process::Command::new("systemctl")
-        .args(["--user", "enable", "--now", SYSTEMD_SERVICE_NAME])
-        .output()
-        .context("Failed to run systemctl --user enable --now")?;
-    if !enable.status.success() {
-        let err = String::from_utf8_lossy(&enable.stderr);
-        tracing::warn!(
-            "systemctl enable --now failed (daemon may start on next login): {}",
-            err
-        );
-    } else {
-        tracing::info!(
-            "systemd user service enabled and started: {}",
-            SYSTEMD_SERVICE_NAME
-        );
+    for args in systemd_enable_args(binary_updated, SYSTEMD_SERVICE_NAME) {
+        let out = std::process::Command::new("systemctl")
+            .args(&args)
+            .output()
+            .with_context(|| format!("Failed to run systemctl {}", args.join(" ")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            tracing::warn!(
+                "systemctl {} failed (daemon may start on next login): {}",
+                args.join(" "),
+                err
+            );
+            return Ok(());
+        }
     }
+    tracing::info!(
+        "systemd user service enabled and started: {}",
+        SYSTEMD_SERVICE_NAME
+    );
 
     Ok(())
 }
@@ -5744,5 +5769,28 @@ mod bundle_marker_tests {
         drop(f);
         super::sweep_marker_tmp_older_than(dir.path(), Duration::from_secs(60));
         assert!(!future.exists(), "a future-dated temp file is swept");
+    }
+}
+
+#[cfg(test)]
+mod systemd_enable_tests {
+    use super::systemd_enable_args;
+
+    #[test]
+    fn a_binary_update_restarts_the_unit_instead_of_relying_on_enable_now() {
+        let calls = systemd_enable_args(true, "nodespace.service");
+        assert!(calls
+            .iter()
+            .any(|c| c.contains(&"restart".to_owned()) && c.contains(&"nodespace.service".into())));
+        assert!(calls.iter().all(|c| !c.contains(&"--now".to_owned())));
+    }
+
+    #[test]
+    fn without_a_binary_update_the_unit_is_enabled_and_started_once() {
+        let calls = systemd_enable_args(false, "nodespace.service");
+        assert_eq!(
+            calls,
+            vec![vec!["--user", "enable", "--now", "nodespace.service"]]
+        );
     }
 }
