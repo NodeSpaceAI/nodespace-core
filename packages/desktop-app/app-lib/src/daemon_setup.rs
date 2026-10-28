@@ -4,7 +4,7 @@
 //!   1. Locate sidecar binaries bundled beside the app's own executable (Tauri's
 //!      `externalBin` convention — see `resolve_sidecar_path`'s doc comment for
 //!      why this is NOT the `Resources`/resource-resolver tree).
-//!   2. Copy them to ~/.nodespace/bin/ (skipped if the copy was extracted from the same bundled file).
+//!   2. Copy them to ~/.nodespace/bin/ (~/.nodespace/bin-dev/ for a debug build; skipped if the copy was extracted from the same bundled file).
 //!   3. Register the daemon as a user service:
 //!      - macOS: write ~/Library/LaunchAgents/<plist_filename()> and bootstrap it.
 //!        The filename and launchd label vary by build flavour (debug or release) so dev
@@ -84,7 +84,26 @@ use crate::daemon_profile::{self, DaemonProfile};
 use crate::services::GrpcClient;
 use crate::window_routing;
 
-const DAEMON_BIN_DIR: &str = ".nodespace/bin";
+/// Relative path from HOME to the directory the sidecars are installed into,
+/// scoped by build flavour like the socket and the launchd label.
+///
+/// Both flavours' launchd jobs run the installed daemon by path, so a shared
+/// directory lets whichever app extracted last decide which binary either job
+/// execs, and makes each app's stale-daemon check signal the other flavour's
+/// healthy daemon. A debug build keeps its own directory so the two installs
+/// never touch one another's files.
+const fn daemon_bin_dir_relative(is_debug: bool) -> &'static str {
+    if is_debug {
+        ".nodespace/bin-dev"
+    } else {
+        ".nodespace/bin"
+    }
+}
+
+/// The sidecar install directory of this build flavour under `home`.
+fn daemon_bin_dir(home: &Path) -> PathBuf {
+    home.join(daemon_bin_dir_relative(cfg!(debug_assertions)))
+}
 const DAEMON_DB_DIR: &str = ".nodespace/database";
 const DAEMON_LOG_DIR: &str = ".nodespace/logs";
 pub(crate) const DAEMON_BINARY_NAME: &str = "nodespaced";
@@ -170,7 +189,7 @@ pub fn kill_stale_daemon_sync() {
     if machine_wide_plist_path().exists() {
         return;
     }
-    let bin_dir = home.join(DAEMON_BIN_DIR);
+    let bin_dir = daemon_bin_dir(&home);
     let socket_path = home.join(daemon_socket_relative());
     let installed = bin_dir.join(daemon_binary_name());
 
@@ -1032,7 +1051,7 @@ pub(crate) async fn record_outcome(
 /// starts; [`start_attempt`] does, and asks whichever daemon answers.
 async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     let home = home_dir().context("Cannot resolve home directory")?;
-    let bin_dir = home.join(DAEMON_BIN_DIR);
+    let bin_dir = daemon_bin_dir(&home);
     let log_dir = home.join(DAEMON_LOG_DIR);
     let db_dir = home.join(DAEMON_DB_DIR);
     // On Windows the "socket path" is a Named Pipe path, not a filesystem path.
@@ -1069,7 +1088,7 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     // Ensure all directories exist before any binary checks.
     tokio::fs::create_dir_all(&bin_dir)
         .await
-        .context("Failed to create ~/.nodespace/bin")?;
+        .context("Failed to create the sidecar install directory")?;
     tokio::fs::create_dir_all(&log_dir)
         .await
         .context("Failed to create ~/.nodespace/logs")?;
@@ -1366,7 +1385,7 @@ async fn kill_running_daemon_within(socket_path: &Path, exit_grace: Duration) {
     // Verify each PID holding the socket against our installed binary path
     // before sending SIGTERM.
     let programs = home_dir()
-        .map(|h| daemon_program_paths(&h.join(DAEMON_BIN_DIR), &real_launchctl_print))
+        .map(|h| daemon_program_paths(&daemon_bin_dir(&h), &real_launchctl_print))
         .unwrap_or_default();
     for pid in pids_holding_unix_socket(socket_path) {
         if process_is_ours_running_one_of(pid, &programs) {
@@ -2794,7 +2813,7 @@ async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
     );
     window_routing::emit_routed(app, "daemon-status", "starting", None);
 
-    let daemon_bin = sidecar_install_path(&home.join(DAEMON_BIN_DIR), daemon_binary_name());
+    let daemon_bin = sidecar_install_path(&daemon_bin_dir(&home), daemon_binary_name());
 
     // Stop the process actually holding the files open, THEN rotate — see
     // `rotate_daemon_logs`'s call site in `ensure_daemon_running` for why this
@@ -3899,7 +3918,10 @@ mod launch_agent_label_tests {
 /// instead of shipping silently, the way it did the first time.
 #[cfg(test)]
 mod sidecar_path_tests {
-    use super::{bundled_sidecar_name, sidecar_install_path, sidecar_path_from_exe};
+    use super::{
+        bundled_sidecar_name, daemon_bin_dir, daemon_bin_dir_relative, sidecar_install_path,
+        sidecar_path_from_exe,
+    };
     use std::path::Path;
 
     #[test]
@@ -4003,6 +4025,20 @@ mod sidecar_path_tests {
             };
             assert_eq!(installed, Path::new(&expected));
         }
+    }
+
+    /// The two build flavours install into different directories, so neither
+    /// can replace the binary the other flavour's launchd job runs.
+    #[test]
+    fn debug_and_release_flavours_install_into_different_directories() {
+        assert_ne!(
+            daemon_bin_dir_relative(true),
+            daemon_bin_dir_relative(false)
+        );
+        let home = Path::new("/home/user");
+        let this_build = daemon_bin_dir(home);
+        let other_flavour = home.join(daemon_bin_dir_relative(!cfg!(debug_assertions)));
+        assert_ne!(this_build, other_flavour);
     }
 }
 
@@ -4934,12 +4970,45 @@ mod product_eviction_tests {
 #[cfg(test)]
 mod sidecar_source_stamp_tests {
     use super::{
-        ensure_bundle_unchanged, extract_sidecar_from, file_signature, installed_matches_source,
-        sha256_hex, sidecar_install_path, sidecar_stamp_path, write_sidecar_stamp, SidecarStamp,
+        daemon_bin_dir_relative, ensure_bundle_unchanged, extract_sidecar_from, file_signature,
+        installed_matches_source, sha256_hex, sidecar_install_path, sidecar_stamp_path,
+        write_sidecar_stamp, SidecarStamp,
     };
     use std::path::{Path, PathBuf};
 
     const NAME: &str = "nodespaced";
+
+    /// Extracting one flavour's daemon leaves the other flavour's installed
+    /// binary and its source stamp untouched.
+    #[test]
+    fn extracting_one_flavour_leaves_the_other_flavours_binary_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let debug_dir = home.join(daemon_bin_dir_relative(true));
+        let release_dir = home.join(daemon_bin_dir_relative(false));
+        let debug_src = home.join("debug-src");
+        let release_src = home.join("release-src");
+        std::fs::write(&debug_src, b"debug daemon").unwrap();
+        std::fs::write(&release_src, b"release daemon").unwrap();
+        std::fs::create_dir_all(&debug_dir).unwrap();
+        std::fs::create_dir_all(&release_dir).unwrap();
+
+        assert!(extract_sidecar_from(&release_src, NAME, &release_dir).unwrap());
+        assert!(extract_sidecar_from(&debug_src, NAME, &debug_dir).unwrap());
+
+        assert_eq!(
+            std::fs::read(sidecar_install_path(&release_dir, NAME)).unwrap(),
+            b"release daemon"
+        );
+        assert!(installed_matches_source(
+            &release_src,
+            &sidecar_install_path(&release_dir, NAME),
+            &stamp_path(&release_dir)
+        ));
+        // Re-extracting the release bundle is a no-op: the debug extraction
+        // did not invalidate its stamp.
+        assert!(!extract_sidecar_from(&release_src, NAME, &release_dir).unwrap());
+    }
 
     fn stamp_path(bin_dir: &Path) -> PathBuf {
         sidecar_stamp_path(bin_dir, &super::bundled_sidecar_name(NAME))
