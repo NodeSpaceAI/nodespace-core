@@ -36,6 +36,15 @@ impl ScopeContext {
         self.scope_fields.iter().any(|f| f.name == name)
     }
 
+    /// Whether the queried scope declares this field as an enum. Only an
+    /// enum's values carry a vocabulary a subtype extends and maps back; any
+    /// other field's value means the same at every scope.
+    fn field_is_enum(&self, name: &str) -> bool {
+        self.scope_fields
+            .iter()
+            .any(|f| f.name == name && f.field_type == crate::models::SchemaFieldType::Enum)
+    }
+
     /// Whether a node of this type could carry a value needing resolution.
     ///
     /// False for a node of exactly the queried type — it is already reading at
@@ -408,11 +417,14 @@ impl NodeService {
         // An unresolvable value fails the filter rather than falling back to
         // the raw value, which a base-scoped filter has no way to interpret.
         //
-        // Only single-segment paths resolve: `maps_to` maps a field's enum
-        // values, not positions inside a nested object.
+        // Only single-segment paths to an enum field resolve: `maps_to` maps a
+        // field's enum values, not positions inside a nested object, and any
+        // other field is compared as stored.
         let resolved;
         let actual_value = match (scope, actual_value.as_str(), segments.as_slice()) {
-            (Some(ctx), Some(raw), [field]) if ctx.may_resolve_values(&node.node_type) => {
+            (Some(ctx), Some(raw), [field])
+                if ctx.may_resolve_values(&node.node_type) && ctx.field_is_enum(field) =>
+            {
                 match ctx.resolve_value(field, raw, &node.node_type) {
                     Some(value) => {
                         resolved = serde_json::Value::String(value);
