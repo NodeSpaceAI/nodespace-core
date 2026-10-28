@@ -41,7 +41,7 @@ impl CollectionSegment {
     /// Create a new segment from a name
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
-        let normalized_name = name.to_lowercase();
+        let normalized_name = name.to_ascii_lowercase();
         Self {
             name,
             normalized_name,
@@ -251,7 +251,7 @@ pub fn validate_collection_name(name: &str) -> Result<String, NodeServiceError> 
 
 /// Normalize a collection name for case-insensitive lookup
 pub fn normalize_collection_name(name: &str) -> String {
-    name.trim().to_lowercase()
+    name.trim().to_ascii_lowercase()
 }
 
 /// Stable namespace for deterministic collection ids (UUIDv5). A fixed, arbitrary

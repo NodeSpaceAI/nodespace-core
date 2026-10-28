@@ -1091,7 +1091,7 @@ impl SqliteStore {
     /// legitimate way to free up that name rather than a collision. An
     /// archived collection is reached by id.
     pub async fn get_collection_by_name(&self, name: &str) -> Result<Option<Node>> {
-        let normalized = name.to_lowercase();
+        let normalized = name.to_ascii_lowercase();
 
         // Drain and drop the cursor before `get_node` checks out a second reader
         // connection — see `ReadRows` in `connections.rs`.
@@ -1133,7 +1133,7 @@ impl SqliteStore {
             return Ok(HashMap::new());
         }
 
-        let normalized: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let normalized: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
         let placeholders: Vec<String> = (1..=normalized.len()).map(|i| format!("?{}", i)).collect();
         let sql = format!(
             "SELECT id, title FROM node WHERE {} AND {} AND LOWER(title) IN ({})",
@@ -1166,7 +1166,7 @@ impl SqliteStore {
         let mut collections = HashMap::new();
         for (id, title) in matches {
             if let Ok(Some(node)) = self.get_node(&id).await {
-                let key = title.unwrap_or_default().to_lowercase();
+                let key = title.unwrap_or_default().to_ascii_lowercase();
                 collections.insert(key, node);
             }
         }

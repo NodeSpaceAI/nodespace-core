@@ -246,7 +246,7 @@ impl NodeService {
             .iter()
             .filter(|n| collection_types.get(&n.node_type) == Some(&true))
         {
-            let name = node.content.to_lowercase();
+            let name = node.content.to_ascii_lowercase();
             let stored = self
                 .store
                 .get_collection_by_name(&node.content)
@@ -263,7 +263,7 @@ impl NodeService {
             }
             if let (true, Some(title)) = (crate::governance::participates(node), &node.title) {
                 batch_collections
-                    .entry(title.to_lowercase())
+                    .entry(title.to_ascii_lowercase())
                     .or_insert_with(|| node.id.clone());
             }
         }
