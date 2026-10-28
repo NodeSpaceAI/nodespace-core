@@ -128,7 +128,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Operate on individual nodes (get, context, create, update, move, delete, children, query, export, batch-get, batch-update).
+    /// Operate on individual nodes (get, context, create, update, set-status, move, delete, children, query, export, batch-get, batch-update).
     Node {
         #[command(subcommand)]
         action: commands::node::NodeAction,
@@ -139,7 +139,7 @@ pub enum Command {
         #[command(subcommand)]
         action: journal::JournalAction,
     },
-    /// Manage the local inference model (list, load, recommended).
+    /// Manage the local inference model (list, load, recommended, status).
     Model {
         #[command(subcommand)]
         action: commands::model::ModelAction,
@@ -1137,6 +1137,26 @@ mod connect_failure_tests {
             !flat.contains("Start the daemon with `nodespaced` before"),
             "{flat}"
         );
+    }
+
+    #[test]
+    fn top_level_group_summaries_list_every_visible_subcommand() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        for group in ["node", "model"] {
+            let cmd = cli.find_subcommand(group).expect("group exists");
+            let about = cmd.get_about().expect("group has about").to_string();
+            for sub in cmd.get_subcommands().filter(|s| !s.is_hide_set()) {
+                let name = sub.get_name();
+                if name == "help" {
+                    continue;
+                }
+                assert!(
+                    about.contains(name),
+                    "`{group}` summary `{about}` omits subcommand `{name}`"
+                );
+            }
+        }
     }
 
     #[test]
