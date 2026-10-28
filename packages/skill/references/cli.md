@@ -1044,7 +1044,7 @@ Every command, subcommand, and flag below is generated from the CLI's own defini
 
 ### `nodespace node`
 
-Operate on individual nodes (get, context, create, update, move, delete, children, query, export, batch-get, batch-update)
+Operate on individual nodes (get, context, create, update, set-status, move, delete, children, query, export, batch-get, batch-update)
 
 **`nodespace node get`** — Retrieve a node by ID
 
@@ -1131,7 +1131,7 @@ Operate on individual nodes (get, context, create, update, move, delete, childre
 
 ### `nodespace model`
 
-Manage the local inference model (list, load, recommended)
+Manage the local inference model (list, load, recommended, status)
 
 **`nodespace model list`** — List models in the catalog and their download/load status
 
