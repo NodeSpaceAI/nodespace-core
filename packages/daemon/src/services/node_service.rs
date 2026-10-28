@@ -3065,11 +3065,16 @@ impl GrpcNodeService for NodeServiceImpl {
                         // caller) suppresses nothing, matching pre-existing
                         // behavior; an event with no `source_client_id`
                         // (write made through an unscoped `node_service`) is
-                        // never suppressed either.
-                        let is_own_echo = matches!(
-                            (&subscriber_client_id, &envelope.metadata.source_client_id),
-                            (Some(sub), Some(src)) if sub == src
-                        );
+                        // never suppressed either. A write a play made
+                        // (`playbook_context` set) is never the subscriber's
+                        // own echo: an invariant rule's actions run on a clone
+                        // of the writer's scoped service and so carry its id,
+                        // but the writer never applied them optimistically.
+                        let is_own_echo = envelope.metadata.playbook_context.is_none()
+                            && matches!(
+                                (&subscriber_client_id, &envelope.metadata.source_client_id),
+                                (Some(sub), Some(src)) if sub == src
+                            );
                         if is_own_echo {
                             continue;
                         }
@@ -7446,6 +7451,101 @@ mod tests {
         assert!(
             next_event(&mut alice_stream).await.is_none(),
             "the writer's own WatchNodes subscription must not see its own echo"
+        );
+    }
+
+    /// An invariant rule's write actions run inside the writer's transaction
+    /// on a clone of the writer's client-scoped service, so the nodes they
+    /// create carry the writer's client id. The writer never applied those
+    /// optimistically, so its own `WatchNodes` stream must still deliver
+    /// them, while the write it did apply stays suppressed.
+    #[tokio::test]
+    async fn watch_nodes_delivers_invariant_rule_writes_to_the_writing_client() {
+        const PLAY_ID: &str = "d7000000-0000-4000-8000-0000000000e1";
+        const CHILD: &str = "Definition of done";
+
+        let tmp = TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let core_svc = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+        let lifecycle = Arc::new(std::sync::RwLock::new(
+            nodespace_core::playbook::PlaybookLifecycleManager::new(),
+        ));
+        let play = nodespace_core::models::Node::new_with_id(
+            PLAY_ID.to_string(),
+            "play".to_string(),
+            "invariant-writes-a-child".to_string(),
+            serde_json::json!({ "play": { "rules": [{
+                "name": "add-definition-of-done",
+                "class": "invariant",
+                "description": "Give every new task a definition of done",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "node_created",
+                    "select": { "target_type": "task" }
+                },
+                "conditions": [],
+                "actions": [{
+                    "action_type": "create_node",
+                    "description": "Create the child",
+                    "params": { "node_type": "text", "content": CHILD }
+                }]
+            }] } }),
+        );
+        lifecycle.write().unwrap().activate_play(&play).unwrap();
+        core_svc.set_playbook_lifecycle(lifecycle.clone());
+        let svc = Arc::new(
+            NodeServiceImpl::new(
+                core_svc,
+                Arc::new(tokio::sync::RwLock::new(None)),
+                Arc::new(EmbeddingScheduler::new()),
+            )
+            .with_playbook_lifecycle(lifecycle),
+        );
+
+        let mut alice_stream = watch_as(&svc, Some("alice")).await;
+        let mut bob_stream = watch_as(&svc, Some("bob")).await;
+
+        let mut create = Request::new(crate::nodespace::CreateNodeRequest {
+            id: None,
+            node_type: "task".into(),
+            content: "Plan the offsite".into(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: r#"{"status":"open"}"#.into(),
+            position: None,
+        });
+        create
+            .metadata_mut()
+            .insert(nodespace_proto::CLIENT_ID_HEADER, "alice".parse().unwrap());
+        svc.create_node(create).await.unwrap();
+
+        async fn created_contents(
+            stream: &mut (impl tokio_stream::Stream<Item = Result<NodeEvent, Status>> + Unpin),
+        ) -> Vec<String> {
+            let mut out = Vec::new();
+            while let Some(event) = next_event(stream).await {
+                if let Some(NodeEventKind::Created(data)) = event.event {
+                    out.push(data.content);
+                }
+            }
+            out
+        }
+
+        let bob_saw = created_contents(&mut bob_stream).await;
+        assert!(
+            bob_saw.iter().any(|c| c == CHILD),
+            "another client sees the rule's child: {bob_saw:?}"
+        );
+        let alice_saw = created_contents(&mut alice_stream).await;
+        assert!(
+            alice_saw.iter().any(|c| c == CHILD),
+            "the writing client must receive the node its invariant rule created: {alice_saw:?}"
+        );
+        assert!(
+            !alice_saw.iter().any(|c| c == "Plan the offsite"),
+            "the write the client applied itself stays suppressed: {alice_saw:?}"
         );
     }
 
