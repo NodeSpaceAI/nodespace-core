@@ -377,11 +377,21 @@ const HIGH_COLLECTION_ID: &str = "e4d3c2b1-a091-4f8e-9d7c-6b5a4f3e2d1c";
 /// Creates two active collections named "Projects", `first` before `second`,
 /// and checks that their collision is journaled as one open record.
 async fn colliding_collections(svc: &NodeService, first: &str, second: &str) -> Result<()> {
+    colliding_collections_named(svc, first, second, "Projects").await
+}
+
+/// [`colliding_collections`] with the shared name given.
+async fn colliding_collections_named(
+    svc: &NodeService,
+    first: &str,
+    second: &str,
+    name: &str,
+) -> Result<()> {
     for id in [first, second] {
         svc.create_node(Node::new_with_id(
             id.to_string(),
             "collection".to_string(),
-            "Projects".to_string(),
+            name.to_string(),
             json!({}),
         ))
         .await?;
@@ -406,6 +416,26 @@ async fn sweep_leaves_a_live_collection_name_collision_open_in_either_id_order()
             closed, 0,
             "two active collections still share the name ({first} created first)"
         );
+        let after = svc.conflicts_for_node(first).await?;
+        assert_eq!(after[0].status, ConflictStatus::Open);
+    }
+    Ok(())
+}
+
+/// A name with a non-ASCII capital is folded the same way when the collision
+/// is journaled and when the sweep re-checks it, so a live collision stays
+/// open.
+#[tokio::test]
+async fn sweep_leaves_a_live_collision_on_a_non_ascii_capital_name_open() -> Result<()> {
+    for (first, second) in [
+        (LOW_COLLECTION_ID, HIGH_COLLECTION_ID),
+        (HIGH_COLLECTION_ID, LOW_COLLECTION_ID),
+    ] {
+        let (svc, _tmp) = service().await?;
+        colliding_collections_named(&svc, first, second, "Équipe").await?;
+
+        let closed = svc.reconcile_conflicts().await?;
+        assert_eq!(closed, 0, "the collision on \"Équipe\" is still live");
         let after = svc.conflicts_for_node(first).await?;
         assert_eq!(after[0].status, ConflictStatus::Open);
     }

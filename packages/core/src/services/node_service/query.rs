@@ -440,21 +440,21 @@ impl NodeService {
             FilterOperator::Equals => actual_value == &filter.value,
             FilterOperator::NotEquals => actual_value != &filter.value,
             FilterOperator::Contains => match (actual_value.as_str(), filter.value.as_str()) {
-                (Some(actual), Some(expected)) => {
-                    actual.to_lowercase().contains(&expected.to_lowercase())
-                }
+                (Some(actual), Some(expected)) => actual
+                    .to_ascii_lowercase()
+                    .contains(&expected.to_ascii_lowercase()),
                 _ => false,
             },
             FilterOperator::StartsWith => match (actual_value.as_str(), filter.value.as_str()) {
-                (Some(actual), Some(expected)) => {
-                    actual.to_lowercase().starts_with(&expected.to_lowercase())
-                }
+                (Some(actual), Some(expected)) => actual
+                    .to_ascii_lowercase()
+                    .starts_with(&expected.to_ascii_lowercase()),
                 _ => false,
             },
             FilterOperator::EndsWith => match (actual_value.as_str(), filter.value.as_str()) {
-                (Some(actual), Some(expected)) => {
-                    actual.to_lowercase().ends_with(&expected.to_lowercase())
-                }
+                (Some(actual), Some(expected)) => actual
+                    .to_ascii_lowercase()
+                    .ends_with(&expected.to_ascii_lowercase()),
                 _ => false,
             },
             FilterOperator::GreaterThan => {

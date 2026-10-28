@@ -548,11 +548,14 @@ impl SqliteStore {
         node_ids.sort();
 
         // Discriminator is the case-folded name (conflict-journal-and-
-        // resolution.md §2.3) — the same fold `get_collection_by_name` and
-        // `normalize_collection_name` apply, so a collision detected via
-        // either the create or the rename path always derives the same id.
+        // resolution.md §2.3), derived by `normalize_collection_name` — the
+        // ASCII-only fold the lookups and the still-holds re-check apply — so
+        // a collision detected via either the create or the rename path
+        // always derives the same id.
         let name = match self.get_node(new_id).await {
-            Ok(Some(node)) => node.content.trim().to_lowercase(),
+            Ok(Some(node)) => {
+                crate::services::collection_service::normalize_collection_name(&node.content)
+            }
             _ => {
                 // The node we just wrote is unreadable immediately after —
                 // should not happen, but journaling nothing is safer than
@@ -2537,7 +2540,7 @@ impl SqliteStore {
     /// interpolated into SQL, so quote handling is the driver's job.
     pub(super) fn like_contains_pattern(term: &str) -> String {
         let escaped = term
-            .to_lowercase()
+            .to_ascii_lowercase()
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
@@ -2689,14 +2692,14 @@ impl SqliteStore {
             }),
             OrderBy::ContentAsc => nodes.sort_by(|a, b| {
                 a.content
-                    .to_lowercase()
-                    .cmp(&b.content.to_lowercase())
+                    .to_ascii_lowercase()
+                    .cmp(&b.content.to_ascii_lowercase())
                     .then_with(|| a.id.cmp(&b.id))
             }),
             OrderBy::ContentDesc => nodes.sort_by(|a, b| {
                 b.content
-                    .to_lowercase()
-                    .cmp(&a.content.to_lowercase())
+                    .to_ascii_lowercase()
+                    .cmp(&a.content.to_ascii_lowercase())
                     .then_with(|| a.id.cmp(&b.id))
             }),
             OrderBy::NodeTypeAsc => {
@@ -4458,11 +4461,9 @@ impl SqliteStore {
             crate::db::json_path::bucket_field_path(bucket, field)
         );
         let (lhs, needle) = if case_insensitive {
-            // SQLite LOWER() folds ASCII only, so a value differing solely in the
-            // case of a non-ASCII character would not be matched here. Acceptable:
-            // this backs a suggestion (never a hard block) and the first consumer
-            // (email) is effectively ASCII.
-            (format!("LOWER({})", extract), value.to_lowercase())
+            // SQLite LOWER() folds ASCII only, so the bound value is folded the
+            // same way.
+            (format!("LOWER({})", extract), value.to_ascii_lowercase())
         } else {
             (extract, value.to_string())
         };
@@ -6547,5 +6548,121 @@ mod subtree_walk_cycle_tests {
         };
         assert_eq!(deleted.len(), 2);
         assert!(!b_exists);
+    }
+}
+
+#[cfg(test)]
+mod case_folding_tests {
+    //! A value the store compares case-insensitively is folded in Rust the
+    //! way SQLite's `LOWER()` and `LIKE` fold the column it is compared
+    //! against. Folded differently, a title with an uppercase non-ASCII
+    //! letter never matches, even typed exactly as stored.
+
+    use super::*;
+    use crate::models::{NodeQuery, OrderBy};
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    async fn bare_store() -> Result<(Arc<SqliteStore>, TempDir)> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+        let store = Arc::new(SqliteStore::new(db_path).await?);
+        Ok((store, temp_dir))
+    }
+
+    async fn make_titled(store: &SqliteStore, node_type: &str, title: &str) -> Result<String> {
+        let mut node = Node::new(node_type.to_string(), title.to_string(), json!({}));
+        node.title = Some(title.to_string());
+        let id = node.id.clone();
+        store.create_node(node, None, None).await?;
+        Ok(id)
+    }
+
+    /// The mention picker and a title search find "Über uns" by what was
+    /// typed, and an ASCII letter typed in either case still matches.
+    #[tokio::test]
+    async fn a_title_with_a_non_ascii_capital_matches_as_typed() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let id = make_titled(&store, "task", "Über uns").await?;
+
+        for typed in ["Über", "ÜBER", "Über uns"] {
+            let offered: Vec<String> = store
+                .mention_autocomplete(typed, None)
+                .await?
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            assert_eq!(offered, vec![id.clone()], "mention picker, typed {typed:?}");
+
+            let found: Vec<String> = store
+                .query_nodes(NodeQuery {
+                    title_contains: Some(typed.to_string()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            assert_eq!(found, vec![id.clone()], "title search, typed {typed:?}");
+        }
+        Ok(())
+    }
+
+    /// A collection named with a non-ASCII capital is found by its name, one
+    /// at a time and in a batch, keyed as a path segment looks it up. Every
+    /// duplicate-name check goes through these lookups.
+    #[tokio::test]
+    async fn a_collection_name_with_a_non_ascii_capital_is_found_by_name() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let id = make_titled(&store, "collection", "Équipe").await?;
+
+        for name in ["Équipe", "ÉQUIPE"] {
+            let found = store.get_collection_by_name(name).await?.map(|n| n.id);
+            assert_eq!(found, Some(id.clone()), "by name {name:?}");
+
+            let batch = store.get_collections_by_names(&[name.to_string()]).await?;
+            assert_eq!(
+                batch
+                    .get(&crate::services::CollectionSegment::new(name).normalized_name)
+                    .map(|n| n.id.clone()),
+                Some(id.clone()),
+                "in a batch, by name {name:?}: {:?}",
+                batch.keys().collect::<Vec<_>>()
+            );
+        }
+        Ok(())
+    }
+
+    /// Ordering by content in Rust, where results from several statements
+    /// are merged, puts nodes in the order the statement's `LOWER(content)`
+    /// does.
+    #[tokio::test]
+    async fn merged_results_sort_by_content_as_the_statement_does() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        for title in ["éa", "Éb", "Zeta", "alpha"] {
+            make_titled(&store, "task", title).await?;
+        }
+        for order_by in [OrderBy::ContentAsc, OrderBy::ContentDesc] {
+            let from_sql: Vec<String> = store
+                .query_nodes(NodeQuery {
+                    node_type: Some("task".to_string()),
+                    order_by: Some(order_by.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .map(|n| n.content)
+                .collect();
+            let mut nodes = store
+                .query_nodes(NodeQuery {
+                    node_type: Some("task".to_string()),
+                    ..Default::default()
+                })
+                .await?;
+            SqliteStore::sort_nodes_by(&mut nodes, &order_by);
+            let in_rust: Vec<String> = nodes.into_iter().map(|n| n.content).collect();
+            assert_eq!(in_rust, from_sql, "{order_by:?}");
+        }
+        Ok(())
     }
 }
