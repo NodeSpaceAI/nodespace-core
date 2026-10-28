@@ -19,7 +19,7 @@
 
 import type { KeyboardCommand, KeyboardContext } from '$lib/services/keyboard-command-registry';
 
-type FormatType = 'bold' | 'italic' | 'underline';
+type FormatType = 'bold' | 'italic';
 
 export class FormatTextCommand implements KeyboardCommand {
   id: string;
@@ -40,9 +40,6 @@ export class FormatTextCommand implements KeyboardCommand {
       case 'italic':
         this.marker = '*';
         break;
-      case 'underline':
-        this.marker = '__';
-        break;
     }
   }
 
@@ -61,8 +58,6 @@ export class FormatTextCommand implements KeyboardCommand {
         return key === 'b';
       case 'italic':
         return key === 'i';
-      case 'underline':
-        return key === 'u';
       default:
         return false;
     }

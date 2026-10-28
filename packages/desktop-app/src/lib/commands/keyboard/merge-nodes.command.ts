@@ -1,70 +1,43 @@
 /**
- * MergeNodesCommand - Handles Backspace/Delete functionality
+ * MergeNodesCommand - Handles Backspace at the start of a node
  *
  * Extracted from ContentEditableController.handleKeyDown (Backspace case)
- * Unified command for merging nodes with directional parameter.
  *
  * Behavior:
- * - Backspace at start of node (direction='up'): Merge with previous node ✅ IMPLEMENTED
- * - Delete at end of node (direction='down'): Merge with next node ⏳ DEFERRED (see TODO below)
+ * - Backspace at start of node: Merge with previous node
  * - Empty node: Deletes the node entirely
- * - Non-empty node: Combines content with adjacent node
+ * - Non-empty node: Combines content with the previous node
  * - Multiline nodes: Only merges when at start of first line
- *
- * Usage:
- * - `new MergeNodesCommand('up')` for Backspace (merge with above)
- * - `new MergeNodesCommand('down')` for Delete (merge with below) - architecture ready, implementation deferred
- *
- * TODO: Implement Delete key functionality (direction='down')
- * Requires:
- * - Add `combineWithNext` event to ContentEditableController.events
- * - Implement isAtEnd() and isAtEndOfLastLine() helper methods
- * - Add node service support for merging with next sibling
- * - Add comprehensive tests for Delete key behavior
- * - Update documentation when complete
  */
 
 import type { KeyboardCommand, KeyboardContext } from '$lib/services/keyboard-command-registry';
 
-export type MergeDirection = 'up' | 'down';
-
 export class MergeNodesCommand implements KeyboardCommand {
   id: string;
   description: string;
-  private direction: MergeDirection;
 
-  constructor(direction: MergeDirection = 'up') {
-    this.direction = direction;
-    this.id = direction === 'up' ? 'merge-nodes-up' : 'merge-nodes-down';
-    this.description =
-      direction === 'up'
-        ? 'Merge with previous node on Backspace'
-        : 'Merge with next node on Delete';
+  constructor() {
+    this.id = 'merge-nodes-up';
+    this.description = 'Merge with previous node on Backspace';
   }
 
   canExecute(context: KeyboardContext): boolean {
-    if (this.direction === 'up') {
-      // Backspace: only execute at start of node
-      if (context.event.key !== 'Backspace') {
-        return false;
-      }
-
-      // Check if we're at the start
-      if (!this.isAtStart(context)) {
-        return false;
-      }
-
-      // For multiline nodes, ensure we're at start of first line
-      if (context.allowMultiline) {
-        return this.isAtStartOfFirstLine(context);
-      }
-
-      return true;
-    } else {
-      // Delete: only execute at end of node (future implementation)
-      // For now, not implemented
+    // Backspace: only execute at start of node
+    if (context.event.key !== 'Backspace') {
       return false;
     }
+
+    // Check if we're at the start
+    if (!this.isAtStart(context)) {
+      return false;
+    }
+
+    // For multiline nodes, ensure we're at start of first line
+    if (context.allowMultiline) {
+      return this.isAtStartOfFirstLine(context);
+    }
+
+    return true;
   }
 
   async execute(context: KeyboardContext): Promise<boolean> {
@@ -74,25 +47,18 @@ export class MergeNodesCommand implements KeyboardCommand {
     // Get current content
     const currentContent = this.getCurrentContent(context);
 
-    if (this.direction === 'up') {
-      // Backspace: merge with previous node or delete if empty
-      if (currentContent.trim() === '') {
-        // Empty node: delete it entirely
-        context.controller.events.deleteNode({
-          nodeId: context.nodeId
-        });
-      } else {
-        // Non-empty node: combine with previous
-        context.controller.events.combineWithPrevious({
-          nodeId: context.nodeId,
-          currentContent
-        });
-      }
+    // Merge with previous node, or delete if empty
+    if (currentContent.trim() === '') {
+      // Empty node: delete it entirely
+      context.controller.events.deleteNode({
+        nodeId: context.nodeId
+      });
     } else {
-      // Delete: merge with next node (deferred implementation - see TODO in file header)
-      // When implemented, would emit combineWithNext event (not yet available)
-      // Architecture is ready, but requires event system and node service changes
-      return false;
+      // Non-empty node: combine with previous
+      context.controller.events.combineWithPrevious({
+        nodeId: context.nodeId,
+        currentContent
+      });
     }
 
     return true;

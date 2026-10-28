@@ -70,7 +70,7 @@ describe('Keyboard Command Integration', () => {
     registry.register({ key: 'Enter' }, new CreateNodeCommand());
     registry.register({ key: 'Tab' }, new IndentNodeCommand());
     registry.register({ key: 'Tab', shift: true }, new OutdentNodeCommand());
-    registry.register({ key: 'Backspace' }, new MergeNodesCommand('up'));
+    registry.register({ key: 'Backspace' }, new MergeNodesCommand());
 
     // Phase 3 commands
     registry.register({ key: 'ArrowUp' }, new NavigateUpCommand());

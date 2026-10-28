@@ -33,7 +33,7 @@ describe('MergeNodesCommand', () => {
     let command: MergeNodesCommand;
 
     beforeEach(() => {
-      command = new MergeNodesCommand('up');
+      command = new MergeNodesCommand();
     });
 
     describe('canExecute', () => {
@@ -176,50 +176,14 @@ describe('MergeNodesCommand', () => {
     });
   });
 
-  describe('direction: down (Delete)', () => {
-    let command: MergeNodesCommand;
-
-    beforeEach(() => {
-      command = new MergeNodesCommand('down');
-    });
-
-    describe('canExecute', () => {
-      it('should not execute (not yet implemented)', () => {
-        const context = createContext({
-          key: 'Delete',
-          cursorPosition: 10,
-          allowMultiline: false
-        });
-
-        expect(command.canExecute(context)).toBe(false);
-      });
-    });
-  });
-
   describe('command metadata', () => {
-    it('should have correct id for up direction', () => {
-      const command = new MergeNodesCommand('up');
-      expect(command.id).toBe('merge-nodes-up');
-    });
-
-    it('should have correct id for down direction', () => {
-      const command = new MergeNodesCommand('down');
-      expect(command.id).toBe('merge-nodes-down');
-    });
-
-    it('should have correct description for up direction', () => {
-      const command = new MergeNodesCommand('up');
-      expect(command.description).toBe('Merge with previous node on Backspace');
-    });
-
-    it('should have correct description for down direction', () => {
-      const command = new MergeNodesCommand('down');
-      expect(command.description).toBe('Merge with next node on Delete');
-    });
-
-    it('should default to up direction when no direction specified', () => {
+    it('should have correct id', () => {
       const command = new MergeNodesCommand();
       expect(command.id).toBe('merge-nodes-up');
+    });
+
+    it('should have correct description', () => {
+      const command = new MergeNodesCommand();
       expect(command.description).toBe('Merge with previous node on Backspace');
     });
   });
@@ -228,7 +192,7 @@ describe('MergeNodesCommand', () => {
     let command: MergeNodesCommand;
 
     beforeEach(() => {
-      command = new MergeNodesCommand('up');
+      command = new MergeNodesCommand();
     });
 
     it('should use DOM selection when element does not have selectionStart', () => {
@@ -322,7 +286,7 @@ describe('MergeNodesCommand', () => {
     let command: MergeNodesCommand;
 
     beforeEach(() => {
-      command = new MergeNodesCommand('up');
+      command = new MergeNodesCommand();
     });
 
     it('should check isAtFirstLine for multiline nodes with DIV structure', () => {
@@ -442,33 +406,11 @@ describe('MergeNodesCommand', () => {
     });
   });
 
-  describe('execute - direction down', () => {
-    let command: MergeNodesCommand;
-
-    beforeEach(() => {
-      command = new MergeNodesCommand('down');
-    });
-
-    it('should return false for down direction (not implemented)', async () => {
-      const context = createContext({
-        key: 'Delete',
-        cursorPosition: 10,
-        allowMultiline: false
-      });
-
-      const result = await command.execute(context);
-
-      expect(result).toBe(false);
-      expect(deleteNodeSpy).not.toHaveBeenCalled();
-      expect(combineWithPreviousSpy).not.toHaveBeenCalled();
-    });
-  });
-
   describe('getCursorPosition fallback', () => {
     let command: MergeNodesCommand;
 
     beforeEach(() => {
-      command = new MergeNodesCommand('up');
+      command = new MergeNodesCommand();
     });
 
     it('should use getCurrentColumn when available', () => {
