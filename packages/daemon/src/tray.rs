@@ -192,9 +192,9 @@ impl TrayController {
         let _ = self.proxy.send_event(TrayEvent::RpcStateChanged);
     }
 
-    /// Companion to [`Self::rpc_started`]. Every increment has exactly one
-    /// matching decrement in the metrics layer, so underflow is impossible
-    /// under normal operation.
+    /// Companion to [`Self::rpc_started`]. The metrics layer pairs every
+    /// increment with one decrement through a drop guard, so underflow is
+    /// impossible under normal operation.
     pub fn rpc_completed(&self) {
         self.active_rpcs.fetch_sub(1, Ordering::Relaxed);
         let _ = self.proxy.send_event(TrayEvent::RpcStateChanged);
@@ -1244,14 +1244,54 @@ pub mod layer {
         }
     }
 
-    #[derive(Clone)]
-    pub struct TrayMetrics<S> {
-        inner: S,
-        controller: TrayController,
+    /// Sink for the start/finish of each RPC. [`TrayController`] is the
+    /// production implementation; tests substitute a plain counter.
+    pub trait RpcGauge: Clone + Send + 'static {
+        fn rpc_started(&self);
+        fn rpc_completed(&self);
     }
 
-    impl<S, Req> Service<Req> for TrayMetrics<S>
+    impl RpcGauge for TrayController {
+        fn rpc_started(&self) {
+            TrayController::rpc_started(self);
+        }
+        fn rpc_completed(&self) {
+            TrayController::rpc_completed(self);
+        }
+    }
+
+    /// Counts one RPC as active from construction until drop, so the count
+    /// is released whether the call completes or its future is dropped.
+    struct RpcGuard<G: RpcGauge>(G);
+
+    impl<G: RpcGauge> RpcGuard<G> {
+        fn start(gauge: G) -> Self {
+            gauge.rpc_started();
+            Self(gauge)
+        }
+    }
+
+    impl<G: RpcGauge> Drop for RpcGuard<G> {
+        fn drop(&mut self) {
+            self.0.rpc_completed();
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct TrayMetrics<S, G = TrayController> {
+        inner: S,
+        controller: G,
+    }
+
+    impl<S, G: RpcGauge> TrayMetrics<S, G> {
+        pub fn with_gauge(inner: S, controller: G) -> Self {
+            Self { inner, controller }
+        }
+    }
+
+    impl<S, G, Req> Service<Req> for TrayMetrics<S, G>
     where
+        G: RpcGauge,
         S: Service<Req> + Clone + Send + 'static,
         S::Future: Send + 'static,
         Req: Send + 'static,
@@ -1265,19 +1305,107 @@ pub mod layer {
         }
 
         fn call(&mut self, req: Req) -> Self::Future {
-            self.controller.rpc_started();
+            // Held by the returned future, so the decrement also runs when
+            // hyper drops that future on a client cancel or a dead connection.
+            let guard = RpcGuard::start(self.controller.clone());
             // tower's contract: `call` may be invoked again before the
             // previous future resolves, so move the readied service into the
             // future and leave a fresh clone in `self.inner`. We clone first
             // (a separate binding) to avoid an immutable + mutable borrow.
             let clone = self.inner.clone();
             let mut inner = std::mem::replace(&mut self.inner, clone);
-            let controller = self.controller.clone();
             Box::pin(async move {
-                let result = inner.call(req).await;
-                controller.rpc_completed();
-                result
+                let _guard = guard;
+                inner.call(req).await
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod rpc_gauge_tests {
+    use super::layer::{RpcGauge, TrayMetrics};
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::task::{Context, Poll};
+    use tower::Service;
+
+    #[derive(Clone, Default)]
+    struct Counter(Arc<AtomicUsize>);
+
+    impl RpcGauge for Counter {
+        fn rpc_started(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn rpc_completed(&self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Service whose future never resolves, like an RPC that outlives its client.
+    #[derive(Clone)]
+    struct Pending;
+
+    impl Service<()> for Pending {
+        type Response = ();
+        type Error = std::convert::Infallible;
+        type Future = Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _: ()) -> Self::Future {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[derive(Clone)]
+    struct Immediate;
+
+    impl Service<()> for Immediate {
+        type Response = ();
+        type Error = std::convert::Infallible;
+        type Future = std::future::Ready<Result<(), Self::Error>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _: ()) -> Self::Future {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_call_returns_the_counter_to_zero() {
+        let gauge = Counter::default();
+        let mut svc = TrayMetrics::with_gauge(Immediate, gauge.clone());
+        svc.call(()).await.unwrap();
+        assert_eq!(gauge.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn dropped_pending_call_returns_the_counter_to_zero() {
+        let gauge = Counter::default();
+        let mut svc = TrayMetrics::with_gauge(Pending, gauge.clone());
+        let fut = svc.call(());
+        assert_eq!(gauge.0.load(Ordering::SeqCst), 1);
+        drop(fut);
+        assert_eq!(gauge.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn call_that_was_never_polled_is_still_balanced_on_drop() {
+        let gauge = Counter::default();
+        let mut svc = TrayMetrics::with_gauge(Pending, gauge.clone());
+        let a = svc.call(());
+        let b = svc.call(());
+        assert_eq!(gauge.0.load(Ordering::SeqCst), 2);
+        drop(a);
+        drop(b);
+        assert_eq!(gauge.0.load(Ordering::SeqCst), 0);
     }
 }
