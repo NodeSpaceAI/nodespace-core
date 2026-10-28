@@ -1633,7 +1633,9 @@ impl NodeService {
 
         // Register store-level notifier for automatic domain event emission
         // This callback converts StoreChange notifications to EventEnvelopes.
-        // Must be set BEFORE seed_core_schemas so schema seeding also emits events.
+        // Set here, while this is the store's only owner (`Arc::get_mut`
+        // below). Core schema seeding writes in one transaction and emits no
+        // events; nothing can subscribe before this returns anyway.
         //
         // Events now send only node_id (not full payload) for efficiency.
         // Events wrapped in EventEnvelope with metadata.
@@ -2038,58 +2040,70 @@ impl NodeService {
         );
 
         // Universal Graph Architecture: Properties stored in node.properties.
-        // Schema nodes go through the normal create path. Relationship
-        // declarations are relationship-table rows, written after the node so
-        // both FK endpoints (declaring + target schema) exist — core schemas
-        // are seeded as a batch, so a declaration may target a schema created
-        // later in the same loop.
-        {
-            for schema in &missing_schemas {
-                // Created with the shipped context paths, and stamped as
-                // current with them (`reconcile_core_context_paths`).
-                let mut node = crate::models::schema_node::to_node(schema);
-                node.properties["_seed"] = serde_json::json!({
-                    SeedAspect::ContextPaths.version_key():
-                        seed_updates::context_paths_version(&schema.context_paths),
-                });
+        // Relationship declarations are relationship-table rows, written after
+        // the nodes so both FK endpoints (declaring + target schema) exist —
+        // core schemas are seeded as a batch, so a declaration may target a
+        // schema created later in the same batch.
+        //
+        // The nodes and their declarations are written in one transaction.
+        // A schema counts as seeded once its node exists, so a run stopped
+        // between the two (a kill, a full disk, a failed later create) would
+        // otherwise leave nodes with no declarations or `extends` edges, and
+        // no later open would write them.
+        let to_seed = missing_schemas.clone();
+        store
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    for schema in &to_seed {
+                        // Created with the shipped context paths, and stamped
+                        // as current with them (`reconcile_core_context_paths`).
+                        let mut node = crate::models::schema_node::to_node(schema);
+                        node.properties["_seed"] = serde_json::json!({
+                            SeedAspect::ContextPaths.version_key():
+                                seed_updates::context_paths_version(&schema.context_paths),
+                        });
+                        SqliteStore::create_node_in_tx(tx, &node)
+                            .await
+                            .map_err(|e| {
+                                e.context(format!(
+                                    "Failed to create schema node '{}'",
+                                    schema.envelope.id
+                                ))
+                            })?;
+                    }
+                    for schema in &to_seed {
+                        let declarations = crate::models::schema_node::to_declarations(schema);
+                        if declarations.is_empty() {
+                            continue;
+                        }
+                        SqliteStore::set_schema_declarations_in_tx(
+                            tx,
+                            &schema.envelope.id,
+                            &declarations,
+                        )
+                        .await
+                        .map_err(|e| {
+                            e.context(format!(
+                                "Failed to seed relationship declarations for schema '{}'",
+                                schema.envelope.id
+                            ))
+                        })?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|e| NodeServiceError::SerializationError(format!("{e:#}")))?;
 
-                store.create_node(node, None, None).await.map_err(|e| {
-                    NodeServiceError::SerializationError(format!(
-                        "Failed to create schema node '{}': {}",
-                        schema.envelope.id, e
-                    ))
-                })?;
-
-                // A schema is found by meaning, a core one included, so it is
-                // queued for embedding like any other created root. Derived
-                // state: a failure to queue does not fail the seed.
-                if let Err(e) = store
-                    .create_stale_embedding_marker(&schema.envelope.id)
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to queue core schema '{}' for embedding: {}",
-                        schema.envelope.id,
-                        e
-                    );
-                }
-            }
-
-            for schema in &missing_schemas {
-                let declarations = crate::models::schema_node::to_declarations(schema);
-                if declarations.is_empty() {
-                    continue;
-                }
-                store
-                    .set_schema_declarations(&schema.envelope.id, &declarations)
-                    .await
-                    .map_err(|e| {
-                        NodeServiceError::SerializationError(format!(
-                            "Failed to seed relationship declarations for schema '{}': {}",
-                            schema.envelope.id, e
-                        ))
-                    })?;
-            }
+        // A schema is found by meaning, a core one included, so it is queued
+        // for embedding like any other created root. Derived state: a failure
+        // to queue does not fail the seed.
+        let seeded_ids: Vec<String> = missing_schemas
+            .iter()
+            .map(|schema| schema.envelope.id.clone())
+            .collect();
+        if let Err(e) = store.create_stale_embedding_markers_bulk(&seeded_ids).await {
+            tracing::warn!("Failed to queue core schemas for embedding: {}", e);
         }
 
         tracing::info!("✅ Core schemas seeded successfully");
@@ -4702,6 +4716,90 @@ mod tests {
             task_after.version, task_before.version,
             "an unrelated, already-present schema (task) must not be touched by reconciliation"
         );
+    }
+
+    /// Opens a fresh database with `fault` (a `CREATE TRIGGER` that raises)
+    /// installed, so the first open stops part-way through seeding the core
+    /// schemas; then drops it and opens again. A schema counts as seeded once
+    /// its node exists, so that second open must find every core schema with
+    /// exactly its shipped declarations, `extends` edges included: nodes
+    /// committed without their declarations would never get them.
+    async fn assert_interrupted_core_schema_seed_recovers(fault: &str, drop_fault: &str) {
+        use crate::models::core_schemas::get_core_schemas;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        {
+            let mut store = Arc::new(SqliteStore::new(db_path.clone()).await.unwrap());
+            store.write().await.execute(fault, ()).await.unwrap();
+            assert!(
+                NodeService::new(&mut store).await.is_err(),
+                "the injected failure stops the first open"
+            );
+            store.write().await.execute(drop_fault, ()).await.unwrap();
+        }
+
+        let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
+        let service = NodeService::new(&mut store)
+            .await
+            .expect("the next open seeds");
+
+        let by_name = |mut declarations: Vec<crate::models::schema::SchemaRelationship>| {
+            declarations.sort_by(|a, b| a.name.cmp(&b.name));
+            declarations
+        };
+        for schema in &get_core_schemas() {
+            let stored = service
+                .store
+                .get_schema_declarations(&schema.envelope.id)
+                .await
+                .unwrap();
+            assert_eq!(
+                by_name(stored),
+                by_name(crate::models::schema_node::to_declarations(schema)),
+                "core schema '{}' must carry its shipped declarations",
+                schema.envelope.id
+            );
+        }
+    }
+
+    /// The last schema node's create fails, whichever schema that is: every
+    /// other node has been created by then.
+    #[tokio::test]
+    async fn core_schema_seed_interrupted_at_a_node_create_recovers() {
+        let schema_count = crate::models::core_schemas::get_core_schemas().len();
+        assert_interrupted_core_schema_seed_recovers(
+            &format!(
+                "CREATE TRIGGER fail_seed BEFORE INSERT ON node \
+                 WHEN NEW.node_type = 'schema' \
+                 AND (SELECT COUNT(*) FROM node WHERE node_type = 'schema') = {} \
+                 BEGIN SELECT RAISE(ABORT, 'injected seed failure'); END",
+                schema_count - 1
+            ),
+            "DROP TRIGGER fail_seed",
+        )
+        .await;
+    }
+
+    /// A declaration write fails after every schema node exists: the case
+    /// where the nodes alone would make the next open skip the seed.
+    #[tokio::test]
+    async fn core_schema_seed_interrupted_at_a_declaration_write_recovers() {
+        let declaring = crate::models::core_schemas::get_core_schemas()
+            .into_iter()
+            .find(|schema| !crate::models::schema_node::to_declarations(schema).is_empty())
+            .expect("a core schema declares relationships")
+            .envelope
+            .id;
+        assert_interrupted_core_schema_seed_recovers(
+            &format!(
+                "CREATE TRIGGER fail_seed BEFORE INSERT ON relationship \
+                 WHEN NEW.in_node = '{declaring}' \
+                 BEGIN SELECT RAISE(ABORT, 'injected seed failure'); END"
+            ),
+            "DROP TRIGGER fail_seed",
+        )
+        .await;
     }
 
     /// Adding existing nodes as children one at a time appends each after the
