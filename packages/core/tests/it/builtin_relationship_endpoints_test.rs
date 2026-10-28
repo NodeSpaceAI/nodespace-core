@@ -94,3 +94,25 @@ async fn a_mentions_edge_between_existing_nodes_is_created() -> Result<()> {
     mentions(&svc, REAL, other).await?;
     Ok(())
 }
+
+/// A date page that has no row yet is a real target: the edge is written and
+/// the page is saved with it, since the edge's foreign key needs the row.
+#[tokio::test]
+async fn a_mentions_edge_to_an_unvisited_date_page_saves_the_page() -> Result<()> {
+    let (svc, _t) = service_with_one_node().await?;
+    let date = "2026-10-24";
+    assert!(svc.store().get_node(date).await?.is_none());
+
+    mentions(&svc, REAL, date).await?;
+
+    assert!(
+        svc.store().get_node(date).await?.is_some(),
+        "the date page is saved"
+    );
+    assert!(
+        svc.store()
+            .relationship_exists(REAL, date, "mentions")
+            .await?
+    );
+    Ok(())
+}

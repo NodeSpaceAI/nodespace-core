@@ -627,6 +627,78 @@ async fn a_message_is_created_with_its_edges_in_one_write() {
     );
 }
 
+/// A turn that looked up today's page before anyone opened it records the
+/// lookup like any other: the edge is written with the message, the date page
+/// is saved for it, and the turn's other edges are kept. A declared
+/// relationship written on its own to an unvisited date page works the same.
+#[tokio::test]
+async fn an_edge_to_an_unvisited_date_page_is_written_with_its_message() {
+    use nodespace_core::services::NewRelationship;
+
+    let (svc, _tmp) = test_service().await;
+    let chat = native_chat(&svc).await;
+    let task = create(&svc, "task", "Buy milk", json!({})).await;
+    let today = "2026-10-24";
+    assert!(svc.store().get_node(today).await.unwrap().is_none());
+    let resolved = || {
+        json!(AiChatResolvedEdge {
+            tool: "get_node".to_string()
+        })
+    };
+
+    let (id, skipped) = svc
+        .create_node_with_relationships(
+            CreateNodeParams {
+                id: None,
+                node_type: MESSAGE.to_string(),
+                content: "Looked it up.".to_string(),
+                parent_id: Some(chat.clone()),
+                position: InsertPositionOwned::End,
+                properties: json!({ "role": "assistant" }),
+                lifecycle_status: None,
+            },
+            vec![
+                NewRelationship {
+                    name: AI_CHAT_RESOLVED.to_string(),
+                    target_id: today.to_string(),
+                    edge_data: resolved(),
+                },
+                NewRelationship {
+                    name: AI_CHAT_RESOLVED.to_string(),
+                    target_id: task.clone(),
+                    edge_data: resolved(),
+                },
+            ],
+        )
+        .await
+        .expect("the message and both edges are created");
+    assert!(skipped.is_empty(), "no edge is left out: {skipped:?}");
+    assert!(
+        svc.store().get_node(today).await.unwrap().is_some(),
+        "the date page is saved"
+    );
+    let mut targets: Vec<String> = svc
+        .get_child_edges(&chat, &[AI_CHAT_RESOLVED])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(source, _, target, _)| {
+            assert_eq!(source, id);
+            target.id
+        })
+        .collect();
+    targets.sort();
+    let mut expected = vec![today.to_string(), task];
+    expected.sort();
+    assert_eq!(targets, expected);
+
+    let tomorrow = "2026-10-25";
+    svc.create_relationship(&id, AI_CHAT_RESOLVED, tomorrow, resolved())
+        .await
+        .expect("a declared edge to an unvisited date page is written");
+    assert!(svc.store().get_node(tomorrow).await.unwrap().is_some());
+}
+
 /// Only a message declares these relationships: another type cannot be the
 /// source of one.
 #[tokio::test]
