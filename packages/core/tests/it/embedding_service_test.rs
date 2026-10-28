@@ -468,9 +468,14 @@ async fn test_service_with_custom_config() -> Result<()> {
     let (service, _node_service, _store, _temp_dir) =
         create_unified_test_env_with_config(custom_config).await?;
 
-    // Verify accessors exist and return valid references
-    let _ = service.nlp_engine();
-    let _ = service.store();
+    let config = service.config();
+    assert_eq!(config.max_tokens_per_chunk, 256);
+    assert_eq!(config.overlap_tokens, 25);
+    assert_eq!(config.chars_per_token_estimate, 3);
+    assert_eq!(config.max_descendants, 50);
+    assert_eq!(config.max_content_size, 100_000);
+    assert_eq!(config.debounce_duration_secs, 10);
+    assert_eq!(config.max_retries, 5);
     Ok(())
 }
 
