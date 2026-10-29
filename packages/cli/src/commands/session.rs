@@ -9,7 +9,7 @@ use nodespace_agent::agent_types::AgentType;
 use nodespace_agent::pty::SESSION_ENV_VAR;
 use nodespace_daemon::nodespace::{
     LaunchSessionRequest, ListSessionsRequest, OutputChunk, ReportHarnessSessionRequest,
-    StreamOutputRequest, TerminateSessionRequest, WriteInputRequest,
+    SessionInfo, StreamOutputRequest, TerminateSessionRequest, WriteInputRequest,
 };
 use tokio_stream::{Stream, StreamExt};
 use tonic::Request;
@@ -108,8 +108,8 @@ pub async fn run(client: &mut SessionClient, action: SessionAction, json: bool) 
     match action {
         SessionAction::Launch(args) => launch(client, args).await,
         SessionAction::Attach(args) => attach(client, args).await,
-        SessionAction::List(_) => list(client).await,
-        SessionAction::Kill(args) => kill(client, args).await,
+        SessionAction::List(_) => list(client, json).await,
+        SessionAction::Kill(args) => kill(client, args, json).await,
         SessionAction::ReportHarnessSession(args) => {
             report_harness_session(client, args, json).await
         }
@@ -171,12 +171,20 @@ async fn attach(client: &mut SessionClient, args: AttachArgs) -> Result<()> {
     stream_bridge(client, args.session_id).await
 }
 
-async fn list(client: &mut SessionClient) -> Result<()> {
+async fn list(client: &mut SessionClient, json: bool) -> Result<()> {
     let resp = client
         .list_sessions(Request::new(ListSessionsRequest {}))
         .await
         .context("ListSessions RPC failed")?
         .into_inner();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&sessions_json(&resp.sessions))?
+        );
+        return Ok(());
+    }
 
     if resp.sessions.is_empty() {
         println!("No active sessions.");
@@ -191,7 +199,22 @@ async fn list(client: &mut SessionClient) -> Result<()> {
     Ok(())
 }
 
-async fn kill(client: &mut SessionClient, args: KillArgs) -> Result<()> {
+/// The `session list --json` shape: `{"sessions": [...]}`, empty when nothing
+/// is running. `started_at` is unix seconds, as the daemon reports it.
+fn sessions_json(sessions: &[SessionInfo]) -> serde_json::Value {
+    serde_json::json!({
+        "sessions": sessions
+            .iter()
+            .map(|s| serde_json::json!({
+                "session_id": s.session_id,
+                "agent_type": s.agent_type,
+                "started_at": s.started_at,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+async fn kill(client: &mut SessionClient, args: KillArgs, json: bool) -> Result<()> {
     let resp = client
         .terminate_session(Request::new(TerminateSessionRequest {
             session_id: args.session_id.clone(),
@@ -200,7 +223,9 @@ async fn kill(client: &mut SessionClient, args: KillArgs) -> Result<()> {
         .context("TerminateSession RPC failed")?
         .into_inner();
 
-    if resp.was_running {
+    if json {
+        println!("{}", kill_json(&args.session_id, resp.was_running));
+    } else if resp.was_running {
         println!("Session {} terminated.", args.session_id);
     } else {
         println!(
@@ -209,6 +234,11 @@ async fn kill(client: &mut SessionClient, args: KillArgs) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The `session kill --json` shape.
+fn kill_json(session_id: &str, was_running: bool) -> serde_json::Value {
+    serde_json::json!({ "session_id": session_id, "was_running": was_running })
 }
 
 /// Concurrently streams output from the session to stdout and forwards raw
@@ -378,10 +408,12 @@ fn format_unix_time(unix_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{dropped_notice, pump_output, spawn_stdin_reader, split_detach};
+    use super::{kill_json, sessions_json};
     use super::{LaunchArgs, ReportHarnessSessionArgs, SESSION_ENV_VAR};
     use clap::{CommandFactory, Parser};
     use nodespace_agent::agent_types::AgentType;
     use nodespace_daemon::nodespace::OutputChunk;
+    use nodespace_daemon::nodespace::SessionInfo;
 
     #[derive(Parser)]
     struct Launch {
@@ -570,5 +602,30 @@ mod tests {
         let mut rx = spawn_stdin_reader(std::io::Cursor::new(b"hello".to_vec()));
         assert_eq!(rx.recv().await.unwrap(), b"hello");
         assert!(rx.recv().await.is_none());
+    }
+
+    #[test]
+    fn session_list_json_has_a_stable_sessions_array() {
+        assert_eq!(sessions_json(&[]), serde_json::json!({ "sessions": [] }));
+        let one = SessionInfo {
+            session_id: "s-1".into(),
+            agent_type: "claude-code".into(),
+            started_at: 1_700_000_000,
+            node_id: None,
+        };
+        assert_eq!(
+            sessions_json(&[one]),
+            serde_json::json!({ "sessions": [
+                { "session_id": "s-1", "agent_type": "claude-code", "started_at": 1_700_000_000i64 }
+            ] })
+        );
+    }
+
+    #[test]
+    fn session_kill_json_reports_whether_it_was_running() {
+        assert_eq!(
+            kill_json("s-1", false),
+            serde_json::json!({ "session_id": "s-1", "was_running": false })
+        );
     }
 }
