@@ -2621,7 +2621,7 @@ mod tests {
             );
             assert_eq!(matching(open).await.unwrap().count, 0);
 
-            // The same name sorts by the column, in SQL and in the re-sort.
+            // The same name sorts by the column, in SQL.
             let sorted: ExecuteQueryInput = serde_json::from_value(json!({
                 "target_type": "task",
                 "sorting": [{"field": "id", "direction": "desc"}]
@@ -2637,8 +2637,7 @@ mod tests {
         }
 
         /// `id` names the node's own id even on a type that declares a field
-        /// called `id`: the SQL ordering and the re-sort both read the
-        /// column, so the two never disagree about the order.
+        /// called `id`: the SQL ordering reads the column.
         #[tokio::test(flavor = "multi_thread")]
         async fn a_sort_by_id_reads_the_column_on_a_type_with_an_id_field() {
             let (svc, _tmp) = make_test_service().await;
