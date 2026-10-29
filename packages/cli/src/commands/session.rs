@@ -224,7 +224,10 @@ async fn kill(client: &mut SessionClient, args: KillArgs, json: bool) -> Result<
         .into_inner();
 
     if json {
-        println!("{}", kill_json(&args.session_id, resp.was_running));
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&kill_json(&args.session_id, resp.was_running))?
+        );
     } else if resp.was_running {
         println!("Session {} terminated.", args.session_id);
     } else {
