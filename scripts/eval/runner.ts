@@ -844,6 +844,17 @@ export function checkGuidanceDrift(
   );
 }
 
+/**
+ * Derive the raw-output trace path from the results path.
+ *
+ * Strips an optional trailing `.json` (any case) and always appends
+ * `.trace.jsonl`, so the result is strictly longer than `outPath` and can
+ * never equal it, whatever extension (or none) the caller supplied.
+ */
+export function deriveTracePath(outPath: string): string {
+  return outPath.replace(/\.json$/i, "") + ".trace.jsonl";
+}
+
 /** One line of the raw-output JSONL trace. */
 export interface TraceLine {
   /** 1-based rep this turn came from. */
@@ -1714,7 +1725,7 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
   // investigating never requires a re-run to see what the model actually
   // said. Absent turns (no RUST_LOG=debug on the daemon) are simply skipped
   // rather than padded with nulls.
-  const tracePath = outPath.replace(/\.json$/, ".trace.jsonl");
+  const tracePath = deriveTracePath(outPath);
   const traceLines = reps
     .flatMap((r) => buildTraceLines(r.results, r.rep))
     .map((l) => JSON.stringify(l));
