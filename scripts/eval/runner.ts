@@ -493,6 +493,22 @@ async function compareToBaseline(
 // ---------------------------------------------------------------------------
 
 /**
+ * Why a scenario cannot be scored because a turn never reached the model, or
+ * null when every turn sent. `turns` is the prior-context turns plus the scored
+ * one.
+ *
+ * A failed send records no tools and an empty graph diff, which a negative
+ * assertion reads as a pass; and its error text lands in `toolsOffered`, which
+ * a required-tool check reads as a routing miss. Neither is a statement about
+ * the model, so the caller excludes the scenario instead of scoring it.
+ */
+export function sendFailureReason(turns: TurnRecord[]): string | null {
+  const failed = turns.find((t) => t.sendFailed);
+  if (!failed) return null;
+  return `excluded: a turn failed to send, so the model never saw it (${failed.reply})`;
+}
+
+/**
  * Count a scenario's excluded reps by cause.
  *
  * A result carries one exclusion at most: each is recorded where the runner
@@ -500,11 +516,12 @@ async function compareToBaseline(
  * then matches `markerFor`.
  */
 export function countExclusions(results: ScenarioResult[]): ExclusionCounts {
-  const counts: ExclusionCounts = { emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0 };
+  const counts: ExclusionCounts = { emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0, sendFailed: 0 };
   for (const r of results) {
     if (r.excludedAsEmptyGeneration) counts.emptyGeneration++;
     else if (r.excludedAsToolNotOffered) counts.toolNotOffered++;
     else if (r.excludedAsSetupFailed) counts.setupFailed++;
+    else if (r.excludedAsSendFailed) counts.sendFailed++;
   }
   return counts;
 }
@@ -520,6 +537,7 @@ export function describeExclusions(by: ExclusionCounts): string {
     [by.emptyGeneration, "degenerate empty generation"],
     [by.toolNotOffered, "asserted tool never offered"],
     [by.setupFailed, "group setup failed"],
+    [by.sendFailed, "send failed"],
   ];
   const present = causes.filter(([n]) => n > 0);
   if (present.length === 1) return present[0][1];
@@ -543,9 +561,12 @@ export function markerFor(r: {
   excludedAsEmptyGeneration?: boolean;
   excludedAsSetup?: boolean;
   excludedAsToolNotOffered?: boolean;
+  excludedAsSendFailed?: boolean;
   passed: boolean;
 }): string {
   if (r.excludedAsEmptyGeneration) return "⊘";
+  // A turn that never reached the model: an environment fault, not a result.
+  if (r.excludedAsSendFailed) return "⚠";
   // Distinct glyph from ⊘: both are exclusions, but one is an inference bug
   // and this one is a ROUTING miss. Collapsing them would hide which of the
   // two a run is actually suffering from.
@@ -594,13 +615,20 @@ export function partitionExcluded(results: ScenarioResult[]): {
    * others would hide which failure a run is suffering.
    */
   setupFailedCount: number;
+  /**
+   * Scenarios excluded because a turn's send failed (see `sendFailureReason`).
+   * Counted apart from the model-side causes: it is the environment, and
+   * scoring it would pass a "no tools" assertion for a turn the model never saw.
+   */
+  sendFailedCount: number;
 } {
   const scored = results.filter(
     (r) =>
       !r.excludedAsEmptyGeneration &&
       !r.excludedAsSetup &&
       !r.excludedAsToolNotOffered &&
-      !r.excludedAsSetupFailed,
+      !r.excludedAsSetupFailed &&
+      !r.excludedAsSendFailed,
   );
   return {
     scored,
@@ -610,6 +638,7 @@ export function partitionExcluded(results: ScenarioResult[]): {
     ).length,
     toolNotOfferedCount: results.filter((r) => r.excludedAsToolNotOffered).length,
     setupFailedCount: results.filter((r) => r.excludedAsSetupFailed).length,
+    sendFailedCount: results.filter((r) => r.excludedAsSendFailed).length,
   };
 }
 
@@ -672,7 +701,7 @@ export function aggregateReps(reps: ScenarioResult[][]): RunAggregate {
       passedReps,
       excludedReps,
       excludedBy: setup
-        ? { emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0 }
+        ? { emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0, sendFailed: 0 }
         : countExclusions(results),
       passedAll: scored.length > 0 && passedReps === scored.length,
       flipped: passedReps > 0 && passedReps < scored.length,
@@ -1291,6 +1320,26 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
 
       const scored = turn(chatId, scenario.prompt);
 
+      // A turn that never reached the model is neither a pass nor a routing
+      // miss. Checked before anything reads the turn's tools or the graph.
+      const sendFailure = sendFailureReason([...priorTurns, scored]);
+      if (sendFailure !== null) {
+        results.push({
+          id: scenario.id,
+          scenario: scenario.scenario,
+          prompt: scenario.prompt,
+          passed: false,
+          failure: sendFailure,
+          turns: [...priorTurns, scored],
+          excludedAsSendFailed: true,
+        });
+        setupFailed = withSetupFailure(setupFailed, scenario, false);
+        console.error(
+          `[${fixture.name}]   ⚠ excluded (send failed) ${scored.latencyMs}ms`,
+        );
+        continue;
+      }
+
       // Nodes created by THIS turn join the candidate set before its edges
       // are walked: a turn that creates a node and links it in the same
       // breath is legitimate, and walking only the pre-turn set would miss
@@ -1639,6 +1688,7 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
         setupCount,
         toolNotOfferedCount,
         setupFailedCount,
+        sendFailedCount,
       } = partitionExcluded(results);
       const passed = scored.filter((r) => r.passed).length;
 
@@ -1690,6 +1740,7 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
           excludedSetup: setupCount,
           excludedToolNotOffered: toolNotOfferedCount,
           excludedSetupFailed: setupFailedCount,
+          excludedSendFailed: sendFailedCount,
           trajectoryDisagreements,
         },
         results,
@@ -1821,6 +1872,15 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
   if (toolNotOffered > 0) {
     console.log(
       `   Unrouted: ${toolNotOffered} scenario-rep(s) (asserted tool never offered — not scored)`,
+    );
+  }
+  const sendFailedTotal = reps.reduce(
+    (n, r) => n + (r.summary.excludedSendFailed ?? 0),
+    0,
+  );
+  if (sendFailedTotal > 0) {
+    console.log(
+      `   Send failed: ${sendFailedTotal} scenario-rep(s) (turn never reached the model — not scored)`,
     );
   }
   // Reported separately again, for the same reason: this names the FIXTURE's

@@ -31,6 +31,7 @@ import {
   partitionExcluded,
   readBaselineReliability,
   selectScenarios,
+  sendFailureReason,
   UnknownScenarioError,
   withSetupFailure,
 } from "./runner.ts";
@@ -432,7 +433,7 @@ describe("aggregateReps", () => {
       scoredReps: 2,
       passedReps: 2,
       excludedReps: 1,
-      excludedBy: { emptyGeneration: 1, toolNotOffered: 0, setupFailed: 0 },
+      excludedBy: { emptyGeneration: 1, toolNotOffered: 0, setupFailed: 0, sendFailed: 0 },
       passedAll: true,
     });
   });
@@ -454,7 +455,7 @@ describe("aggregateReps", () => {
       scoredReps: 2,
       passedReps: 2,
       excludedReps: 2,
-      excludedBy: { emptyGeneration: 0, toolNotOffered: 1, setupFailed: 1 },
+      excludedBy: { emptyGeneration: 0, toolNotOffered: 1, setupFailed: 1, sendFailed: 0 },
       passedAll: true,
       flipped: false,
     });
@@ -686,13 +687,13 @@ describe("formatReliabilityTable", () => {
 
 describe("describeExclusions", () => {
   test("one cause is named without a count", () => {
-    expect(describeExclusions({ emptyGeneration: 0, toolNotOffered: 3, setupFailed: 0 })).toBe(
+    expect(describeExclusions({ emptyGeneration: 0, toolNotOffered: 3, setupFailed: 0, sendFailed: 0 })).toBe(
       "asserted tool never offered",
     );
   });
 
   test("several causes each carry their rep count", () => {
-    expect(describeExclusions({ emptyGeneration: 1, toolNotOffered: 0, setupFailed: 2 })).toBe(
+    expect(describeExclusions({ emptyGeneration: 1, toolNotOffered: 0, setupFailed: 2, sendFailed: 0 })).toBe(
       "degenerate empty generation ×1, group setup failed ×2",
     );
   });
@@ -1282,5 +1283,46 @@ describe("deriveTracePath", () => {
     for (const p of ["a", "a.json", "a.JSON", "a.trace.jsonl", "a.jsonl", ".json", ""]) {
       expect(deriveTracePath(p)).not.toBe(p);
     }
+  });
+});
+
+describe("sendFailureReason", () => {
+  const ok = { toolsOffered: "", toolsCalled: [], reply: "hello", latencyMs: 1 };
+  const failed = {
+    toolsOffered: "(error: boom)",
+    toolsCalled: [],
+    reply: "(send failed: boom)",
+    latencyMs: 1,
+    sendFailed: true,
+  };
+
+  test("a scored turn that failed to send is reported, never a clean pass", () => {
+    expect(sendFailureReason([failed])).toContain("boom");
+  });
+
+  test("a failed prior-context turn is reported too", () => {
+    expect(sendFailureReason([failed, ok])).toContain("failed to send");
+  });
+
+  test("turns that all sent report nothing", () => {
+    expect(sendFailureReason([ok, ok])).toBeNull();
+  });
+});
+
+describe("send-failed exclusion", () => {
+  const sendFailed = result({ passed: false, excludedAsSendFailed: true });
+
+  test("is outside the scored denominator and counted on its own", () => {
+    const p = partitionExcluded([result(), sendFailed]);
+    expect(p.scored).toHaveLength(1);
+    expect(p.sendFailedCount).toBe(1);
+    expect(p.toolNotOfferedCount).toBe(0);
+  });
+
+  test("has a distinct marker and cause", () => {
+    expect(markerFor(sendFailed)).toBe("⚠");
+    expect(describeExclusions({ emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0, sendFailed: 2 })).toBe(
+      "send failed",
+    );
   });
 });

@@ -354,6 +354,12 @@ export interface ScenarioResult {
    * missing, so a red here would describe the fixture, not the model.
    */
   excludedAsSetupFailed?: boolean;
+  /**
+   * A turn of this scenario (prior context or scored) failed to send, so the
+   * model never saw it. Excluded rather than scored: it would pass a negative
+   * assertion, or be booked as a routing miss.
+   */
+  excludedAsSendFailed?: boolean;
 }
 
 /**
@@ -612,6 +618,8 @@ export interface RepSummary {
    * routing miss.
    */
   excludedSetupFailed?: number;
+  /** Scenarios excluded because a turn failed to send. */
+  excludedSendFailed?: number;
   /**
    * How many scored scenarios' trajectory diagnostic DISAGREED with the
    * outcome score. Not a failure count — it is the number worth looking at
@@ -630,6 +638,8 @@ export interface ExclusionCounts {
   toolNotOffered: number;
   /** See `ScenarioResult.excludedAsSetupFailed`. */
   setupFailed: number;
+  /** See `ScenarioResult.excludedAsSendFailed`. */
+  sendFailed: number;
 }
 
 /**
