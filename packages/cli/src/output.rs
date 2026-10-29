@@ -43,19 +43,40 @@ pub fn print_delete(response: &DeleteNodeResponse, json: bool) -> Result<()> {
             "deleted_count": response.deleted_count,
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
-    } else if !response.existed {
-        println!("Node {} did not exist (no-op)", response.node_id);
-    } else if response.title.is_empty() {
-        println!("Deleted node {}", response.node_id);
     } else {
-        println!(
-            "Deleted \"{}\" ({}){}",
-            response.title,
-            response.node_id,
-            nested_clause(response.deleted_count.saturating_sub(1))
-        );
+        println!("{}", delete_result_line(response));
     }
     Ok(())
+}
+
+/// The human line for a delete result. Title and id come from the graph, so
+/// they pass through [`sanitize_for_terminal`].
+fn delete_result_line(response: &DeleteNodeResponse) -> String {
+    let id = sanitize_for_terminal(&response.node_id);
+    if !response.existed {
+        format!("Node {id} did not exist (no-op)")
+    } else if response.title.is_empty() {
+        format!("Deleted node {id}")
+    } else {
+        format!(
+            "Deleted \"{}\" ({id}){}",
+            sanitize_for_terminal(&response.title),
+            nested_clause(response.deleted_count.saturating_sub(1))
+        )
+    }
+}
+
+/// The headline of a delete preview: what would go, sanitized because the
+/// title, id and type come from the graph.
+fn delete_preview_headline(response: &DeleteNodeResponse) -> String {
+    format!(
+        "Would delete \"{}\" ({}, {} v{}){}.",
+        sanitize_for_terminal(&response.title),
+        sanitize_for_terminal(&response.node_id),
+        sanitize_for_terminal(&response.node_type),
+        response.version,
+        nested_clause(response.descendant_count)
+    )
 }
 
 /// The first step of a node delete: what it would remove, and the one
@@ -76,16 +97,10 @@ pub fn print_delete_preview(
         let value = delete_preview_json(response, &confirm_command);
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        println!(
-            "Would delete \"{}\" ({}, {} v{}){}.",
-            response.title,
-            response.node_id,
-            response.node_type,
-            response.version,
-            nested_clause(response.descendant_count)
-        );
-        println!("Nothing deleted. To delete exactly this:");
-        println!("  {confirm_command}");
+        println!("{}", delete_preview_headline(response));
+        for line in delete_preview_footer(response, routing) {
+            println!("{line}");
+        }
     }
     Ok(())
 }
@@ -101,6 +116,26 @@ pub fn delete_confirm_command(response: &DeleteNodeResponse, routing: &[String])
         response.descendant_count
     ));
     words.join(" ")
+}
+
+/// The lines under a delete preview's headline. A plain id gets the command
+/// that deletes exactly it. When the id (or a routing word) carries control,
+/// bidi or invisible characters no pasteable command is printed: no shell
+/// quoting reproduces such a word faithfully across shells, and a pasted
+/// command that targets a different id would delete the wrong node.
+fn delete_preview_footer(response: &DeleteNodeResponse, routing: &[String]) -> Vec<String> {
+    let unsafe_word = |w: &str| sanitize_for_terminal(w) != w || w.contains(['\n', '\t']);
+    if unsafe_word(&response.node_id) || routing.iter().any(|w| unsafe_word(w)) {
+        return vec![
+            "Nothing deleted. The node id contains control characters, so no command is \
+             printed. Delete using the exact id from the --json output (its confirm_command)."
+                .to_string(),
+        ];
+    }
+    vec![
+        "Nothing deleted. To delete exactly this:".to_string(),
+        format!("  {}", delete_confirm_command(response, routing)),
+    ]
 }
 
 /// The `--json` shape of a delete preview — what an agent parses.
@@ -443,7 +478,7 @@ fn write_human_paths(paths: &[PathNodes]) {
         println!();
         println!(
             "path {} ({} node(s){}):",
-            reached.path,
+            sanitize_for_terminal(&reached.path),
             reached.nodes.len(),
             if reached.limit_reached {
                 "; the path reaches more, these are the first"
@@ -555,9 +590,9 @@ fn write_human_node(node: &NodeData) {
         println!("title:           {}", clean(title));
     }
     println!("version:         {}", node.version);
-    println!("lifecycle:       {}", node.lifecycle_status);
-    println!("created_at:      {}", node.created_at);
-    println!("modified_at:     {}", node.modified_at);
+    println!("lifecycle:       {}", clean(&node.lifecycle_status));
+    println!("created_at:      {}", clean(&node.created_at));
+    println!("modified_at:     {}", clean(&node.modified_at));
     // Flattened for the same reason as JSON mode: the schema-id nesting is a
     // storage detail and must not surface anywhere on the CLI.
     let properties = properties_to_json(node);
@@ -701,30 +736,35 @@ fn render_schema_created(result_json: &str, json: bool) -> Result<String> {
         ))?);
     }
 
-    let mut lines = vec![format!("Created schema {}", created.schema_id)];
+    let clean = sanitize_for_terminal;
+    let mut lines = vec![format!("Created schema {}", clean(&created.schema_id))];
     if let Some(parent_type) = &created.extends {
-        lines.push(format!("extends:         {parent_type}"));
+        lines.push(format!("extends:         {}", clean(parent_type)));
     }
     lines.push("fields:".to_string());
     if created.fields.is_empty() {
         lines.push("    (none)".to_string());
     }
     for field in &created.fields {
-        lines.push(format!("    {}: {}", field.name, field.field_type));
+        lines.push(format!(
+            "    {}: {}",
+            clean(&field.name),
+            clean(&field.field_type.to_string())
+        ));
     }
     if !created.relationships.is_empty() {
         lines.push("relationships:".to_string());
         for relationship in &created.relationships {
             lines.push(format!(
                 "    {} -> {} (reverse: {})",
-                relationship.name,
-                relationship.target_type.as_deref().unwrap_or("*"),
-                relationship.reverse_name
+                clean(&relationship.name),
+                clean(relationship.target_type.as_deref().unwrap_or("*")),
+                clean(&relationship.reverse_name)
             ));
         }
     }
     for warning in created.warnings.iter().flatten() {
-        lines.push(format!("warning: {warning}"));
+        lines.push(format!("warning: {}", clean(warning)));
     }
     Ok(lines.join("\n"))
 }
@@ -795,16 +835,18 @@ fn render_schema_updated(result_json: &str, json: bool) -> Result<String> {
         ))?);
     }
 
-    let mut lines = vec![format!("Updated schema {}", updated.schema_id)];
+    let clean = sanitize_for_terminal;
+    let mut lines = vec![format!("Updated schema {}", clean(&updated.schema_id))];
     for (key, count) in schema_update_counts(&updated) {
         lines.push(format!("    {}: {count}", key.replace('_', " ")));
     }
     for play in updated.affected_plays.iter().flatten() {
-        lines.push(format!("affected play: {play}"));
+        lines.push(format!("affected play: {}", clean(play)));
     }
     for path in updated.stranded_context_paths.iter().flatten() {
         lines.push(format!(
-            "stranded context path (no longer resolves; remove it with remove_context_paths): {path}"
+            "stranded context path (no longer resolves; remove it with remove_context_paths): {}",
+            clean(path)
         ));
     }
     Ok(lines.join("\n"))
@@ -859,52 +901,68 @@ pub fn print_schema_list(schemas_json: &[String], json: bool) -> Result<()> {
 }
 
 fn write_human_schema(schema: &SchemaNode) {
-    println!("id:              {}", schema.envelope.id);
-    println!("name:            {}", schema.envelope.content);
-    println!("version:         {}", schema.envelope.version);
-    println!("core:            {}", schema.is_core);
+    print!("{}", format_human_schema(schema));
+}
+
+/// The human layout of a schema. The name and templates come from the graph,
+/// so they pass through [`sanitize_for_terminal`].
+fn format_human_schema(schema: &SchemaNode) -> String {
+    use std::fmt::Write as _;
+    let clean = sanitize_for_terminal;
+    let mut out = String::new();
+    let _ = writeln!(out, "id:              {}", clean(&schema.envelope.id));
+    let _ = writeln!(out, "name:            {}", clean(&schema.envelope.content));
+    let _ = writeln!(out, "version:         {}", schema.envelope.version);
+    let _ = writeln!(out, "core:            {}", schema.is_core);
     if schema.is_abstract {
-        println!("abstract:        true");
+        let _ = writeln!(out, "abstract:        true");
     }
     if let Some(parent) = &schema.extends {
-        println!("extends:         {}", parent);
+        let _ = writeln!(out, "extends:         {}", clean(parent));
     }
     if !schema.children.is_any() {
-        println!("children:        {}", json!(schema.children));
+        let _ = writeln!(out, "children:        {}", json!(schema.children));
     }
     if !schema.parent.is_any() {
-        println!("parent:          {}", json!(schema.parent));
+        let _ = writeln!(out, "parent:          {}", json!(schema.parent));
     }
     if let Some(template) = &schema.title_template {
-        println!("title_template:  {}", template);
+        let _ = writeln!(out, "title_template:  {}", clean(template));
     }
     if let Some(template) = &schema.properties_header_summary_template {
-        println!("summary_template: {}", template);
+        let _ = writeln!(out, "summary_template: {}", clean(template));
     }
-    println!("fields:");
+    let _ = writeln!(out, "fields:");
     if schema.fields.is_empty() {
-        println!("    (none)");
+        let _ = writeln!(out, "    (none)");
     }
     for field in &schema.fields {
-        println!("    {}: {}", field.name, field.field_type);
+        let _ = writeln!(
+            out,
+            "    {}: {}",
+            clean(&field.name),
+            clean(&field.field_type.to_string())
+        );
     }
     if !schema.relationships.is_empty() {
-        println!("relationships:");
+        let _ = writeln!(out, "relationships:");
         for rel in &schema.relationships {
-            println!(
+            let _ = writeln!(
+                out,
                 "    {} -> {} (reverse: {})",
-                rel.name,
-                rel.target_type.as_deref().unwrap_or("*"),
-                rel.reverse_name
+                clean(&rel.name),
+                clean(rel.target_type.as_deref().unwrap_or("*")),
+                clean(&rel.reverse_name)
             );
         }
     }
     if !schema.context_paths.is_empty() {
-        println!("context_paths:");
+        let _ = writeln!(out, "context_paths:");
         for path in &schema.context_paths {
-            println!("    {path}");
+            let _ = writeln!(out, "    {}", clean(&path.to_string()));
         }
     }
+    out
 }
 
 /// Parse the wire `properties` string into the flat API shape.
@@ -1134,27 +1192,42 @@ pub fn print_conflict_list(records: &[ConflictRecordProto], json: bool) -> Resul
 }
 
 fn write_human_conflict(record: &ConflictRecordProto) {
-    println!("id:              {}", record.id);
-    println!("kind:            {}", record.kind);
-    println!("status:          {}", record.status);
-    println!("node_ids:        {}", record.node_ids.join(", "));
-    println!("detected_at:     {}", record.detected_at);
+    print!("{}", format_human_conflict(record));
+}
+
+/// The human layout of a conflict. Ids, kind, status and timestamps are
+/// graph or peer supplied, so they pass through [`sanitize_for_terminal`];
+/// `detail` and `resolution` print as JSON, which escapes control characters.
+fn format_human_conflict(record: &ConflictRecordProto) -> String {
+    use std::fmt::Write as _;
+    let clean = sanitize_for_terminal;
+    let mut out = String::new();
+    let _ = writeln!(out, "id:              {}", clean(&record.id));
+    let _ = writeln!(out, "kind:            {}", clean(&record.kind));
+    let _ = writeln!(out, "status:          {}", clean(&record.status));
+    let _ = writeln!(
+        out,
+        "node_ids:        {}",
+        clean(&record.node_ids.join(", "))
+    );
+    let _ = writeln!(out, "detected_at:     {}", clean(&record.detected_at));
     if let Some(by) = &record.detected_by {
-        println!("detected_by:     {by}");
+        let _ = writeln!(out, "detected_by:     {}", clean(by));
     }
-    println!("occurrences:     {}", record.occurrences);
-    println!("last_seen_at:    {}", record.last_seen_at);
+    let _ = writeln!(out, "occurrences:     {}", record.occurrences);
+    let _ = writeln!(out, "last_seen_at:    {}", clean(&record.last_seen_at));
     let detail: serde_json::Value =
         serde_json::from_str(&record.detail).unwrap_or_else(|_| json!(record.detail));
-    println!("detail:          {detail}");
+    let _ = writeln!(out, "detail:          {}", clean(&detail.to_string()));
     if let Some(resolved_at) = &record.resolved_at {
-        println!("resolved_at:     {resolved_at}");
+        let _ = writeln!(out, "resolved_at:     {}", clean(resolved_at));
     }
     if let Some(resolution) = &record.resolution {
         let resolution: serde_json::Value =
             serde_json::from_str(resolution).unwrap_or_else(|_| json!(resolution));
-        println!("resolution:      {resolution}");
+        let _ = writeln!(out, "resolution:      {}", clean(&resolution.to_string()));
     }
+    out
 }
 
 pub fn print_merge_outcome(response: &MergeNodesResponse, json: bool) -> Result<()> {
@@ -1168,27 +1241,32 @@ pub fn print_merge_outcome(response: &MergeNodesResponse, json: bool) -> Result<
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        println!(
-            "Merged {} into {}: {} propert{} merged, {} edge{} re-pointed, {} edge{} dropped",
-            response.loser_id,
-            response.survivor_id,
-            response.properties_merged,
-            if response.properties_merged == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-            response.edges_repointed,
-            if response.edges_repointed == 1 {
-                ""
-            } else {
-                "s"
-            },
-            response.edges_dropped,
-            if response.edges_dropped == 1 { "" } else { "s" },
-        );
+        println!("{}", merge_outcome_line(response));
     }
     Ok(())
+}
+
+/// The human line for a merge; the ids come from the graph.
+fn merge_outcome_line(response: &MergeNodesResponse) -> String {
+    format!(
+        "Merged {} into {}: {} propert{} merged, {} edge{} re-pointed, {} edge{} dropped",
+        sanitize_for_terminal(&response.loser_id),
+        sanitize_for_terminal(&response.survivor_id),
+        response.properties_merged,
+        if response.properties_merged == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        response.edges_repointed,
+        if response.edges_repointed == 1 {
+            ""
+        } else {
+            "s"
+        },
+        response.edges_dropped,
+        if response.edges_dropped == 1 { "" } else { "s" },
+    )
 }
 
 #[cfg(test)]
@@ -1631,6 +1709,55 @@ mod tests {
         }
     }
 
+    const HOSTILE: &str = "safe\u{1B}[8m hidden\u{1B}[2K\u{07}\u{1B}[0m";
+
+    #[test]
+    fn delete_result_and_preview_strip_terminal_controls_from_graph_text() {
+        let mut response = previewed();
+        response.title = format!("Q3 {HOSTILE}");
+        response.node_id = format!("id{HOSTILE}");
+        response.node_type = format!("ty{HOSTILE}");
+        response.deleted_count = 5;
+
+        let result = delete_result_line(&response);
+        let preview = delete_preview_headline(&response);
+        for line in [&result, &preview] {
+            assert!(
+                !line.contains('\u{1B}') && !line.contains('\u{07}'),
+                "{line:?}"
+            );
+        }
+        assert_eq!(
+            result,
+            "Deleted \"Q3 safe hidden\" (idsafe hidden) and 4 nested nodes"
+        );
+        assert_eq!(
+            preview,
+            "Would delete \"Q3 safe hidden\" (idsafe hidden, tysafe hidden v7) and 4 nested nodes."
+        );
+
+        response.existed = false;
+        assert!(!delete_result_line(&response).contains('\u{1B}'));
+    }
+
+    #[test]
+    fn human_schema_strips_terminal_controls_from_name_and_templates() {
+        let mut schema = SchemaNode::new("note", format!("Note{HOSTILE}"));
+        schema.title_template = Some(format!("{{title}}{HOSTILE}"));
+        schema.properties_header_summary_template = Some(format!("{{x}}{HOSTILE}"));
+        schema.extends = Some(format!("base{HOSTILE}"));
+
+        let text = format_human_schema(&schema);
+        assert!(
+            !text.contains('\u{1B}') && !text.contains('\u{07}'),
+            "{text:?}"
+        );
+        assert!(text.contains("name:            Notesafe hidden\n"));
+        assert!(text.contains("title_template:  {title}safe hidden\n"));
+        assert!(text.contains("summary_template: {x}safe hidden\n"));
+        assert!(text.contains("extends:         basesafe hidden\n"));
+    }
+
     #[test]
     fn delete_preview_json_is_the_shape_agents_parse() {
         let command = delete_confirm_command(&previewed(), &[]);
@@ -1843,6 +1970,149 @@ mod tests {
                 "field_values_added": 1,
             })
         );
+    }
+
+    fn assert_clean(text: &str) {
+        assert!(
+            !text.contains('\u{1B}') && !text.contains('\u{07}'),
+            "terminal control leaked: {text:?}"
+        );
+    }
+
+    #[test]
+    fn human_schema_strips_controls_from_every_graph_field() {
+        let mut value: serde_json::Value = serde_json::from_str(&sample_schema_json()).unwrap();
+        value["id"] = format!("invoice{HOSTILE}").into();
+        value["relationships"][0]["name"] = format!("billed{HOSTILE}").into();
+        value["relationships"][0]["targetType"] = format!("cust{HOSTILE}").into();
+        value["relationships"][0]["reverseName"] = format!("inv{HOSTILE}").into();
+        value["contextPaths"] = serde_json::json!([[format!("path{HOSTILE}")]]);
+        let schema: SchemaNode = serde_json::from_value(value).unwrap();
+
+        let text = format_human_schema(&schema);
+        assert_clean(&text);
+        assert!(text.contains("id:              invoicesafe hidden\n"));
+        assert!(text.contains("billedsafe hidden -> custsafe hidden (reverse: invsafe hidden)"));
+        assert!(text.contains("pathsafe hidden"));
+    }
+
+    #[test]
+    fn schema_write_summaries_strip_controls_from_graph_fields() {
+        let created = serde_json::json!({
+            "schemaId": format!("invoice{HOSTILE}"),
+            "isCore": false,
+            "version": 1,
+            "description": "d",
+            "fields": [{ "name": "amount", "type": "number" }],
+            "extends": format!("doc{HOSTILE}"),
+            "relationships": [{
+                "name": format!("billed{HOSTILE}"),
+                "targetType": format!("cust{HOSTILE}"),
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": format!("inv{HOSTILE}"),
+                "reverseCardinality": "many"
+            }],
+            "warnings": [format!("careful{HOSTILE}")],
+        })
+        .to_string();
+        let text = render_schema_created(&created, false).unwrap();
+        assert_clean(&text);
+        assert!(text.contains("Created schema invoicesafe hidden"));
+        assert!(text.contains("warning: carefulsafe hidden"));
+
+        let updated = serde_json::json!({
+            "schemaId": format!("invoice{HOSTILE}"),
+            "success": true,
+            "affectedPlays": [format!("play{HOSTILE}")],
+            "strandedContextPaths": [format!("path{HOSTILE}")],
+        })
+        .to_string();
+        let text = render_schema_updated(&updated, false).unwrap();
+        assert_clean(&text);
+        assert!(text.contains("Updated schema invoicesafe hidden"));
+        assert!(text.contains("affected play: playsafe hidden"));
+        assert!(text.contains("remove_context_paths): pathsafe hidden"));
+    }
+
+    #[test]
+    fn conflict_and_merge_human_output_strip_controls() {
+        let record = ConflictRecordProto {
+            id: format!("c{HOSTILE}"),
+            kind: format!("k{HOSTILE}"),
+            node_ids: vec![format!("a{HOSTILE}"), "b".into()],
+            detail: format!("{{\"x\":\"d{HOSTILE}\"}}"),
+            status: format!("s{HOSTILE}"),
+            detected_at: format!("t{HOSTILE}"),
+            detected_by: Some(format!("by{HOSTILE}")),
+            occurrences: 2,
+            last_seen_at: format!("l{HOSTILE}"),
+            resolved_at: Some(format!("r{HOSTILE}")),
+            resolution: Some(format!("{{\"y\":\"z{HOSTILE}\"}}")),
+        };
+        let text = format_human_conflict(&record);
+        assert_clean(&text);
+        assert!(text.contains("id:              csafe hidden\n"));
+        assert!(text.contains("node_ids:        asafe hidden, b\n"));
+        assert!(text.contains("detected_by:     bysafe hidden\n"));
+
+        let merged = MergeNodesResponse {
+            survivor_id: format!("s{HOSTILE}"),
+            loser_id: format!("l{HOSTILE}"),
+            properties_merged: 1,
+            edges_repointed: 2,
+            edges_dropped: 0,
+        };
+        let line = merge_outcome_line(&merged);
+        assert_clean(&line);
+        assert!(line.starts_with("Merged lsafe hidden into ssafe hidden: "));
+    }
+
+    #[test]
+    fn a_preview_never_prints_a_command_for_an_id_with_control_characters() {
+        for bad in [
+            "a\u{1B}[8mb",
+            "a\u{07}b",
+            "a\u{0}b",
+            "a\u{9b}b",
+            "a\u{E0001}b",
+            "a\u{202E}b",
+            "a\nb",
+        ] {
+            let mut response = previewed();
+            response.node_id = bad.into();
+            let footer = delete_preview_footer(&response, &[]).join("\n");
+            assert!(footer.contains("contains control characters"), "{bad:?}");
+            assert!(!footer.contains("node delete"), "{bad:?}: {footer:?}");
+            assert!(!footer.contains(bad), "{bad:?}: {footer:?}");
+            assert_clean(&footer);
+        }
+
+        // A routing word with control characters is no safer.
+        let footer = delete_preview_footer(&previewed(), &["--database".into(), "d\u{1B}b".into()]);
+        assert!(!footer.join("\n").contains("node delete"));
+
+        // A plain id prints exactly the command, as before.
+        let plain = previewed();
+        assert_eq!(
+            delete_preview_footer(&plain, &[]),
+            vec![
+                "Nothing deleted. To delete exactly this:".to_string(),
+                format!("  {}", delete_confirm_command(&plain, &[])),
+            ]
+        );
+    }
+
+    #[test]
+    fn conflict_detail_and_resolution_strip_bidi_controls() {
+        let record = ConflictRecordProto {
+            detail: "{\"x\":\"a\u{202E}b\"}".into(),
+            resolution: Some("{\"y\":\"c\u{202E}d\"}".into()),
+            ..Default::default()
+        };
+        let text = format_human_conflict(&record);
+        assert!(!text.contains('\u{202E}'), "{text:?}");
+        assert!(text.contains("ab") && text.contains("cd"));
     }
 }
 
