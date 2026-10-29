@@ -71,6 +71,20 @@ describe("classify", () => {
     });
   });
 
+  test("Markdown inside a Rust crate is compiled in, so it reaches the Rust tier", () => {
+    expect(classify(["packages/agent/src/seeds/skills/example/body.md"])).toEqual({
+      fullReason: null,
+      ...NONE,
+      rust: true,
+      scripts: true,
+    });
+    expect(classify(["packages/cli/README.md"]).rust).toBe(true);
+  });
+
+  test("Markdown outside the Rust crates stays inert", () => {
+    expect(classify(["packages/desktop-app/README.md", "docs/guide.md"])).toEqual({ fullReason: null, ...NONE });
+  });
+
   test("mixed changes union their stages", () => {
     const scope = classify(["packages/desktop-app/src/routes/+page.svelte", "packages/cli/src/main.rs"]);
     expect(scope).toEqual({ fullReason: null, ...NONE, frontend: true, rust: true, scripts: true });

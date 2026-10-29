@@ -93,6 +93,9 @@ const GATE_FILES = [
 /** Prose and agent configuration: no stage reads them. */
 function isInert(file: string): boolean {
   if (file.startsWith("packages/skill/")) return false; // SKILL.md is checked
+  // Crates compile Markdown in (include_str!, e.g. the agent's seed bodies),
+  // so a .md inside a crate is source, not prose.
+  if (RUST_DIRS.some((d) => file.startsWith(d))) return false;
   return file.endsWith(".md") || file.startsWith(".claude/") || file === ".gitignore";
 }
 
