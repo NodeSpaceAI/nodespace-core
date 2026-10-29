@@ -18,7 +18,7 @@ export interface Tab {
   };
   closeable: boolean;
   paneId: string; // Which pane this tab belongs to
-  expandedNodeIds?: string[]; // Sparse array: only store expanded node IDs (collapsed is default)
+  collapsedNodeIds?: string[]; // Sparse array: only store collapsed node IDs (viewers load nodes expanded)
 }
 
 export interface Pane {
@@ -71,7 +71,7 @@ function withDailyJournalOnToday(tab: Tab): Tab {
   if (content.nodeId === today) {
     return tab;
   }
-  const { expandedNodeIds: _staleExpansion, ...rest } = tab;
+  const { collapsedNodeIds: _staleExpansion, ...rest } = tab;
   return { ...rest, title: today, content: { ...content, nodeId: today } };
 }
 
@@ -160,7 +160,7 @@ class NavigationStore {
       // Enrich tabs with expansion state before saving
       const enrichedTabs = this.state.tabs.map((tab) => ({
         ...tab,
-        expandedNodeIds: NodeExpansionCoordinator.getExpandedNodeIds(tab.id),
+        collapsedNodeIds: NodeExpansionCoordinator.getCollapsedNodeIds(tab.id),
       }));
 
       TabPersistenceService.save({
@@ -192,18 +192,18 @@ class NavigationStore {
       // Schedule expansion state restoration for each tab
       // This will be applied when viewers register (deferred restoration pattern)
       for (const tab of tabs) {
-        // Validate expandedNodeIds before scheduling restoration
+        // Validate collapsedNodeIds before scheduling restoration
         if (
-          tab.expandedNodeIds &&
-          Array.isArray(tab.expandedNodeIds) &&
-          tab.expandedNodeIds.length > 0 &&
-          tab.expandedNodeIds.every((id) => typeof id === 'string' && id.length > 0)
+          tab.collapsedNodeIds &&
+          Array.isArray(tab.collapsedNodeIds) &&
+          tab.collapsedNodeIds.length > 0 &&
+          tab.collapsedNodeIds.every((id) => typeof id === 'string' && id.length > 0)
         ) {
-          NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
-        } else if (tab.expandedNodeIds && !Array.isArray(tab.expandedNodeIds)) {
+          NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.collapsedNodeIds);
+        } else if (tab.collapsedNodeIds && !Array.isArray(tab.collapsedNodeIds)) {
           // Log warning for malformed data but don't crash
           log.warn(
-            `Invalid expandedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.expandedNodeIds}`
+            `Invalid collapsedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.collapsedNodeIds}`
           );
         }
       }

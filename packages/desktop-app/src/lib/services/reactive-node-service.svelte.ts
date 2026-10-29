@@ -1589,6 +1589,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return sharedNodeStore.getNode(nodeId) ? peekUIState(nodeId) : _uiState[nodeId];
     },
 
+    /**
+     * Whether this viewer tracks UI state for the node. Nodes that other viewers loaded
+     * into the shared store report a default state through getUIState but are not
+     * this viewer's.
+     */
+    hasUIState(nodeId: string): boolean {
+      return nodeId in _uiState;
+    },
+
     // Lifecycle management
     /**
      * No-op kept for call-site compatibility (components call this on unmount).

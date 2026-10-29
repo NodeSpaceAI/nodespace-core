@@ -1202,7 +1202,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: ['node-a', 'node-b']
+            collapsedNodeIds: ['node-a', 'node-b']
           }
         ],
         panes: [
@@ -1238,7 +1238,7 @@ describe('Navigation Store - Tab Management', () => {
         content: { nodeId, nodeType: 'date' },
         closeable: true,
         paneId: DEFAULT_PANE_ID,
-        expandedNodeIds: ['old-day-node']
+        collapsedNodeIds: ['old-day-node']
       });
       const persistedWith = (tabs: ReturnType<typeof dateTab>[]) => ({
         tabs,
@@ -1263,7 +1263,7 @@ describe('Navigation Store - Tab Management', () => {
         const tab = navigationStore.state.tabs[0];
         expect(tab.content?.nodeId).toBe('2026-10-13');
         expect(tab.title).toBe('2026-10-13');
-        expect(tab.expandedNodeIds).toBeUndefined();
+        expect(tab.collapsedNodeIds).toBeUndefined();
       });
 
       it('keeps a Daily Journal tab that is already on today', () => {
@@ -1273,7 +1273,7 @@ describe('Navigation Store - Tab Management', () => {
 
         const tab = navigationStore.state.tabs[0];
         expect(tab.content?.nodeId).toBe('2026-10-13');
-        expect(tab.expandedNodeIds).toEqual(['old-day-node']);
+        expect(tab.collapsedNodeIds).toEqual(['old-day-node']);
       });
 
       it('does not rewrite a Daily Journal tab navigated in place to a non-date node', () => {
@@ -1289,7 +1289,7 @@ describe('Navigation Store - Tab Management', () => {
         const restored = navigationStore.state.tabs[0];
         expect(restored.content?.nodeId).toBe('some-text-node');
         expect(restored.title).toBe('My note');
-        expect(restored.expandedNodeIds).toEqual(['old-day-node']);
+        expect(restored.collapsedNodeIds).toEqual(['old-day-node']);
       });
 
       it('leaves a date tab that is not the Daily Journal untouched', () => {
@@ -1305,11 +1305,11 @@ describe('Navigation Store - Tab Management', () => {
         const other = navigationStore.state.tabs[1];
         expect(other.content?.nodeId).toBe('2026-06-01');
         expect(other.title).toBe('2026-06-01');
-        expect(other.expandedNodeIds).toEqual(['old-day-node']);
+        expect(other.collapsedNodeIds).toEqual(['old-day-node']);
       });
     });
 
-    it('schedules expansion state restoration for valid expandedNodeIds', () => {
+    it('schedules expansion state restoration for valid collapsedNodeIds', () => {
       const persistedState = {
         tabs: [
           {
@@ -1319,7 +1319,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: ['node-a', 'node-b', 'node-c']
+            collapsedNodeIds: ['node-a', 'node-b', 'node-c']
           }
         ],
         panes: [
@@ -1342,7 +1342,7 @@ describe('Navigation Store - Tab Management', () => {
       expect(mockScheduleRestoration).toHaveBeenCalledWith('tab-1', ['node-a', 'node-b', 'node-c']);
     });
 
-    it('skips restoration for empty expandedNodeIds array', () => {
+    it('skips restoration for empty collapsedNodeIds array', () => {
       const persistedState = {
         tabs: [
           {
@@ -1352,7 +1352,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: []
+            collapsedNodeIds: []
           }
         ],
         panes: [
@@ -1375,7 +1375,7 @@ describe('Navigation Store - Tab Management', () => {
       expect(mockScheduleRestoration).not.toHaveBeenCalled();
     });
 
-    it('skips restoration for undefined expandedNodeIds', () => {
+    it('skips restoration for undefined collapsedNodeIds', () => {
       const persistedState = {
         tabs: [
           {
@@ -1385,7 +1385,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID
-            // No expandedNodeIds property
+            // No collapsedNodeIds property
           }
         ],
         panes: [
@@ -1408,7 +1408,7 @@ describe('Navigation Store - Tab Management', () => {
       expect(mockScheduleRestoration).not.toHaveBeenCalled();
     });
 
-    it('handles malformed expandedNodeIds gracefully (non-array)', () => {
+    it('handles malformed collapsedNodeIds gracefully (non-array)', () => {
       const persistedState = {
         tabs: [
           {
@@ -1418,7 +1418,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: 'not-an-array' as unknown as string[]
+            collapsedNodeIds: 'not-an-array' as unknown as string[]
           }
         ],
         panes: [
@@ -1443,7 +1443,7 @@ describe('Navigation Store - Tab Management', () => {
       expect(mockScheduleRestoration).not.toHaveBeenCalled();
     });
 
-    it('validates expandedNodeIds contains only non-empty strings', () => {
+    it('validates collapsedNodeIds contains only non-empty strings', () => {
       const persistedState = {
         tabs: [
           {
@@ -1453,7 +1453,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: ['node-a', '', 'node-b'] // Contains empty string
+            collapsedNodeIds: ['node-a', '', 'node-b'] // Contains empty string
           }
         ],
         panes: [
@@ -1477,7 +1477,7 @@ describe('Navigation Store - Tab Management', () => {
       expect(mockScheduleRestoration).not.toHaveBeenCalled();
     });
 
-    it('validates expandedNodeIds contains only strings', () => {
+    it('validates collapsedNodeIds contains only strings', () => {
       const persistedState = {
         tabs: [
           {
@@ -1487,7 +1487,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: ['node-a', 123, 'node-b'] as unknown as string[] // Contains number
+            collapsedNodeIds: ['node-a', 123, 'node-b'] as unknown as string[] // Contains number
           }
         ],
         panes: [
@@ -1532,7 +1532,7 @@ describe('Navigation Store - Tab Management', () => {
       // (Note: Direct verification of isInitialized flag is not possible as it's private)
     });
 
-    it('processes multiple tabs with mixed expandedNodeIds validity', () => {
+    it('processes multiple tabs with mixed collapsedNodeIds validity', () => {
       const persistedState = {
         tabs: [
           {
@@ -1542,7 +1542,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-1', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: ['node-a', 'node-b'] // Valid
+            collapsedNodeIds: ['node-a', 'node-b'] // Valid
           },
           {
             id: 'tab-2',
@@ -1551,7 +1551,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-2', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: [] // Empty - should skip
+            collapsedNodeIds: [] // Empty - should skip
           },
           {
             id: 'tab-3',
@@ -1560,7 +1560,7 @@ describe('Navigation Store - Tab Management', () => {
             content: { nodeId: 'node-3', nodeType: 'text' },
             closeable: true,
             paneId: DEFAULT_PANE_ID,
-            expandedNodeIds: ['node-c'] // Valid
+            collapsedNodeIds: ['node-c'] // Valid
           }
         ],
         panes: [
@@ -1589,18 +1589,18 @@ describe('Navigation Store - Tab Management', () => {
 
   describe('automatic persistence subscription', () => {
     let mockSave: ReturnType<typeof vi.fn>;
-    let mockGetExpandedNodeIds: ReturnType<typeof vi.fn>;
+    let mockGetCollapsedNodeIds: ReturnType<typeof vi.fn>;
 
     beforeEach(() => {
       vi.useFakeTimers();
       resetTabState();
 
       mockSave = vi.fn();
-      mockGetExpandedNodeIds = vi.fn().mockReturnValue([]);
+      mockGetCollapsedNodeIds = vi.fn().mockReturnValue([]);
 
       vi.spyOn(TabPersistenceService, 'save').mockImplementation(mockSave);
-      vi.spyOn(NodeExpansionCoordinator, 'getExpandedNodeIds').mockImplementation(
-        mockGetExpandedNodeIds
+      vi.spyOn(NodeExpansionCoordinator, 'getCollapsedNodeIds').mockImplementation(
+        mockGetCollapsedNodeIds
       );
 
       // Initialize to enable persistence
@@ -1672,7 +1672,7 @@ describe('Navigation Store - Tab Management', () => {
     });
 
     it('enriches tabs with expansion state before saving', () => {
-      mockGetExpandedNodeIds.mockReturnValue(['node-1', 'node-2']);
+      mockGetCollapsedNodeIds.mockReturnValue(['node-1', 'node-2']);
 
       const newTab: Tab = {
         id: 'test-tab-1',
@@ -1691,10 +1691,10 @@ describe('Navigation Store - Tab Management', () => {
       expect(mockSave).toHaveBeenCalledTimes(1);
       const savedState = mockSave.mock.calls[0][0];
       const savedTab = savedState.tabs.find((t: Tab) => t.id === 'test-tab-1');
-      expect(savedTab.expandedNodeIds).toEqual(['node-1', 'node-2']);
+      expect(savedTab.collapsedNodeIds).toEqual(['node-1', 'node-2']);
     });
 
-    it('calls getExpandedNodeIds for each tab when persisting', () => {
+    it('calls getCollapsedNodeIds for each tab when persisting', () => {
       // Add multiple tabs
       addTab({
         id: 'test-tab-1',
@@ -1716,11 +1716,11 @@ describe('Navigation Store - Tab Management', () => {
 
       vi.advanceTimersByTime(500);
 
-      // Should call getExpandedNodeIds for each tab (including Daily Journal)
-      expect(mockGetExpandedNodeIds).toHaveBeenCalledWith(DAILY_JOURNAL_TAB_ID);
-      expect(mockGetExpandedNodeIds).toHaveBeenCalledWith('test-tab-1');
-      expect(mockGetExpandedNodeIds).toHaveBeenCalledWith('test-tab-2');
-      expect(mockGetExpandedNodeIds).toHaveBeenCalledTimes(3);
+      // Should call getCollapsedNodeIds for each tab (including Daily Journal)
+      expect(mockGetCollapsedNodeIds).toHaveBeenCalledWith(DAILY_JOURNAL_TAB_ID);
+      expect(mockGetCollapsedNodeIds).toHaveBeenCalledWith('test-tab-1');
+      expect(mockGetCollapsedNodeIds).toHaveBeenCalledWith('test-tab-2');
+      expect(mockGetCollapsedNodeIds).toHaveBeenCalledTimes(3);
     });
   });
 });
