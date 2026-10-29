@@ -58,6 +58,7 @@ import {
   changesDependencies,
   changesGate,
   describeLock,
+  ensureHeadLocal,
   fenced,
   gateVerdict,
   HEARTBEAT_MS,
@@ -742,7 +743,13 @@ async function main(): Promise<void> {
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.once(signal, () => void giveUp(signal));
 
-  await queue.enqueue(pr, pushedHead);
+  try {
+    // The caller's checkout may never have seen the PR's head; the queue push needs it locally.
+    await ensureHeadLocal(here, "origin", `refs/pull/${pr}/head`, pushedHead);
+    await queue.enqueue(pr, pushedHead);
+  } catch (err) {
+    fail(`PR #${pr} was not queued: ${err instanceof Error ? err.message : String(err)}`);
+  }
   console.log(`\n▶ #${pr} queued. Whichever machine holds the queue's lock gates and lands it.`);
 
   const started = Date.now();
