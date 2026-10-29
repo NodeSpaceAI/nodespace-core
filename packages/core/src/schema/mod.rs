@@ -1231,8 +1231,8 @@ async fn validate_structural_rules(
 
 /// Refuse a change to a schema's place in the type system that the type's
 /// existing state does not allow. Run in `update_schema`'s Phase 0, against
-/// the schema as it stood before the call, because Phase 1 commits renames
-/// (and migrates node data) before anything later can refuse.
+/// the schema as it stood before the call, so a refusal is reported before
+/// the renames are applied in memory and migrated in the write transaction.
 ///
 /// - **A core type's parent, abstract flag and structural rules are the
 ///   registry's.** Every rule resolved in Rust answers from the registry, so
@@ -1839,7 +1839,7 @@ fn validate_no_same_schema_field_relationship_collision(
 /// succeed with no error there (permanently shadowing the ancestor's
 /// declaration with no way for the caller to detect it). This check runs
 /// first, ahead of `rename_schema_field`, so both halves are caught before
-/// Phase 1 commits any data migration — not just the relationship half.
+/// the data migration runs — not just the relationship half.
 /// Takes a bare name rather than a `SchemaField` (what the two functions
 /// above take) because the caller has no complete `SchemaField` to hand —
 /// `rename_fields` renames an existing field in place, it does not construct
@@ -2834,7 +2834,7 @@ pub async fn update_schema(
     // Schema existence is verified upfront so rename/play validation errors are reported
     // before any mutations execute. The fetched schema is also the pre-mutation snapshot the
     // protection-level and grammar checks below validate `remove_fields`/`rename_fields`
-    // against, before Phase 1 or Phase 2 touch anything.
+    // against, before the renames are applied in memory or anything is written.
     let schema_before = node_service
         .get_schema_node(&params.schema_id)
         .await
@@ -2843,10 +2843,10 @@ pub async fn update_schema(
             MarkdownError::invalid_params(format!("Schema '{}' not found", params.schema_id))
         })?;
 
-    // Before Phase 1 commits a rename: a refused `extends` or `abstract` must
+    // Before any rename is applied: a refused `extends` or `abstract` must
     // not leave the call half-applied.
     validate_type_system_changes(node_service, &schema_before, &params).await?;
-    // Likewise ahead of Phase 1: a refused context path leaves nothing renamed.
+    // Likewise ahead of the renames: a refused context path leaves nothing renamed.
     validate_context_path_changes(node_service, &schema_before, &params).await?;
 
     // Before any mutation, like the reserved-name check above: a name this
@@ -2904,10 +2904,10 @@ pub async fn update_schema(
     // path through the API.
     //
     // Checked here, against `schema_before` (the schema as it stood before this
-    // call touched anything), and before Phase 1 executes a single rename: a
-    // rename migrates every existing node's property data and rewrites the
-    // schema as it goes, so validating the whole batch upfront — rather than
-    // per-entry as Phase 1 runs — keeps a batch with one bad entry from
+    // call touched anything), and before any rename is applied: a
+    // rename migrates every existing node's property data, so validating the
+    // whole batch upfront — rather than per entry as it is applied — keeps a
+    // batch with one bad entry from
     // partially applying before the rejection is returned.
     if let Some(ref remove_names) = params.remove_fields {
         for name in remove_names {
@@ -2929,7 +2929,7 @@ pub async fn update_schema(
         // `remove_relationships` applies — not `schema_before`'s raw
         // snapshot, which would still show a name this call is
         // simultaneously freeing as colliding. `remove_relationships`
-        // itself is applied later (Phase 2, to a separately-cloned list);
+        // itself is applied later, to a separately-cloned list;
         // this recomputes just the piece the checks below need, ahead of
         // any mutation. Computed once for the whole batch: it doesn't vary
         // per rename entry.
@@ -2955,17 +2955,16 @@ pub async fn update_schema(
         //
         // Deferring entirely when `extends` is set — mirroring how
         // `current_ancestor_for_additive_check` defers to the retarget
-        // block for `add_fields`/`add_relationships` — is unsafe here
-        // specifically because Phase 1 commits before that later block
-        // runs. And trusting `params.extends` outright is equally unsafe:
+        // block for `add_fields`/`add_relationships` — would leave the
+        // destination unchecked here. And trusting `params.extends` outright is equally unsafe:
         // a target that doesn't exist (or is self-referential, or would
         // close a cycle) resolves to an empty ancestor chain rather than
         // erroring (a missing schema "contributes nothing" to
         // `resolve_field_owners`/`resolve_relationships`, per their own
         // doc comments), so an invalid target would let the rename pass
         // unchecked here and only be caught by the retarget block's own
-        // `validate_extends_target` call much later — after Phase 1 has
-        // already migrated the rename. Validating the target's
+        // `validate_extends_target` call much later, once the renames are
+        // already applied in memory. Validating the target's
         // existence/self-reference/cycle here first closes that gap; the
         // retarget block re-validates it again when it actually applies
         // the edge, which is redundant but harmless (a pure read, not a
@@ -2973,17 +2972,16 @@ pub async fn update_schema(
         //
         // Gated on `params.extends` being `Some` AT ALL — not on whether
         // it's non-blank after trimming, and not on whether this batch
-        // contains an identity rename. Phase 1 commits eagerly for EVERY
+        // contains an identity rename. The check applies to EVERY
         // entry in `renames`, not just identity ones: a display-only
-        // rename (`from == to` with `friendlyName`) writes via
-        // `update_schema_field_friendly_name`, itself a separate,
-        // immediately-committing write (see its own comment below). A
+        // rename (`from == to` with `friendlyName`) changes the stored
+        // definition too. A
         // blank `extends` value is exactly what `validate_extends_target`
         // itself rejects — mirroring the later retarget block, which
         // passes the trimmed value straight through with no emptiness
         // pre-filter of its own — so pre-filtering it out here would
         // silently treat it as "no retarget, fall back to the old parent"
-        // and let Phase 1 commit before that rejection ever runs.
+        // and let the rename through before that rejection ever runs.
         let rename_ancestor: Option<String> = if let Some(ref new_parent) = params.extends {
             let new_parent = new_parent.trim();
             validate_extends_target(node_service, &params.schema_id, new_parent).await?;
@@ -3005,13 +3003,10 @@ pub async fn update_schema(
             }
 
             // The destination name's grammar must be rejected here too, before
-            // Phase 1 runs — not left to Phase 2's re-validation. An identity
-            // rename is persisted by `rename_schema_field` immediately,
-            // migrating every node's property data as it executes; Phase 2's
-            // check runs only after that migration has already committed, so a
-            // malformed name (spaces, punctuation, more than one namespace
-            // prefix) would already be durably written to the schema and every
-            // node instance by the time it was caught.
+            // the renames are applied — not left to the final schema
+            // validation, which runs only after the rename has been applied
+            // in memory and would report a duplicate or odd name instead of
+            // this one.
             crate::behaviors::validate_schema_field_name(&rename.to).map_err(|e| {
                 MarkdownError::invalid_params(format!(
                     "rename_fields: invalid destination name '{}': {}",
@@ -3021,7 +3016,7 @@ pub async fn update_schema(
 
             // ADR-078 cross-domain (and same-domain) collision check for the
             // destination name — same reasoning as the grammar check just
-            // above: this must run here, before Phase 1, not after.
+            // above: this must run here, before the renames are applied.
             // `rename_schema_field` checks `to` against its own chain-merged
             // effective *field* set (own fields plus ancestors'), but has no
             // relationship awareness at all, so left unchecked here a rename
@@ -3048,12 +3043,10 @@ pub async fn update_schema(
 
                 // Also check against a relationship or field THIS SAME call
                 // adds via `add_relationships`/`add_fields`. Both sections
-                // run well after Phase 1 folds renames in (and after Phase 1
-                // has already committed its own transaction), so a
+                // run after the renames are folded in, so a
                 // destination colliding only with a same-call addition —
                 // not anything pre-existing — would otherwise reach only
-                // the end-of-function same-schema check, by which point the
-                // rename has already migrated every node's data.
+                // the end-of-function same-schema check, with a less specific message.
                 if let Some(ref add_rels) = params.add_relationships {
                     if let Some(rel) = add_rels.iter().find(|r| r.name == rename.to) {
                         return Err(MarkdownError::invalid_params(format!(
@@ -3092,8 +3085,8 @@ pub async fn update_schema(
     // Checked over the field list this call would leave, against the parent
     // it would leave, so one check covers `add_fields`, `rename_fields` and
     // an `extends` re-target, and a call that also removes or renames the
-    // declared field away is legal. Ahead of Phase 1, which commits a rename
-    // as it runs, and ahead of the play check: `force` cannot make the name
+    // declared field away is legal. Ahead of the renames being applied,
+    // and ahead of the play check: `force` cannot make the name
     // legal, so the caller is not asked for it first.
     {
         let mut fields_after = schema_before.fields.clone();
@@ -3126,7 +3119,7 @@ pub async fn update_schema(
 
         // A new parent is validated before its chain is read: one that does
         // not exist resolves to an empty chain, and the re-target block's
-        // own refusal would come only after Phase 1.
+        // own refusal would come only after the renames were applied.
         let parent_after = match params.extends.as_deref().map(str::trim) {
             Some(new_parent) => {
                 validate_extends_target(node_service, &params.schema_id, new_parent).await?;
@@ -3150,11 +3143,9 @@ pub async fn update_schema(
     // types carry no such risk — NodeSpace never adds core fields to them — so
     // their fields are stored under the caller's names.
     //
-    // This runs before Phase 1 rather than validating the final field list,
-    // because `rename_schema_field` migrates node property data and rewrites the
-    // schema per rename, committing each one as it goes. Validating afterwards
-    // would return an error with the offending rename already persisted across
-    // every node instance. Both routes that can introduce a name are checked
+    // This runs before the renames are applied rather than validating the final
+    // field list, because a rename migrates node property data. Validating afterwards
+    // would report the generic final-schema error instead. Both routes that can introduce a name are checked
     // here: `add_fields` supplies one directly, and `rename_fields` can turn an
     // already-prefixed field into a bare one.
     if schema_is_core(node_service, &params.schema_id).await? {
@@ -3241,7 +3232,7 @@ pub async fn update_schema(
 
     // --- Phase 0: Hold a change that active plays or saved queries depend on ---
     //
-    // Last of the refusals ahead of Phase 1, so a call is never asked to agree
+    // Last of the refusals ahead of the renames being applied, so a call is never asked to agree
     // to a change that is then refused outright, and one refusal carries
     // everything that needs agreeing: `force` is the one agreement.
     //
@@ -3374,89 +3365,64 @@ pub async fn update_schema(
         None
     };
 
-    // --- Phase 1: Process renames (identity renames migrate data; display-only renames do not) ---
-    let mut fields_renamed = 0;
-    if let Some(ref renames) = params.rename_fields {
-        for rename in renames {
-            if rename.from == rename.to {
-                // Display-only: `friendly_name` is guaranteed present here —
-                // the validation pass above rejects `from == to` with no
-                // `friendly_name`. No node property data is touched.
-                let friendly_name = rename.friendly_name.as_deref().unwrap_or_default();
-                node_service
-                    .update_schema_field_friendly_name(
-                        &params.schema_id,
-                        &rename.from,
-                        friendly_name,
-                    )
-                    .await
-                    .map_err(|e| {
-                        MarkdownError::invalid_params(format!(
-                            "Field friendly_name update failed: {}",
-                            e
-                        ))
-                    })?;
-            } else {
-                // Identity rename: rekeys `name` and migrates every existing
-                // node's property data. `rename_schema_field` deliberately
-                // leaves `friendly_name` untouched (see its own doc comment),
-                // so an entry that ALSO supplies `friendly_name` applies that
-                // as a second, immediately-following update — one logical
-                // change, two schema-definition writes rather than asking
-                // the caller to split it across two `rename_fields` entries.
-                node_service
-                    .rename_schema_field(&params.schema_id, &rename.from, &rename.to)
-                    .await
-                    .map_err(|e| {
-                        MarkdownError::invalid_params(format!("Field rename failed: {}", e))
-                    })?;
-                if let Some(ref friendly_name) = rename.friendly_name {
-                    // Not atomic with the rename above — they are two
-                    // separate schema-node writes (the data migration inside
-                    // `rename_schema_field` is itself a distinct step from
-                    // the schema-definition rewrite, so there is no single
-                    // write these two calls could be merged into that would
-                    // also cover it). If this second call fails, the rename
-                    // has ALREADY happened: the field now exists under `to`,
-                    // and a retry of this same `rename_fields` entry would
-                    // fail differently (`from` no longer exists). Say so
-                    // explicitly rather than returning an error that reads
-                    // like nothing happened — the caller (model, then user)
-                    // needs to know the storage key already changed.
-                    node_service
-                        .update_schema_field_friendly_name(
-                            &params.schema_id,
-                            &rename.to,
-                            friendly_name,
-                        )
-                        .await
-                        .map_err(|e| {
-                            MarkdownError::invalid_params(format!(
-                                "Field '{}' was successfully renamed to '{}' (and its node data \
-                                 migrated), but updating its display label failed: {}. Do NOT \
-                                 retry with the original 'from'/'to' pair — the field now exists \
-                                 as '{}'. To retry the label update alone, send \
-                                 {{\"from\": \"{}\", \"to\": \"{}\", \"friendlyName\": ...}}.",
-                                rename.from, rename.to, e, rename.to, rename.to, rename.to
-                            ))
-                        })?;
-                }
-            }
-            fields_renamed += 1;
-        }
-    }
-
-    // --- Phase 2: Re-fetch schema (reflects any renames applied above) ---
-    let schema = node_service
+    // --- Phase 1: Apply renames to an in-memory copy of the schema ---
+    //
+    // Nothing is written here. Every refusal below judges the schema as the
+    // renames leave it, and the storage-key renames themselves (which migrate
+    // node property data) run inside the write-group transaction further down,
+    // so a call refused at any point leaves the schema and its instances
+    // exactly as they were.
+    let fields_renamed = params.rename_fields.as_ref().map_or(0, Vec::len);
+    let mut schema = node_service
         .get_schema_node(&params.schema_id)
         .await
         .map_err(|e| MarkdownError::internal_error(format!("Failed to get schema: {}", e)))?
         .ok_or_else(|| {
-            MarkdownError::invalid_params(format!(
-                "Schema '{}' not found after renames",
-                params.schema_id
-            ))
+            MarkdownError::invalid_params(format!("Schema '{}' not found", params.schema_id))
         })?;
+    // The schema as stored: the starting point for the in-transaction data
+    // migration of identity renames.
+    let schema_as_stored = schema.clone();
+    let mut identity_renames: Vec<(String, String)> = Vec::new();
+    if let Some(ref renames) = params.rename_fields {
+        for rename in renames {
+            if !schema.fields.iter().any(|f| f.name == rename.from) {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Field rename failed: Field '{}' not found in schema '{}'",
+                    rename.from, params.schema_id
+                )));
+            }
+            if rename.from != rename.to {
+                // The schema's own fields as earlier entries in this call
+                // left them; ancestors' and descendants' fields are checked
+                // inside the transaction.
+                if schema.fields.iter().any(|f| f.name == rename.to) {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Field '{}' already exists in schema '{}' (declared by '{}' — own \
+                         field or inherited via extends); cannot rename to an existing field",
+                        rename.to, params.schema_id, params.schema_id
+                    )));
+                }
+                identity_renames.push((rename.from.clone(), rename.to.clone()));
+                for field in schema.fields.iter_mut().filter(|f| f.name == rename.from) {
+                    field.name = rename.to.clone();
+                }
+            }
+            // A display-only entry always carries a label (checked in Phase
+            // 0); an identity rename carries one optionally, applied after
+            // the rename since a rename alone leaves the label as stored.
+            if let Some(ref friendly_name) = rename.friendly_name {
+                let resolved = crate::services::node_service::schema::resolve_field_friendly_name(
+                    &schema.fields,
+                    &rename.to,
+                    friendly_name,
+                );
+                for field in schema.fields.iter_mut().filter(|f| f.name == rename.to) {
+                    field.friendly_name = resolved.clone();
+                }
+            }
+        }
+    }
 
     // Relationship removals are resolved here, ahead of field processing, so
     // `relationships` reflects them by the time the "Process relationships"
@@ -3849,16 +3815,10 @@ pub async fn update_schema(
     // fully untouched — fields included. That ordering guarantee is now
     // backed by the transaction rather than by hoping nothing fails after it.
     //
-    // Phase 1 (per-rename field renames above) is NOT included in this
-    // boundary — each rename is its own already-atomic unit (S3's
-    // `rename_schema_field` fix), and merging N independent renames plus this
-    // group into one transaction is a larger composition than this pass
-    // covers. The existing "Do NOT retry with the original pair" guidance
-    // for a friendly_name failure after a successful rename (Phase 1 above)
-    // therefore still applies — that compensation-by-error-message is
-    // unchanged by this fix.
+    // The identity renames (which rekey node property data) run first inside
+    // this same transaction, so a refusal anywhere in the group undoes them.
     //
-    // Everything written below was built from the Phase 2 read, which ran
+    // Everything written below was built from the read above, which ran
     // outside this transaction — and `properties` replaces the stored
     // `fields` array wholesale. A rename, relabel or other `update_schema`
     // committing in between would be silently reverted (for a rename,
@@ -3933,6 +3893,8 @@ pub async fn update_schema(
             let added_fields = added_fields_for_tx.clone();
             let inherited_by_owner = inherited_by_owner.clone();
             let parent_chain_versions = parent_chain_versions.clone();
+            let schema_as_stored = schema_as_stored.clone();
+            let identity_renames = identity_renames.clone();
             Box::pin(async move {
                 let current = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), &schema_id)
                     .await
@@ -3959,6 +3921,16 @@ pub async fn update_schema(
                             actual_version,
                         });
                     }
+                }
+
+                // Identity renames: migrate each type's stored property data
+                // inside this transaction, so any later refusal rolls the
+                // migration back with the rest of the group.
+                let mut working = schema_as_stored.clone();
+                for (from, to) in &identity_renames {
+                    node_service
+                        .rename_schema_field_step_in_tx(tx, &mut working, from, to)
+                        .await?;
                 }
 
                 // Values stored under an added field's name must satisfy its
@@ -4050,15 +4022,14 @@ pub async fn update_schema(
         .await;
 
     // The schema's embedding is built from its name, fields and description,
-    // so a change to any of them leaves it stale. A Phase 1 rename is
-    // persisted whether or not the group above committed, so it queues too.
+    // so a change to any of them leaves it stale.
     // A rejected call queues nothing: a stale embedding is out of the index
     // until it is rebuilt. A committed call queues whatever it changed, a
     // relationship-only change included, though relationships are not part
     // of the embedded text. The transaction runs in a caller-held
     // boundary, which queues nothing itself (ADR-069 §5).
     #[cfg(feature = "nlp")]
-    if committed.is_ok() || fields_renamed > 0 {
+    if committed.is_ok() {
         node_service
             .queue_root_for_embedding(&params.schema_id)
             .await;
@@ -4067,14 +4038,6 @@ pub async fn update_schema(
     committed.map_err(|e| match e {
         NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
         NodeServiceError::VersionConflict { ref node_id, .. } => {
-            // Phase 1 renames commit on their own, ahead of this group,
-            // so a caller retrying the whole call must not resend them.
-            let renames_note = if fields_renamed > 0 {
-                " The field renames in this call WERE applied before the conflict was \
-                     detected — omit rename_fields when retrying."
-            } else {
-                ""
-            };
             let changed = if *node_id == params.schema_id {
                 format!("Schema '{}' changed concurrently", node_id)
             } else {
@@ -4084,9 +4047,9 @@ pub async fn update_schema(
                 )
             };
             MarkdownError::invalid_params(format!(
-                "{} while this update was being applied; none of its field, relationship or \
-                     description changes were written.{} Re-read the schema and retry.",
-                changed, renames_note
+                "{} while this update was being applied; none of its field, relationship, \
+                     rename or description changes were written. Re-read the schema and retry.",
+                changed
             ))
         }
         other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),

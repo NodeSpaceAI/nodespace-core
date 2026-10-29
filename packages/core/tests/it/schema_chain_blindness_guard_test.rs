@@ -200,9 +200,15 @@ const ALLOWLIST: &[Allowed] = &[
     },
     Allowed {
         file: "services/node_service/schema.rs",
-        function: "validate_schema_field_rename",
+        function: "validate_schema_field_rename_against",
         field_kind: "fields",
-        why: "Two own-only reads, both intentional. (1) The source field \
+        why: "Three own-only reads, all intentional. (0) The destination name \
+              is checked against the schema's OWN declarations as passed in \
+              (update_schema applies several renames in one transaction and \
+              hands each the schema as earlier renames left it, so a name \
+              freed by an earlier entry can be reused); inherited fields are \
+              checked separately through resolve_field_owners, counting only \
+              those declared by an ancestor. (1) The source field \
               being renamed must be OWN-declared on type_id — you can only \
               rename a field the type itself declares; renaming an inherited \
               field would mean renaming the ancestor's field, which is a \

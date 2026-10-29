@@ -1101,3 +1101,49 @@ async fn misspelled_relationship_key_is_rejected_not_silently_dropped() -> Resul
     assert!(schema.relationships.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn rename_with_a_live_edge_removal_refused_in_the_transaction_changes_nothing() -> Result<()>
+{
+    let (svc, _t) = create_test_service().await?;
+    create_widget_pair(&svc).await?;
+    let assembly = "85b8139f-92d2-5b40-959c-140253882714";
+    svc.create_node(Node::new_with_id(
+        assembly.to_string(),
+        "assembly".to_string(),
+        "an assembly".to_string(),
+        json!({ "assembly": { "title": "kept" } }),
+    ))
+    .await?;
+    make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
+    svc.create_relationship(
+        assembly,
+        "widgets",
+        "5c115e74-4f2a-5af0-9741-d3d785a753b8",
+        json!({}),
+    )
+    .await?;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "assembly",
+            "rename_fields": [{ "from": "title", "to": "heading" }],
+            "remove_relationships": ["widgets"]
+        }),
+    )
+    .await
+    .expect_err("a declaration with live edges cannot be removed");
+    assert!(err.to_string().contains("1 instance edge"), "{err}");
+
+    // The refusal comes from inside the write transaction, after the rename
+    // migrated node data; the migration must have rolled back with it.
+    let node = svc.get_node(assembly).await?.expect("assembly node");
+    assert_eq!(node.properties["assembly"]["title"], json!("kept"));
+    assert!(node.properties["assembly"].get("heading").is_none());
+    let schema = svc.get_schema_node("assembly").await?.expect("assembly");
+    assert!(schema.get_field("title").is_some());
+    assert!(schema.get_field("heading").is_none());
+    assert_eq!(schema.relationships.len(), 1);
+    Ok(())
+}
