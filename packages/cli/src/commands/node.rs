@@ -883,35 +883,67 @@ async fn batch_get(client: &mut NodeClient, args: BatchGetArgs, json: bool) -> R
     Ok(())
 }
 
+/// Parses `--updates` into batch items, validating the whole input before any
+/// item is sent. A key that is present and not null must have its documented
+/// type, and unknown keys are rejected: a mistyped `version` that was dropped
+/// would turn a guarded write into an unguarded one.
+fn parse_batch_updates(input: &str) -> Result<Vec<nodespace_daemon::nodespace::BatchUpdateItem>> {
+    use nodespace_daemon::nodespace::BatchUpdateItem;
+
+    const KNOWN_KEYS: [&str; 5] = ["node_id", "version", "content", "node_type", "properties"];
+
+    let raw: serde_json::Value =
+        serde_json::from_str(input).context("--updates must be a JSON array of update objects")?;
+    let arr = raw.as_array().context("--updates must be a JSON array")?;
+
+    let mut updates: Vec<BatchUpdateItem> = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let obj = item
+            .as_object()
+            .with_context(|| format!("updates[{i}] must be a JSON object"))?;
+        if let Some(key) = obj.keys().find(|k| !KNOWN_KEYS.contains(&k.as_str())) {
+            anyhow::bail!(
+                "updates[{i}] has unknown field '{key}' (expected one of: {})",
+                KNOWN_KEYS.join(", ")
+            );
+        }
+        let node_id = item["node_id"]
+            .as_str()
+            .with_context(|| format!("updates[{i}] missing string field 'node_id'"))?
+            .to_string();
+        let optional = |key: &str| obj.get(key).filter(|v| !v.is_null());
+        let version = match optional("version") {
+            None => None,
+            Some(v) => Some(v.as_i64().with_context(|| {
+                format!("updates[{i}] field 'version' must be an integer, got {v}")
+            })?),
+        };
+        let text = |key: &str| -> Result<Option<String>> {
+            match optional(key) {
+                None => Ok(None),
+                Some(v) => v.as_str().map(|s| Some(s.to_string())).with_context(|| {
+                    format!("updates[{i}] field '{key}' must be a string, got {v}")
+                }),
+            }
+        };
+        updates.push(BatchUpdateItem {
+            node_id,
+            version,
+            content: text("content")?,
+            node_type: text("node_type")?,
+            properties: optional("properties").map(|v| v.to_string()),
+        });
+    }
+    Ok(updates)
+}
+
 async fn batch_update(
     client: &mut NodeClient,
     args: BatchUpdateArgs,
     json: bool,
     journal: &WriteJournal,
 ) -> Result<()> {
-    use nodespace_daemon::nodespace::BatchUpdateItem;
-
-    let raw: serde_json::Value = serde_json::from_str(&args.updates)
-        .context("--updates must be a JSON array of update objects")?;
-    let arr = raw.as_array().context("--updates must be a JSON array")?;
-
-    let mut updates: Vec<BatchUpdateItem> = Vec::with_capacity(arr.len());
-    for (i, item) in arr.iter().enumerate() {
-        let node_id = item["node_id"]
-            .as_str()
-            .with_context(|| format!("updates[{i}] missing string field 'node_id'"))?
-            .to_string();
-        updates.push(BatchUpdateItem {
-            node_id,
-            version: item["version"].as_i64(),
-            content: item["content"].as_str().map(str::to_string),
-            node_type: item["node_type"].as_str().map(str::to_string),
-            properties: item
-                .get("properties")
-                .filter(|v| !v.is_null())
-                .map(|v| v.to_string()),
-        });
-    }
+    let updates = parse_batch_updates(&args.updates)?;
 
     let response = client
         .update_nodes_batch(UpdateNodesBatchRequest { updates })
@@ -979,6 +1011,49 @@ mod tests {
             .metadata_mut()
             .insert("x-version-conflict", header.parse().unwrap());
         status
+    }
+
+    #[test]
+    fn batch_update_rejects_a_mistyped_version() {
+        for bad in [r#""3""#, "3.5", "true", "[3]"] {
+            let input =
+                format!(r#"[{{"node_id":"a","version":1}},{{"node_id":"b","version":{bad}}}]"#);
+            let err = super::parse_batch_updates(&input).unwrap_err().to_string();
+            assert!(
+                err.contains("updates[1]") && err.contains("'version'"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_update_rejects_mistyped_text_fields_and_unknown_keys() {
+        for (input, needle) in [
+            (r#"[{"node_id":"a","content":5}]"#, "'content'"),
+            (r#"[{"node_id":"a","node_type":{}}]"#, "'node_type'"),
+            (r#"[{"node_id":"a","Version":3}]"#, "'Version'"),
+            (r#"["a"]"#, "must be a JSON object"),
+        ] {
+            let err = super::parse_batch_updates(input).unwrap_err().to_string();
+            assert!(
+                err.contains("updates[0]") && err.contains(needle),
+                "{input}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_update_accepts_valid_and_absent_or_null_fields() {
+        let items = super::parse_batch_updates(
+            r#"[{"node_id":"a","version":7,"content":"x","node_type":"text","properties":{"k":1}},
+                {"node_id":"b","version":null},{"node_id":"c"}]"#,
+        )
+        .unwrap();
+        assert_eq!(items[0].version, Some(7));
+        assert_eq!(items[0].content.as_deref(), Some("x"));
+        assert_eq!(items[0].properties.as_deref(), Some(r#"{"k":1}"#));
+        assert_eq!(items[1].version, None);
+        assert_eq!(items[2].version, None);
     }
 
     #[test]
