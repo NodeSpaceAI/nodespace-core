@@ -152,10 +152,10 @@ async fn reset_context_paths(
         .await
         .context("ResetSeedNode RPC failed")?
         .into_inner();
-    if !preview.found {
-        println!("No built-in type found with id \"{}\".", args.id);
-        return Ok(());
-    }
+    super::require_found(
+        preview.found,
+        format!("No built-in type found with id \"{}\".", args.id),
+    )?;
 
     if !args.yes {
         let summary = format!(

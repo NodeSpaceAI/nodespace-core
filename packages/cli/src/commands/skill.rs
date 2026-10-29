@@ -218,10 +218,10 @@ pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> 
         .context("Failed to look up seed node for reset (ResetSeedNode RPC)")?
         .into_inner();
 
-    if !preview.found {
-        println!("No seeded skill found with key \"{}\".", args.key);
-        return Ok(());
-    }
+    super::require_found(
+        preview.found,
+        format!("No seeded skill found with key \"{}\".", args.key),
+    )?;
 
     if !args.yes {
         let summary = format_reset_summary(

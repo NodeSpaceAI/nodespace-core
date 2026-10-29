@@ -5959,17 +5959,17 @@ async fn seed_pending_context_paths_update_is_listed_kept_and_taken_end_to_end()
     let _ = shutdown.send(());
 }
 
-/// A reset scope flag against a seed key that doesn't exist must report
-/// "not found" rather than erroring or silently succeeding.
+/// A reset against a key that matches nothing is an error, not a sentence and
+/// exit 0: through `run_reset` it returns `Err` carrying the message.
 #[tokio::test]
-async fn skill_reset_reports_not_found_for_an_unknown_key() {
+async fn skill_reset_fails_for_an_unknown_key() {
     let (sock, shutdown, _tempdir, _node_service) = spawn_test_daemon_with_seeded_skills().await;
 
     let mut client = connect(&sock, DatabaseIdInterceptor::none())
         .await
         .expect("connect");
 
-    commands::skill::run_reset(
+    let error = commands::skill::run_reset(
         &mut client,
         commands::skill::ResetArgs {
             key: "Not A Real Skill".to_string(),
@@ -5982,7 +5982,79 @@ async fn skill_reset_reports_not_found_for_an_unknown_key() {
         true,
     )
     .await
-    .expect("run_reset must not error on an unknown key -- it should report not-found");
+    .expect_err("run_reset must fail on an unknown key");
+    assert_eq!(
+        error.to_string(),
+        "No seeded skill found with key \"Not A Real Skill\"."
+    );
+
+    let _ = shutdown.send(());
+}
+
+/// Run the compiled `nodespace` against `sock` and return its output.
+async fn run_nodespace_binary(sock: &std::path::Path, args: &[&str]) -> std::process::Output {
+    let home = TempDir::new().expect("tempdir");
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_nodespace"))
+        .arg("--socket")
+        .arg(sock)
+        .args(args)
+        .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
+        .env_remove("NODESPACE_DATABASE")
+        .output()
+        .await
+        .expect("run nodespace")
+}
+
+/// The user-visible contract of a reset that matched nothing: non-zero exit,
+/// the message on stderr, nothing on stdout (so a `--json` caller never reads
+/// a sentence as a result).
+fn assert_not_found_failure(output: &std::process::Output, message: &str) {
+    assert!(
+        !output.status.success(),
+        "an unknown key must exit non-zero, got {}",
+        output.status
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "stdout must stay empty, got {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(message), "stderr was {stderr:?}");
+}
+
+#[tokio::test]
+async fn skill_reset_binary_exits_non_zero_for_an_unknown_key() {
+    let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
+
+    for json in [false, true] {
+        let mut args = vec!["skill", "reset", "Not A Real Skill", "--all", "--yes"];
+        if json {
+            args.insert(0, "--json");
+        }
+        let output = run_nodespace_binary(&sock, &args).await;
+        assert_not_found_failure(
+            &output,
+            "No seeded skill found with key \"Not A Real Skill\".",
+        );
+    }
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn schema_reset_context_paths_binary_exits_non_zero_for_an_unknown_key() {
+    let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
+
+    for json in [false, true] {
+        let mut args = vec!["schema", "reset-context-paths", "no_such_type", "--yes"];
+        if json {
+            args.insert(0, "--json");
+        }
+        let output = run_nodespace_binary(&sock, &args).await;
+        assert_not_found_failure(&output, "No built-in type found with id \"no_such_type\".");
+    }
 
     let _ = shutdown.send(());
 }
