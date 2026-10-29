@@ -6,8 +6,9 @@
  *
  * ## Architecture
  * - Maintains a registry of ReactiveNodeService instances (one per viewer/tab)
- * - Extracts expanded node IDs from services for persistence
- * - Restores expansion states when tabs are loaded
+ * - Extracts collapsed node IDs from services for persistence (viewers load all
+ *   nodes expanded, so the collapsed ids are the sparse exceptions)
+ * - Restores collapsed states when tabs are loaded
  * - Supports deferred restoration (register restoration before service exists)
  *
  * ## Lifecycle & Timing
@@ -15,16 +16,16 @@
  * **Application Startup (Loading State):**
  * ```
  * 1. App loads → TabPersistenceService.load()
- *    └─ Returns: { tabs: [{ id, expandedNodeIds: [...] }] }
+ *    └─ Returns: { tabs: [{ id, collapsedNodeIds: [...] }] }
  *
  * 2. Navigation store processes loaded state
- *    └─ Calls: scheduleRestoration(tabId, expandedNodeIds)
+ *    └─ Calls: scheduleRestoration(tabId, collapsedNodeIds)
  *    └─ State: PENDING (viewer not mounted yet)
  *
  * 3. BaseNodeViewer mounts (onMount)
  *    └─ Calls: registerViewer(tabId, service)
  *    └─ Triggers: Automatic restoration of pending states
- *    └─ State: APPLIED (nodes expanded via batchSetExpanded)
+ *    └─ State: APPLIED (nodes collapsed via batchSetExpanded)
  * ```
  *
  * **Application Shutdown (Saving State):**
@@ -33,11 +34,11 @@
  *    └─ ReactiveNodeService updates UIState.expanded
  *
  * 2. Navigation store subscription fires (debounced 500ms)
- *    └─ Calls: getExpandedNodeIds(tabId) for each tab
- *    └─ Returns: ['node-1', 'node-3'] (sparse - only expanded)
+ *    └─ Calls: getCollapsedNodeIds(tabId) for each tab
+ *    └─ Returns: ['node-1', 'node-3'] (sparse - only collapsed)
  *
  * 3. TabPersistenceService.save({ tabs: [...] })
- *    └─ Persists to localStorage with expandedNodeIds
+ *    └─ Persists to localStorage with collapsedNodeIds
  * ```
  *
  * ## Deferred Restoration Pattern
@@ -74,15 +75,15 @@
  *
  * // In navigation.ts (load)
  * for (const tab of loadedTabs) {
- *   if (tab.expandedNodeIds?.length > 0) {
- *     NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
+ *   if (tab.collapsedNodeIds?.length > 0) {
+ *     NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.collapsedNodeIds);
  *   }
  * }
  *
  * // In navigation.ts (save)
  * const enrichedTabs = tabs.map(tab => ({
  *   ...tab,
- *   expandedNodeIds: NodeExpansionCoordinator.getExpandedNodeIds(tab.id)
+ *   collapsedNodeIds: NodeExpansionCoordinator.getCollapsedNodeIds(tab.id)
  * }));
  * ```
  */
@@ -118,7 +119,7 @@ export class NodeExpansionCoordinator {
   /**
    * Map of pending restoration requests
    * Key: viewerId
-   * Value: Array of node IDs to expand
+   * Value: Array of node IDs to collapse
    */
   private static pendingRestorations = new Map<string, string[]>();
 
@@ -146,8 +147,8 @@ export class NodeExpansionCoordinator {
     // Check if there are pending expansion states to restore
     const pendingStates = this.pendingRestorations.get(viewerId);
     if (pendingStates && pendingStates.length > 0) {
-      log.debug(`Restoring ${pendingStates.length} expansions for viewer: ${viewerId}`);
-      this.restoreExpansionStates(viewerId, pendingStates);
+      log.debug(`Restoring ${pendingStates.length} collapsed nodes for viewer: ${viewerId}`);
+      this.restoreCollapsedStates(viewerId, pendingStates);
       this.pendingRestorations.delete(viewerId);
     }
   }
@@ -166,53 +167,52 @@ export class NodeExpansionCoordinator {
   }
 
   /**
-   * Extract expanded node IDs from a viewer
-   * Returns sparse array of only expanded nodes (collapsed is default state)
+   * Extract collapsed node IDs from a viewer
+   *
+   * Viewers load every node expanded, so only the exceptions are persisted: the
+   * returned sparse array lists the nodes the user collapsed. A node that is
+   * missing from the list (including a node created later) is expanded.
+   *
+   * While a viewer has not registered yet, its pending restoration is returned
+   * unchanged so that a save before the viewer mounts cannot drop saved state.
    *
    * @param viewerId - The viewer ID to extract from
-   * @returns Array of node IDs that are expanded, or empty array if viewer not found
+   * @returns Array of node IDs that are collapsed
    */
-  static getExpandedNodeIds(viewerId: string): string[] {
+  static getCollapsedNodeIds(viewerId: string): string[] {
     const entry = this.viewerRegistry.get(viewerId);
     if (!entry) {
-      // Silently return empty array if viewer not registered yet
-      // This is normal during app startup before viewers mount
-      return [];
+      // Normal during app startup before viewers mount
+      return [...(this.pendingRestorations.get(viewerId) ?? [])];
     }
 
     const { service } = entry;
-    const expandedIds: string[] = [];
+    const collapsedIds: string[] = [];
 
-    // Get all nodes from the service
     // Note: service.nodes returns Map entries [id, Node][], so we need to destructure
-    const nodes = service.nodes;
-
-    // Check expansion state for each node
-    for (const [nodeId] of nodes) {
-      const uiState = service.getUIState(nodeId);
-      if (uiState?.expanded) {
-        expandedIds.push(nodeId);
+    for (const [nodeId] of service.nodes) {
+      if (service.hasUIState(nodeId) && service.getUIState(nodeId)?.expanded === false) {
+        collapsedIds.push(nodeId);
       }
     }
 
-    // Silently return (no log spam for routine extraction)
-    return expandedIds;
+    return collapsedIds;
   }
 
   /**
-   * Restore expansion states to a viewer
-   * Marks specified nodes as expanded using batch update for efficiency
+   * Restore collapsed states to a viewer
+   * Marks specified nodes as collapsed using batch update for efficiency. Every
+   * other node keeps the viewer's default (expanded).
    *
    * If the viewer hasn't been registered yet, the restoration
    * will be queued and applied when the viewer registers.
    *
    * @param viewerId - The viewer ID to restore to
-   * @param expandedNodeIds - Array of node IDs to mark as expanded
+   * @param collapsedNodeIds - Array of node IDs to mark as collapsed
    */
-  static restoreExpansionStates(viewerId: string, expandedNodeIds: string[]): void {
-    // Handle empty array - still consume the restoration request
-    if (expandedNodeIds.length === 0) {
-      // Clear any pending restorations for this viewer
+  static restoreCollapsedStates(viewerId: string, collapsedNodeIds: string[]): void {
+    // Nothing is collapsed: the default already applies. Still consume the request.
+    if (collapsedNodeIds.length === 0) {
       this.pendingRestorations.delete(viewerId);
       return;
     }
@@ -222,25 +222,25 @@ export class NodeExpansionCoordinator {
     if (!entry) {
       // Viewer not registered yet - queue the restoration
       log.debug(
-        `Viewer not yet registered, queueing ${expandedNodeIds.length} expansions: ${viewerId}`
+        `Viewer not yet registered, queueing ${collapsedNodeIds.length} collapsed nodes: ${viewerId}`
       );
-      this.pendingRestorations.set(viewerId, expandedNodeIds);
+      this.pendingRestorations.set(viewerId, collapsedNodeIds);
       return;
     }
 
     const { service } = entry;
 
     // Filter to only nodes that exist, and prepare batch update
-    const updates = expandedNodeIds
-      .filter((nodeId) => service.getUIState(nodeId) !== undefined)
-      .map((nodeId) => ({ nodeId, expanded: true }));
+    const updates = collapsedNodeIds
+      .filter((nodeId) => service.hasUIState(nodeId))
+      .map((nodeId) => ({ nodeId, expanded: false }));
 
     // Use batch API for better performance
     const changedCount = service.batchSetExpanded(updates);
-    const skippedCount = expandedNodeIds.length - updates.length;
+    const skippedCount = collapsedNodeIds.length - updates.length;
 
     log.debug(
-      `Restored expansions for viewer ${viewerId}: ${changedCount} applied, ${skippedCount} skipped (missing nodes)`
+      `Restored collapsed nodes for viewer ${viewerId}: ${changedCount} applied, ${skippedCount} skipped (missing nodes)`
     );
   }
 
@@ -249,11 +249,11 @@ export class NodeExpansionCoordinator {
    * This is useful when loading tab state before viewers are mounted
    *
    * @param viewerId - The viewer ID to schedule restoration for
-   * @param expandedNodeIds - Array of node IDs to mark as expanded
+   * @param collapsedNodeIds - Array of node IDs to mark as collapsed
    */
-  static scheduleRestoration(viewerId: string, expandedNodeIds: string[]): void {
-    log.debug(`Scheduling ${expandedNodeIds.length} expansions for viewer: ${viewerId}`);
-    this.pendingRestorations.set(viewerId, expandedNodeIds);
+  static scheduleRestoration(viewerId: string, collapsedNodeIds: string[]): void {
+    log.debug(`Scheduling ${collapsedNodeIds.length} collapsed nodes for viewer: ${viewerId}`);
+    this.pendingRestorations.set(viewerId, collapsedNodeIds);
   }
 
   /**

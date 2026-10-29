@@ -42,23 +42,23 @@ describe('Expansion State Persistence Integration', () => {
           createMockNode(child2Id, 'Child 2', rootId),
           createMockNode(grandchild1Id, 'Grandchild 1', child1Id)
         ],
-        { expanded: false }
+        { expanded: true } // The viewer's real default: every loaded node is expanded
       );
 
       // Register viewer
       NodeExpansionCoordinator.registerViewer(tabId, service);
 
-      // Simulate user expanding some nodes
-      service.toggleExpanded(rootId); // Expand root
-      service.toggleExpanded(child1Id); // Expand child1
-      // child2 remains collapsed
+      // Simulate user collapsing some nodes
+      service.toggleExpanded(rootId); // Collapse root
+      service.toggleExpanded(child1Id); // Collapse child1
+      // child2 remains expanded
 
       // ==========================================
       // PHASE 2: Save State (Simulating App Close)
       // ==========================================
 
       // Extract expansion states (simulates navigation store subscription)
-      const expandedNodeIds = NodeExpansionCoordinator.getExpandedNodeIds(tabId);
+      const collapsedNodeIds = NodeExpansionCoordinator.getCollapsedNodeIds(tabId);
 
       // Create tab state with expansion data
       const tabState: TabState = {
@@ -70,7 +70,7 @@ describe('Expansion State Persistence Integration', () => {
             content: { nodeId: rootId },
             closeable: true,
             paneId: 'pane-1',
-            expandedNodeIds: expandedNodeIds
+            collapsedNodeIds: collapsedNodeIds
           }
         ],
         panes: [
@@ -88,10 +88,10 @@ describe('Expansion State Persistence Integration', () => {
       TabPersistenceService.saveNow(tabState);
 
       // Verify expansion state was captured
-      expect(expandedNodeIds).toContain(rootId);
-      expect(expandedNodeIds).toContain(child1Id);
-      expect(expandedNodeIds).not.toContain(child2Id);
-      expect(expandedNodeIds).not.toContain(grandchild1Id);
+      expect(collapsedNodeIds).toContain(rootId);
+      expect(collapsedNodeIds).toContain(child1Id);
+      expect(collapsedNodeIds).not.toContain(child2Id);
+      expect(collapsedNodeIds).not.toContain(grandchild1Id);
 
       // ==========================================
       // PHASE 3: Simulate App Restart
@@ -107,13 +107,13 @@ describe('Expansion State Persistence Integration', () => {
       // Load tab state from localStorage
       const loadedState = TabPersistenceService.load();
       expect(loadedState).toBeTruthy();
-      expect(loadedState?.tabs[0].expandedNodeIds).toEqual(expandedNodeIds);
+      expect(loadedState?.tabs[0].collapsedNodeIds).toEqual(collapsedNodeIds);
 
       // Schedule restoration for each tab (simulates loadPersistedState in navigation.ts)
       if (loadedState) {
         for (const tab of loadedState.tabs) {
-          if (tab.expandedNodeIds && tab.expandedNodeIds.length > 0) {
-            NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.expandedNodeIds);
+          if (tab.collapsedNodeIds && tab.collapsedNodeIds.length > 0) {
+            NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.collapsedNodeIds);
           }
         }
       }
@@ -128,7 +128,7 @@ describe('Expansion State Persistence Integration', () => {
       // Create new service instance (simulates component remount)
       const newService = createMockReactiveNodeService();
 
-      // Load nodes from database (all collapsed by default)
+      // Load nodes from database (the viewer initialises every node expanded)
       newService.initializeNodes(
         [
           createMockNode(rootId, 'Root Node', null),
@@ -136,7 +136,7 @@ describe('Expansion State Persistence Integration', () => {
           createMockNode(child2Id, 'Child 2', rootId),
           createMockNode(grandchild1Id, 'Grandchild 1', child1Id)
         ],
-        { expanded: false } // Important: nodes start collapsed
+        { expanded: true } // Important: matches the viewer's initialisation
       );
 
       // Register viewer - should trigger automatic restoration
@@ -146,14 +146,40 @@ describe('Expansion State Persistence Integration', () => {
       // PHASE 6: Verify Restoration
       // ==========================================
 
-      // Check that expansion states were restored
-      expect(newService.getUIState(rootId)?.expanded).toBe(true);
-      expect(newService.getUIState(child1Id)?.expanded).toBe(true);
-      expect(newService.getUIState(child2Id)?.expanded).toBe(false);
-      expect(newService.getUIState(grandchild1Id)?.expanded).toBe(false);
+      // Check that collapsed states were restored
+      expect(newService.getUIState(rootId)?.expanded).toBe(false);
+      expect(newService.getUIState(child1Id)?.expanded).toBe(false);
+      expect(newService.getUIState(child2Id)?.expanded).toBe(true);
+      expect(newService.getUIState(grandchild1Id)?.expanded).toBe(true);
 
       // Pending restorations should be cleared
       expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(0);
+    });
+
+    it('should restore a tab where every node was collapsed', () => {
+      const tabId = 'test-tab-all';
+      const nodes = ['a', 'b'].map((id) => createMockNode(id, id, null));
+
+      const service = createMockReactiveNodeService();
+      service.initializeNodes(nodes, { expanded: true });
+      NodeExpansionCoordinator.registerViewer(tabId, service);
+      service.toggleExpanded('a');
+      service.toggleExpanded('b');
+      const saved = NodeExpansionCoordinator.getCollapsedNodeIds(tabId);
+      expect(saved).toEqual(['a', 'b']);
+
+      NodeExpansionCoordinator.clear();
+      NodeExpansionCoordinator.scheduleRestoration(tabId, saved);
+
+      // A save that runs before the viewer mounts must not drop the saved state
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds(tabId)).toEqual(['a', 'b']);
+
+      const restarted = createMockReactiveNodeService();
+      restarted.initializeNodes(nodes, { expanded: true });
+      NodeExpansionCoordinator.registerViewer(tabId, restarted);
+
+      expect(restarted.getUIState('a')?.expanded).toBe(false);
+      expect(restarted.getUIState('b')?.expanded).toBe(false);
     });
 
     it('should handle multiple tabs with independent expansion states', () => {
@@ -171,22 +197,22 @@ describe('Expansion State Persistence Integration', () => {
 
       service1.initializeNodes(
         [createMockNode(node1Id, 'Node 1'), createMockNode(node2Id, 'Node 2')],
-        { expanded: false }
+        { expanded: true }
       );
 
-      service2.initializeNodes([createMockNode(node3Id, 'Node 3')], { expanded: false });
+      service2.initializeNodes([createMockNode(node3Id, 'Node 3')], { expanded: true });
 
       // Register viewers
       NodeExpansionCoordinator.registerViewer(tab1Id, service1);
       NodeExpansionCoordinator.registerViewer(tab2Id, service2);
 
       // Expand different nodes in each tab
-      service1.toggleExpanded(node1Id); // Tab 1: expand node-1
-      service2.toggleExpanded(node3Id); // Tab 2: expand node-3
+      service1.toggleExpanded(node1Id); // Tab 1: collapse node-1
+      service2.toggleExpanded(node3Id); // Tab 2: collapse node-3
 
       // Extract expansion states
-      const tab1Expanded = NodeExpansionCoordinator.getExpandedNodeIds(tab1Id);
-      const tab2Expanded = NodeExpansionCoordinator.getExpandedNodeIds(tab2Id);
+      const tab1Expanded = NodeExpansionCoordinator.getCollapsedNodeIds(tab1Id);
+      const tab2Expanded = NodeExpansionCoordinator.getCollapsedNodeIds(tab2Id);
 
       // Verify independence
       expect(tab1Expanded).toContain(node1Id);
@@ -203,32 +229,32 @@ describe('Expansion State Persistence Integration', () => {
       const deletedNodeId = 'deleted-node';
 
       service.initializeNodes([createMockNode(existingNodeId, 'Existing Node')], {
-        expanded: false
+        expanded: true
       });
 
       NodeExpansionCoordinator.registerViewer(tabId, service);
 
       // Simulate restoring expansion state that includes a deleted node
-      NodeExpansionCoordinator.restoreExpansionStates(tabId, [existingNodeId, deletedNodeId]);
+      NodeExpansionCoordinator.restoreCollapsedStates(tabId, [existingNodeId, deletedNodeId]);
 
-      // Should only expand existing node, skip deleted node
-      expect(service.getUIState(existingNodeId)?.expanded).toBe(true);
+      // Should only collapse existing node, skip deleted node
+      expect(service.getUIState(existingNodeId)?.expanded).toBe(false);
       // No error should be thrown for deleted node
     });
 
     it('should handle empty expansion state gracefully', () => {
       const tabId = 'test-tab-1';
 
-      // Restore with empty array (simulates no expanded nodes)
+      // Restore with empty array (simulates no collapsed nodes)
       // This should handle gracefully without queueing
-      NodeExpansionCoordinator.restoreExpansionStates(tabId, []);
+      NodeExpansionCoordinator.restoreCollapsedStates(tabId, []);
 
       // Should not have queued anything
       expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(0);
 
       // Register viewer with nodes after empty restoration
       const service = createMockReactiveNodeService();
-      service.initializeNodes([createMockNode('node-1', 'Node 1')], { expanded: false });
+      service.initializeNodes([createMockNode('node-1', 'Node 1')], { expanded: true });
 
       NodeExpansionCoordinator.registerViewer(tabId, service);
 
@@ -247,16 +273,16 @@ describe('Expansion State Persistence Integration', () => {
 
       service.initializeNodes(
         [createMockNode(node1Id, 'Node 1'), createMockNode(node2Id, 'Node 2')],
-        { expanded: false }
+        { expanded: true }
       );
 
       NodeExpansionCoordinator.registerViewer(tabId, service);
 
-      // Expand node-1
+      // Collapse node-1
       service.toggleExpanded(node1Id);
 
       // Extract expansion states
-      const expandedNodeIds = NodeExpansionCoordinator.getExpandedNodeIds(tabId);
+      const collapsedNodeIds = NodeExpansionCoordinator.getCollapsedNodeIds(tabId);
 
       // Create and save tab state
       const tabState: TabState = {
@@ -268,7 +294,7 @@ describe('Expansion State Persistence Integration', () => {
             content: { nodeId: node1Id },
             closeable: true,
             paneId: 'pane-1',
-            expandedNodeIds: expandedNodeIds
+            collapsedNodeIds: collapsedNodeIds
           }
         ],
         panes: [{ id: 'pane-1', width: 100, tabIds: [tabId] }],
@@ -281,7 +307,7 @@ describe('Expansion State Persistence Integration', () => {
 
       // Load and verify
       const loaded = TabPersistenceService.load();
-      expect(loaded?.tabs[0].expandedNodeIds).toEqual([node1Id]);
+      expect(loaded?.tabs[0].collapsedNodeIds).toEqual([node1Id]);
     });
 
     it('should handle tabs without expansion data', () => {
@@ -294,7 +320,7 @@ describe('Expansion State Persistence Integration', () => {
             content: { nodeId: 'node-1' },
             closeable: true,
             paneId: 'pane-1'
-            // No expandedNodeIds field
+            // No collapsedNodeIds field
           }
         ],
         panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
@@ -306,7 +332,7 @@ describe('Expansion State Persistence Integration', () => {
       TabPersistenceService.saveNow(tabState);
 
       const loaded = TabPersistenceService.load();
-      expect(loaded?.tabs[0].expandedNodeIds).toBeUndefined();
+      expect(loaded?.tabs[0].collapsedNodeIds).toBeUndefined();
     });
   });
 
@@ -318,7 +344,7 @@ describe('Expansion State Persistence Integration', () => {
       const nodeIds = Array.from({ length: 50 }, (_, i) => `node-${i}`);
       service.initializeNodes(
         nodeIds.map((id) => createMockNode(id, `Node ${id}`)),
-        { expanded: false }
+        { expanded: true }
       );
 
       NodeExpansionCoordinator.registerViewer(tabId, service);
@@ -329,10 +355,10 @@ describe('Expansion State Persistence Integration', () => {
       }
 
       // Extract expansion states
-      const expandedNodeIds = NodeExpansionCoordinator.getExpandedNodeIds(tabId);
+      const collapsedNodeIds = NodeExpansionCoordinator.getCollapsedNodeIds(tabId);
 
-      // Should capture all expanded nodes
-      expect(expandedNodeIds.length).toBe(50);
+      // Should capture all collapsed nodes
+      expect(collapsedNodeIds.length).toBe(50);
     });
 
     it('should use batch restoration for performance', () => {
@@ -343,7 +369,7 @@ describe('Expansion State Persistence Integration', () => {
       const nodeIds = Array.from({ length: 20 }, (_, i) => `node-${i}`);
       service.initializeNodes(
         nodeIds.map((id) => createMockNode(id, `Node ${id}`)),
-        { expanded: false }
+        { expanded: true }
       );
 
       // Spy on batchSetExpanded to verify it's being used
@@ -351,24 +377,23 @@ describe('Expansion State Persistence Integration', () => {
 
       NodeExpansionCoordinator.registerViewer(tabId, service);
 
-      // Restore expansion states for 15 nodes
-      const nodesToExpand = nodeIds.slice(0, 15);
-      NodeExpansionCoordinator.restoreExpansionStates(tabId, nodesToExpand);
+      // Restore collapsed states for 15 nodes
+      const nodesToCollapse = nodeIds.slice(0, 15);
+      NodeExpansionCoordinator.restoreCollapsedStates(tabId, nodesToCollapse);
 
       // Should have called batchSetExpanded once (not setExpanded 15 times)
       expect(batchSpy).toHaveBeenCalledOnce();
       expect(batchSpy).toHaveBeenCalledWith(
-        nodesToExpand.map((nodeId) => ({ nodeId, expanded: true }))
+        nodesToCollapse.map((nodeId) => ({ nodeId, expanded: false }))
       );
 
-      // Verify all nodes are expanded
-      for (const nodeId of nodesToExpand) {
-        expect(service.getUIState(nodeId)?.expanded).toBe(true);
+      for (const nodeId of nodesToCollapse) {
+        expect(service.getUIState(nodeId)?.expanded).toBe(false);
       }
 
-      // Verify remaining nodes are still collapsed
+      // Verify remaining nodes keep the expanded default
       for (const nodeId of nodeIds.slice(15)) {
-        expect(service.getUIState(nodeId)?.expanded).toBe(false);
+        expect(service.getUIState(nodeId)?.expanded).toBe(true);
       }
     });
   });

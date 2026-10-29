@@ -48,64 +48,69 @@ describe('NodeExpansionCoordinator', () => {
   });
 
   describe('Expansion State Extraction', () => {
-    it('should extract expanded node IDs from a viewer', () => {
+    it('should extract collapsed node IDs from a viewer', () => {
       const service = createMockReactiveNodeService();
       const viewerId = 'test-viewer-1';
 
-      // Create nodes
       const node1Id = 'node-1';
       const node2Id = 'node-2';
       const node3Id = 'node-3';
 
-      // Initialize with test nodes (all collapsed by default)
+      // Viewers load every node expanded
       service.initializeNodes(
         [
           createMockNode(node1Id, 'Node 1'),
           createMockNode(node2Id, 'Node 2'),
           createMockNode(node3Id, 'Node 3')
         ],
-        { expanded: false }
+        { expanded: true }
       );
 
-      // Expand node-1 and node-3
+      // Collapse node-1 and node-3
       service.toggleExpanded(node1Id);
       service.toggleExpanded(node3Id);
 
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
-      const expandedIds = NodeExpansionCoordinator.getExpandedNodeIds(viewerId);
+      const collapsedIds = NodeExpansionCoordinator.getCollapsedNodeIds(viewerId);
 
-      expect(expandedIds).toContain(node1Id);
-      expect(expandedIds).toContain(node3Id);
-      expect(expandedIds).not.toContain(node2Id);
-      expect(expandedIds.length).toBe(2);
+      expect(collapsedIds).toContain(node1Id);
+      expect(collapsedIds).toContain(node3Id);
+      expect(collapsedIds).not.toContain(node2Id);
+      expect(collapsedIds.length).toBe(2);
     });
 
     it('should return empty array for unregistered viewer', () => {
-      const expandedIds = NodeExpansionCoordinator.getExpandedNodeIds('nonexistent-viewer');
-      expect(expandedIds).toEqual([]);
+      const collapsedIds = NodeExpansionCoordinator.getCollapsedNodeIds('nonexistent-viewer');
+      expect(collapsedIds).toEqual([]);
     });
 
-    it('should return empty array when no nodes are expanded', () => {
+    it('should return the pending restoration for a viewer that has not registered yet', () => {
+      NodeExpansionCoordinator.scheduleRestoration('pending-viewer', ['node-1', 'node-2']);
+
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds('pending-viewer')).toEqual([
+        'node-1',
+        'node-2'
+      ]);
+    });
+
+    it('should return empty array when no nodes are collapsed', () => {
       const service = createMockReactiveNodeService();
       const viewerId = 'test-viewer-1';
 
-      // Initialize nodes as collapsed
-      service.initializeNodes([createMockNode('node-1', 'Node 1')], { expanded: false });
+      service.initializeNodes([createMockNode('node-1', 'Node 1')], { expanded: true });
 
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
-      const expandedIds = NodeExpansionCoordinator.getExpandedNodeIds(viewerId);
-      expect(expandedIds).toEqual([]);
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds(viewerId)).toEqual([]);
     });
   });
 
   describe('Deferred Restoration', () => {
     it('should schedule restoration for unregistered viewer', () => {
       const viewerId = 'test-viewer-1';
-      const expandedNodeIds = ['node-1', 'node-2'];
 
-      NodeExpansionCoordinator.scheduleRestoration(viewerId, expandedNodeIds);
+      NodeExpansionCoordinator.scheduleRestoration(viewerId, ['node-1', 'node-2']);
 
       expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(1);
     });
@@ -116,24 +121,17 @@ describe('NodeExpansionCoordinator', () => {
       const node1Id = 'node-1';
       const node2Id = 'node-2';
 
-      // Initialize with test nodes (all collapsed by default)
+      // The viewer's real default: every loaded node starts expanded
       service.initializeNodes(
         [createMockNode(node1Id, 'Node 1'), createMockNode(node2Id, 'Node 2')],
-        { expanded: false }
+        { expanded: true }
       );
 
-      // Schedule restoration before viewer is registered
-      NodeExpansionCoordinator.scheduleRestoration(viewerId, [node1Id, node2Id]);
-
-      // Register viewer - should trigger automatic restoration
+      NodeExpansionCoordinator.scheduleRestoration(viewerId, [node1Id]);
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
-      // Check that nodes are now expanded
-      const uiState1 = service.getUIState(node1Id);
-      const uiState2 = service.getUIState(node2Id);
-
-      expect(uiState1?.expanded).toBe(true);
-      expect(uiState2?.expanded).toBe(true);
+      expect(service.getUIState(node1Id)?.expanded).toBe(false);
+      expect(service.getUIState(node2Id)?.expanded).toBe(true);
       expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(0);
     });
 
@@ -151,26 +149,24 @@ describe('NodeExpansionCoordinator', () => {
   });
 
   describe('Restoration Behavior', () => {
-    it('should restore expansion states for existing nodes', () => {
+    it('should restore collapsed states for existing nodes', () => {
       const service = createMockReactiveNodeService();
       const viewerId = 'test-viewer-1';
       const node1Id = 'node-1';
       const node2Id = 'node-2';
 
-      // Initialize with test nodes (all collapsed)
       service.initializeNodes(
         [createMockNode(node1Id, 'Node 1'), createMockNode(node2Id, 'Node 2')],
-        { expanded: false }
+        { expanded: true }
       );
 
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
-      // Restore expansion states
-      NodeExpansionCoordinator.restoreExpansionStates(viewerId, [node1Id]);
+      NodeExpansionCoordinator.restoreCollapsedStates(viewerId, [node1Id]);
 
-      // Check that only node-1 is expanded
-      expect(service.getUIState(node1Id)?.expanded).toBe(true);
-      expect(service.getUIState(node2Id)?.expanded).toBe(false);
+      // Only node-1 is collapsed
+      expect(service.getUIState(node1Id)?.expanded).toBe(false);
+      expect(service.getUIState(node2Id)?.expanded).toBe(true);
     });
 
     it('should skip restoration for non-existent nodes', () => {
@@ -179,29 +175,23 @@ describe('NodeExpansionCoordinator', () => {
       const existingNodeId = 'node-1';
       const nonExistentNodeId = 'node-999';
 
-      service.initializeNodes([createMockNode(existingNodeId, 'Node 1')], { expanded: false });
+      service.initializeNodes([createMockNode(existingNodeId, 'Node 1')], { expanded: true });
 
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
-      // Attempt to restore both existing and non-existent nodes
-      // Should not throw error
-      NodeExpansionCoordinator.restoreExpansionStates(viewerId, [
+      NodeExpansionCoordinator.restoreCollapsedStates(viewerId, [
         existingNodeId,
         nonExistentNodeId
       ]);
 
-      // Only existing node should be expanded
-      expect(service.getUIState(existingNodeId)?.expanded).toBe(true);
+      expect(service.getUIState(existingNodeId)?.expanded).toBe(false);
     });
 
     it('should handle restoration for unregistered viewer by queueing', () => {
       const viewerId = 'test-viewer-1';
-      const expandedNodeIds = ['node-1', 'node-2'];
 
-      // Attempt to restore before viewer is registered
-      NodeExpansionCoordinator.restoreExpansionStates(viewerId, expandedNodeIds);
+      NodeExpansionCoordinator.restoreCollapsedStates(viewerId, ['node-1', 'node-2']);
 
-      // Should queue the restoration
       expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(1);
     });
   });
@@ -215,7 +205,7 @@ describe('NodeExpansionCoordinator', () => {
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
       expect(() => {
-        NodeExpansionCoordinator.restoreExpansionStates(viewerId, []);
+        NodeExpansionCoordinator.restoreCollapsedStates(viewerId, []);
       }).not.toThrow();
     });
 
