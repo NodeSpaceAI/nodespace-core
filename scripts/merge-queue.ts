@@ -57,6 +57,30 @@ export interface LockInfo {
   prs: number[];
 }
 
+/**
+ * Makes `expected` — the head `ls-remote` reported for a PR — present in the
+ * repository at `cwd`, so it can be pushed to the queue. A PR pushed from
+ * another machine, or one that gained a commit on GitHub, is otherwise missing
+ * and the queue push dies with `bad object`. Fetches `ref` (the PR's head ref,
+ * `refs/pull/<n>/head`) and throws a plain message when the fetched commit is
+ * not `expected`: the PR moved since it was read, and queueing a different
+ * commit than the one validated would be wrong.
+ */
+export async function ensureHeadLocal(cwd: string, remote: string, ref: string, expected: string): Promise<void> {
+  const git = (args: string[]) => $`git -c core.hooksPath=/dev/null ${args}`.cwd(cwd).quiet().nothrow();
+  if ((await git(["cat-file", "-e", `${expected}^{commit}`])).exitCode === 0) return;
+  const fetched = await git(["fetch", "--quiet", "--no-tags", remote, ref]);
+  if (fetched.exitCode !== 0) {
+    throw new Error(`could not fetch ${ref} from ${remote} to get commit ${expected.slice(0, 8)}: ${fetched.stderr.toString().trim()}`);
+  }
+  const got = (await git(["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).stdout.toString().trim();
+  if (got !== expected) {
+    throw new Error(
+      `${ref} is at ${got.slice(0, 8)} but the branch head read earlier was ${expected.slice(0, 8)}; the PR changed while it was being read. Re-run.`
+    );
+  }
+}
+
 export function describeLock(info: LockInfo): string {
   const prs = info.prs.length > 0 ? ` on ${info.prs.map((p) => `#${p}`).join(", ")}` : "";
   return `${info.user}@${info.host} (pid ${info.pid})${prs}`;

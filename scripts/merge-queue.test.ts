@@ -17,6 +17,7 @@ import {
   changesDependencies,
   changesGate,
   describeLock,
+  ensureHeadLocal,
   fenced,
   gateVerdict,
   type LandEntry,
@@ -333,5 +334,44 @@ describe("eject comment formatting", () => {
   test("terminal colour codes are stripped", () => {
     const esc = String.fromCharCode(27);
     expect(stripAnsi(`${esc}[31m✗ failed${esc}[0m ${esc}[2K`)).toBe("✗ failed ");
+  });
+});
+
+describe("ensureHeadLocal", () => {
+  let author: string;
+  let tip: string;
+
+  // A PR head published as refs/pull/7/head on origin by a clone that machineA
+  // never fetched from, so machineA's object store lacks it.
+  beforeEach(async () => {
+    author = await clone("author");
+    await $`git -C ${author} commit --quiet --allow-empty -m pr-work`.quiet();
+    tip = (await $`git -C ${author} rev-parse HEAD`.quiet().text()).trim();
+    await $`git -C ${author} push --quiet origin ${tip}:refs/pull/7/head`.quiet();
+  });
+
+  test("fetches a head missing locally so it can be queued", async () => {
+    const hasTip = async () => (await $`git -C ${machineA} cat-file -e ${tip}^{commit}`.quiet().nothrow()).exitCode === 0;
+    expect(await hasTip()).toBe(false);
+    await ensureHeadLocal(machineA, "origin", "refs/pull/7/head", tip);
+    expect(await hasTip()).toBe(true);
+    await new MergeQueue(machineA).enqueue(7, tip);
+    expect(await new MergeQueue(machineA).queued()).toEqual([7]);
+  });
+
+  test("leaves a head that is already local alone", async () => {
+    // No such ref on origin: a fetch would fail, so success means none was tried.
+    const local = (await $`git -C ${machineA} rev-parse HEAD`.quiet().text()).trim();
+    await ensureHeadLocal(machineA, "origin", "refs/pull/99/head", local);
+  });
+
+  test("refuses when the PR head moved since it was read", async () => {
+    await $`git -C ${author} commit --quiet --allow-empty -m more`.quiet();
+    await $`git -C ${author} push --quiet --force origin HEAD:refs/pull/7/head`.quiet();
+    await expect(ensureHeadLocal(machineA, "origin", "refs/pull/7/head", tip)).rejects.toThrow(/changed while it was being read/);
+  });
+
+  test("says so when the head ref cannot be fetched", async () => {
+    await expect(ensureHeadLocal(machineA, "origin", "refs/pull/8/head", tip)).rejects.toThrow(/could not fetch refs\/pull\/8\/head/);
   });
 });
