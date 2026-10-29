@@ -533,46 +533,49 @@ impl NodeService {
             .unwrap_or(node_type)
             .to_string();
 
-        // Re-derive from each participant's OWN CURRENT value, not the value
+        // Re-derive from the participants' OWN CURRENT values, not the value
         // recorded at detection time — a participant may have since changed
-        // it (as this exact scenario exercises: Bob edits his email away
-        // from Alice's). Checking a stale `detail.value` from an arbitrary
-        // participant's exclusion perspective is wrong in both directions:
-        // excluding the participant who MOVED AWAY still finds the OTHER
-        // participant's still-correct value and reports a false collision.
+        // it. The record holds only while every participant still takes part
+        // (an archived node never collides, so a merged-away loser closes the
+        // record its merge resolved) and they all still share one value. A
+        // participant matching some other node instead is a different
+        // collision, journaled under its own record; searching the whole type
+        // for any match would keep this one open over a value its
+        // participants no longer share.
+        if record.node_ids.len() < 2 {
+            return Ok(true); // malformed participants — leave it for a human
+        }
+        let mut shared: Option<String> = None;
         for node_id in &record.node_ids {
             let Some(node) = self.get_node(node_id).await? else {
-                continue; // already handled by the hard-delete check in reconcile_one
+                return Ok(false); // already handled by the hard-delete check in reconcile_one
             };
-            let Some(current_value) = node
+            if !crate::governance::participates(&node) {
+                return Ok(false);
+            }
+            let Some(value) = node
                 .properties
                 .get(&bucket)
                 .and_then(|p| p.get(field))
                 .and_then(|v| v.as_str())
+                .filter(|v| !v.trim().is_empty())
             else {
-                continue;
+                return Ok(false);
             };
-            if current_value.trim().is_empty() {
-                continue;
-            }
-
-            let conflicting = self
-                .store
-                .find_conflicting_unique(
-                    node_type,
-                    &bucket,
-                    field,
-                    current_value,
-                    Some(node_id),
-                    case_insensitive,
-                )
-                .await
-                .map_err(NodeServiceError::from_store)?;
-            if conflicting.is_some() {
-                return Ok(true);
+            // Compared as detection compares them: exactly, or case-folded
+            // for a case-insensitive field.
+            let value = if case_insensitive {
+                value.to_lowercase()
+            } else {
+                value.to_string()
+            };
+            match &shared {
+                Some(first) if *first != value => return Ok(false),
+                Some(_) => {}
+                None => shared = Some(value),
             }
         }
-        Ok(false)
+        Ok(true)
     }
 
     /// Whether the record's participants still collide on its name: each one

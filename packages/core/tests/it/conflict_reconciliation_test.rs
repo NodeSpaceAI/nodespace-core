@@ -364,6 +364,51 @@ async fn sweep_closes_an_inherited_field_collision_that_no_longer_holds() -> Res
     Ok(())
 }
 
+async fn person(svc: &NodeService, first_name: &str, email: &str) -> Result<String> {
+    Ok(svc
+        .create_node(Node::new(
+            "person".to_string(),
+            String::new(),
+            json!({ "person": { "first_name": first_name, "email": email } }),
+        ))
+        .await?)
+}
+
+/// An archived node never collides, so a record whose participant was
+/// archived closes, whichever participant it is.
+#[tokio::test]
+async fn sweep_closes_a_unique_field_collision_once_a_participant_is_archived() -> Result<()> {
+    for archive_first_created in [true, false] {
+        let (svc, _tmp) = service().await?;
+        let alice_id = person(&svc, "Alice", "alice@example.com").await?;
+        let bob_id = person(&svc, "Bob", "alice@example.com").await?;
+        assert_eq!(svc.conflicts_for_node(&alice_id).await?.len(), 1);
+
+        let archived = if archive_first_created {
+            &alice_id
+        } else {
+            &bob_id
+        };
+        let node = svc.get_node(archived).await?.unwrap();
+        svc.update_node(
+            archived,
+            node.version,
+            NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )
+        .await?;
+
+        let closed = svc.reconcile_conflicts().await?;
+        assert_eq!(closed, 1, "archived first-created: {archive_first_created}");
+        let after = svc.conflicts_for_node(&alice_id).await?;
+        assert_eq!(after[0].status, ConflictStatus::Resolved);
+        assert_eq!(
+            after[0].resolution.as_ref().unwrap()["reason"],
+            "no_longer_conflicting"
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Collection-name collisions
 // ---------------------------------------------------------------------------
@@ -419,6 +464,64 @@ async fn sweep_leaves_a_live_collection_name_collision_open_in_either_id_order()
         let after = svc.conflicts_for_node(first).await?;
         assert_eq!(after[0].status, ConflictStatus::Open);
     }
+    Ok(())
+}
+
+/// A merge run without naming the record archives the loser and leaves the
+/// record open; the sweep closes it.
+#[tokio::test]
+async fn sweep_closes_a_unique_field_collision_merged_without_its_record() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let alice_id = person(&svc, "Alice", "alice@example.com").await?;
+    let bob_id = person(&svc, "Bob", "alice@example.com").await?;
+
+    svc.merge_nodes(&alice_id, &bob_id, None).await?;
+    assert_eq!(
+        svc.conflicts_for_node(&alice_id).await?[0].status,
+        ConflictStatus::Open
+    );
+
+    let closed = svc.reconcile_conflicts().await?;
+    assert_eq!(closed, 1);
+    assert_eq!(
+        svc.conflicts_for_node(&alice_id).await?[0].status,
+        ConflictStatus::Resolved
+    );
+    Ok(())
+}
+
+/// A and B shared a value; B moved to one C already holds. That is a new
+/// collision with its own record, and the old one closes: A and B no longer
+/// share anything.
+#[tokio::test]
+async fn sweep_closes_a_unique_field_collision_whose_participant_now_collides_elsewhere(
+) -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let a_id = person(&svc, "Ann", "shared@example.com").await?;
+    let b_id = person(&svc, "Ben", "shared@example.com").await?;
+    let c_id = person(&svc, "Cal", "cal@example.com").await?;
+    let ab_record = svc.conflicts_for_node(&a_id).await?[0].id.clone();
+
+    let b = svc.get_node(&b_id).await?.unwrap();
+    svc.update_node(
+        &b_id,
+        b.version,
+        NodeUpdate::new().with_properties(
+            json!({ "person": { "first_name": "Ben", "email": "cal@example.com" } }),
+        ),
+    )
+    .await?;
+    let bc_records = svc.conflicts_for_node(&c_id).await?;
+    assert_eq!(bc_records.len(), 1, "B and C now collide");
+    let bc_record = bc_records[0].id.clone();
+
+    let closed = svc.reconcile_conflicts().await?;
+    assert_eq!(closed, 1, "only the A/B record no longer holds");
+
+    let records = svc.conflicts_for_node(&b_id).await?;
+    let status = |id: &str| records.iter().find(|r| r.id == id).map(|r| r.status);
+    assert_eq!(status(&ab_record), Some(ConflictStatus::Resolved));
+    assert_eq!(status(&bc_record), Some(ConflictStatus::Open));
     Ok(())
 }
 
