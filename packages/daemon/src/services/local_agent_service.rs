@@ -118,6 +118,48 @@ const MODEL_SPEC_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// verdict — so model loading is never blocked past this bound.
 const ROUTING_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long an errored or timed-out routing probe is remembered for the
+/// `(base_url, served_model)` it ran against. Within this window a model load
+/// for the same pair skips the probe and leaves routing enabled, so a model
+/// that cannot answer the probe does not stall every message send behind a
+/// fresh probe. Bounded so a transient failure (server still warming up) is
+/// measured again later.
+const ROUTING_PROBE_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What a failed probe is remembered against: the provider config, endpoint,
+/// served model and API key. Editing any of them (a corrected key, a different
+/// model) makes the next load probe afresh.
+type RoutingProbeFailureKey = (String, String, String, String);
+
+type RoutingProbeFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, InferenceError>> + Send>>;
+
+/// The routing probe and the clock that ages its negative cache, held as data
+/// so tests can drive a failing or hanging probe and advance time without a
+/// network or real waiting.
+struct RoutingProbeHooks {
+    probe: Box<dyn Fn(Arc<dyn ChatInferenceEngine>) -> RoutingProbeFuture + Send + Sync>,
+    now: Box<dyn Fn() -> std::time::Instant + Send + Sync>,
+    probe_timeout: std::time::Duration,
+    failure_ttl: std::time::Duration,
+}
+
+impl RoutingProbeHooks {
+    fn production() -> Self {
+        Self {
+            probe: Box::new(|engine| {
+                Box::pin(async move {
+                    nodespace_agent::local_agent::routing_probe::probe_routing_ok(engine.as_ref())
+                        .await
+                })
+            }),
+            now: Box::new(std::time::Instant::now),
+            probe_timeout: ROUTING_PROBE_TIMEOUT,
+            failure_ttl: ROUTING_PROBE_FAILURE_TTL,
+        }
+    }
+}
+
 /// TTL for the OpenAI-compat discovery cache (see
 /// `LocalAgentServiceInner::openai_compat_discovery_cache`).
 ///
@@ -212,6 +254,12 @@ pub struct SharedLocalAgent {
     /// (not the opaque id used for engine-swap dedup) means an in-place model
     /// edit is detected even when the engine-swap path sees no change.
     active_model_routing_key: Mutex<Option<(String, String)>>,
+    /// The `(base_url, served_model)` pair whose routing probe errored or timed
+    /// out, and when. Kept apart from `active_model_routing_key` so an
+    /// unmeasured model is never mistaken for a probed one; it only suppresses
+    /// re-running the probe until [`RoutingProbeHooks::failure_ttl`] elapses.
+    routing_probe_failure: Mutex<Option<(RoutingProbeFailureKey, std::time::Instant)>>,
+    routing_probe_hooks: std::sync::RwLock<Arc<RoutingProbeHooks>>,
     /// The loaded model's geometry, captured at engine-swap time.
     ///
     /// Read by `get_status` instead of calling `model_spec()`, which reaches a
@@ -279,10 +327,38 @@ impl SharedLocalAgent {
             active_model_id: Mutex::new(None),
             active_model_routing_disabled: Mutex::new(false),
             active_model_routing_key: Mutex::new(None),
+            routing_probe_failure: Mutex::new(None),
+            routing_probe_hooks: std::sync::RwLock::new(Arc::new(RoutingProbeHooks::production())),
             loaded_model_spec: Mutex::new(None),
             model_spec_snapshot_timeout,
             idle_gate: ChatIdleGate::new(),
         })
+    }
+
+    #[cfg(test)]
+    fn set_routing_probe_hooks(&self, hooks: RoutingProbeHooks) {
+        *self
+            .routing_probe_hooks
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Arc::new(hooks);
+    }
+
+    fn routing_probe_hooks(&self) -> Arc<RoutingProbeHooks> {
+        self.routing_probe_hooks
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Whether the probe for `key` errored or timed out within the failure TTL.
+    async fn routing_probe_recently_failed(&self, key: &RoutingProbeFailureKey) -> bool {
+        let hooks = self.routing_probe_hooks();
+        match &*self.routing_probe_failure.lock().await {
+            Some((failed_key, at)) if failed_key == key => {
+                (hooks.now)().saturating_duration_since(*at) < hooks.failure_ttl
+            }
+            _ => false,
+        }
     }
 
     /// The process-global chat-model idle gate. Live turns register against it
@@ -398,6 +474,7 @@ impl SharedLocalAgent {
         *self.active_model_id.lock().await = None;
         *self.active_model_routing_disabled.lock().await = false;
         *self.active_model_routing_key.lock().await = None;
+        *self.routing_probe_failure.lock().await = None;
         *self.loaded_model_spec.lock().await = None;
         tracing::debug!("SharedLocalAgent: inference engine reset to NoOp");
     }
@@ -2027,6 +2104,12 @@ impl LocalAgentServiceImpl {
             // change — `swapped` would then wrongly read as "still the model
             // last probed."
             let this_key = (config.base_url.clone(), model.clone());
+            let failure_key: RoutingProbeFailureKey = (
+                config_id.to_string(),
+                config.base_url.clone(),
+                model.clone(),
+                config.api_key.clone(),
+            );
             let cached_key_matches =
                 *self.inner.shared.active_model_routing_key.lock().await == Some(this_key.clone());
             // `None` here means "the probe did not run / could not complete
@@ -2046,18 +2129,29 @@ impl LocalAgentServiceImpl {
                 // comment on `OpenAiCompatConfig::routing_ok`), each with its
                 // own independent verdict.
                 Some(cached)
-            } else {
-                let probe_result = match tokio::time::timeout(
-                    ROUTING_PROBE_TIMEOUT,
-                    nodespace_agent::local_agent::routing_probe::probe_routing_ok(engine.as_ref()),
-                )
+            } else if self
+                .inner
+                .shared
+                .routing_probe_recently_failed(&failure_key)
                 .await
-                {
-                    Ok(result) => result,
-                    Err(_) => Err(nodespace_nlp_engine::InferenceError::Engine(format!(
-                        "routing probe exceeded {ROUTING_PROBE_TIMEOUT:?}"
-                    ))),
-                };
+            {
+                // The probe already errored or timed out for this exact pair
+                // moments ago; re-running it would stall this load for the
+                // same bound again. Routing stays enabled, as after the
+                // original failure.
+                None
+            } else {
+                let hooks = self.inner.shared.routing_probe_hooks();
+                let probe_result =
+                    match tokio::time::timeout(hooks.probe_timeout, (hooks.probe)(engine.clone()))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(nodespace_nlp_engine::InferenceError::Engine(format!(
+                            "routing probe exceeded {:?}",
+                            hooks.probe_timeout
+                        ))),
+                    };
                 match probe_result {
                     Ok(routing_ok) => {
                         if !routing_ok {
@@ -2085,6 +2179,7 @@ impl LocalAgentServiceImpl {
                                 "failed to persist routing probe verdict; will re-probe next load"
                             );
                         }
+                        *self.inner.shared.routing_probe_failure.lock().await = None;
                         Some(routing_ok)
                     }
                     Err(e) => {
@@ -2098,6 +2193,9 @@ impl LocalAgentServiceImpl {
                             "routing probe failed to complete; leaving routing enabled for this \
                              load"
                         );
+                        let failed_at = (self.inner.shared.routing_probe_hooks().now)();
+                        *self.inner.shared.routing_probe_failure.lock().await =
+                            Some((failure_key.clone(), failed_at));
                         None
                     }
                 }
@@ -2330,6 +2428,7 @@ impl LocalAgentServiceImpl {
         // onto this model.
         *self.inner.shared.active_model_routing_disabled.lock().await = false;
         *self.inner.shared.active_model_routing_key.lock().await = None;
+        *self.inner.shared.routing_probe_failure.lock().await = None;
 
         emit!(ModelLoadProgressEvent {
             event_type: "ready".to_string(),
@@ -6942,6 +7041,123 @@ mod tests {
              Some((base_url, \"model-a\")) it would mean the second load reused the first load's \
              state instead of re-evaluating for model-b"
         );
+    }
+
+    /// A fake probe that counts its runs and either errors or never returns,
+    /// with a clock the test advances by hand.
+    struct FakeProbe {
+        runs: Arc<std::sync::atomic::AtomicUsize>,
+        offset_secs: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl FakeProbe {
+        fn install(shared: &SharedLocalAgent, hang: bool) -> Self {
+            use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+            let runs = Arc::new(AtomicUsize::new(0));
+            let offset_secs = Arc::new(AtomicU64::new(0));
+            let base = std::time::Instant::now();
+            let probe_runs = runs.clone();
+            let clock_offset = offset_secs.clone();
+            shared.set_routing_probe_hooks(RoutingProbeHooks {
+                probe: Box::new(move |_engine| {
+                    probe_runs.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async move {
+                        if hang {
+                            std::future::pending::<()>().await;
+                        }
+                        Err(InferenceError::Engine("probe failed".to_string()))
+                    })
+                }),
+                now: Box::new(move || {
+                    base + std::time::Duration::from_secs(clock_offset.load(Ordering::SeqCst))
+                }),
+                probe_timeout: std::time::Duration::from_millis(50),
+                failure_ttl: std::time::Duration::from_secs(300),
+            });
+            Self { runs, offset_secs }
+        }
+
+        fn runs(&self) -> usize {
+            self.runs.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn advance(&self, secs: u64) {
+            self.offset_secs
+                .fetch_add(secs, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn errored_routing_probe_is_not_rerun_on_the_next_load() {
+        let (svc, node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let probe = FakeProbe::install(&shared, false);
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+
+        for _ in 0..3 {
+            let events = svc.load_model_and_collect_events(&model_id, None).await;
+            assert!(events.iter().any(|e| e.event_type == "ready"), "{events:?}");
+        }
+        assert_eq!(
+            probe.runs(),
+            1,
+            "an errored probe must be cached, not re-run"
+        );
+        assert_eq!(
+            *shared.active_model_routing_key.lock().await,
+            None,
+            "the failure must not be recorded as a measured verdict"
+        );
+        assert!(
+            !*shared.active_model_routing_disabled.lock().await,
+            "an unmeasured model keeps routing enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_routing_probe_is_not_rerun_on_the_next_load() {
+        let (svc, node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let probe = FakeProbe::install(&shared, true);
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+
+        svc.load_model_and_collect_events(&model_id, None).await;
+        svc.load_model_and_collect_events(&model_id, None).await;
+        assert_eq!(
+            probe.runs(),
+            1,
+            "a timed-out probe must be cached, not re-run"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_routing_probe_is_retried_after_ttl_and_after_a_model_edit() {
+        let (svc, node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let probe = FakeProbe::install(&shared, false);
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+
+        svc.load_model_and_collect_events(&model_id, None).await;
+        probe.advance(299);
+        svc.load_model_and_collect_events(&model_id, None).await;
+        assert_eq!(probe.runs(), 1, "still inside the TTL");
+
+        probe.advance(2);
+        svc.load_model_and_collect_events(&model_id, None).await;
+        assert_eq!(probe.runs(), 2, "expired failure is measured again");
+
+        set_providers(&node_service, vec![provider("model-b")]).await;
+        svc.load_model_and_collect_events(&model_id, None).await;
+        assert_eq!(probe.runs(), 3, "a different served model is probed afresh");
+
+        let mut rekeyed = provider("model-b");
+        rekeyed.api_key = "sk-corrected".to_string();
+        set_providers(&node_service, vec![rekeyed]).await;
+        svc.load_model_and_collect_events(&model_id, None).await;
+        assert_eq!(probe.runs(), 4, "a corrected API key is probed afresh");
     }
 
     /// A provider is found only in the database that configured it (ADR-095):
