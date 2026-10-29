@@ -1902,6 +1902,211 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
     expect(typeof afterExpanded).toBe('boolean');
   });
 
+  describe('child promotion ordering and failure', () => {
+    const mkNode = (id: string, content: string): Node => ({
+      lifecycleStatus: 'active',
+      id,
+      nodeType: 'text',
+      content,
+      version: 1,
+      properties: {},
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString()
+    });
+
+    const spies: { mockRestore: () => void }[] = [];
+    afterEach(() => {
+      spies.splice(0).forEach((spy) => spy.mockRestore());
+    });
+
+    /**
+     * 'current' (to be merged into 'target') owns the given children. The tree mock is
+     * stateful: a child moved out of 'current' stops being reported as its child, as with
+     * the real tree. 'target' sits under 'holder', so promoted children land there.
+     */
+    async function setupMerge(childIds: string[], targetUnderHolder = true) {
+      const { structureTree } = await import('$lib/stores/reactive-structure-tree.svelte');
+      service.initializeNodes([mkNode('target', 'Target'), mkNode('current', 'Current')]);
+      const holder = mkNode('holder', 'Holder');
+      const childrenOf = new Map<string, Node[]>([
+        ['current', childIds.map((id) => mkNode(id, id))],
+        ['holder', []]
+      ]);
+      const allNodes = new Map<string, Node>();
+      for (const child of childrenOf.get('current') ?? []) {
+        allNodes.set(child.id, child);
+        _sharedNodeStore.setNode(child, { type: 'database', reason: 'test' });
+      }
+      spies.push(
+        vi
+          .spyOn(_sharedNodeStore, 'getNodesForParent')
+          .mockImplementation((id) => [...(childrenOf.get(id ?? '') ?? [])]),
+        vi
+          .spyOn(_sharedNodeStore, 'getParentsForNode')
+          .mockImplementation((id) => (id === 'target' && targetUnderHolder ? [holder] : [])),
+        vi
+          .spyOn(structureTree, 'moveInMemoryRelationship')
+          .mockImplementation((from, to, childId) => {
+            const moving = allNodes.get(childId);
+            if (!moving) return;
+            if (from) {
+              childrenOf.set(
+                from,
+                (childrenOf.get(from) ?? []).filter((n) => n.id !== childId)
+              );
+            }
+            // A null parent leaves the child without an edge, i.e. a root
+            if (to) childrenOf.set(to, [...(childrenOf.get(to) ?? []), moving]);
+          })
+      );
+      const deleteSpy = vi.spyOn(_sharedNodeStore, 'deleteNode');
+      spies.push(deleteSpy);
+      return { deleteSpy, childrenOf };
+    }
+
+    type MoveReply = Awaited<ReturnType<typeof import('$lib/services/backend-adapter').backendAdapter.moveNode>>;
+    const moveReply = (id: string): MoveReply =>
+      ({ node: { ...mkNode(id, id), version: 2 }, placement: null }) as MoveReply;
+
+    it('does not delete the merged node or its children when a child move fails', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy, childrenOf } = await setupMerge(['kid']);
+      conflictNotifications.dismissAll();
+      vi.mocked(backendAdapter.moveNode).mockRejectedValueOnce(new Error('version conflict'));
+
+      service.combineNodes('current', 'target');
+      await waitForPendingMoveOperations();
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(vi.mocked(backendAdapter.deleteNode)).not.toHaveBeenCalled();
+      expect(service.findNode('current')).not.toBeNull();
+      expect(service.findNode('kid')).not.toBeNull();
+      // The child is back under the merged node
+      expect(childrenOf.get('current')?.map((n) => n.id)).toEqual(['kid']);
+      expect(service.findNode('target')?.content).toBe('Target');
+      expect(conflictNotifications.notifications.map((n) => n.conflictType)).toContain(
+        'child-transfer-failure'
+      );
+    });
+
+    it('does not dispatch the delete before the child moves have resolved', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy } = await setupMerge(['kid']);
+      let resolveMove: (value: MoveReply) => void = () => {};
+      let moveStarted = false;
+      vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+        moveStarted = true;
+        return new Promise((resolve) => {
+          resolveMove = resolve;
+        });
+      });
+
+      service.combineNodes('current', 'target');
+      await vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 });
+      await Promise.resolve();
+      expect(deleteSpy).not.toHaveBeenCalled();
+
+      resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(deleteSpy.mock.calls[0][0]).toBe('current');
+      expect(events.nodeDeleted).toHaveBeenCalledWith('current');
+    });
+
+    it('ignores a second merge of the same node while its children are moving', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy } = await setupMerge(['kid']);
+      let resolveMove: (value: MoveReply) => void = () => {};
+      let moveStarted = false;
+      vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+        moveStarted = true;
+        return new Promise((resolve) => {
+          resolveMove = resolve;
+        });
+      });
+
+      service.combineNodes('current', 'target');
+      await vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 });
+
+      // The children already sit under their new parent in the tree
+      service.combineNodes('current', 'target');
+      void service.deleteNode('current');
+      await Promise.resolve();
+      expect(deleteSpy).not.toHaveBeenCalled();
+
+      resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      // Merged once, not twice
+      expect(service.findNode('target')?.content).toBe('TargetCurrent');
+    });
+
+    it('ignores a merge into a node whose own children are still being moved', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy } = await setupMerge(['kid']);
+      _sharedNodeStore.setNode(mkNode('other', 'Other'), { type: 'database', reason: 'test' });
+      let resolveMove: (value: MoveReply) => void = () => {};
+      let moveStarted = false;
+      vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+        moveStarted = true;
+        return new Promise((resolve) => {
+          resolveMove = resolve;
+        });
+      });
+
+      service.combineNodes('current', 'target');
+      await vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 });
+
+      // 'current' is about to be deleted; 'other' must not be merged into it
+      service.combineNodes('other', 'current');
+      expect(service.findNode('current')?.content).toBe('Current');
+      expect(service.findNode('other')).not.toBeNull();
+
+      resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('restores the tree edge and root list when a child promoted to root is rolled back', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy, childrenOf } = await setupMerge(['kid'], false);
+      vi.mocked(backendAdapter.moveNode).mockRejectedValueOnce(new Error('version conflict'));
+
+      service.combineNodes('current', 'target');
+      // Promoted to the root level: the edge to the merged node is gone
+      expect(childrenOf.get('current')).toEqual([]);
+      expect(service.rootNodeIds).toContain('kid');
+      await waitForPendingMoveOperations();
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(childrenOf.get('current')?.map((n) => n.id)).toEqual(['kid']);
+      expect(service.rootNodeIds).not.toContain('kid');
+    });
+
+    it('keeps the moved child, rolls back the rest and deletes nothing on partial failure', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy, childrenOf } = await setupMerge(['k1', 'k2', 'k3']);
+      const moveMock = vi.mocked(backendAdapter.moveNode);
+      const callsBefore = moveMock.mock.calls.length;
+      moveMock.mockResolvedValueOnce(moveReply('k1'));
+      moveMock.mockRejectedValueOnce(new Error('version conflict'));
+
+      service.combineNodes('current', 'target');
+      await waitForPendingMoveOperations();
+
+      const calls = moveMock.mock.calls.slice(callsBefore);
+      expect(calls.map((c) => c[0])).toEqual(['k1', 'k2']);
+      // Each child is placed after the one before it
+      expect(calls[1][3]).toEqual({ type: 'after', siblingId: 'k1' });
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(childrenOf.get('holder')?.map((n) => n.id)).toEqual(['k1']);
+      expect(childrenOf.get('current')?.map((n) => n.id)).toEqual(['k2', 'k3']);
+      expect(service.findNode('target')?.content).toBe('Target');
+    });
+  });
+
   it('combineNodes strips quote-block prefixes when combining', () => {
     const nodes: Node[] = [
       {

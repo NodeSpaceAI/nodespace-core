@@ -572,11 +572,30 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     debouncedOperations.delete(nodeId);
   }
 
+  /** One child's optimistic promotion, with what is needed to move it and to undo it. */
+  type ChildPromotion = {
+    childId: string;
+    newParentId: string | null;
+    insertPosition: InsertPosition;
+    originalUIState: NodeUIState | undefined;
+    addedToRoot: boolean;
+  };
+
+  /**
+   * Merged nodes whose children are still being moved. While a node is listed here its
+   * children already sit under their new parent in the tree, so a second merge or delete
+   * would see it as childless and dispatch the cascading delete ahead of the moves.
+   */
+  const combiningNodeIds = new Set<string>();
+
   function combineNodes(
     currentNodeId: string,
     previousNodeId: string,
     paneId: string = DEFAULT_PANE_ID
   ): void {
+    // Either end of the merge is mid-promotion: merging into a row that is about to be
+    // deleted would lose the content.
+    if (combiningNodeIds.has(currentNodeId) || combiningNodeIds.has(previousNodeId)) return;
     const currentNode = sharedNodeStore.getNode(currentNodeId);
     const previousNode = sharedNodeStore.getNode(previousNodeId);
 
@@ -620,27 +639,80 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       }
     }
 
-    promoteChildren(currentNodeId, previousNodeId);
+    const promotions = promoteChildren(currentNodeId, previousNodeId);
 
-    // CRITICAL: Collect dependencies that must persist before deletion
-    // This prevents "database is locked" errors and FOREIGN KEY violations
-    // PersistenceCoordinator will ensure these operations complete before deletion
-    const deletionDependencies = [previousNodeId]; // Content update must persist first
-    const children = sharedNodeStore.getNodesForParent(currentNodeId);
-    if (children.length > 0) {
-      deletionDependencies.push(...children.map((c) => c.id)); // Child promotions must complete
-    }
+    // The merged node is deleted by the daemon as a cascade (it removes every descendant it
+    // still owns). With children, the delete therefore waits until every child move has been
+    // confirmed; a failed move aborts the whole merge instead.
+    const finishMerge = (): void => {
+      // Content update must persist before the delete
+      sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, [previousNodeId]);
+      delete _uiState[currentNodeId];
 
-    // NOTE: Sibling chain management removed - backend handles ordering via fractional ordering
+      // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
+      const rootIndex = _rootNodeIds.indexOf(currentNodeId);
+      if (rootIndex >= 0) {
+        _rootNodeIds = _rootNodeIds.filter((id) => id !== currentNodeId);
+      }
+      events.nodeDeleted(currentNodeId);
+      events.hierarchyChanged();
+    };
 
-    // Delete with dependencies - PersistenceCoordinator ensures correct order
-    sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, deletionDependencies);
-    delete _uiState[currentNodeId];
+    if (promotions.length === 0) {
+      finishMerge();
+    } else {
+      // Known limitations while the moves are in flight: text typed into the target is not
+      // reverted by an abort (the content is then duplicated, never lost), and text typed
+      // into the merged row is discarded when the merge succeeds.
+      combiningNodeIds.add(currentNodeId);
+      void trackMoveOperation(currentNodeId, async (ticket) => {
+        const committed = new Set<string>();
+        try {
+          await waitForPendingMoveOperations();
+          // Pending creates/edits of the children must reach the daemon before they move.
+          ticket.coverWritesThrough(sharedNodeStore.persistenceSequence());
+          await sharedNodeStore.flushAllPendingSaves();
 
-    // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
-    const rootIndex = _rootNodeIds.indexOf(currentNodeId);
-    if (rootIndex >= 0) {
-      _rootNodeIds = _rootNodeIds.filter((id) => id !== currentNodeId);
+          let previousChildId: string | null = null;
+          for (const promotion of promotions) {
+            const fresh = sharedNodeStore.getNode(promotion.childId);
+            if (!fresh) throw new Error(`Child ${promotion.childId} no longer exists`);
+            // Keep the children's relative order: the first goes after the anchor, the rest
+            // after the child before them.
+            const position: InsertPosition =
+              previousChildId !== null && promotion.insertPosition.type === 'after'
+                ? { type: 'after', siblingId: previousChildId }
+                : promotion.insertPosition;
+            await persistMove(promotion.childId, fresh.version, promotion.newParentId, position);
+            committed.add(promotion.childId);
+            previousChildId = promotion.childId;
+          }
+          finishMerge();
+        } catch (error) {
+          log.error('[combineNodes] Child promotion failed, aborting merge:', error);
+          // Children that already moved stay where the daemon has them; the rest return to
+          // the merged node. Nothing is deleted.
+          rollbackChildPromotions(
+            currentNodeId,
+            promotions.filter((p) => !committed.has(p.childId))
+          );
+          const target = sharedNodeStore.getNode(previousNodeId);
+          if (target && target.content === combinedContent) {
+            sharedNodeStore.updateNode(
+              previousNodeId,
+              { content: previousNode.content },
+              contentUpdateSource,
+              { persist: 'immediate' }
+            );
+          }
+          events.hierarchyChanged();
+          notifyChildTransferFailure(currentNodeId);
+        } finally {
+          combiningNodeIds.delete(currentNodeId);
+        }
+      }).catch((error) => {
+        log.error('[combineNodes] Unexpected failure while aborting merge:', error);
+      });
     }
 
     // NOTE: Sorted children cache removed - backend provides pre-sorted children
@@ -648,8 +720,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Set focus on the previous node using FocusManager
     focusManager.focusNodeAtPosition(previousNodeId, mergePosition, paneId);
     events.focusRequested(previousNodeId, mergePosition);
-    events.nodeDeleted(currentNodeId);
-    events.hierarchyChanged();
+    if (promotions.length > 0) events.hierarchyChanged();
   }
 
   function stripFormattingSyntax(content: string): string {
@@ -1295,9 +1366,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * @param nodeId - The node being deleted whose children will be promoted
    * @param previousNodeId - The node that content is being merged into
    */
-  function promoteChildren(nodeId: string, previousNodeId: string): void {
+  function promoteChildren(nodeId: string, previousNodeId: string): ChildPromotion[] {
     const children = sharedNodeStore.getNodesForParent(nodeId);
-    if (children.length === 0) return;
+    const promotions: ChildPromotion[] = [];
 
     // Process each child - find parent and insertion point by walking up from merged-into node
     for (const child of children) {
@@ -1336,18 +1407,19 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         ? { type: 'after', siblingId: insertAfterSiblingId }
         : { type: 'end' };
 
-      // Update the has_child edge in the backend (with OCC)
-      persistMove(child.id, child.version, newParentForChild, insertPosition).catch((error) => {
-          log.error(
-            `[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`,
-            error
-          );
-        });
+      const originalUIState = _uiState[child.id];
+      const addedToRoot = newParentForChild === null && !_rootNodeIds.includes(child.id);
+      promotions.push({
+        childId: child.id,
+        newParentId: newParentForChild,
+        insertPosition,
+        originalUIState,
+        addedToRoot
+      });
 
       // Update ReactiveStructureTree for immediate UI update
-      if (newParentForChild !== null) {
-        structureTree.moveInMemoryRelationship(nodeId, newParentForChild, child.id);
-      }
+      // (a null parent removes the edge: the child becomes a root)
+      structureTree.moveInMemoryRelationship(nodeId, newParentForChild, child.id);
 
       // If promoting to root level, add to _rootNodeIds
       if (newParentForChild === null && !_rootNodeIds.includes(child.id)) {
@@ -1362,6 +1434,27 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
       // Update all descendants' depths to maintain relative structure
       updateDescendantDepths(child.id);
+    }
+    return promotions;
+  }
+
+  /** Undoes the optimistic in-memory promotion of children whose move was not committed. */
+  function rollbackChildPromotions(fromParentId: string, promotions: ChildPromotion[]): void {
+    for (const promotion of promotions) {
+      structureTree.moveInMemoryRelationship(
+        promotion.newParentId,
+        fromParentId,
+        promotion.childId
+      );
+      if (promotion.addedToRoot) {
+        _rootNodeIds = _rootNodeIds.filter((id) => id !== promotion.childId);
+      }
+      if (promotion.originalUIState) {
+        _uiState[promotion.childId] = promotion.originalUIState;
+      } else {
+        delete _uiState[promotion.childId];
+      }
+      updateDescendantDepths(promotion.childId);
     }
   }
 
@@ -1381,6 +1474,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
   async function deleteNode(nodeId: string): Promise<void> {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
+    // Its children are mid-promotion; the pending merge decides whether the node goes.
+    if (combiningNodeIds.has(nodeId)) return;
 
     // Fetch descendant count to determine whether confirmation is needed.
     const descendants = await backendAdapter.getDescendants(nodeId);
@@ -1391,6 +1486,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       log.debug(`Delete cancelled by user for node ${nodeId} (${descendantCount} descendants)`);
       return;
     }
+    // A merge may have started while the descendants were fetched or the dialog was open
+    if (combiningNodeIds.has(nodeId)) return;
 
     cleanupDebouncedOperations(nodeId);
 
