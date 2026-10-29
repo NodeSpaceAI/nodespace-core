@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({
@@ -105,7 +107,7 @@ describe('Settings Store', () => {
       await updateDisplaySetting('renderMarkdown', false);
 
       expect(mockInvoke).toHaveBeenCalledWith('update_display_settings', {
-        render_markdown: false
+        renderMarkdown: false
       });
       expect(settingsStore.appSettings?.display.renderMarkdown).toBe(false);
     });
@@ -120,6 +122,33 @@ describe('Settings Store', () => {
         theme: 'dark'
       });
       expect(settingsStore.appSettings?.display.theme).toBe('dark');
+    });
+
+    it('sends only argument names the Rust command declares (camelCase)', async () => {
+      const rustSrc = readFileSync(
+        resolve(__dirname, '../../../app-lib/src/commands/settings.rs'),
+        'utf8'
+      );
+      const sig = rustSrc.match(/fn update_display_settings\(([\s\S]*?)\)\s*->/);
+      expect(sig).not.toBeNull();
+      const declared = [...sig![1].matchAll(/(\w+):\s*Option</g)].map((m) =>
+        m[1].replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())
+      );
+      expect(declared).toContain('renderMarkdown');
+
+      settingsStore.appSettings = mockSettings;
+      for (const [key, value] of [
+        ['renderMarkdown', true],
+        ['theme', 'dark'],
+      ] as const) {
+        mockInvoke.mockClear();
+        mockInvoke.mockResolvedValueOnce(undefined);
+        await updateDisplaySetting(key, value);
+        const args = mockInvoke.mock.calls[0][1] as Record<string, unknown>;
+        for (const name of Object.keys(args)) {
+          expect(declared).toContain(name);
+        }
+      }
     });
 
     it('should handle errors gracefully', async () => {
