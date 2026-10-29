@@ -23,6 +23,7 @@ import {
   buildTraceLines,
   checkGuidanceDrift,
   checkUniformity,
+  deriveTracePath,
   describeExclusions,
   formatReliabilityTable,
   markerFor,
@@ -1260,5 +1261,26 @@ describe("selectScenarios", () => {
     selectScenarios(fixture, ["b1"]);
     expect(fixture.groups).toHaveLength(3);
     expect(fixture.groups[0]).toHaveLength(4);
+  });
+});
+
+describe("deriveTracePath", () => {
+  test("replaces a .json suffix", () => {
+    expect(deriveTracePath("/tmp/run1.json")).toBe("/tmp/run1.trace.jsonl");
+  });
+
+  test("appends when there is no .json suffix", () => {
+    expect(deriveTracePath("/tmp/run1")).toBe("/tmp/run1.trace.jsonl");
+    expect(deriveTracePath("results.txt")).toBe("results.txt.trace.jsonl");
+  });
+
+  test("handles an upper-case extension", () => {
+    expect(deriveTracePath("out.JSON")).toBe("out.trace.jsonl");
+  });
+
+  test("never equals the results path", () => {
+    for (const p of ["a", "a.json", "a.JSON", "a.trace.jsonl", "a.jsonl", ".json", ""]) {
+      expect(deriveTracePath(p)).not.toBe(p);
+    }
   });
 });
