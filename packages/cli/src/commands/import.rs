@@ -172,8 +172,12 @@ async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -
         .await?
         .into_inner();
 
+    let mut final_results: Vec<FileImportResult> = Vec::new();
     while let Some(event) = stream.next().await {
         let event = event?;
+        if event.step == 9 {
+            final_results = event.results.clone();
+        }
         if json {
             if event.step == 9 {
                 println!(
@@ -204,6 +208,22 @@ async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -
         }
     }
 
+    ensure_no_failures(&final_results)
+}
+
+/// Non-zero exit whenever any file failed to import, for every import path, so
+/// a script checking the exit status can tell a partly failed import from a
+/// good one. Per-file failures arrive as data in the final event, not as RPC
+/// errors, so the status has to be derived from the results.
+fn ensure_no_failures(results: &[FileImportResult]) -> Result<()> {
+    let failed = results.iter().filter(|r| !r.success).count();
+    if failed > 0 {
+        return Err(anyhow::anyhow!(
+            "{failed} of {} file(s)/director{} failed to import",
+            results.len(),
+            if results.len() == 1 { "y" } else { "ies" }
+        ));
+    }
     Ok(())
 }
 
@@ -282,8 +302,12 @@ async fn run_one_dir(
         .await?
         .into_inner();
 
+    let mut final_results: Vec<FileImportResult> = Vec::new();
     while let Some(event) = stream.next().await {
         let event = event?;
+        if event.step == 9 {
+            final_results = event.results.clone();
+        }
         if json {
             if event.step == 9 {
                 println!(
@@ -306,7 +330,7 @@ async fn run_one_dir(
         }
     }
 
-    Ok(())
+    ensure_no_failures(&final_results)
 }
 
 /// Import several directories in one call, combining their results into one
@@ -415,15 +439,7 @@ async fn run_multi_dir(
     // resilience is about not letting one bad directory stop the *others*
     // from being attempted, not about the process reporting success when
     // something genuinely failed.
-    if failed > 0 {
-        return Err(anyhow::anyhow!(
-            "{failed} of {} file(s)/director{} failed to import",
-            all_results.len(),
-            if all_results.len() == 1 { "y" } else { "ies" }
-        ));
-    }
-
-    Ok(())
+    ensure_no_failures(&all_results)
 }
 
 /// Stream one `ImportMarkdownFiles` call to completion, printing per-step
@@ -601,6 +617,27 @@ fn collect_recursive(
 mod path_tests {
     use super::*;
     use std::path::Path;
+
+    fn result(success: bool) -> FileImportResult {
+        FileImportResult {
+            file_path: "a.md".into(),
+            success,
+            error: if success {
+                String::new()
+            } else {
+                "boom".into()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn any_failed_result_is_a_non_zero_exit() {
+        assert!(ensure_no_failures(&[]).is_ok());
+        assert!(ensure_no_failures(&[result(true), result(true)]).is_ok());
+        let err = ensure_no_failures(&[result(true), result(false)]).unwrap_err();
+        assert!(err.to_string().starts_with("1 of 2 "), "{err}");
+    }
 
     #[test]
     fn file_request_path_is_resolved_against_cwd() {

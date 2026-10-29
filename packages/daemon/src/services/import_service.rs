@@ -306,13 +306,16 @@ async fn import_single_file(
                     .add_to_collection_by_path(&root_id, coll)
                     .await
                 {
+                    // The nodes are committed but the document is not in the
+                    // requested collection, so the file is not fully imported:
+                    // report failure (as the batch path does) and no collection.
                     return LocalFileImportResult {
                         file_path: path.to_string_lossy().to_string(),
                         root_id: Some(root_id),
                         nodes_created,
-                        success: true,
+                        success: false,
                         error: Some(format!("Imported but failed to add to collection: {}", e)),
-                        collection,
+                        collection: None,
                         archived: is_archived,
                     };
                 }
@@ -2202,6 +2205,42 @@ mod tests {
         .expect("the corrected file imports");
         assert_eq!(created, 2, "root plus its body");
         assert_eq!(ns.get_children(&root_id).await.unwrap().len(), 1);
+    }
+
+    /// A single-file import whose requested collection cannot be assigned is a
+    /// failed import: `success` is false, the error says why, and the result
+    /// does not claim the collection.
+    #[tokio::test]
+    async fn single_file_import_with_unassignable_collection_fails() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let file = dir.path().join("notes.md");
+        std::fs::write(&file, "# Notes\n\nBody.\n").unwrap();
+        let opts = ImportOptions {
+            collection: "docs::rust".to_string(),
+            ..Default::default()
+        };
+
+        let result = import_single_file(&ns, &file, &opts).await;
+        assert!(!result.success, "collection assignment failed");
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("collection")));
+        assert!(result.collection.is_none(), "no collection is claimed");
+        assert!(
+            result.root_id.is_some(),
+            "the committed root is still reported"
+        );
+
+        let ok = ImportOptions {
+            collection: "docs".to_string(),
+            replace: true,
+            ..Default::default()
+        };
+        let result = import_single_file(&ns, &file, &ok).await;
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.collection.as_deref(), Some("docs"));
     }
 
     /// A `--replace` whose body insert is rejected leaves the existing
