@@ -164,6 +164,24 @@ enum TrayEvent {
     GrpcTaskFinished,
 }
 
+/// Record that the user asked to quit.
+///
+/// The gRPC server only starts polling [`TrayController::shutdown`] after the
+/// database is open and the socket is bound, which can be well after the tray
+/// icon (and its Quit item) is clickable. `notify_waiters` stores nothing, so
+/// a Quit clicked in that window would be lost and the daemon would only exit
+/// through the shutdown watchdog. `notify_one` stores a permit that the first
+/// `wait_for_quit` consumes, whether it was created before or after this call.
+fn signal_quit(notify: &tokio::sync::Notify) {
+    notify.notify_one();
+}
+
+/// Resolve once [`signal_quit`] has been called, before or after this future
+/// is first polled. There is a single consumer of the signal.
+async fn wait_for_quit(notify: &tokio::sync::Notify) {
+    notify.notified().await;
+}
+
 /// Handle the gRPC side of the daemon uses to talk to the tray.
 ///
 /// `shutdown` resolves once when the user picks "Quit" so the tonic server
@@ -180,7 +198,7 @@ impl TrayController {
     /// `tonic::transport::Server::serve_with_shutdown` so the gRPC server
     /// exits cleanly before the tray closes.
     pub async fn shutdown(&self) {
-        self.quit_notify.notified().await;
+        wait_for_quit(&self.quit_notify).await;
     }
 
     /// Record that an RPC just started. Pair with [`Self::rpc_completed`] —
@@ -563,13 +581,10 @@ pub fn run<T>(seed_controller: impl FnOnce(TrayController) -> T) -> Result<T> {
                     // Quit.
                     s.refresh_ui_binary();
                     signal_ui_to_quit(ui_pid_path().as_deref(), s.ui_binary.as_deref());
-                    // `notify_waiters` wakes only currently-registered waiters.
-                    // The gRPC server's `shutdown().await` is registered at
-                    // server-build time (synchronously inside the seed closure
-                    // above), so it's guaranteed to be parked here before the
-                    // user can click Quit. New consumers of `shutdown()` must
-                    // be registered with the same lifetime discipline.
-                    quit_notify.notify_waiters();
+                    // Latches: the gRPC server may not be polling `shutdown()`
+                    // yet (database open and socket bind come first), and the
+                    // request must still reach it when it does.
+                    signal_quit(&quit_notify);
                     *control_flow = ControlFlow::Exit;
                 }
             }
@@ -1407,5 +1422,35 @@ mod rpc_gauge_tests {
         drop(a);
         drop(b);
         assert_eq!(gauge.0.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod quit_signal_tests {
+    use super::{signal_quit, wait_for_quit};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn quit_before_first_wait_still_resolves() {
+        let notify = tokio::sync::Notify::new();
+        signal_quit(&notify);
+        tokio::time::timeout(Duration::from_secs(2), wait_for_quit(&notify))
+            .await
+            .expect("a quit signalled before the wait began must not be lost");
+    }
+
+    #[tokio::test]
+    async fn quit_after_wait_began_resolves() {
+        let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+        let waiter = {
+            let notify = notify.clone();
+            tokio::spawn(async move { wait_for_quit(&notify).await })
+        };
+        tokio::task::yield_now().await;
+        signal_quit(&notify);
+        tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("wait must resolve")
+            .unwrap();
     }
 }
