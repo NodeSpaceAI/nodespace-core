@@ -1044,6 +1044,60 @@ impl NodeService {
         Ok(affected)
     }
 
+    /// One identity rename inside a caller-held transaction: validates it
+    /// against `working` (the schema as earlier renames in the same
+    /// transaction left it; the schema's own fields are judged from it, so a
+    /// name freed by an earlier rename can be reused, while ancestors' and
+    /// descendants' fields come from committed state), migrates every instance's property data, checks
+    /// the values the renamed declaration must accept, and applies the rename
+    /// to `working` in memory. The schema definition itself is NOT written;
+    /// the caller writes `working` as part of the same transaction, so a
+    /// failure anywhere in it leaves the data migration rolled back too.
+    pub(crate) async fn rename_schema_field_step_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        working: &mut crate::models::SchemaNode,
+        from: &str,
+        to: &str,
+    ) -> Result<u64, NodeServiceError> {
+        let type_id = working.envelope.id.clone();
+        let schema = self
+            .validate_schema_field_rename_against(working.clone(), from, to)
+            .await?;
+
+        let affected =
+            crate::db::SqliteStore::rename_schema_field_in_tx(tx.store_tx(), &type_id, from, to)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
+                        context: format!(
+                            "Failed to migrate field data '{}' -> '{}' for type '{}': {}",
+                            from, to, type_id, e
+                        ),
+                    })
+                })?;
+
+        for f in working.fields.iter_mut() {
+            if f.name == from {
+                f.name = to.to_string();
+            }
+        }
+        // Same post-migration check as `rename_schema_field`: a leftover value
+        // under `to` must satisfy the renamed declaration.
+        let renamed: Vec<_> = schema
+            .fields
+            .iter()
+            .filter(|f| f.name == from)
+            .map(|f| crate::models::schema::SchemaField {
+                name: to.to_string(),
+                required: None,
+                ..f.clone()
+            })
+            .collect();
+        Self::reject_incompatible_instance_values(tx, &type_id, &type_id, &renamed).await?;
+        Ok(affected)
+    }
+
     /// Everything `rename_schema_field` checks before migrating anything:
     /// the schema exists, `from` is a User-protected field it declares, and
     /// `to` collides with neither its extends-chain-merged effective field
@@ -1077,6 +1131,23 @@ impl NodeService {
             .get_schema_node(type_id)
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(type_id))?;
+        self.validate_schema_field_rename_against(schema, from, to)
+            .await
+    }
+
+    /// The checks of [`Self::validate_schema_field_rename`], run against a
+    /// caller-supplied schema value: `update_schema` applies several renames
+    /// in one transaction, each judged against the schema as the earlier ones
+    /// left it. Collisions with ancestors' and descendants' fields are read
+    /// from committed state.
+    pub(crate) async fn validate_schema_field_rename_against(
+        &self,
+        schema: crate::models::SchemaNode,
+        from: &str,
+        to: &str,
+    ) -> Result<crate::models::SchemaNode, NodeServiceError> {
+        let type_id = schema.envelope.id.clone();
+        let type_id = type_id.as_str();
 
         // Validate source field exists in schema
         if !schema.fields.iter().any(|f| f.name == from) {
@@ -1105,19 +1176,30 @@ impl NodeService {
             )));
         }
 
-        // Validate destination field does not already exist — checked
-        // against the extends-chain-merged effective set (own fields plus
-        // every ancestor's), not `schema.fields` alone, so a rename cannot
-        // shadow an inherited field the same way `validate_no_field_redeclaration`
+        // Validate destination field does not already exist: the schema's
+        // OWN fields come from `schema` (a caller running several renames in
+        // one transaction passes the schema as earlier renames left it, so a
+        // name an earlier rename freed can be reused), and inherited fields
+        // from the extends-chain-merged effective set, so a rename cannot
+        // shadow an ancestor's field the same way `validate_no_field_redeclaration`
         // already blocks a *new* field declaration from doing.
-        let (effective_fields, field_owners, _chain) = self.resolve_field_owners(type_id).await?;
-        if effective_fields.iter().any(|f| f.name == to) {
-            let declaring_schema = field_owners.get(to).map(String::as_str).unwrap_or(type_id);
+        if schema.fields.iter().any(|f| f.name == to) {
             return Err(NodeServiceError::invalid_update(format!(
                 "Field '{}' already exists in schema '{}' (declared by '{}' — own field or \
                  inherited via extends); cannot rename to an existing field",
-                to, type_id, declaring_schema
+                to, type_id, type_id
             )));
+        }
+        let (effective_fields, field_owners, _chain) = self.resolve_field_owners(type_id).await?;
+        if effective_fields.iter().any(|f| f.name == to) {
+            let declaring_schema = field_owners.get(to).map(String::as_str).unwrap_or(type_id);
+            if declaring_schema != type_id {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Field '{}' already exists in schema '{}' (declared by '{}' — own field or \
+                     inherited via extends); cannot rename to an existing field",
+                    to, type_id, declaring_schema
+                )));
+            }
         }
 
         // Also reject a destination colliding with a DESCENDANT's own field.
@@ -1233,20 +1315,8 @@ impl NodeService {
                     // function's treatment of an omitted value exactly: derive from the
                     // field's own name, disambiguating against a sibling field's label
                     // if the derived form collides.
-                    let resolved_friendly_name = if friendly_name.trim().is_empty() {
-                        let derived = crate::models::schema::derive_friendly_name(field_name);
-                        let collides = schema
-                            .fields
-                            .iter()
-                            .any(|f| f.name != field_name && f.friendly_name == derived);
-                        if collides {
-                            crate::schema::disambiguate_friendly_name(&derived, field_name)
-                        } else {
-                            derived
-                        }
-                    } else {
-                        friendly_name.to_string()
-                    };
+                    let resolved_friendly_name =
+                        resolve_field_friendly_name(&schema.fields, field_name, friendly_name);
 
                     let updated_fields: Vec<crate::models::schema::SchemaField> = schema
                         .fields
@@ -1743,6 +1813,29 @@ impl NodeService {
             is_complete: missing.is_empty(),
             missing_relationships: missing,
         })
+    }
+}
+
+/// The `friendly_name` a field takes when a caller sets `friendly_name`: a
+/// blank value is derived from the field's own name, disambiguated against a
+/// sibling's label if the derived form collides.
+pub(crate) fn resolve_field_friendly_name(
+    fields: &[crate::models::schema::SchemaField],
+    field_name: &str,
+    friendly_name: &str,
+) -> String {
+    if friendly_name.trim().is_empty() {
+        let derived = crate::models::schema::derive_friendly_name(field_name);
+        let collides = fields
+            .iter()
+            .any(|f| f.name != field_name && f.friendly_name == derived);
+        if collides {
+            crate::schema::disambiguate_friendly_name(&derived, field_name)
+        } else {
+            derived
+        }
+    } else {
+        friendly_name.to_string()
     }
 }
 

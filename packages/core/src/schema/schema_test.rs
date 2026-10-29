@@ -583,9 +583,11 @@ async fn test_rename_field_to_existing_field_returns_error() {
     )
     .await;
 
+    let err = result.expect_err("Renaming to an existing field name should fail");
     assert!(
-        result.is_err(),
-        "Renaming to an existing field name should fail"
+        err.to_string()
+            .contains("cannot rename to an existing field"),
+        "the precise own-field collision message is reported: {err}"
     );
 }
 
@@ -927,11 +929,9 @@ async fn test_update_schema_rename_fields_rejects_friendly_name_only_relabel_of_
     );
 }
 
-/// A malformed destination name must be rejected before the rename runs, not
-/// after — `rename_schema_field` persists the schema rewrite and migrates
-/// every node's property data immediately, so validating only the final
-/// field list (as Phase 2 already did) catches the problem after the damage
-/// is already committed.
+/// A malformed destination name must be rejected before the rename is
+/// applied, with the destination-specific message, rather than surfacing from
+/// the final field-list validation.
 #[tokio::test]
 async fn test_update_schema_rename_fields_validates_destination_grammar_before_persisting() {
     use crate::services::CreateNodeParams;
@@ -6696,7 +6696,7 @@ async fn test_rename_fields_combined_with_a_blank_extends_does_not_migrate_data(
     // A blank "extends" value must not be pre-filtered into "no retarget,
     // fall back to the old parent" — it is exactly the input
     // `validate_extends_target` itself rejects, and that rejection must
-    // land before Phase 1 migrates the rename's data.
+    // land before the rename is applied.
     let result = handle_update_schema(
         &svc,
         json!({
@@ -6744,10 +6744,10 @@ async fn test_display_only_rename_combined_with_an_invalid_extends_does_not_rela
     .expect("bug schema should be created");
 
     // The batch contains ONLY a display-only rename (from == to, with
-    // friendlyName) — no identity rename. Phase 1 still commits it via
-    // `update_schema_field_friendly_name`, a separate, immediately-applying
-    // write, so the invalid extends target must be validated before Phase 1
-    // runs here too, not just when the batch also renames a field's name.
+    // friendlyName) — no identity rename. The relabel
+    // changes the stored definition too, so the invalid extends target must be
+    // validated before it is applied here too, not just when the batch also
+    // renames a field's name.
     let result = handle_update_schema(
         &svc,
         json!({
@@ -7891,4 +7891,303 @@ async fn test_update_schema_removal_with_the_field_added_again_is_not_refused() 
     )
     .await
     .expect("a field removed and added again keeps the template valid");
+}
+
+// ============================================================================
+// A refused update_schema leaves nothing applied, renames included
+// ============================================================================
+
+async fn create_notes_schema_with_one_node(svc: &Arc<NodeService>) -> (String, String) {
+    use crate::services::CreateNodeParams;
+
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "Memo",
+            "fields": [
+                { "name": "notes", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("schema creation");
+    let node_id = svc
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "memo".to_string(),
+            content: "memo".to_string(),
+            parent_id: None,
+            position: crate::services::InsertPositionOwned::End,
+            properties: json!({ "memo": { "notes": "kept" } }),
+            lifecycle_status: None,
+        })
+        .await
+        .expect("node creation");
+    ("memo".to_string(), node_id)
+}
+
+async fn assert_memo_untouched(svc: &Arc<NodeService>, node_id: &str) {
+    let schema = svc.get_schema_node("memo").await.unwrap().unwrap();
+    assert!(schema.get_field("notes").is_some(), "{:?}", schema.fields);
+    assert!(schema.get_field("remarks").is_none(), "{:?}", schema.fields);
+    let node = svc.get_node(node_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["memo"]["notes"], json!("kept"));
+    assert!(node.properties["memo"].get("remarks").is_none());
+}
+
+#[tokio::test]
+async fn test_rename_with_a_later_refused_relationship_target_applies_nothing_and_retries() {
+    let (svc, _tmp) = create_test_service().await;
+    let (_, node_id) = create_notes_schema_with_one_node(&svc).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "memo",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }],
+            "add_relationships": [widget_relationship("about", "does-not-exist", "memos")]
+        }),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "unknown relationship target must be refused"
+    );
+    assert_memo_untouched(&svc, &node_id).await;
+
+    // The same rename retried without the refused change succeeds.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "memo",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }]
+        }),
+    )
+    .await
+    .expect("the rename succeeds once the refusal is fixed");
+    let node = svc.get_node(&node_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["memo"]["remarks"], json!("kept"));
+}
+
+#[tokio::test]
+async fn test_rename_with_a_later_refused_add_field_applies_nothing_and_retries() {
+    let (svc, _tmp) = create_test_service().await;
+    let (_, node_id) = create_notes_schema_with_one_node(&svc).await;
+
+    // `add_fields` carries an entry whose name is not a valid field name.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "memo",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }],
+            "add_fields": [
+                { "name": "remarks_extra", "type": "text", "protection": "user", "indexed": false },
+                { "name": "bad name", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+    assert!(result.is_err(), "invalid added field must be refused");
+    assert_memo_untouched(&svc, &node_id).await;
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "memo",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }],
+            "add_fields": [
+                { "name": "remarks_extra", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("retry with the add_fields fixed succeeds");
+}
+
+#[tokio::test]
+async fn test_rename_rolls_back_when_an_in_transaction_check_refuses_the_call() {
+    let (svc, _tmp) = create_test_service().await;
+    let (_, node_id) = create_notes_schema_with_one_node(&svc).await;
+
+    // The node holds a `score` value that the added number field would reject;
+    // that check runs inside the write group, after the rename's data
+    // migration.
+    let node = svc.get_node(&node_id).await.unwrap().unwrap();
+    svc.update_node(
+        &node_id,
+        node.version,
+        crate::models::NodeUpdate {
+            properties: Some(json!({ "memo": { "score": "not-a-number" } })),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("seed a leftover value");
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "memo",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }],
+            "add_fields": [
+                { "name": "score", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+    assert!(result.is_err(), "incompatible stored value must be refused");
+    assert_memo_untouched(&svc, &node_id).await;
+}
+
+async fn node_with_props(svc: &Arc<NodeService>, node_type: &str, props: Value) -> String {
+    use crate::services::CreateNodeParams;
+    svc.create_node_with_parent(CreateNodeParams {
+        id: None,
+        node_type: node_type.to_string(),
+        content: "node".to_string(),
+        parent_id: None,
+        position: crate::services::InsertPositionOwned::End,
+        properties: props,
+        lifecycle_status: None,
+    })
+    .await
+    .expect("node creation")
+}
+
+#[tokio::test]
+async fn test_rename_chain_a_to_b_to_c_succeeds() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Chain", &["a"]).await;
+    let id = node_with_props(&svc, "chain", json!({ "a": "va" })).await;
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "chain",
+            "rename_fields": [{ "from": "a", "to": "b" }, { "from": "b", "to": "c" }]
+        }),
+    )
+    .await
+    .expect("a chain of renames applies in order");
+
+    let schema = svc.get_schema_node("chain").await.unwrap().unwrap();
+    assert!(schema.get_field("c").is_some() && schema.get_field("a").is_none());
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["chain"]["c"], json!("va"));
+}
+
+#[tokio::test]
+async fn test_rename_may_reuse_a_name_an_earlier_entry_freed() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Reuse", &["a", "c"]).await;
+    let id = node_with_props(&svc, "reuse", json!({ "a": "va", "c": "vc" })).await;
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "reuse",
+            "rename_fields": [{ "from": "a", "to": "b" }, { "from": "c", "to": "a" }]
+        }),
+    )
+    .await
+    .expect("a→b then c→a reuses the freed name");
+
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["reuse"]["b"], json!("va"));
+    assert_eq!(node.properties["reuse"]["a"], json!("vc"));
+    assert!(node.properties["reuse"].get("c").is_none());
+}
+
+#[tokio::test]
+async fn test_second_rename_refused_in_transaction_rolls_back_the_first() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Parentish", &["a", "c"]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Childish",
+            "extends": "parentish",
+            "fields": [{ "name": "taken", "type": "text", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await
+    .expect("child schema");
+    let id = node_with_props(&svc, "parentish", json!({ "a": "va", "c": "vc" })).await;
+
+    // The first rename is fine; the second collides with a descendant's own
+    // field, a check that runs inside the transaction after the first has
+    // already migrated data.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "parentish",
+            "rename_fields": [{ "from": "a", "to": "b" }, { "from": "c", "to": "taken" }]
+        }),
+    )
+    .await;
+    assert!(result.is_err(), "descendant collision must be refused");
+
+    let schema = svc.get_schema_node("parentish").await.unwrap().unwrap();
+    assert!(schema.get_field("a").is_some() && schema.get_field("b").is_none());
+    assert!(schema.get_field("c").is_some());
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["parentish"]["a"], json!("va"));
+    assert_eq!(node.properties["parentish"]["c"], json!("vc"));
+    assert!(node.properties["parentish"].get("b").is_none());
+}
+
+#[tokio::test]
+async fn test_rename_migrates_descendant_instances_and_rolls_back_with_a_refusal() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Base", &["notes"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Sub", "extends": "base", "fields": [] }),
+    )
+    .await
+    .expect("sub schema");
+    let sub_id = node_with_props(&svc, "sub", json!({ "notes": "kept" })).await;
+
+    // Refused inside the transaction (a stored value the added number field
+    // rejects), after the descendant's data was migrated.
+    let node = svc.get_node(&sub_id).await.unwrap().unwrap();
+    svc.update_node(
+        &sub_id,
+        node.version,
+        crate::models::NodeUpdate {
+            properties: Some(json!({ "base": { "score": "not-a-number" } })),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("seed a leftover value");
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "base",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }],
+            "add_fields": [
+                { "name": "score", "type": "number", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+    assert!(result.is_err());
+    let node = svc.get_node(&sub_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["base"]["notes"], json!("kept"));
+    assert!(node.properties["base"].get("remarks").is_none());
+
+    // Without the refused change the descendant's data migrates.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "base",
+            "rename_fields": [{ "from": "notes", "to": "remarks" }]
+        }),
+    )
+    .await
+    .expect("rename succeeds");
+    let node = svc.get_node(&sub_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["base"]["remarks"], json!("kept"));
+    assert!(node.properties["base"].get("notes").is_none());
 }
