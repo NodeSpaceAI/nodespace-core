@@ -96,7 +96,7 @@ class SettingsStore {
   ): Promise<void> {
     try {
       const params: Record<string, unknown> = {};
-      if (key === 'renderMarkdown') params.render_markdown = value;
+      if (key === 'renderMarkdown') params.renderMarkdown = value;
       if (key === 'theme') params.theme = value;
 
       await invoke('update_display_settings', params);
