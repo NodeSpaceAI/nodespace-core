@@ -1570,11 +1570,8 @@ mod tests {
     // priority (on task and project, which share one scale) is a string enum
     // whose alphabetical order is meaningless
     // (`high, highest, low, lowest, medium`), so sorting ranks it instead.
-    // Two independent sites implement that rank — the SQL CASE in
-    // resolve_order_field and compare_priority_values in Rust — and the Rust
-    // pass runs last, so a SQL-only regression would be invisible here unless
-    // a LIMIT forces the database's ordering to matter. Hence both a
-    // full-result test and a LIMIT test below.
+    // The SQL CASE in resolve_order_field implements that rank and is the
+    // only ordering. Both a full-result test and a LIMIT test below cover it.
     // =========================================================================
 
     /// Create one task per priority value, in an order chosen so that neither
@@ -1748,10 +1745,9 @@ mod tests {
         )
         .await;
 
-        // LIMIT applies in SQL, before the in-Rust re-sort, so the database
-        // alone decides which rows survive. This fails if the CASE in
-        // resolve_order_field regresses, even though the Rust pass would still
-        // order whatever rows it received. The limit is 3, not 2: the first
+        // LIMIT applies in SQL, so the database alone decides which rows
+        // survive. This fails if the CASE in resolve_order_field regresses.
+        // The limit is 3, not 2: the first
         // two rows alphabetically (`high, highest`) are the same two the rank
         // keeps, so a limit of 2 passes against a text sort as well.
         let results = query_service
@@ -1764,6 +1760,115 @@ mod tests {
             ["highest", "high", "medium"],
             "LIMIT must cut by rank in SQL, not alphabetically"
         );
+    }
+
+    /// A field that holds values of more than one JSON type is ordered by the
+    /// statement alone: no value first, then numbers with a boolean read as 0
+    /// or 1, then text. Rows come back in that order, and a limit keeps the
+    /// first rows of the unlimited order. A text field takes any JSON value,
+    /// so such rows exist.
+    #[tokio::test]
+    async fn test_a_mixed_type_sort_with_a_limit_keeps_the_first_rows_of_the_full_order() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let schema = crate::models::Node::new_with_id(
+            "invoice".to_string(),
+            "schema".to_string(),
+            "Invoice".to_string(),
+            json!({ "fields": [{ "name": "reference", "field_type": "text" }] }),
+        );
+        node_service
+            .store()
+            .create_node(schema, None, None)
+            .await
+            .unwrap();
+        let references = [
+            ("text INV-1", Some(json!("INV-1"))),
+            ("number 42", Some(json!(42))),
+            ("text 10", Some(json!("10"))),
+            ("text draft", Some(json!("draft"))),
+            ("number 9", Some(json!(9))),
+            ("true", Some(json!(true))),
+            ("number -3", Some(json!(-3))),
+            ("number 0.5", Some(json!(0.5))),
+            ("false", Some(json!(false))),
+            ("array", Some(json!(["a"]))),
+            ("none", None),
+        ];
+        for (content, reference) in &references {
+            let properties = match reference {
+                Some(reference) => json!({ "invoice": { "reference": reference } }),
+                None => json!({}),
+            };
+            node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "invoice".to_string(),
+                    content: content.to_string(),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    properties,
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+        }
+        let sorted = |direction: SortDirection, limit: Option<usize>| QueryDefinition {
+            target_type: "invoice".to_string(),
+            filters: vec![],
+            sorting: Some(vec![SortConfig {
+                field: "reference".to_string(),
+                direction,
+                ..Default::default()
+            }]),
+            limit,
+        };
+        let contents = |nodes: Vec<Node>| -> Vec<String> {
+            nodes.into_iter().map(|node| node.content).collect()
+        };
+
+        let ascending = contents(
+            query_service
+                .execute(&sorted(SortDirection::Ascending, None))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            ascending,
+            [
+                "none",
+                "number -3",
+                "false",
+                "number 0.5",
+                "true",
+                "number 9",
+                "number 42",
+                "text 10",
+                "text INV-1",
+                "array",
+                "text draft",
+            ]
+        );
+        for direction in [SortDirection::Ascending, SortDirection::Descending] {
+            let full = contents(
+                query_service
+                    .execute(&sorted(direction.clone(), None))
+                    .await
+                    .unwrap(),
+            );
+            for limit in 1..references.len() {
+                let page = contents(
+                    query_service
+                        .execute(&sorted(direction.clone(), Some(limit)))
+                        .await
+                        .unwrap(),
+                );
+                assert_eq!(
+                    page,
+                    full[..limit],
+                    "{direction:?} limit {limit}: the page is not the start of the full order"
+                );
+            }
+        }
     }
 
     /// `project.priority` shares the task scale, so it ranks the same way —
@@ -1793,9 +1898,8 @@ mod tests {
         );
     }
 
-    /// The SQL half for projects: LIMIT cuts before the Rust re-sort, so this
-    /// fails if resolve_order_field's scope drops `project` even while the
-    /// Rust comparator still ranks it.
+    /// Projects share the scale: this fails if resolve_order_field's scope
+    /// drops `project`.
     #[tokio::test]
     async fn test_project_sort_by_priority_with_limit_ranks_in_sql() {
         let (query_service, node_service, _temp) = create_test_services().await;
@@ -1867,9 +1971,8 @@ mod tests {
         };
         node_service.create_node_with_parent(task).await.unwrap();
 
-        // The combination the two preceding tests each miss: without a LIMIT
-        // the Rust re-sort masks whatever SQL did, and the other LIMIT test
-        // uses only core values, where the layers happen to agree. A simple
+        // The combination the preceding tests miss: the other LIMIT test uses
+        // only core values, so no user-defined value is ranked. A simple
         // `CASE <expr> WHEN ...` ranks NULL via ELSE (it compares with `=`, and
         // `NULL = 'highest'` is NULL, not true), which would drop this task off
         // the end of an ascending query that should return it first.
@@ -1889,8 +1992,8 @@ mod tests {
     }
 
     /// The SQL CASE gives each declared value its position in the list, which
-    /// is what `EnumRank::of` gives it in the Rust re-sort. If the two
-    /// disagreed, results would depend on whether a LIMIT was present.
+    /// is what `EnumRank::of` gives it. This checks the SQL rank matches
+    /// `EnumRank::of`.
     #[tokio::test]
     async fn test_sql_enum_rank_matches_declared_order() {
         let (query_service, _node_service, _temp) = create_test_services().await;
@@ -1968,9 +2071,7 @@ mod tests {
         // A wildcard query resolves the namespace from each row's own
         // node_type, so a single CASE would rank every type's field of that
         // name by one type's order, a user-defined type's own vocabulary
-        // included. The Rust comparator ranks only for a named target, so
-        // ranking here too would make the two layers disagree, with the
-        // winner depending on whether a LIMIT was present.
+        // included.
         let sort = SortConfig {
             field: "priority".to_string(),
             rank: Some(EnumRank {

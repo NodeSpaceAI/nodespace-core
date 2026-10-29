@@ -396,9 +396,6 @@ pub(crate) const NODE_COLUMNS: [&str; 6] = [
     "title",
 ];
 
-/// Each node type's chain of types, itself first and then its ancestors.
-type TypeChains = std::collections::HashMap<String, Vec<String>>;
-
 impl QueryService {
     /// Create a new QueryService
     pub fn new(store: Arc<SqliteStore>) -> Self {
@@ -441,131 +438,11 @@ impl QueryService {
         }
 
         // Fetch the matched nodes in one batched read, kept in the order the
-        // query returned their ids.
+        // query returned their ids. The statement's ORDER BY is the only
+        // ordering, so a LIMIT and the order of the rows it keeps cannot
+        // disagree.
         let mut by_id = self.store.get_nodes_by_ids(&node_ids).await?;
-        let mut nodes: Vec<Node> = node_ids.iter().filter_map(|id| by_id.remove(id)).collect();
-
-        // Re-apply sorting in Rust to guarantee sort order
-        // This ensures consistent sorting even if database ordering behaves unexpectedly
-        if let Some(sorting) = &query.sorting {
-            // A query over every type reads each row's own bucket and then
-            // its ancestors', so the re-sort needs each row's type chain.
-            let chains = if query.target_type == "*" && !sorting.is_empty() {
-                let types: Vec<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
-                crate::services::resolve_type_chains_from_store(&self.store, types).await?
-            } else {
-                TypeChains::new()
-            };
-            self.sort_nodes(&mut nodes, sorting, &query.target_type, &chains);
-        }
-
-        Ok(nodes)
-    }
-
-    /// Sort nodes in-place according to the sort configuration
-    ///
-    /// `target_type` is the query's own target, not each node's type: it
-    /// selects the same ordering rules [`Self::resolve_order_field`] used when
-    /// building the SQL, so both passes agree.
-    ///
-    /// `chains` is each row's type chain, nearest first, for a query over
-    /// every type; a query for one type reads through each sort's scope and
-    /// needs none.
-    fn sort_nodes(
-        &self,
-        nodes: &mut [Node],
-        sorting: &[SortConfig],
-        target_type: &str,
-        chains: &TypeChains,
-    ) {
-        if sorting.is_empty() {
-            return;
-        }
-
-        nodes.sort_by(|a, b| {
-            for sort_config in sorting {
-                let ordering = self.compare_nodes_by_field(a, b, sort_config, target_type, chains);
-                let ordering = match sort_config.direction {
-                    SortDirection::Ascending => ordering,
-                    SortDirection::Descending => ordering.reverse(),
-                };
-                if ordering != std::cmp::Ordering::Equal {
-                    return ordering;
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
-    }
-
-    /// Compare two nodes by a specific field (Namespaced property access)
-    fn compare_nodes_by_field(
-        &self,
-        a: &Node,
-        b: &Node,
-        sort: &SortConfig,
-        target_type: &str,
-        chains: &TypeChains,
-    ) -> std::cmp::Ordering {
-        let field = sort.field.as_str();
-        match field {
-            // Metadata fields
-            "id" => a.id.cmp(&b.id),
-            "created_at" => a.created_at.cmp(&b.created_at),
-            "modified_at" => a.modified_at.cmp(&b.modified_at),
-            "content" => a.content.cmp(&b.content),
-            "node_type" => a.node_type.cmp(&b.node_type),
-            "title" => a.title.cmp(&b.title),
-            // Type-specific properties, read where the SQL ordering reads
-            // them (`resolve_sort_field`). A node keeps a field in the bucket
-            // of the type that declares it, which for a row of a query for
-            // one type is what the sort's scope names. A wildcard query has
-            // no one bucket, so each row is read at its own type and then at
-            // its ancestors, as the SQL does.
-            _ => {
-                let read = |node: &Node, scope: &PropertyScope| {
-                    if target_type != "*" {
-                        return scope
-                            .read(node, target_type, field)
-                            .map(std::borrow::Cow::into_owned);
-                    }
-                    let own = std::slice::from_ref(&node.node_type);
-                    let chain = chains.get(&node.node_type).map_or(own, Vec::as_slice);
-                    chain.iter().find_map(|bucket| {
-                        // A dotted field is a path into an object value,
-                        // walked one segment at a time as the SQL JSON path
-                        // walks it.
-                        nodespace_types::property_segments(field)
-                            .into_iter()
-                            .try_fold(node.properties.get(bucket)?, |value, segment| {
-                                value.get(segment)
-                            })
-                            .filter(|value| !value.is_null())
-                            .cloned()
-                    })
-                };
-                let val_a = read(a, &sort.scope);
-                let val_b = read(b, &sort.scope);
-
-                // An enum's alphabetical order is meaningless, so rank it by
-                // its declared order. This pass runs after the SQL and has
-                // the final say, so the condition and the value ranked must
-                // match resolve_order_field's exactly, or the SQL ordering
-                // is silently undone here.
-                if let Some(rank) = Self::enum_rank(sort, target_type) {
-                    let (rank_a, rank_b) = match &rank.scope {
-                        Some(rank_scope) => (read(a, rank_scope), read(b, rank_scope)),
-                        None => (val_a.clone(), val_b.clone()),
-                    };
-                    return Self::compare_ranked_values(
-                        rank,
-                        (rank_a.as_ref(), val_a.as_ref()),
-                        (rank_b.as_ref(), val_b.as_ref()),
-                    );
-                }
-
-                self.compare_json_values(val_a.as_ref(), val_b.as_ref())
-            }
-        }
+        Ok(node_ids.iter().filter_map(|id| by_id.remove(id)).collect())
     }
 
     /// The declared order a sort ranks its enum field by, when it has one.
@@ -573,78 +450,6 @@ impl QueryService {
     /// type's own vocabulary there.
     fn enum_rank<'a>(sort: &'a SortConfig, target_type: &str) -> Option<&'a EnumRank> {
         sort.rank.as_ref().filter(|_| target_type != "*")
-    }
-
-    /// Compare two values of an enum field by declared order rather than
-    /// alphabetically
-    ///
-    /// Ascending yields the values in the order the schema declares them,
-    /// core values and then user values, and after them any value the schema
-    /// does not list, ordered lexicographically among themselves: the same
-    /// ordering [`Self::resolve_order_field`] builds in SQL.
-    ///
-    /// A node with no value ranks [`EnumRank::ABSENT`], before every value,
-    /// so it sorts first ascending: the position the SQL CASE's `IS NULL`
-    /// arm gives it (`json_extract` yields SQL NULL for a JSON null too, so
-    /// one arm covers both). A non-string value is not a valid enum value
-    /// and takes the rank of an unlisted one, where the `ELSE` arm puts it.
-    ///
-    /// The rank matches SQL for every input, and the tie-break within a rank
-    /// matches for strings, where both order the raw value. It does not
-    /// match for non-strings (this keys on `to_string()` while SQLite orders
-    /// integers before text), but `validate_node_with_fields` rejects a
-    /// non-null non-string in an enum field on every write path, so no such
-    /// row exists to sort. Agreement matters because SQL applies LIMIT
-    /// before this pass runs, discarding rows it has already ordered.
-    ///
-    /// Each side is the value the rank is taken from and the value the row
-    /// holds, which breaks a tie. They are one value unless the queried type
-    /// inherits the field and reads it in its own vocabulary
-    /// ([`EnumRank::scope`]).
-    fn compare_ranked_values(
-        rank: &EnumRank,
-        a: (Option<&serde_json::Value>, Option<&serde_json::Value>),
-        b: (Option<&serde_json::Value>, Option<&serde_json::Value>),
-    ) -> std::cmp::Ordering {
-        /// The tie-break key of one JSON value.
-        fn key(value: Option<&serde_json::Value>) -> String {
-            match value {
-                None | Some(serde_json::Value::Null) => String::new(),
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(other) => other.to_string(),
-            }
-        }
-
-        rank.of(a.0)
-            .cmp(&rank.of(b.0))
-            .then_with(|| key(a.1).cmp(&key(b.1)))
-    }
-
-    /// Compare two JSON values for sorting
-    fn compare_json_values(
-        &self,
-        a: Option<&serde_json::Value>,
-        b: Option<&serde_json::Value>,
-    ) -> std::cmp::Ordering {
-        match (a, b) {
-            (None, None) => std::cmp::Ordering::Equal,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            (Some(va), Some(vb)) => {
-                // Compare based on JSON value type
-                match (va, vb) {
-                    (serde_json::Value::String(sa), serde_json::Value::String(sb)) => sa.cmp(sb),
-                    (serde_json::Value::Number(na), serde_json::Value::Number(nb)) => {
-                        let fa = na.as_f64().unwrap_or(0.0);
-                        let fb = nb.as_f64().unwrap_or(0.0);
-                        fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    (serde_json::Value::Bool(ba), serde_json::Value::Bool(bb)) => ba.cmp(bb),
-                    // For mixed types or arrays/objects, convert to string and compare
-                    _ => va.to_string().cmp(&vb.to_string()),
-                }
-            }
-        }
     }
 
     /// Execute query and return matching node IDs
@@ -887,8 +692,7 @@ impl QueryService {
             // no single literal path — the namespace segment differs row by
             // row. Build it from the row's own node_type: a fixed '$.<field>'
             // is structurally NULL for EVERY row, which SQL then happily
-            // ORDERs by and LIMITs on, cutting the real matches before the
-            // in-Rust re-sort below ever sees them.
+            // ORDERs by and LIMITs on, cutting the real matches.
             Self::own_or_inherited_field(field)
         } else {
             format!(
@@ -1010,8 +814,7 @@ impl QueryService {
     /// [`EnumRank::values`], which is what [`EnumRank::of`] gives it in
     /// Rust. Values the schema does not list all land on the `ELSE` rank, so
     /// the raw value is appended as a tiebreaker to order them
-    /// lexicographically among themselves, as
-    /// [`Self::compare_ranked_values`] does.
+    /// lexicographically among themselves.
     ///
     /// The trade this makes: a CASE is not an indexed expression, so the
     /// sort itself does not use the field's index and SQLite builds a
@@ -1033,9 +836,7 @@ impl QueryService {
 
         // Never under a wildcard: the namespace is each row's own type
         // there, so one type's order would be imposed on every type's field
-        // of that name, and compare_ranked_values ranks only for a named
-        // target. The two layers would disagree, and which one won would
-        // depend on whether a LIMIT was present.
+        // of that name.
         let Some(rank) = Self::enum_rank(sort, target_type) else {
             return format!("{resolved} {direction}");
         };
@@ -1046,11 +847,8 @@ impl QueryService {
         // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
         // compares with `=`, and `NULL = 'open'` is NULL rather than true,
         // so an absent value would match no arm and fall to ELSE, ranking
-        // it with the unlisted values at the far end from where
-        // compare_ranked_values puts it. Because LIMIT applies in SQL
-        // before the in-Rust re-sort, that disagreement would drop nodes
-        // with no value from a limited ascending query that should have
-        // returned them first.
+        // it with the unlisted values at the far end, and a limited ascending
+        // query would drop nodes with no value that should come first.
         let mut arms = format!("WHEN {ranked} IS NULL THEN {} ", EnumRank::ABSENT);
         for (position, value) in rank.values.iter().enumerate() {
             let value = built.bind(libsql::Value::Text(value.clone()));
