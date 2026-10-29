@@ -55,6 +55,9 @@
   let isNewConfig = $state(false);
   // Set when the database refused a provider change; cleared by the next attempt.
   let providerError = $state<string | null>(null);
+  // True while a provider write is in flight; further writes are refused so a
+  // rollback can only ever undo the one write that failed.
+  let savingProviders = $state(false);
 
   // The models discovered at the endpoint being edited, offered as
   // suggestions for the Model field. Discovery covers saved providers, so a
@@ -127,6 +130,8 @@
 
   // --- OpenAI-compat CRUD ---
   function startAdd() {
+    if (savingProviders) return;
+    providerError = null;
     isNewConfig = true;
     editForm = { name: '', base_url: '', api_key: '', model: '' };
     editingConfig = {
@@ -140,6 +145,8 @@
   }
 
   function startEdit(config: ProviderConfig) {
+    if (savingProviders) return;
+    providerError = null;
     isNewConfig = false;
     editingConfig = config;
     editForm = {
@@ -151,8 +158,17 @@
   }
 
   async function saveConfig() {
-    if (!editingConfig) return;
-    const updated = { ...editingConfig, ...editForm };
+    if (!editingConfig || savingProviders) return;
+    savingProviders = true;
+    try {
+      await persistEditedConfig(editingConfig);
+    } finally {
+      savingProviders = false;
+    }
+  }
+
+  async function persistEditedConfig(editing: ProviderConfig) {
+    const updated = { ...editing, ...editForm };
     const previous = openAiConfigs;
     providerError = null;
     if (isNewConfig) {
@@ -174,6 +190,16 @@
   }
 
   async function deleteConfig(id: string) {
+    if (savingProviders) return;
+    savingProviders = true;
+    try {
+      await removeConfig(id);
+    } finally {
+      savingProviders = false;
+    }
+  }
+
+  async function removeConfig(id: string) {
     const previous = openAiConfigs;
     providerError = null;
     openAiConfigs = openAiConfigs.filter((c) => c.id !== id);
@@ -197,6 +223,7 @@
   }
 
   function cancelEdit() {
+    if (savingProviders) return;
     providerError = null;
     editingConfig = null;
   }
@@ -313,7 +340,7 @@
   <section class="mm-section">
     <div class="mm-section-header">
       <h3>OpenAI-compatible providers</h3>
-      <button class="btn btn--primary btn--sm" onclick={startAdd}>Add</button>
+      <button class="btn btn--primary btn--sm" onclick={startAdd} disabled={savingProviders}>Add</button>
     </div>
 
     {#if providerError}
@@ -331,8 +358,8 @@
           <span class="config-url">{config.base_url}</span>
         </div>
         <div class="config-card-actions">
-          <button class="btn btn--sm" onclick={() => startEdit(config)}>Edit</button>
-          <button class="btn btn--sm btn--ghost btn--danger" onclick={() => deleteConfig(config.id)}>Remove</button>
+          <button class="btn btn--sm" onclick={() => startEdit(config)} disabled={savingProviders}>Edit</button>
+          <button class="btn btn--sm btn--ghost btn--danger" onclick={() => deleteConfig(config.id)} disabled={savingProviders}>Remove</button>
         </div>
       </div>
     {/each}
@@ -377,8 +404,8 @@
           <input class="form-input" type="password" bind:value={editForm.api_key} placeholder="sk-…" />
         </label>
         <div class="form-actions">
-          <button class="btn btn--primary btn--sm" onclick={saveConfig} disabled={!editForm.name || !editForm.base_url || !editForm.model}>Save</button>
-          <button class="btn btn--sm" onclick={cancelEdit}>Cancel</button>
+          <button class="btn btn--primary btn--sm" onclick={saveConfig} disabled={savingProviders || !editForm.name || !editForm.base_url || !editForm.model} aria-busy={savingProviders}>{savingProviders ? 'Saving…' : 'Save'}</button>
+          <button class="btn btn--sm" onclick={cancelEdit} disabled={savingProviders}>Cancel</button>
         </div>
       </div>
     {/if}
