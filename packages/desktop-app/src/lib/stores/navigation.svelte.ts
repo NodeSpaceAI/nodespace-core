@@ -167,6 +167,9 @@ class NavigationStore {
         ...this.state,
         tabs: enrichedTabs,
       });
+
+      // Closed tabs no longer need their pending collapsed ids
+      NodeExpansionCoordinator.retainViewers(this.state.tabs.map((tab) => tab.id));
     }, PERSISTENCE_DEBOUNCE_MS);
   }
 
