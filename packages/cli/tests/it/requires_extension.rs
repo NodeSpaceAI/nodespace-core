@@ -187,6 +187,24 @@ async fn a_command_routed_to_a_refused_database_exits_non_zero_with_the_refusal(
         vec!["diagnostics"],
         vec!["--database", "marked", "diagnostics"],
         vec!["--json", "diagnostics"],
+        vec![
+            "wait",
+            "node",
+            "anything",
+            "--until",
+            "[]",
+            "--timeout",
+            "5s",
+        ],
+        vec![
+            "--database",
+            "marked",
+            "wait",
+            "query",
+            "anything",
+            "--timeout",
+            "5s",
+        ],
     ] {
         let out = nodespace(&daemon, &args).await;
         assert!(!out.status.success(), "{args:?} must fail");
