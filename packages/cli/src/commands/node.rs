@@ -973,6 +973,17 @@ async fn batch_update(
             }
         }
     }
+    ensure_no_batch_failures(response.failed.len(), response.count)
+}
+
+/// Non-zero exit whenever any item of a batch update failed (not found,
+/// invalid properties, version conflict). Per-item failures arrive as data in
+/// an Ok response, so the exit status has to be derived from them or a script
+/// checking it would treat a rejected versioned write as applied.
+fn ensure_no_batch_failures(failed: usize, updated: impl std::fmt::Display) -> Result<()> {
+    if failed > 0 {
+        anyhow::bail!("{failed} batch update item(s) failed ({updated} updated)");
+    }
     Ok(())
 }
 
@@ -1011,6 +1022,15 @@ mod tests {
             .metadata_mut()
             .insert("x-version-conflict", header.parse().unwrap());
         status
+    }
+
+    #[test]
+    fn batch_update_with_failed_items_is_an_error() {
+        assert!(super::ensure_no_batch_failures(0, 2).is_ok());
+        let err = super::ensure_no_batch_failures(1, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("1 batch update item(s) failed"), "{err}");
     }
 
     #[test]
