@@ -108,9 +108,6 @@ impl From<NodeServiceError> for OpsError {
             NodeServiceError::InvalidParent { parent_id } => {
                 OpsError::ValidationFailed(format!("Invalid parent: {}", parent_id))
             }
-            NodeServiceError::InvalidRoot { root_node_id } => {
-                OpsError::ValidationFailed(format!("Invalid root: {}", root_node_id))
-            }
             NodeServiceError::TreeInvariantViolation(violation) => {
                 OpsError::TreeInvariantViolation(violation)
             }

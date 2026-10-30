@@ -13,11 +13,12 @@
 //!
 //! # Root Node Detection
 //!
-//! Root nodes are identified by `root_id IS NULL`. Never use `node_type == "topic"`.
+//! Nodes carry no root field. A node is a root when it has no incoming `has_child`
+//! edge (no parent); see `NodeService::is_root_node`. Never use `node_type == "topic"`.
 //!
 //! Examples:
-//! - Root node: `root_id = NULL` (e.g., @mention pages, date nodes)
-//! - Child node: `root_id = Some("parent-id")` (e.g., notes within a topic)
+//! - Root node: no parent edge (e.g., @mention pages, date nodes)
+//! - Child node: has a parent edge (e.g., notes within a topic)
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
@@ -1129,28 +1130,6 @@ pub(crate) fn is_date_node_id(id: &str) -> bool {
 
 /// Check if a node is a root node based on its root_id
 ///
-/// Root nodes are identified by having a NULL root_id in the database.
-/// This is the ONLY correct way to detect root nodes.
-///
-/// # Arguments
-///
-/// * `root_id` - The root_id field from a Node
-///
-/// # Returns
-///
-/// `true` if the node is a root (root_id is None), `false` otherwise
-///
-/// # Examples
-///
-/// ```
-/// # use nodespace_core::services::node_service::is_root_node;
-/// assert!(is_root_node(&None)); // Root node
-/// assert!(!is_root_node(&Some("parent-id".to_string()))); // Child node
-/// ```
-pub fn is_root_node(root_id: &Option<String>) -> bool {
-    root_id.is_none()
-}
-
 // Regex pattern for UUID validation (lowercase hex with standard UUID format)
 const UUID_PATTERN: &str = r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$";
 

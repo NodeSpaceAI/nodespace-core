@@ -1151,20 +1151,6 @@ impl NodeEmbeddingService {
             .filter_map(|r| r.node.map(|node| (node, r.score)))
             .collect())
     }
-
-    // =========================================================================
-    // Cleanup
-    // =========================================================================
-
-    /// Delete embeddings for a node
-    ///
-    /// Called when a node is deleted.
-    pub async fn delete_node_embeddings(&self, node_id: &str) -> Result<(), NodeServiceError> {
-        self.store.delete_embeddings(node_id).await.map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
-        })?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
