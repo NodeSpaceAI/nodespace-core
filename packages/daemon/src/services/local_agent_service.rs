@@ -259,6 +259,10 @@ pub struct SharedLocalAgent {
     /// unmeasured model is never mistaken for a probed one; it only suppresses
     /// re-running the probe until [`RoutingProbeHooks::failure_ttl`] elapses.
     routing_probe_failure: Mutex<Option<(RoutingProbeFailureKey, std::time::Instant)>>,
+    /// Held for the whole of a routing probe run, so loads that reach the
+    /// probe together queue behind the first instead of each firing one. A
+    /// waiter re-reads the verdict or failure the leader recorded.
+    routing_probe_flight: Mutex<()>,
     routing_probe_hooks: std::sync::RwLock<Arc<RoutingProbeHooks>>,
     /// The loaded model's geometry, captured at engine-swap time.
     ///
@@ -328,6 +332,7 @@ impl SharedLocalAgent {
             active_model_routing_disabled: Mutex::new(false),
             active_model_routing_key: Mutex::new(None),
             routing_probe_failure: Mutex::new(None),
+            routing_probe_flight: Mutex::new(()),
             routing_probe_hooks: std::sync::RwLock::new(Arc::new(RoutingProbeHooks::production())),
             loaded_model_spec: Mutex::new(None),
             model_spec_snapshot_timeout,
@@ -2156,10 +2161,30 @@ impl LocalAgentServiceImpl {
                 // original failure.
                 None
             } else {
-                let hooks = self.inner.shared.routing_probe_hooks();
-                let probe_result =
-                    match tokio::time::timeout(hooks.probe_timeout, (hooks.probe)(engine.clone()))
-                        .await
+                // Singleflight: concurrent loads that all found no verdict and
+                // no recent failure run one probe between them. The leader
+                // records its outcome before releasing, and each waiter
+                // re-reads it once it holds the lock.
+                let _flight = self.inner.shared.routing_probe_flight.lock().await;
+                if *self.inner.shared.active_model_routing_key.lock().await
+                    == Some(this_key.clone())
+                {
+                    let disabled = *self.inner.shared.active_model_routing_disabled.lock().await;
+                    Some(!disabled)
+                } else if self
+                    .inner
+                    .shared
+                    .routing_probe_recently_failed(&failure_key)
+                    .await
+                {
+                    None
+                } else {
+                    let hooks = self.inner.shared.routing_probe_hooks();
+                    let probe_result = match tokio::time::timeout(
+                        hooks.probe_timeout,
+                        (hooks.probe)(engine.clone()),
+                    )
+                    .await
                     {
                         Ok(result) => result,
                         Err(_) => Err(nodespace_nlp_engine::InferenceError::Engine(format!(
@@ -2167,51 +2192,57 @@ impl LocalAgentServiceImpl {
                             hooks.probe_timeout
                         ))),
                     };
-                match probe_result {
-                    Ok(routing_ok) => {
-                        if !routing_ok {
-                            tracing::warn!(
-                                model_id,
-                                base_url = %config.base_url,
-                                served_model = %model,
-                                "Routing probe: Stage-2 candidate injection suppresses \
-                                 tool-calling on this served model. Disabling injection for \
-                                 this model; routing falls back to the full tool surface."
-                            );
+                    match probe_result {
+                        Ok(routing_ok) => {
+                            if !routing_ok {
+                                tracing::warn!(
+                                    model_id,
+                                    base_url = %config.base_url,
+                                    served_model = %model,
+                                    "Routing probe: Stage-2 candidate injection suppresses \
+                                     tool-calling on this served model. Disabling injection for \
+                                     this model; routing falls back to the full tool surface."
+                                );
+                            }
+                            if let Err(e) = record_routing_probe_verdict(
+                                &self.inner.node_service,
+                                config_id,
+                                &config.base_url,
+                                &model,
+                                routing_ok,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    model_id,
+                                    "failed to persist routing probe verdict; will re-probe next load"
+                                );
+                            }
+                            *self.inner.shared.routing_probe_failure.lock().await = None;
+                            // Visible to waiters before the flight lock drops.
+                            *self.inner.shared.active_model_routing_disabled.lock().await =
+                                !routing_ok;
+                            *self.inner.shared.active_model_routing_key.lock().await =
+                                Some(this_key.clone());
+                            Some(routing_ok)
                         }
-                        if let Err(e) = record_routing_probe_verdict(
-                            &self.inner.node_service,
-                            config_id,
-                            &config.base_url,
-                            &model,
-                            routing_ok,
-                        )
-                        .await
-                        {
+                        Err(e) => {
+                            // An unmeasured model is not the same as a suppressed
+                            // one — do not cache a guess, and do not disable
+                            // routing on an engine error that says nothing about
+                            // whether injection is safe.
                             tracing::warn!(
                                 error = %e,
                                 model_id,
-                                "failed to persist routing probe verdict; will re-probe next load"
+                                "routing probe failed to complete; leaving routing enabled for this \
+                                 load"
                             );
+                            let failed_at = (self.inner.shared.routing_probe_hooks().now)();
+                            *self.inner.shared.routing_probe_failure.lock().await =
+                                Some((failure_key.clone(), failed_at));
+                            None
                         }
-                        *self.inner.shared.routing_probe_failure.lock().await = None;
-                        Some(routing_ok)
-                    }
-                    Err(e) => {
-                        // An unmeasured model is not the same as a suppressed
-                        // one — do not cache a guess, and do not disable
-                        // routing on an engine error that says nothing about
-                        // whether injection is safe.
-                        tracing::warn!(
-                            error = %e,
-                            model_id,
-                            "routing probe failed to complete; leaving routing enabled for this \
-                             load"
-                        );
-                        let failed_at = (self.inner.shared.routing_probe_hooks().now)();
-                        *self.inner.shared.routing_probe_failure.lock().await =
-                            Some((failure_key.clone(), failed_at));
-                        None
                     }
                 }
             };
@@ -7178,6 +7209,35 @@ mod tests {
         assert!(
             !*shared.active_model_routing_disabled.lock().await,
             "an unmeasured model keeps routing enabled"
+        );
+    }
+
+    /// Loads that reach the probe together, after an earlier failure has aged
+    /// out, run one probe between them.
+    #[tokio::test]
+    async fn concurrent_loads_after_the_failure_ttl_run_one_probe() {
+        let (svc, node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let probe = FakeProbe::install(&shared, true);
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+
+        svc.load_model_and_collect_events(&model_id, None).await;
+        assert_eq!(probe.runs(), 1);
+        probe.advance(301);
+
+        let (a, b, c) = tokio::join!(
+            svc.load_model_and_collect_events(&model_id, None),
+            svc.load_model_and_collect_events(&model_id, None),
+            svc.load_model_and_collect_events(&model_id, None),
+        );
+        for events in [a, b, c] {
+            assert!(events.iter().any(|e| e.event_type == "ready"), "{events:?}");
+        }
+        assert_eq!(
+            probe.runs(),
+            2,
+            "three concurrent loads after the TTL expired must share one probe"
         );
     }
 
