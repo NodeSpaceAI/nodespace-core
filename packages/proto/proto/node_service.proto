@@ -830,6 +830,8 @@ message SearchRequest {
   // unset = no collection filter; present = collection ID filter (alternative to path).
   optional string collection_id = 4;
   int32 limit = 5;            // 0 = use server default (20)
+  // Unsupported by SearchNodes: any non-zero value is rejected with
+  // INVALID_ARGUMENT. Raise `limit` to see more results.
   int32 offset = 6;
   float threshold = 7;        // semantic similarity threshold; 0.0 = use default (0.7)
   bool semantic = 8;          // true = semantic search, false = structured query
