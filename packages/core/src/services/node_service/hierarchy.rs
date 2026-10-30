@@ -1015,6 +1015,11 @@ impl NodeService {
             },
         );
 
+        // The node was created before this edge, so anything that derived its
+        // title in between (an invariant rule's update) saw a root.
+        self.refresh_for_rootness_in_tx(tx, child_id, false, None)
+            .await?;
+
         Ok(placement)
     }
 
