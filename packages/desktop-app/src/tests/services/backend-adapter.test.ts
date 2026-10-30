@@ -340,6 +340,47 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       );
     });
 
+    it('should send the collection as collectionIds in the create body', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ id: 'created-node-id', placement: null })
+      });
+
+      await adapter.createNode({
+        id: 'test-id',
+        nodeType: 'text',
+        content: 'Test content',
+        collectionId: 'collection-1'
+      });
+
+      const [, init] = mockFetch.mock.calls[0];
+      const body = JSON.parse((init as { body: string }).body);
+      expect(body.collectionIds).toEqual(['collection-1']);
+      expect(body).not.toHaveProperty('collectionId');
+    });
+
+    it('should omit collectionIds when the create names no collection', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ id: 'created-node-id', placement: null })
+      });
+
+      await adapter.createNode({ id: 'test-id', nodeType: 'text', content: 'Test content' });
+
+      const [, init] = mockFetch.mock.calls[0];
+      expect(JSON.parse((init as { body: string }).body)).not.toHaveProperty('collectionIds');
+    });
+
     it('should get node with GET request', async () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();

@@ -47,11 +47,10 @@
       return;
     }
 
-    // Fast path: if no viewer is registered for this type, store the fallback immediately
-    // without entering viewerLoading state (avoids a null→BaseNodeViewer transition that
-    // would unmount/remount the viewer unnecessarily).
+    // Fast path: if no viewer is registered for this type, render the BaseNodeViewer fallback
+    // (see ViewerComponent) without entering viewerLoading state. Nothing is cached for the
+    // type, so a plugin that is enabled later is found by the next call.
     if (!pluginRegistry.hasViewer(nodeType)) {
-      viewerComponents = new Map(viewerComponents.set(nodeType, BaseNodeViewer));
       return;
     }
 
@@ -59,10 +58,12 @@
 
     try {
       const viewer = await pluginRegistry.getViewer(nodeType);
-      // Always store a result (viewer or BaseNodeViewer fallback) so the guard
-      // viewerComponents.has(nodeType) fires true on subsequent calls and prevents
-      // repeated load attempts that cause mount/unmount loops.
-      viewerComponents = new Map(viewerComponents.set(nodeType, viewer ?? BaseNodeViewer));
+      // Only a real viewer is cached. A null result (the plugin was disabled, or unregistered
+      // while loading) renders the BaseNodeViewer fallback without being remembered, so
+      // enabling the plugin again is picked up instead of sticking until reload.
+      if (viewer) {
+        viewerComponents = new Map(viewerComponents.set(nodeType, viewer));
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error loading viewer';
       log.error(`Failed to load viewer for ${nodeType}:`, error);

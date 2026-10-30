@@ -2611,11 +2611,10 @@ async fn test_update_schema_core_type_requires_namespace_prefix() {
     );
 }
 
-/// Renaming is the other way a bare name can land on a core type, and it is the
-/// more damaging one: `rename_schema_field` migrates node property data and
-/// rewrites the schema per rename as it goes, so a check that ran afterwards
-/// would reject the call with the offending key already written across every
-/// node instance. The requirement is therefore enforced before any rename runs.
+/// Renaming is the other way a bare name can land on a core type. The rename
+/// migrates node property data inside the update's transaction, so a refusal
+/// would roll it back; the requirement is still enforced before any rename
+/// runs, so a refused call never rekeys node data at all.
 #[tokio::test]
 async fn test_update_schema_core_type_rename_cannot_drop_namespace_prefix() {
     let (svc, _tmp) = create_test_service().await;
@@ -8096,6 +8095,57 @@ async fn test_rename_may_reuse_a_name_an_earlier_entry_freed() {
     assert_eq!(node.properties["reuse"]["b"], json!("va"));
     assert_eq!(node.properties["reuse"]["a"], json!("vc"));
     assert!(node.properties["reuse"].get("c").is_none());
+}
+
+#[tokio::test]
+async fn test_rename_from_the_same_source_twice_is_refused_up_front() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Fanout", &["a"]).await;
+    let id = node_with_props(&svc, "fanout", json!({ "a": "va" })).await;
+
+    // a->b, a->c: the duplicate source is refused before any mutation.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "fanout",
+            "rename_fields": [{ "from": "a", "to": "b" }, { "from": "a", "to": "c" }]
+        }),
+    )
+    .await;
+    assert!(result.is_err(), "renaming one source twice must be refused");
+
+    let schema = svc.get_schema_node("fanout").await.unwrap().unwrap();
+    assert!(schema.get_field("a").is_some());
+    assert!(schema.get_field("b").is_none() && schema.get_field("c").is_none());
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["fanout"]["a"], json!("va"));
+    assert!(node.properties["fanout"].get("b").is_none());
+}
+
+#[tokio::test]
+async fn test_two_renames_to_the_same_destination_are_refused_up_front() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Merge", &["a", "c"]).await;
+    let id = node_with_props(&svc, "merge", json!({ "a": "va", "c": "vc" })).await;
+
+    // a->b, c->b: the duplicate destination is refused before any mutation.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "merge",
+            "rename_fields": [{ "from": "a", "to": "b" }, { "from": "c", "to": "b" }]
+        }),
+    )
+    .await;
+    assert!(result.is_err(), "two sources onto one name must be refused");
+
+    let schema = svc.get_schema_node("merge").await.unwrap().unwrap();
+    assert!(schema.get_field("a").is_some() && schema.get_field("c").is_some());
+    assert!(schema.get_field("b").is_none());
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["merge"]["a"], json!("va"));
+    assert_eq!(node.properties["merge"]["c"], json!("vc"));
+    assert!(node.properties["merge"].get("b").is_none());
 }
 
 #[tokio::test]
