@@ -158,7 +158,7 @@ describe("GitHubClient project-board membership", () => {
           projectV2: {
             items: {
               nodes: options.alreadyOnBoard
-                ? [{ id: "PVTI_existing", content: { number: ISSUE_NUMBER } }]
+                ? [{ id: "PVTI_existing", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/nodespace-core" } } }]
                 : [],
               pageInfo: { hasNextPage: false, endCursor: null },
             },
@@ -180,6 +180,25 @@ describe("GitHubClient project-board membership", () => {
 
     return { client, graphql, graphqlCalls, issuesCreate, issuesGet };
   }
+
+  test("a same-numbered issue from another repository is not taken for this one", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => ({
+      organization: {
+        projectV2: {
+          items: {
+            nodes: [
+              { id: "PVTI_other", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/other-repo" } } },
+              { id: "PVTI_core", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/nodespace-core" } } },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    }));
+
+    expect(await client.getItemIdForIssue(ISSUE_NUMBER)).toBe("PVTI_core");
+  });
 
   test("creating an issue adds it to the project board", async () => {
     const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });

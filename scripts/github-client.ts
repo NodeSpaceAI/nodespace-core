@@ -17,6 +17,7 @@ interface ProjectItem {
   content?: {
     number: number;
     title: string;
+    repository?: { nameWithOwner: string };
   };
   fieldValues: {
     nodes: Array<{
@@ -185,6 +186,9 @@ export class GitHubClient {
                     ... on Issue {
                       number
                       title
+                      repository {
+                        nameWithOwner
+                      }
                     }
                   }
                   fieldValues(first: 10) {
@@ -228,11 +232,15 @@ export class GitHubClient {
   }
 
   /**
-   * Get project item ID for specific issue number
+   * Get project item ID for specific issue number in this repository. The
+   * board is shared with other repositories, so the number alone is ambiguous.
    */
   async getItemIdForIssue(issueNumber: number): Promise<string | null> {
     const items = await this.getProjectItems();
-    const item = items.find(item => item.content?.number === issueNumber);
+    const fullName = `${this.owner}/${this.repo}`;
+    const item = items.find(
+      item => item.content?.number === issueNumber && item.content.repository?.nameWithOwner === fullName
+    );
     return item?.id || null;
   }
 
