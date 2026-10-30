@@ -179,6 +179,10 @@ fn walk_expr(expr: &IdedExpr, active_iter_vars: &[String], result: &mut Extracti
                 } else {
                     result.paths.push(path);
                 }
+            } else if let Expr::Select(sel) = &expr.expr {
+                // The chain ends in an index or call rather than an identifier
+                // (`node.rel[0].field`): the paths inside the operand still count.
+                walk_expr(&sel.operand, active_iter_vars, result);
             }
         }
         Expr::Ident(name) => {
@@ -348,6 +352,32 @@ mod tests {
             .paths
             .iter()
             .any(|p| p.segments == vec!["node", "status"]));
+    }
+
+    #[test]
+    fn extract_path_behind_an_index_operand() {
+        let result = extract_paths("node.has_child[0].status == 'done'").unwrap();
+        assert!(
+            result
+                .paths
+                .iter()
+                .any(|p| p.segments == vec!["node", "has_child"]),
+            "{:?}",
+            result.paths
+        );
+    }
+
+    #[test]
+    fn extract_path_behind_a_call_operand() {
+        let result = extract_paths("node.items.filter(i, i.done)[0].name == 'x'").unwrap();
+        assert!(
+            result
+                .collections
+                .iter()
+                .any(|c| c.collection.segments == vec!["node", "items"]),
+            "{:?}",
+            result.collections
+        );
     }
 
     #[test]
