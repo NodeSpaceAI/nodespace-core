@@ -53,8 +53,7 @@ pub use nodespace_types::{
 // ships, and what each records.
 pub use nodespace_types::{
     checkbox_is_checked, ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind,
-    DerivedAttribute, DerivedValueType, ParentRule, ParticipationRules, StructuralRules,
-    TypeCategory, WireShape,
+    DerivedAttribute, ParentRule, ParticipationRules, StructuralRules, TypeCategory, WireShape,
 };
 
 // node_to_typed_value and nodes_to_typed_values are the single canonical

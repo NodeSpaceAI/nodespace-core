@@ -185,12 +185,6 @@ pub enum WireShape {
     },
 }
 
-/// The type of value a derived attribute computes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DerivedValueType {
-    Boolean,
-}
-
 /// An attribute computed from a node's `content` and never stored
 /// (ADR-086 §4, ADR-094 §5).
 ///
@@ -212,12 +206,6 @@ impl DerivedAttribute {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Checked => "checked",
-        }
-    }
-
-    pub const fn value_type(self) -> DerivedValueType {
-        match self {
-            Self::Checked => DerivedValueType::Boolean,
         }
     }
 
@@ -756,14 +744,6 @@ impl CoreNodeType {
             .filter(|t| t.participation().excluded_from_default_queries)
             .collect()
     }
-
-    /// The core types titled by their content at any depth.
-    pub fn always_titled_types() -> Vec<Self> {
-        Self::ALL
-            .into_iter()
-            .filter(|t| t.always_titled())
-            .collect()
-    }
 }
 
 impl std::fmt::Display for CoreNodeType {
@@ -890,10 +870,6 @@ mod tests {
             CoreNodeType::derived_attribute_in(&["invoice"], "checked"),
             None
         );
-        assert_eq!(
-            DerivedAttribute::Checked.value_type(),
-            DerivedValueType::Boolean
-        );
     }
 
     #[test]
@@ -1009,14 +985,6 @@ mod tests {
                 CoreNodeType::AiChatNative,
                 CoreNodeType::AiChatPty,
                 CoreNodeType::AiChatMessage
-            ]
-        );
-        assert_eq!(
-            CoreNodeType::always_titled_types(),
-            vec![
-                CoreNodeType::Task,
-                CoreNodeType::Issue,
-                CoreNodeType::Collection
             ]
         );
     }

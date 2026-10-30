@@ -67,8 +67,7 @@ pub use convert::{
 };
 pub use core_type::{
     checkbox_is_checked, ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind,
-    DerivedAttribute, DerivedValueType, ParentRule, ParticipationRules, StructuralRules,
-    TypeCategory, WireShape,
+    DerivedAttribute, ParentRule, ParticipationRules, StructuralRules, TypeCategory, WireShape,
 };
 pub use database_settings::{
     CaptureContent, DatabaseSettingsFields, DatabaseSettingsNode, DatabaseSettingsNodeUpdate,

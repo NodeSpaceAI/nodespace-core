@@ -1965,13 +1965,15 @@ impl SqliteStore {
 
     /// Delete exactly the given node ids (and, via FK CASCADE, their
     /// relationship/embedding rows). No OCC check — for internal system
-    /// operations. Used to prune a document's *previous* subtree during an
-    /// idempotent re-import only after the fresh subtree has been inserted, so
-    /// a failed insert never destroys the old content.
+    /// operations. No production code calls it today; it exists as a
+    /// store-level primitive for pruning a known set of ids, and tests use it
+    /// to put a database into a pre-seed state (including by deleting a core
+    /// schema node, which the guarded deletes refuse).
     ///
-    /// Bypasses `assert_schema_deletable`: callers pass imported-content ids,
-    /// never schema nodes. Do not route schema-node ids through this — the
-    /// FK CASCADE would silently destroy their relationship declarations.
+    /// Bypasses `assert_schema_deletable`, so the caller owns the check that
+    /// the ids are not schema nodes. Do not route schema-node ids through this
+    /// outside such a test — the FK CASCADE would silently destroy their
+    /// relationship declarations.
     pub async fn delete_nodes_by_ids_unchecked(&self, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -5412,20 +5414,70 @@ mod query_nodes_order_and_scoping_tests {
         Ok((store, temp_dir))
     }
 
-    /// Insert a node with an explicit `created_at`, overriding `Node::new`'s
-    /// `Utc::now()` so tests get deterministic, well-separated timestamps
-    /// instead of racing the clock's resolution.
+    /// Insert a node whose stored `created_at` is the supplied one, so tests
+    /// get deterministic, well-separated timestamps instead of racing the
+    /// clock's resolution. `create_node` stamps the current time, so the
+    /// supplied value is written over it afterwards.
     async fn make_node_at(
         store: &SqliteStore,
         node_type: &str,
         content: &str,
         created_at: DateTime<Utc>,
     ) -> Result<String> {
-        let mut node = Node::new(node_type.to_string(), content.to_string(), json!({}));
-        node.created_at = created_at;
+        let node = Node::new(node_type.to_string(), content.to_string(), json!({}));
         let id = node.id.clone();
         store.create_node(node, None, None).await?;
+        store
+            .write()
+            .await
+            .execute(
+                "UPDATE node SET created_at = ?1 WHERE id = ?2",
+                vec![
+                    libsql::Value::Text(created_at.to_rfc3339()),
+                    libsql::Value::Text(id.clone()),
+                ],
+            )
+            .await?;
         Ok(id)
+    }
+
+    /// Timestamps handed to `make_node_at` are the ones persisted and ordered
+    /// by, even when they run against insertion order.
+    #[tokio::test]
+    async fn make_node_at_persists_the_supplied_created_at() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let base = Utc::now();
+
+        // Inserted oldest-supplied-last, so wall-clock stamping would invert it.
+        let newest = make_node_at(
+            &store,
+            "task",
+            "newest",
+            base + chrono::Duration::seconds(20),
+        )
+        .await?;
+        let middle = make_node_at(
+            &store,
+            "task",
+            "middle",
+            base + chrono::Duration::seconds(10),
+        )
+        .await?;
+        let oldest = make_node_at(&store, "task", "oldest", base).await?;
+
+        let stored = store.get_node(&oldest).await?.expect("node exists");
+        assert_eq!(stored.created_at, base);
+
+        let ordered = store
+            .query_nodes(NodeQuery {
+                node_type: Some("task".to_string()),
+                order_by: Some(OrderBy::CreatedDesc),
+                ..Default::default()
+            })
+            .await?;
+        let ids: Vec<String> = ordered.into_iter().map(|n| n.id).collect();
+        assert_eq!(ids, vec![newest, middle, oldest]);
+        Ok(())
     }
 
     /// Regression test for the bug where `query_nodes` applied LIMIT/OFFSET

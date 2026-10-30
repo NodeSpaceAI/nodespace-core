@@ -291,22 +291,6 @@ pub struct DeleteResult {
     pub deleted_count: u64,
 }
 
-impl DeleteResult {
-    pub fn existed() -> Self {
-        Self {
-            existed: true,
-            deleted_count: 1,
-        }
-    }
-
-    pub fn not_found() -> Self {
-        Self {
-            existed: false,
-            deleted_count: 0,
-        }
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum ValidationError {
     #[error("Missing required field: {0}")]
@@ -317,8 +301,6 @@ pub enum ValidationError {
     InvalidId(String),
     #[error("Invalid parent reference: {0}")]
     InvalidParent(String),
-    #[error("Invalid root reference: {0}")]
-    InvalidRoot(String),
     #[error("Properties validation failed: {0}")]
     InvalidProperties(String),
 }
