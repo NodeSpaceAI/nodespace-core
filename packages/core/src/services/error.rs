@@ -29,10 +29,6 @@ pub enum NodeServiceError {
     #[error("Invalid parent node: {parent_id}")]
     InvalidParent { parent_id: String },
 
-    /// Invalid root reference
-    #[error("Invalid root node: {root_node_id}")]
-    InvalidRoot { root_node_id: String },
-
     /// A write refused because it would break a tree invariant — a cycle, a
     /// collection with a parent, or a member below a parent (ADR-059 §2). A
     /// refusal the caller can act on, carrying which rule fired and which
@@ -193,13 +189,6 @@ impl NodeServiceError {
     pub fn invalid_parent(parent_id: impl Into<String>) -> Self {
         Self::InvalidParent {
             parent_id: parent_id.into(),
-        }
-    }
-
-    /// Create an invalid root error
-    pub fn invalid_root(root_node_id: impl Into<String>) -> Self {
-        Self::InvalidRoot {
-            root_node_id: root_node_id.into(),
         }
     }
 
@@ -386,14 +375,6 @@ mod tests {
         let msg = err.to_string();
         assert!(matches!(err, NodeServiceError::InvalidParent { .. }));
         assert!(msg.contains("parent-123"));
-    }
-
-    #[test]
-    fn test_invalid_root_error() {
-        let err = NodeServiceError::invalid_root("root-456");
-        let msg = err.to_string();
-        assert!(matches!(err, NodeServiceError::InvalidRoot { .. }));
-        assert!(msg.contains("root-456"));
     }
 
     #[test]

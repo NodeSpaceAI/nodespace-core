@@ -7287,12 +7287,6 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_invalid_root_returns_invalid_argument() {
-        let s = to_status(NodeServiceError::invalid_root("r1"));
-        assert_eq!(s.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
     fn error_mapping_hierarchy_violation_returns_invalid_argument() {
         let s = to_status(NodeServiceError::hierarchy_violation("root immutable"));
         assert_eq!(s.code(), tonic::Code::InvalidArgument);
