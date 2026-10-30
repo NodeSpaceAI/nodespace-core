@@ -2078,6 +2078,7 @@ mod tests {
             "a\u{E0001}b",
             "a\u{202E}b",
             "a\nb",
+            "a\tb",
         ] {
             let mut response = previewed();
             response.node_id = bad.into();
@@ -2090,6 +2091,8 @@ mod tests {
 
         // A routing word with control characters is no safer.
         let footer = delete_preview_footer(&previewed(), &["--database".into(), "d\u{1B}b".into()]);
+        assert!(!footer.join("\n").contains("node delete"));
+        let footer = delete_preview_footer(&previewed(), &["--database".into(), "d\tb".into()]);
         assert!(!footer.join("\n").contains("node delete"));
 
         // A plain id prints exactly the command, as before.

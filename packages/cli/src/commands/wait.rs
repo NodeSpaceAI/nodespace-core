@@ -676,6 +676,11 @@ pub async fn watch(
 /// A check the daemon refused: its message says which filter or which query
 /// is at fault.
 fn check_failed(status: Status) -> anyhow::Error {
+    // The refusal for a database that requires an unsupported extension is
+    // kept whole, so `render_refusal` can find it in the error chain.
+    if nodespace_proto::requires_extension::unsupported_extensions(&status).is_some() {
+        return anyhow::Error::new(status);
+    }
     match status.code() {
         Code::InvalidArgument | Code::NotFound | Code::FailedPrecondition => {
             anyhow::anyhow!("{}", status.message())

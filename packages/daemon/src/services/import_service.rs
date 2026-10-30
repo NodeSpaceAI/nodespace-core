@@ -124,6 +124,20 @@ fn root_content_for_title(title: &str, from_filename: bool) -> String {
     }
 }
 
+/// The content the children are parsed from. When the title is the file's
+/// first non-blank line, that line becomes the root and is dropped here; a
+/// title taken from the filename leaves the content whole, since its first
+/// line is body text even when it equals the filename stem.
+fn content_without_title_line(content: &str, title: &str, title_from_filename: bool) -> String {
+    let first_line = content.lines().find(|l| !l.trim().is_empty());
+    if title_from_filename || first_line != Some(title) {
+        return content.to_string();
+    }
+    let lines: Vec<&str> = content.lines().collect();
+    let first_idx = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+    lines[first_idx + 1..].join("\n")
+}
+
 #[derive(Clone)]
 pub struct ImportServiceImpl {
     node_service: Arc<CoreNodeService>,
@@ -252,7 +266,7 @@ async fn import_single_file(
         let meta = derive_collection_metadata(path, &base_dir);
         (Some(meta.collection), meta.is_archived)
     } else if !opts.collection.is_empty() {
-        (Some(opts.collection.clone()), false)
+        (Some(opts.collection.trim().to_string()), false)
     } else {
         (None, false)
     };
@@ -423,7 +437,9 @@ async fn run_batch_import(
                 let meta = derive_collection_metadata(&path, &base_dir);
                 (Some(meta.collection), meta.is_archived)
             } else if !opts.collection.is_empty() {
-                (Some(opts.collection.clone()), false)
+                // Trimmed because the resolved-collections map is keyed by
+                // the trimmed path; an untrimmed lookup key would miss it.
+                (Some(opts.collection.trim().to_string()), false)
             } else {
                 (None, false)
             };
@@ -1241,16 +1257,8 @@ fn prepare_file_import(
 
     let root_content = root_content_for_title(&title, use_filename_as_title);
 
-    let content_for_children = {
-        let first_line = file_read.content.lines().find(|l| !l.trim().is_empty());
-        if first_line == Some(&title) {
-            let lines: Vec<&str> = file_read.content.lines().collect();
-            let first_idx = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
-            lines[first_idx + 1..].join("\n")
-        } else {
-            file_read.content
-        }
-    };
+    let content_for_children =
+        content_without_title_line(&file_read.content, &title, use_filename_as_title);
 
     let outcome = match prepare_nodes_from_markdown(&content_for_children, Some(root_id.clone())) {
         Ok(children) => Ok(PreparedFileImport {
@@ -1342,7 +1350,16 @@ struct CollectionMetadata {
     is_archived: bool,
 }
 
+/// The routed collection path is trimmed, as the resolved-collections map is
+/// keyed by the trimmed path: a folder named with an edge space would
+/// otherwise miss its own entry and lose the membership.
 fn derive_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMetadata {
+    let mut meta = route_collection_metadata(file_path, base_dir);
+    meta.collection = meta.collection.trim().to_string();
+    meta
+}
+
+fn route_collection_metadata(file_path: &Path, base_dir: &Path) -> CollectionMetadata {
     let stripped = file_path.strip_prefix(base_dir);
     let under_base = stripped.is_ok();
     let relative = stripped.unwrap_or(file_path);
@@ -1606,16 +1623,7 @@ async fn import_markdown_content(
 ) -> Result<(String, usize), String> {
     let root_content = root_content_for_title(title, title_from_filename);
 
-    let content_for_children = {
-        let first_line = content.lines().find(|l| !l.trim().is_empty());
-        if first_line == Some(title) {
-            let lines: Vec<&str> = content.lines().collect();
-            let first_idx = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
-            lines[first_idx + 1..].join("\n")
-        } else {
-            content.to_string()
-        }
-    };
+    let content_for_children = content_without_title_line(content, title, title_from_filename);
 
     // Parsing is CPU-bound and scales with file size; keep it off the async
     // workers shared with other RPCs. The parser is given the root, as on
@@ -1739,6 +1747,19 @@ async fn import_markdown_content(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn title_line_is_dropped_only_when_it_is_the_title_source() {
+        use super::content_without_title_line as strip;
+        assert_eq!(strip("Notes\nsome text", "Notes", false), "some text");
+        assert_eq!(strip("\n\nNotes\nsome text", "Notes", false), "some text");
+        assert_eq!(
+            strip("Notes\nsome text", "Notes", true),
+            "Notes\nsome text",
+            "a filename-derived title keeps the first line as body"
+        );
+        assert_eq!(strip("Other\nbody", "Notes", false), "Other\nbody");
+    }
+
     use super::*;
     use crate::db_routing::DATABASE_ID_HEADER;
     use crate::services::database_manager::DatabaseManager;
@@ -3100,6 +3121,14 @@ mod tests {
             "self-heal adds only the missing edge — it must not duplicate any node",
         );
     }
+    #[test]
+    fn routed_collection_path_has_no_edge_whitespace() {
+        let meta = derive_collection_metadata(Path::new("/base/Notes /a.md"), Path::new("/base"));
+        assert_eq!(meta.collection, "Notes");
+        let meta = derive_collection_metadata(Path::new("/base/ Drafts/a.md"), Path::new("/base"));
+        assert_eq!(meta.collection, "Drafts");
+    }
+
     fn route(base: &str, file: &str) -> (String, bool) {
         let meta = derive_collection_metadata(&Path::new(base).join(file), Path::new(base));
         (meta.collection, meta.is_archived)

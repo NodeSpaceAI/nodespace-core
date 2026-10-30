@@ -187,6 +187,24 @@ async fn a_command_routed_to_a_refused_database_exits_non_zero_with_the_refusal(
         vec!["diagnostics"],
         vec!["--database", "marked", "diagnostics"],
         vec!["--json", "diagnostics"],
+        vec![
+            "wait",
+            "node",
+            "anything",
+            "--until",
+            "[]",
+            "--timeout",
+            "5s",
+        ],
+        vec![
+            "--database",
+            "marked",
+            "wait",
+            "query",
+            "anything",
+            "--timeout",
+            "5s",
+        ],
     ] {
         let out = nodespace(&daemon, &args).await;
         assert!(!out.status.success(), "{args:?} must fail");
@@ -379,4 +397,26 @@ async fn database_use_warns_when_the_new_default_is_refused() {
     );
     let info: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(info["status"], "requires_extension");
+}
+
+/// `--json` over a single directory with no markdown prints the empty array,
+/// as the multi-directory path does, rather than nothing.
+#[tokio::test]
+async fn import_dir_json_of_an_empty_directory_prints_an_empty_array() {
+    let daemon = spawn_daemon().await;
+    let empty = TempDir::new().unwrap();
+    let empty = empty.path().to_str().unwrap();
+
+    let out = nodespace(
+        &daemon,
+        &["--json", "--database", "other", "import", "dir", empty],
+    )
+    .await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed: serde_json::Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    assert_eq!(printed, serde_json::json!([]));
 }
