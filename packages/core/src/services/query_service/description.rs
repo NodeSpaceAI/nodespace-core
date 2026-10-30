@@ -133,10 +133,15 @@ fn permitted_phrase(filter: &QueryFilter) -> String {
 
 /// `status is open`, `due_date is before today`, `title contains "x"`.
 fn comparison(filter: &QueryFilter) -> String {
+    // A stored comparison reads each row's own value, not the value it maps
+    // to at the queried type, so the sentence says so: dropping the clause
+    // would change the rows.
+    let stored = filter.filter_type == FilterType::Property && filter.stored == Some(true);
     let subject = match (&filter.filter_type, filter.property.as_deref()) {
-        (FilterType::Content, _) => "content",
-        (_, Some(property)) => property,
-        (_, None) => "content",
+        (FilterType::Content, _) => "content".to_string(),
+        (_, Some(property)) if stored => format!("stored {property}"),
+        (_, Some(property)) => property.to_string(),
+        (_, None) => "content".to_string(),
     };
     let negated = filter.is_negated();
     let object = filter
@@ -163,10 +168,11 @@ fn comparison(filter: &QueryFilter) -> String {
             format!("{} {object}", if negated { "is not" } else { "is" })
         }
         (FilterOperator::Contains, Some(object)) => {
-            let case = if filter.case_sensitive == Some(true) {
+            // An absent flag matches case, as the query service does.
+            let case = if filter.case_sensitive.unwrap_or(true) {
                 " (matching case)"
             } else {
-                ""
+                " (ignoring case)"
             };
             format!(
                 "{} {object}{case}",
@@ -384,11 +390,19 @@ mod tests {
             ),
             (
                 json!({ "type": "property", "operator": "contains", "property": "title", "value": "launch plan" }),
-                "whose title contains \"launch plan\"",
+                "whose title contains \"launch plan\" (matching case)",
             ),
             (
                 json!({ "type": "property", "operator": "contains", "property": "title", "value": "x", "case_sensitive": true, "negate": true }),
                 "whose title does not contain x (matching case)",
+            ),
+            (
+                json!({ "type": "property", "operator": "contains", "property": "title", "value": "x", "case_sensitive": false }),
+                "whose title contains x (ignoring case)",
+            ),
+            (
+                json!({ "type": "property", "operator": "equals", "property": "status", "value": "changes_requested", "stored": true, "negate": true }),
+                "whose stored status is not changes_requested",
             ),
             (
                 json!({ "type": "property", "operator": "gte", "property": "estimate", "value": 3 }),
@@ -422,7 +436,7 @@ mod tests {
             filters(json!([
                 { "type": "content", "operator": "contains", "value": "invoice" }
             ])),
-            "Lists tasks whose content contains invoice."
+            "Lists tasks whose content contains invoice (matching case)."
         );
         assert_eq!(
             filters(json!([
@@ -582,7 +596,7 @@ mod tests {
         ]));
         assert_eq!(
             three,
-            "Lists tasks whose status is open, whose due_date is set, and whose content contains x."
+            "Lists tasks whose status is open, whose due_date is set, and whose content contains x (matching case)."
         );
     }
 
@@ -637,7 +651,7 @@ mod tests {
             sentence(IN_PROGRESS_QUERY_ID),
             format!(
                 "Lists tasks whose status is in_progress, \
-                 and whose status is not changes_requested. {by_priority}"
+                 and whose stored status is not changes_requested. {by_priority}"
             )
         );
         assert_eq!(
