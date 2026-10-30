@@ -2191,6 +2191,7 @@ pub async fn check_schema_change_impact(
                 Ok(r) => r,
                 Err(_) => continue,
             };
+            let paths_before = broken_paths.len();
 
             // Check the type the trigger's selector names. A saved-query
             // selector names a query node rather than a type; the query's own
@@ -2249,6 +2250,26 @@ pub async fn check_schema_change_impact(
                     // through.
                     ActionType::Reject => {}
                 }
+            }
+
+            // A path that reaches the type through a relationship names the
+            // relationship, not the type (`node.assignee.email` reaches
+            // `person`), so the segment checks above miss it. Resolve the
+            // rule's paths through the schemas, as the agent's referenced-type
+            // listing does, and report the rule when one ends on this type.
+            if broken_paths.len() == paths_before
+                && crate::playbook::referenced_types::referenced_types(
+                    node_service,
+                    std::slice::from_ref(def),
+                )
+                .await
+                .iter()
+                .any(|reached| reached == schema_node_type)
+            {
+                broken_paths.push(format!(
+                    "rule '{}' reaches {} through a relationship path",
+                    def.name, schema_node_type
+                ));
             }
         }
 
@@ -4426,6 +4447,56 @@ mod tests {
                 "unrelated schema change should not affect plays: {:?}",
                 affected
             );
+        }
+
+        /// `node.assignee.content` names the relationship `assignee`, never the
+        /// type it reaches, so only resolving the path through the schemas
+        /// finds the play that deleting `vipeople` would break.
+        #[tokio::test]
+        async fn test_schema_impact_detects_a_relationship_path_to_the_type() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vipeople", 1, json!([])).await;
+            create_schema(
+                &svc,
+                "vi-job",
+                1,
+                json!([{
+                    "name": "assignee",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "targetType": "vipeople",
+                    "reverseName": "vi_jobs",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+            create_play(
+                &svc,
+                "0f1d3c7e-5b52-5b0e-9d58-3e2f0e8a7c11",
+                json!([{
+                    "name": "r1",
+                    "description": "Test rule",
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi-job" } },
+                    "conditions": [{ "expr": "node.assignee.content != ''", "description": "Test condition" }],
+                    "actions": []
+                }]),
+            )
+            .await;
+
+            let affected =
+                check_schema_change_impact("vipeople", SchemaChangeKind::Destructive, &svc)
+                    .await
+                    .unwrap();
+            assert_eq!(affected.len(), 1, "{affected:?}");
+            assert_eq!(affected[0].play_id, "0f1d3c7e-5b52-5b0e-9d58-3e2f0e8a7c11");
+
+            // A type the play's paths do not reach is left alone.
+            create_schema(&svc, "vi-other", 1, json!([])).await;
+            let unrelated =
+                check_schema_change_impact("vi-other", SchemaChangeKind::Destructive, &svc)
+                    .await
+                    .unwrap();
+            assert!(unrelated.is_empty(), "{unrelated:?}");
         }
 
         #[tokio::test]

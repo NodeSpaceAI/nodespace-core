@@ -1241,6 +1241,25 @@ mod tests {
         assert_eq!(lm.plays_referencing_schema("person"), vec!["pb-drift-rel"]);
     }
 
+    /// A play reading only its own property resolves nothing through another
+    /// schema, so it is not a drift candidate for any other type.
+    #[test]
+    fn schema_change_ignores_a_play_reading_only_its_own_property() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-drift-own",
+            json!([{
+                "name": "r1",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                "conditions": [{ "expr": "node.status == 'x'", "description": "Test condition" }],
+                "actions": []
+            }]),
+        );
+        lm.activate_play(&node).unwrap();
+        assert!(lm.plays_referencing_schema("person").is_empty());
+    }
+
     #[test]
     fn schema_change_flags_a_play_with_a_collection_condition() {
         let mut lm = PlaybookLifecycleManager::new();
