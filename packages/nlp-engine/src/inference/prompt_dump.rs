@@ -33,8 +33,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const ENV_DUMP_PATH: &str = "NODESPACE_PROMPT_DUMP";
 
 /// Monotonic counter correlating a prompt record with its response record.
-/// Shared by every engine, so a `seq` is unique across the whole file and
-/// call order is the timeline. A request carries no session or turn id at
+/// Shared by every engine, so a `seq` is unique within one process run and
+/// call order is the timeline. The counter restarts when the process does, so
+/// a file appended to across runs repeats seq values; readers must use file
+/// position to tell runs apart. A request carries no session or turn id at
 /// this layer, so call order is the only correlation key available here.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 

@@ -57,8 +57,8 @@ export interface CorrelationResult {
 //   error[E0425]: ... --> packages/core/src/db/mod.rs:12:9
 //   thread 'mod::tests::case' (36545869) panicked at packages/core/src/lib.rs:57:18:
 //
-// The last two are distinct Rust shapes, and both are needed: `-->` is the
-// compiler's, so it appears only when the code fails to BUILD, while a test
+// The last two are distinct Rust shapes, and both are needed: `-->` under an
+// `error` heading is the compiler's, so it appears only when the code fails to BUILD, while a test
 // that builds and then fails an assertion emits `panicked at` and no `-->`
 // at all. Two of the gate's stages run cargo tests, so matching only the
 // compiler form would leave correlation silent for the most common Rust
@@ -69,7 +69,10 @@ export interface CorrelationResult {
 const PATH_PATTERNS: RegExp[] = [
   /^\s*(?:❯|×|✗)\s+(\S+\.(?:test|spec|e2e)\.[cm]?[jt]sx?)/gm,
   /^\s*FAIL\s+(\S+\.(?:test|spec|e2e)\.[cm]?[jt]sx?)/gm,
-  /-->\s+(\S+\.rs):\d+:\d+/gm,
+  // Only an `error` block's location: rustc prints the same `-->` line for
+  // every warning (and cargo replays cached warnings), which would otherwise
+  // name files that have nothing to do with the failure.
+  /^error(?:\[E\d+\])?:[^\n]*\n\s*-->\s+(\S+\.rs):\d+:\d+/gm,
   // `[^\s:]+` stops at the trailing `:line:col` without swallowing it.
   /panicked at\s+([^\s:]+\.rs):\d+:\d+/gm,
 ];
@@ -89,7 +92,9 @@ export function parseFailingPaths(output: string): string[] {
     // matchAll requires them.
     for (const match of output.matchAll(pattern)) {
       const path = match[1]?.trim();
-      if (path) found.add(path);
+      // An absolute path (a dependency's registry source, a toolchain file)
+      // is not in this repo, so no upstream commit can have fixed it.
+      if (path && !path.startsWith("/") && !path.includes("/.cargo/registry/")) found.add(path);
     }
   }
   return [...found];

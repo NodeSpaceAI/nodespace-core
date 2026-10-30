@@ -120,6 +120,7 @@ export async function antigravity(
     }
 
     let said = "";
+    let failedStatus: string | null = null;
 
     for (const line of out.split("\n")) {
       try {
@@ -136,7 +137,7 @@ export async function antigravity(
           said = String(result.response ?? "");
 
           if (result.status !== "SUCCESS") {
-            throw new Error(`agy ended the ${name} prompt with status ${String(result.status)}`);
+            failedStatus = String(result.status);
           }
 
           // The permission system refused something the session needed: the
@@ -149,6 +150,10 @@ export async function antigravity(
       } catch {
         // Not JSON: kept in the log as it came.
       }
+    }
+
+    if (failedStatus !== null) {
+      throw new Error(`agy ended the ${name} prompt with status ${failedStatus}`);
     }
 
     return said;

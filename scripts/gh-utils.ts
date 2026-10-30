@@ -9,11 +9,9 @@
  * Usage:
  *   bun run gh:status 57,58,59 "In Progress"
  *   bun run gh:assign 60,61,62 "@me"
- *   bun run gh:startup 45 "Brief description"
  *   bun run gh:list --status open
  */
 
-import { $ } from "bun";
 import { GitHubClient } from "./github-client.ts";
 
 class NodeSpaceGitHubManager {
@@ -101,7 +99,8 @@ class NodeSpaceGitHubManager {
     }
 
     if (options.assignee) {
-      apiOptions.assignee = options.assignee.replace("@", "");
+      apiOptions.assignee =
+        options.assignee === "@me" ? await this.client.getAuthenticatedUser() : options.assignee.replace("@", "");
     }
 
     const issues = await this.client.listIssues(apiOptions);
@@ -194,77 +193,6 @@ class NodeSpaceGitHubManager {
     } catch (error: unknown) {
       console.error(`❌ Failed to create PR: ${error instanceof Error ? error.message : String(error)}`);
       throw error;
-    }
-  }
-
-  // Complete startup sequence for an issue
-  async startupSequence(issueNumber: number, branchDescription?: string) {
-    console.log(`🚀 Starting startup sequence for issue #${issueNumber}...\n`);
-
-    try {
-      // 1. Check git status (simplified check)
-      console.log("1️⃣ Checking git status...");
-      if (!this.client.isWorkingDirectoryClean()) {
-        console.log("⚠️  Git directory check failed. Please ensure git status is clean before proceeding.");
-        console.log("Run: git status");
-        return false;
-      }
-      console.log("✅ Git status appears clean\n");
-
-      // 2. Get issue details first
-      console.log("2️⃣ Getting issue details...");
-      const issue = await this.client.getIssue(issueNumber);
-      console.log(`📄 Issue: ${issue.title}\n`);
-
-      // 3. Note: Branch creation requires git commands - user must handle manually
-      const branchName = branchDescription 
-        ? `feature/issue-${issueNumber}-${branchDescription.toLowerCase().replace(/\s+/g, '-')}`
-        : `feature/issue-${issueNumber}`;
-      
-      console.log(`3️⃣ Recommended branch name: ${branchName}`);
-      console.log("⚠️  Please create branch manually: git checkout -b " + branchName);
-      console.log("Press Enter when branch is created...");
-
-      // 4. Assign issue
-      console.log("4️⃣ Assigning issue to self...");
-      await this.assignIssues([issueNumber], "@me");
-
-      // 5. Update project status to In Progress
-      console.log("5️⃣ Updating project status to 'In Progress'...");
-      await this.updateIssueStatus([issueNumber], "In Progress");
-
-      console.log(`🎉 Startup sequence completed for issue #${issueNumber}!`);
-      console.log(`📋 Next steps:`);
-      console.log(`   - Read the issue requirements carefully`);
-      console.log(`   - Plan your self-contained implementation`);
-      console.log(`   - Use appropriate specialized agents via Task tool`);
-      console.log(`   - Begin implementation\n`);
-
-      return true;
-
-    } catch (error: unknown) {
-      console.error(`❌ Startup sequence failed: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
-    }
-  }
-
-  // Quality gate check before PR creation (API only)
-  async qualityCheck() {
-    console.log("🔍 Running quality checks...\\n");
-
-    try {
-      console.log("Checking linting and formatting...");
-      // Use the existing quality command
-      const qualityResult = await $`bun run quality:fix`;
-      console.log(qualityResult.text());
-      
-      console.log("✅ Quality checks passed!");
-      return true;
-    } catch (error: unknown) {
-      console.error("❌ Quality checks failed:");
-      console.error(error instanceof Error ? error.message : String(error));
-      console.log("\\n🚨 Fix these issues before creating a PR");
-      return false;
     }
   }
 
@@ -585,19 +513,6 @@ async function main() {
         break;
       }
 
-      case "issues:startup": {
-        const issueNumber = parseInt(args[1]);
-        const branchDescription = args[2];
-        
-        if (!issueNumber) {
-          console.error('Usage: bun run gh:startup 45 "Brief description"');
-          process.exit(1);
-        }
-        
-        await manager.startupSequence(issueNumber, branchDescription);
-        break;
-      }
-
       case "pr:create": {
         const issueNumber = parseInt(args[1]);
         const title = args[2];
@@ -692,7 +607,6 @@ async function main() {
   bun run gh:list --assignee "@me"            # Your issues
 
 🎯 Issue Workflow:
-  bun run gh:startup 45 "Brief description"    # Complete startup sequence
   bun run scripts/gh-utils.ts issues:view 45   # View issue details
   bun run scripts/gh-utils.ts issues:view 45 --web  # Open in browser
 

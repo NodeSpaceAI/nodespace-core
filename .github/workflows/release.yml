@@ -1131,7 +1131,7 @@ jobs:
   notify-failure:
     name: Notify on build failure
     runs-on: ubuntu-22.04
-    needs: [build-tauri-macos-arm, build-tauri, build-pkg-macos, build-headless, sync-homebrew-cask, sync-skill-repo, sync-install-script, sync-homebrew-formula]
+    needs: [build-tauri-macos-arm, build-tauri, build-pkg-macos, build-headless, sync-homebrew-cask, sync-skill-repo, sync-install-script, sync-homebrew-formula, upload-checksums]
     if: failure()
 
     steps:
@@ -1150,7 +1150,14 @@ jobs:
   upload-checksums:
     needs: build-headless
     runs-on: ubuntu-22.04
-    if: github.event_name == 'release'
+    # `needs.build-headless` is the aggregate of the whole matrix, so one failed
+    # leg would skip this job under the default success() gate and publish the
+    # release without SHA256SUMS. Run it after any non-cancelled matrix and
+    # checksum whichever binaries were uploaded.
+    if: >-
+      always() &&
+      github.event_name == 'release' &&
+      needs.build-headless.result != 'cancelled'
 
     steps:
       - name: Checkout repository

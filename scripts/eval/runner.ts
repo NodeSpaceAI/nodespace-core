@@ -377,6 +377,20 @@ export function readBaselineReliability(
 }
 
 /**
+ * The closing line of a baseline comparison. Nothing scored means nothing was
+ * compared: "no regressions" would read as a clean result for a run that
+ * measured nothing.
+ */
+export function baselineVerdictLine(evalName: string, scoredScenarios: number, regressions: number): string {
+  if (scoredScenarios === 0) {
+    return `\n[${evalName}] ⚠ Nothing was scored, so nothing was compared to the baseline`;
+  }
+  return regressions > 0
+    ? `\n[${evalName}] ✗ ${regressions} regression(s) vs baseline`
+    : `\n[${evalName}] ✓ No regressions vs baseline`;
+}
+
+/**
  * Compare against a recorded baseline. Returns the regression count.
  *
  * Joins on scenario `id`, not the prompt text: prompts get reworded (the
@@ -479,11 +493,7 @@ async function compareToBaseline(
     }
   }
 
-  console.log(
-    regressions > 0
-      ? `\n[${evalName}] ✗ ${regressions} regression(s) vs baseline`
-      : `\n[${evalName}] ✓ No regressions vs baseline`,
-  );
+  console.log(baselineVerdictLine(evalName, aggregate.scoredScenarios, regressions));
   return regressions;
 }
 
@@ -1938,6 +1948,13 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
   // The exit code follows pass^k, not the last rep: a suite that passes
   // everything twice and fails one scenario the third time has not passed.
   const notPassing = aggregate.scoredScenarios - aggregate.passAtK;
+  // A run that scored nothing (every scenario excluded) is not a pass.
+  if (aggregate.scoredScenarios === 0) {
+    console.error(
+      `\n[${fixture.name}] ✗ No scenario was scored: every one was excluded or setup-only, so this run says nothing about the model`,
+    );
+    process.exit(EXIT_FAILED);
+  }
   if (notPassing > 0 || regressions > 0) {
     console.error(
       `\n[${fixture.name}] ✗ ${notPassing}/${aggregate.scoredScenarios} scenarios did not pass ` +

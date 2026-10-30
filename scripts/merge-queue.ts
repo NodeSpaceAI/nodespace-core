@@ -76,7 +76,7 @@ export async function ensureHeadLocal(cwd: string, remote: string, ref: string, 
   const got = (await git(["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).stdout.toString().trim();
   if (got !== expected) {
     throw new Error(
-      `${ref} is at ${got.slice(0, 8)} but the branch head read earlier was ${expected.slice(0, 8)}; the PR changed while it was being read. Re-run.`
+      `${ref} is at ${got.slice(0, 8)} but the branch head read earlier was ${expected.slice(0, 8)}; the PR changed while it was being read, or GitHub has not yet updated ${ref} after a recent push (it can lag the branch head by a few seconds). Wait briefly and re-run.`
     );
   }
 }

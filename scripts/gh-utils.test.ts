@@ -62,6 +62,41 @@ describe("NodeSpaceGitHubManager.assignIssues", () => {
   });
 });
 
+describe("NodeSpaceGitHubManager.listIssues", () => {
+  function makeListClient() {
+    const listIssues = mock(async (_options: { assignee?: string }) => []);
+    const getAuthenticatedUser = mock(async () => RESOLVED_LOGIN);
+    const client = { listIssues, getAuthenticatedUser } as unknown as GitHubClient;
+    return { client, listIssues, getAuthenticatedUser };
+  }
+
+  test('"@me" filters by the authenticated account', async () => {
+    const { client, listIssues, getAuthenticatedUser } = makeListClient();
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await new NodeSpaceGitHubManager(client).listIssues({ assignee: "@me" });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
+    expect(listIssues.mock.calls[0][0].assignee).toBe(RESOLVED_LOGIN);
+  });
+
+  test("an explicit username is passed through without the @", async () => {
+    const { client, listIssues, getAuthenticatedUser } = makeListClient();
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await new NodeSpaceGitHubManager(client).listIssues({ assignee: "@someone-else" });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(getAuthenticatedUser).not.toHaveBeenCalled();
+    expect(listIssues.mock.calls[0][0].assignee).toBe("someone-else");
+  });
+});
+
 describe("NodeSpaceGitHubManager.unassignIssues", () => {
   test('"@me" resolves via the authenticated-user API, not a hardcoded literal', async () => {
     const { client, getAuthenticatedUser, unassignIssues } = makeStubClient();
@@ -123,7 +158,7 @@ describe("GitHubClient project-board membership", () => {
           projectV2: {
             items: {
               nodes: options.alreadyOnBoard
-                ? [{ id: "PVTI_existing", content: { number: ISSUE_NUMBER } }]
+                ? [{ id: "PVTI_existing", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/nodespace-core" } } }]
                 : [],
               pageInfo: { hasNextPage: false, endCursor: null },
             },
@@ -145,6 +180,25 @@ describe("GitHubClient project-board membership", () => {
 
     return { client, graphql, graphqlCalls, issuesCreate, issuesGet };
   }
+
+  test("a same-numbered issue from another repository is not taken for this one", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => ({
+      organization: {
+        projectV2: {
+          items: {
+            nodes: [
+              { id: "PVTI_other", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/other-repo" } } },
+              { id: "PVTI_core", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/nodespace-core" } } },
+            ],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    }));
+
+    expect(await client.getItemIdForIssue(ISSUE_NUMBER)).toBe("PVTI_core");
+  });
 
   test("creating an issue adds it to the project board", async () => {
     const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
