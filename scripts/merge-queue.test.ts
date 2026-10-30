@@ -368,7 +368,7 @@ describe("ensureHeadLocal", () => {
   test("refuses when the PR head moved since it was read", async () => {
     await $`git -C ${author} commit --quiet --allow-empty -m more`.quiet();
     await $`git -C ${author} push --quiet --force origin HEAD:refs/pull/7/head`.quiet();
-    await expect(ensureHeadLocal(machineA, "origin", "refs/pull/7/head", tip)).rejects.toThrow(/changed while it was being read/);
+    await expect(ensureHeadLocal(machineA, "origin", "refs/pull/7/head", tip)).rejects.toThrow(/changed while it was being read.*can lag the branch head/);
   });
 
   test("says so when the head ref cannot be fetched", async () => {
