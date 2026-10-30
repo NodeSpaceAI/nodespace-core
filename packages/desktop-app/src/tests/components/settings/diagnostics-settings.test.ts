@@ -7,7 +7,7 @@
  * again on success.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
 vi.mock('$lib/utils/logger', () => ({
@@ -103,6 +103,10 @@ describe('DiagnosticsSettings — Windows autorun cleanup', () => {
 });
 
 describe('DiagnosticsSettings — version row', () => {
+  afterEach(() => {
+    updateStatus.current = '';
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     settingsStore.appSettings = null;

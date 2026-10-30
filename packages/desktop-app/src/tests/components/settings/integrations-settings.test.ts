@@ -88,4 +88,47 @@ describe('IntegrationsSettings status loading', () => {
 
     expect(await screen.findByText(/No supported coding agent/i)).toBeInTheDocument();
   });
+
+  it('shows a retry and no enabled Add to PATH when only the integrations status fails', async () => {
+    let statusCalls = 0;
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_integrations_status') {
+        statusCalls += 1;
+        return statusCalls === 1 ? Promise.reject(new Error('boom')) : Promise.resolve(STATUS);
+      }
+      if (cmd === 'get_skill_setup_status') return Promise.resolve(SKILL);
+      if (cmd === 'detect_agents')
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
+      return Promise.resolve(undefined);
+    });
+
+    render(IntegrationsSettings);
+
+    expect(await screen.findAllByText('Status unavailable')).toHaveLength(2);
+    expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add to PATH' })).not.toBeInTheDocument();
+    const retries = screen.getAllByRole('button', { name: 'Retry' });
+    expect(retries.length).toBeGreaterThan(0);
+
+    await fireEvent.click(retries[0]);
+
+    await waitFor(() => expect(screen.getByText('Configured')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('keeps PATH controls usable when only detection fails', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_integrations_status')
+        return Promise.resolve({ pathAlreadyConfigured: false, pathExportPresent: false });
+      if (cmd === 'get_skill_setup_status') return Promise.resolve(SKILL);
+      if (cmd === 'detect_agents') return Promise.reject(new Error('boom'));
+      return Promise.resolve(undefined);
+    });
+
+    render(IntegrationsSettings);
+
+    expect(await screen.findByText('Could not check agents')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add to PATH' })).toBeEnabled();
+    expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
+  });
 });

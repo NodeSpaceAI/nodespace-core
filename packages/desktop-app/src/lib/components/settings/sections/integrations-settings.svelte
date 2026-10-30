@@ -173,6 +173,8 @@
   // controls stay enabled so the install attempt can surface a real error.
   const anyAgentDetected = $derived(detectedAgents.length > 0 || detected?.detectionFailed === true);
   // "No agent" is only a fact once detection actually answered.
+  // A failed load leaves at least one of the two answers missing; Retry re-runs it.
+  const needsRetry = $derived(loadFailed && (status === null || detected === null));
   const noAgentsInstalled = $derived(detected !== null && !anyAgentDetected);
   const detectedAgentsLabel = $derived(
     detectedAgents.length > 0 ? formatAgentList(detectedAgents) : 'your coding agents'
@@ -219,6 +221,12 @@
           <Button variant="outline" size="sm" onclick={removeFromPath} disabled={pathWorking}>
             {pathWorking ? 'Removing…' : 'Remove from PATH'}
           </Button>
+        {:else if status === null}
+          {#if loadFailed}
+            <Button variant="outline" size="sm" onclick={loadStatus}>Retry</Button>
+          {:else}
+            <Button size="sm" disabled>Add to PATH</Button>
+          {/if}
         {:else if pathIsConfigured}
           <!-- Resolved by something else (e.g. the Homebrew cask): nothing of ours to add or remove. -->
         {:else}
@@ -235,8 +243,10 @@
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
         <span class="text-foreground text-[0.9375rem] font-semibold">Agent Skill</span>
-        {#if detected === null && loadFailed}
+        {#if loadFailed && detected === null}
           <Badge variant="secondary">Could not check agents</Badge>
+        {:else if loadFailed && status === null}
+          <Badge variant="secondary">Status unavailable</Badge>
         {:else if status === null || detected === null}
           <Badge variant="secondary">Checking…</Badge>
         {:else if noAgentsInstalled}
@@ -283,7 +293,7 @@
       {/if}
 
       <div class="flex gap-3">
-        {#if detected === null && loadFailed}
+        {#if needsRetry}
           <Button variant="outline" size="sm" onclick={loadStatus}>Retry</Button>
         {:else if detected === null || noAgentsInstalled}
           <Button size="sm" disabled>Add Skill</Button>
