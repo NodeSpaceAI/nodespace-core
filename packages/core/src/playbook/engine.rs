@@ -145,8 +145,9 @@ impl PlaybookEngine {
                         }
                     }
                 }
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
+                res = shutdown_rx.changed() => {
+                    // A dropped sender can never signal again: treat it as shutdown.
+                    if res.is_err() || *shutdown_rx.borrow() {
                         info!("Play engine received shutdown signal");
                         break Ok(());
                     }
@@ -3817,5 +3818,31 @@ mod run_state_tests {
         .await
         .expect("enabling clears the suspension, with or without the nulls");
         assert_eq!(suspension(&enabled), (None, None, None));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_sender_tests {
+    use super::*;
+    use crate::db::SqliteStore;
+
+    #[tokio::test]
+    async fn start_returns_when_the_shutdown_sender_is_dropped() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(
+            SqliteStore::new(temp_dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let engine = Arc::new(PlaybookEngine::new(node_service));
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(engine.start(rx));
+        drop(tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("engine must stop once the sender is gone")
+            .unwrap()
+            .unwrap();
     }
 }

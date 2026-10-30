@@ -45,8 +45,9 @@ pub async fn conflict_sweep_loop(
                     }
                 }
             }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
+            res = shutdown_rx.changed() => {
+                // A dropped sender can never signal again: treat it as shutdown.
+                if res.is_err() || *shutdown_rx.borrow() {
                     debug!("Conflict reconciliation sweep received shutdown signal");
                     break;
                 }
@@ -55,4 +56,29 @@ pub async fn conflict_sweep_loop(
     }
 
     debug!("Conflict reconciliation sweep stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::SqliteStore;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn loop_exits_when_the_shutdown_sender_is_dropped() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut store = Arc::new(
+            SqliteStore::new(temp_dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(conflict_sweep_loop(node_service, rx));
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("loop must exit once the sender is gone")
+            .unwrap();
+    }
 }
