@@ -1,11 +1,12 @@
-//! Integration tests for QueryService
+//! Serde contract tests for the QueryService types
 //!
 //! Tests cover:
-//! - QueryDefinition serialization/deserialization
-//! - Filter building for queries
-//! - Sorting configuration
-//! - SQL generation patterns
-//! - Query execution with real database
+//! - QueryDefinition and QueryFilter serialization/deserialization
+//! - Wire names of the filter operators, filter types and sort directions
+//! - Sorting and relationship-path configuration round trips
+//!
+//! These tests do not generate SQL or touch a database. Query building and
+//! execution are covered by the unit tests beside the QueryService.
 
 use nodespace_core::services::query_service::{
     FilterOperator, FilterType, QueryDefinition, QueryFilter, RelationshipHop, RelationshipPath,

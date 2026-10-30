@@ -154,16 +154,42 @@ export class NodeExpansionCoordinator {
   }
 
   /**
-   * Unregister a viewer when tab is closed
-   * Cleans up registry to prevent memory leaks
+   * Unregister a viewer when its component is destroyed (tab closed or switched away)
+   * Cleans up the registry to prevent memory leaks.
+   *
+   * The viewer's collapsed nodes are kept as a pending restoration: a tab switch
+   * destroys the viewer but not the tab, so a save before the tab is shown again
+   * must still report them and the next registration must re-apply them. Entries
+   * for tabs that no longer exist are dropped by retainViewers().
    *
    * @param viewerId - The viewer ID to unregister
    */
   static unregisterViewer(viewerId: string): void {
     // Silently unregister viewer (no log spam)
+    if (this.viewerRegistry.has(viewerId)) {
+      const collapsed = this.getCollapsedNodeIds(viewerId);
+      if (collapsed.length > 0) {
+        this.pendingRestorations.set(viewerId, collapsed);
+      } else {
+        this.pendingRestorations.delete(viewerId);
+      }
+    }
     this.viewerRegistry.delete(viewerId);
-    // Also clean up any pending restorations that weren't applied
-    this.pendingRestorations.delete(viewerId);
+  }
+
+  /**
+   * Drop pending restorations for viewers that are not in the given set
+   * (tabs that were closed).
+   *
+   * @param viewerIds - IDs of the viewers that still exist
+   */
+  static retainViewers(viewerIds: Iterable<string>): void {
+    const keep = new Set(viewerIds);
+    for (const viewerId of [...this.pendingRestorations.keys()]) {
+      if (!keep.has(viewerId) && !this.viewerRegistry.has(viewerId)) {
+        this.pendingRestorations.delete(viewerId);
+      }
+    }
   }
 
   /**

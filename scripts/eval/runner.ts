@@ -1130,15 +1130,6 @@ function gate(fixture: EvalFixture, env: EvalEnv): DaemonStatus {
 }
 
 /**
- * Run every scenario in the fixture once.
- *
- * Extracted from `runEval` so a rep is a callable unit rather than the body of
- * the entry point — which is what lets `--runs` repeat the identical code path
- * instead of a second, separately-drifting copy of the scenario loop.
- * Throws `EnvironmentError` if the daemon dies mid-rep; the caller decides
- * whether that voids the whole run (it does — see `runEval`).
- */
-/**
  * The id of the group's first failed setup turn, or the current one when none
  * failed here. A setup turn that was excluded (empty generation, tool never
  * offered) established nothing, so it counts as failed exactly like one whose
@@ -1153,6 +1144,15 @@ export function withSetupFailure(
   return current;
 }
 
+/**
+ * Run every scenario in the fixture once.
+ *
+ * Extracted from `runEval` so a rep is a callable unit rather than the body of
+ * the entry point — which is what lets `--runs` repeat the identical code path
+ * instead of a second, separately-drifting copy of the scenario loop.
+ * Throws `EnvironmentError` if the daemon dies mid-rep; the caller decides
+ * whether that voids the whole run (it does — see `runEval`).
+ */
 function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
   const results: ScenarioResult[] = [];
 

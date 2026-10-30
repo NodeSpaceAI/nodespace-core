@@ -1114,12 +1114,6 @@
   }
 
   /* Markdown formatting styles */
-  :global(.markdown-syntax) {
-    /* Wrapper for consistent double-click selection behavior */
-    display: inline;
-    word-break: keep-all;
-  }
-
   :global(.markdown-bold) {
     font-weight: 700;
     /* Make bold more visible in monospace */
@@ -1142,24 +1136,6 @@
     border-radius: var(--radius);
     font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
     font-size: 0.875rem;
-  }
-
-  :global(.markdown-code),
-  :global(.ns-markdown-code) {
-    /* Legacy inline code styling (from markdown-utils.ts custom parser) */
-    /* TODO: Consolidate with .markdown-code-inline once markdown-utils.ts is deprecated */
-    font-family: 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-    font-size: 0.9em;
-    background-color: hsl(var(--muted));
-    border: 1px solid hsl(var(--border));
-    border-radius: 3px;
-    padding: 0.1em 0.3em;
-    color: hsl(var(--foreground));
-  }
-
-  :global(.markdown-strikethrough) {
-    text-decoration: line-through;
-    opacity: 0.7;
   }
 
   /* Node colors now managed globally in app.css - Subtle Tint System */

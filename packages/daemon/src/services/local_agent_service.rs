@@ -724,10 +724,14 @@ impl LocalAgentServiceImpl {
     pub fn start_event_watcher(&self) {
         let this = self.clone();
         tokio::spawn(async move {
+            // Subscribe before the recovery scan so a processing write that
+            // commits while the scan runs is still delivered to this receiver;
+            // `begin_turn` dedupes a turn the scan and the event both pick up.
+            let mut rx = this.inner.node_service.subscribe_to_events();
+
             // Recovery pass: find any ai-chat nodes stuck in processing.
             this.recover_stuck_turns().await;
 
-            let mut rx = this.inner.node_service.subscribe_to_events();
             loop {
                 let event = tokio::select! {
                     // Stop promptly when the owning database is closed (ADR-053),

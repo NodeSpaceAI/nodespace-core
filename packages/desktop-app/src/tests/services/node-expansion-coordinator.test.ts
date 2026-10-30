@@ -36,6 +36,41 @@ describe('NodeExpansionCoordinator', () => {
       expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(0);
     });
 
+    it('should keep collapsed nodes across an unregister/register cycle (tab switch)', () => {
+      const viewerId = 'test-viewer-1';
+      const service = createMockReactiveNodeService();
+      service.initializeNodes(
+        [createMockNode('node-1', 'Node 1'), createMockNode('node-2', 'Node 2')],
+        { expanded: true }
+      );
+      service.toggleExpanded('node-1');
+      NodeExpansionCoordinator.registerViewer(viewerId, service);
+
+      NodeExpansionCoordinator.unregisterViewer(viewerId);
+
+      // A save while the tab is not shown still reports the collapse
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds(viewerId)).toEqual(['node-1']);
+
+      // The viewer for the same tab mounts again with fresh state
+      const remounted = createMockReactiveNodeService();
+      remounted.initializeNodes(
+        [createMockNode('node-1', 'Node 1'), createMockNode('node-2', 'Node 2')],
+        { expanded: true }
+      );
+      NodeExpansionCoordinator.registerViewer(viewerId, remounted);
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds(viewerId)).toEqual(['node-1']);
+    });
+
+    it('should drop pending restorations of closed tabs with retainViewers', () => {
+      NodeExpansionCoordinator.scheduleRestoration('open-tab', ['node-1']);
+      NodeExpansionCoordinator.scheduleRestoration('closed-tab', ['node-2']);
+
+      NodeExpansionCoordinator.retainViewers(['open-tab']);
+
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds('open-tab')).toEqual(['node-1']);
+      expect(NodeExpansionCoordinator.getCollapsedNodeIds('closed-tab')).toEqual([]);
+    });
+
     it('should handle multiple viewer registrations', () => {
       const service1 = createMockReactiveNodeService();
       const service2 = createMockReactiveNodeService();

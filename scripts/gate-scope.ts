@@ -90,7 +90,11 @@ const GATE_FILES = [
   "bun.lock",
 ];
 
-/** Prose and agent configuration: no stage reads them. */
+/**
+ * Prose and agent configuration that no stage reads. Not inert: anything under
+ * packages/skill/ (its SKILL.md is checked) and any Markdown inside a Rust crate
+ * (compiled in, so it is source).
+ */
 function isInert(file: string): boolean {
   if (file.startsWith("packages/skill/")) return false; // SKILL.md is checked
   // Crates compile Markdown in (include_str!, e.g. the agent's seed bodies),

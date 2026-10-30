@@ -37,6 +37,30 @@ const TASK_NEEDS_CRITERIA: &str = "cannot be marked done without acceptance crit
 const IS_LOCKED: &str = "is locked as the record of what was agreed";
 const CANNOT_BE_REINSTATED: &str = "cannot be reinstated";
 
+/// Retry `attempt` every 25ms until it returns `Ok`, or panic after 5s with
+/// the last `Err`. The engine learns of changes from the event bus
+/// asynchronously, so a test waits for the effect it expects instead of
+/// sleeping a fixed time.
+pub(crate) async fn eventually<T, E, F, Fut>(what: &str, mut attempt: F) -> T
+where
+    E: std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let last = match attempt().await {
+            Ok(value) => return value,
+            Err(e) => e,
+        };
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}; last result: {last:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 pub(crate) struct Harness {
     pub(crate) service: Arc<NodeService>,
     _tmp: TempDir,
@@ -56,14 +80,42 @@ impl Harness {
         let engine = Arc::new(PlaybookEngine::new(Arc::clone(&service)));
         service.set_playbook_lifecycle(engine.lifecycle().clone());
         let engine = tokio::spawn(async move { engine.start(rx).await });
-        tokio::time::sleep(Duration::from_millis(80)).await;
 
-        Ok(Self {
+        let harness = Self {
             service,
             _tmp: tmp,
             shutdown,
             engine,
+        };
+        harness.wait_until_rules_are_live().await?;
+        Ok(harness)
+    }
+
+    /// Wait for the engine to have loaded the seeded rules, by attempting a
+    /// write one of them refuses. A probe that gets through (the engine is not
+    /// ready yet) is deleted again.
+    async fn wait_until_rules_are_live(&self) -> Result<()> {
+        eventually("the seeded rules to be live", || async {
+            match self
+                .try_create(
+                    "plan",
+                    "Readiness probe",
+                    json!({ "plan_status": "approved" }),
+                )
+                .await
+            {
+                Ok(id) => {
+                    if let Ok(Some(node)) = self.service.get_node(&id).await {
+                        let _ = self.service.delete_node(&id, node.version).await;
+                    }
+                    Err("the probe write was accepted".to_string())
+                }
+                Err(e) if e.to_string().contains(PLAN_CREATED_APPROVED) => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
         })
+        .await;
+        Ok(())
     }
 
     pub(crate) async fn stop(self) {
@@ -328,8 +380,10 @@ async fn a_play_switched_off_stops_rejecting() -> Result<()> {
 
     h.set(TASK_CRITERIA_PLAY_ID, json!({ "enabled": false }))
         .await?;
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    h.set_status(&task, "done").await?;
+    eventually("the switched-off rule to stop rejecting", || async {
+        h.set_status(&task, "done").await
+    })
+    .await;
     h.stop().await;
     Ok(())
 }
@@ -605,8 +659,21 @@ async fn a_task_subtype_is_held_to_the_task_rules() -> Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("ticket schema: {e}"))?;
-    // The engine learns of a new subtype from the schema's event.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // The engine learns of a new subtype from the schema's event: wait until
+    // a ticket's status change is held to the task rules.
+    let probe = h.create("ticket", json!({ "status": "open" })).await?;
+    h.child(&probe, "checkbox", "- [ ] Not met yet").await?;
+    eventually("the engine to know the ticket subtype", || async {
+        let result = h.set_status(&probe, "done").await;
+        if rejected(&result, TASK_HAS_UNCHECKED_ITEM) {
+            return Ok(());
+        }
+        if result.is_ok() {
+            let _ = h.set_status(&probe, "open").await;
+        }
+        Err(format!("{result:?}"))
+    })
+    .await;
     let l = h.traced_task().await?;
 
     let traced = h.create("ticket", json!({ "status": "open" })).await?;
@@ -787,14 +854,33 @@ async fn the_spec_play_switched_off_or_emptied_stops_rejecting() -> Result<()> {
 
     h.set(TASK_SPEC_PLAY_ID, json!({ "enabled": false }))
         .await?;
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    h.set_status(&task, "in_progress").await?;
+    eventually("the switched-off rule to stop rejecting", || async {
+        h.set_status(&task, "in_progress").await
+    })
+    .await;
     h.set_status(&task, "open").await?;
 
-    h.set(TASK_SPEC_PLAY_ID, json!({ "enabled": true, "rules": [] }))
-        .await?;
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    h.set_status(&task, "in_progress").await?;
+    // Switched back on, the rule rejects again. Waiting for that makes the
+    // emptying below observable: the write only succeeds once the engine has
+    // dropped the rules.
+    h.set(TASK_SPEC_PLAY_ID, json!({ "enabled": true })).await?;
+    eventually("the switched-on rule to reject again", || async {
+        let result = h.set_status(&task, "in_progress").await;
+        if rejected(&result, TASK_SPEC_NOT_APPROVED) {
+            return Ok(());
+        }
+        if result.is_ok() {
+            let _ = h.set_status(&task, "open").await;
+        }
+        Err(format!("{result:?}"))
+    })
+    .await;
+
+    h.set(TASK_SPEC_PLAY_ID, json!({ "rules": [] })).await?;
+    eventually("the emptied rule to stop rejecting", || async {
+        h.set_status(&task, "in_progress").await
+    })
+    .await;
     h.stop().await;
     Ok(())
 }
@@ -1153,7 +1239,23 @@ async fn a_refused_item_does_not_stop_the_rest_of_a_for_each() -> Result<()> {
             }),
         )
         .await?;
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // The engine learns of the new Play from its event: approve throwaway
+    // plans until one of them gets its task started.
+    eventually("the new Play to be live", || async {
+        let spec = h.approved_spec().await?;
+        let plan = h.create("plan", json!({})).await?;
+        h.link(&plan, "spec", &spec).await?;
+        let task = h.task().await?;
+        h.link(&plan, "tasks", &task).await?;
+        h.link(&spec, "tasks", &task).await?;
+        h.set(&plan, json!({ "plan_status": "approved" })).await?;
+        if wait_for_status(&h, &task, "in_progress").await {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("the probe plan's task was not started"))
+        }
+    })
+    .await;
 
     let spec = h.approved_spec().await?;
     let plan = h.create("plan", json!({})).await?;
