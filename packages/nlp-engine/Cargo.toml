@@ -31,6 +31,8 @@ lru = "0.12"
 
 # SHA-256 for load-time model-integrity verification (ADR-058)
 sha2 = "0.10"
+# Keyed MAC authenticating the verified-state record
+hmac = "0.12"
 
 # Workspace dependencies
 serde = { workspace = true }
