@@ -548,14 +548,15 @@ fn play_references_node_type(play: &ParsedPlay, node_type: &str) -> bool {
         .any(|rule| rule.trigger.registered_type() == Some(node_type))
 }
 
-/// Check if any of a play's conditions contain dot-paths that might traverse
-/// through the given schema's node_type.
+/// Whether any of a play's conditions walks relationships, so that a change to
+/// any schema might break it.
 ///
-/// This is a heuristic: we extract paths from conditions and check if any segment
-/// matches the schema name. A precise check would require walking the full schema
-/// graph, but that's expensive for a lifecycle operation. The heuristic is conservative
-/// (may produce false positives, triggering unnecessary re-validation, but never
-/// false negatives that would leave a broken play active).
+/// Path segments are field and relationship names, not type names: with
+/// `node.assignee.name` the type reached is only known by resolving
+/// `assignee` through the schemas, and that resolution is what a changed
+/// schema may have broken. A play with such a path is therefore a candidate
+/// for every schema change (re-validation decides), as is one that names the
+/// schema in a segment. Paths that stay on the node's own properties are not.
 ///
 /// NOTE: Action binding templates (e.g., `{trigger.node.story.epic.title}`) are not
 /// checked here since they're template strings, not CEL expressions. If an action
@@ -567,21 +568,17 @@ fn play_has_paths_through_schema(play: &ParsedPlay, schema_node_type: &str) -> b
             if let Ok(extraction) =
                 crate::playbook::path_extractor::extract_paths(&condition.source)
             {
-                // Check if any extracted path mentions a segment that looks like the schema type
+                // `root.field` reads a property; a third segment, or any collection,
+                // walks a relationship.
                 for path in &extraction.paths {
-                    if path.segments.iter().any(|s| s == schema_node_type) {
-                        return true;
-                    }
-                }
-                for coll in &extraction.collections {
-                    if coll
-                        .collection
-                        .segments
-                        .iter()
-                        .any(|s| s == schema_node_type)
+                    if path.segments.len() > 2
+                        || path.segments.iter().any(|s| s == schema_node_type)
                     {
                         return true;
                     }
+                }
+                if !extraction.collections.is_empty() {
+                    return true;
                 }
             }
         }
@@ -1221,7 +1218,44 @@ mod tests {
 
         assert!(play_has_paths_through_schema(&pb, "story"));
         assert!(play_has_paths_through_schema(&pb, "epic"));
-        assert!(!play_has_paths_through_schema(&pb, "invoice"));
+        // Which type a hop reaches depends on the schemas, so a relationship path is a
+        // candidate whatever the changed type is called.
+        assert!(play_has_paths_through_schema(&pb, "invoice"));
+    }
+
+    #[test]
+    fn schema_change_flags_a_play_that_reaches_a_type_by_a_relationship_name() {
+        let mut lm = PlaybookLifecycleManager::new();
+        // `assignee` is a relationship name; the type it reaches is `person`.
+        let node = make_play_node(
+            "pb-drift-rel",
+            json!([{
+                "name": "r1",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                "conditions": [{ "expr": "node.assignee.email == 'a@b.c'", "description": "Test condition" }],
+                "actions": []
+            }]),
+        );
+        lm.activate_play(&node).unwrap();
+        assert_eq!(lm.plays_referencing_schema("person"), vec!["pb-drift-rel"]);
+    }
+
+    #[test]
+    fn schema_change_flags_a_play_with_a_collection_condition() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-drift-coll",
+            json!([{
+                "name": "r1",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                "conditions": [{ "expr": "node.subtasks.all(s, s.done == true)", "description": "Test condition" }],
+                "actions": []
+            }]),
+        );
+        lm.activate_play(&node).unwrap();
+        assert_eq!(lm.plays_referencing_schema("person"), vec!["pb-drift-coll"]);
     }
 
     #[test]
