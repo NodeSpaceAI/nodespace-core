@@ -58,6 +58,9 @@ debug-bridge = ["dep:tauri-plugin-mcp-bridge"]
 # Reads the machine-wide launchd registration (XML or binary) for the notice
 # about another product's service -- already in the lockfile through Tauri.
 plist = "1.10"
+# The runtime calls that add the delegate method for Dock and logout quits;
+# already in the lockfile through the windowing layer.
+objc2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
