@@ -91,14 +91,13 @@ export class PluginRegistry {
    * Returns null if no viewer is registered (fallback to base viewer)
    */
   async getViewer(nodeType: string): Promise<NodeViewerComponent | null> {
-    // Check if already loaded
-    if (this.loadedViewers.has(nodeType)) {
-      return this.loadedViewers.get(nodeType)!;
-    }
-
     const plugin = this.plugins.get(nodeType);
     if (!plugin || !this.enabledPlugins.has(nodeType) || !plugin.viewer) {
       return null; // No viewer available
+    }
+
+    if (this.loadedViewers.has(nodeType)) {
+      return this.loadedViewers.get(nodeType)!;
     }
 
     const registration = plugin.viewer;
@@ -107,6 +106,10 @@ export class PluginRegistry {
     if (registration.lazyLoad) {
       try {
         const module = await registration.lazyLoad();
+        // The plugin may have been unregistered or replaced while loading.
+        if (this.plugins.get(nodeType) !== plugin) {
+          return null;
+        }
         this.loadedViewers.set(nodeType, module.default);
         return module.default;
       } catch (error) {
@@ -145,14 +148,13 @@ export class PluginRegistry {
    * Returns null if no node component is registered (fallback to base node)
    */
   async getNodeComponent(nodeType: string): Promise<NodeComponent | null> {
-    // Check if already loaded
-    if (this.loadedNodes.has(nodeType)) {
-      return this.loadedNodes.get(nodeType)!;
-    }
-
     const plugin = this.plugins.get(nodeType);
     if (!plugin || !this.enabledPlugins.has(nodeType) || !plugin.node) {
       return null; // No node component available
+    }
+
+    if (this.loadedNodes.has(nodeType)) {
+      return this.loadedNodes.get(nodeType)!;
     }
 
     const registration = plugin.node;
@@ -161,6 +163,10 @@ export class PluginRegistry {
     if (registration.lazyLoad) {
       try {
         const module = await registration.lazyLoad();
+        // The plugin may have been unregistered or replaced while loading.
+        if (this.plugins.get(nodeType) !== plugin) {
+          return null;
+        }
         this.loadedNodes.set(nodeType, module.default);
         return module.default;
       } catch (error) {
@@ -617,14 +623,13 @@ export class PluginRegistry {
    * @returns Schema form component or null
    */
   async getSchemaForm(nodeType: string): Promise<SchemaFormComponent | null> {
-    // Check if already loaded
-    if (this.loadedSchemaForms.has(nodeType)) {
-      return this.loadedSchemaForms.get(nodeType)!;
-    }
-
     const plugin = this.plugins.get(nodeType);
     if (!plugin || !this.enabledPlugins.has(nodeType) || !plugin.schemaForm) {
       return null; // No schema form available
+    }
+
+    if (this.loadedSchemaForms.has(nodeType)) {
+      return this.loadedSchemaForms.get(nodeType)!;
     }
 
     const registration = plugin.schemaForm;
@@ -633,6 +638,10 @@ export class PluginRegistry {
     if (registration.lazyLoad) {
       try {
         const module = await registration.lazyLoad();
+        // The plugin may have been unregistered or replaced while loading.
+        if (this.plugins.get(nodeType) !== plugin) {
+          return null;
+        }
         this.loadedSchemaForms.set(nodeType, module.default);
         return module.default;
       } catch (error) {

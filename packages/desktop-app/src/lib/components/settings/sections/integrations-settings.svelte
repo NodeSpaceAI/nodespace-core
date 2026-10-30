@@ -57,13 +57,25 @@
   let pathFeedback = $state<{ ok: boolean; message: string } | null>(null);
   let skillFeedback = $state<{ ok: boolean; message: string } | null>(null);
 
+  // True once a load attempt has settled with at least one failed command.
+  let loadFailed = $state(false);
+
+  // The three commands are independent: one failing must not hide the others.
   async function loadStatus() {
-    try {
-      status = await invoke<IntegrationStatus>('get_integrations_status');
-      skillResult = await invoke<SkillSetupResult>('get_skill_setup_status');
-      detected = await invoke<DetectedAgents>('detect_agents');
-    } catch (err) {
-      log.warn('Could not load integration status', err);
+    loadFailed = false;
+    const [statusResult, skillStatusResult, detectResult] = await Promise.allSettled([
+      invoke<IntegrationStatus>('get_integrations_status'),
+      invoke<SkillSetupResult>('get_skill_setup_status'),
+      invoke<DetectedAgents>('detect_agents')
+    ]);
+    if (statusResult.status === 'fulfilled') status = statusResult.value;
+    if (skillStatusResult.status === 'fulfilled') skillResult = skillStatusResult.value;
+    if (detectResult.status === 'fulfilled') detected = detectResult.value;
+    for (const result of [statusResult, skillStatusResult, detectResult]) {
+      if (result.status === 'rejected') {
+        loadFailed = true;
+        log.warn('Could not load integration status', result.reason);
+      }
     }
   }
 
@@ -160,6 +172,8 @@
   // A detection failure must not present as "no agents installed" — the
   // controls stay enabled so the install attempt can surface a real error.
   const anyAgentDetected = $derived(detectedAgents.length > 0 || detected?.detectionFailed === true);
+  // "No agent" is only a fact once detection actually answered.
+  const noAgentsInstalled = $derived(detected !== null && !anyAgentDetected);
   const detectedAgentsLabel = $derived(
     detectedAgents.length > 0 ? formatAgentList(detectedAgents) : 'your coding agents'
   );
@@ -176,7 +190,9 @@
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
         <span class="text-foreground text-[0.9375rem] font-semibold">CLI PATH</span>
-        {#if status === null}
+        {#if status === null && loadFailed}
+          <Badge variant="secondary">Status unavailable</Badge>
+        {:else if status === null}
           <Badge variant="secondary">Checking…</Badge>
         {:else if pathIsConfigured}
           <Badge class="border-green-500/25 bg-green-500/10 text-green-700">Configured</Badge>
@@ -215,13 +231,15 @@
   </Card>
 
   <!-- Agent Skill -->
-  <Card class={cn('mb-4 gap-0 rounded-lg py-0', !anyAgentDetected && 'opacity-60')}>
+  <Card class={cn('mb-4 gap-0 rounded-lg py-0', noAgentsInstalled && 'opacity-60')}>
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
         <span class="text-foreground text-[0.9375rem] font-semibold">Agent Skill</span>
-        {#if status === null || detected === null}
+        {#if detected === null && loadFailed}
+          <Badge variant="secondary">Could not check agents</Badge>
+        {:else if status === null || detected === null}
           <Badge variant="secondary">Checking…</Badge>
-        {:else if !anyAgentDetected}
+        {:else if noAgentsInstalled}
           <Badge variant="secondary">No agents detected</Badge>
         {:else if skillIsInstalled}
           <Badge class="border-green-500/25 bg-green-500/10 text-green-700">Installed</Badge>
@@ -230,7 +248,9 @@
         {/if}
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
-        {#if !anyAgentDetected}
+        {#if detected === null && loadFailed}
+          NodeSpace could not check which coding agents are installed.
+        {:else if noAgentsInstalled}
           No supported coding agent is installed. Install one to enable NodeSpace tools in its CLI
           sessions.
         {:else}
@@ -242,7 +262,7 @@
       </p>
     </CardHeader>
     <CardContent class="px-5 pb-5">
-      {#if anyAgentDetected && skillResult?.cliWarning}
+      {#if !noAgentsInstalled && skillResult?.cliWarning}
         <div class="mb-4 flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3.5 py-2.5 text-sm leading-relaxed text-amber-700">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" class="mt-0.5 shrink-0" aria-hidden="true">
             <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -263,7 +283,9 @@
       {/if}
 
       <div class="flex gap-3">
-        {#if !anyAgentDetected}
+        {#if detected === null && loadFailed}
+          <Button variant="outline" size="sm" onclick={loadStatus}>Retry</Button>
+        {:else if detected === null || noAgentsInstalled}
           <Button size="sm" disabled>Add Skill</Button>
         {:else if skillIsInstalled}
           <Button size="sm" onclick={addSkill} disabled={skillWorking}>
