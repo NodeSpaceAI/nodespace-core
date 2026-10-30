@@ -135,7 +135,7 @@ describe("swarm.workflow.js mock run", () => {
     const { result, seq, logs, calls } = await runWorkflow({
       ...base,
       reuseCandidates: true,
-      done: { find: ["core-p2-critical-01__deep"], verify: ["F-001"], review: { "F-002": "APPROVE" }, filed: ["F-001"] },
+      done: { find: ["core-p2-critical-01__deep"], verify: ["F-001"], review: { "F-002": { decision: "APPROVE", finalSeverity: "P1" } }, filed: ["F-001"] },
     });
     expect(seq("Find")).toEqual(["find:core-p2-critical-01__hygiene:sonnet", "find:sync-p3-tests-01__tests:sonnet"]);
     expect(logs[0]).toContain("1 already done, 2 to run");
@@ -145,6 +145,8 @@ describe("swarm.workflow.js mock run", () => {
     expect(seq("Review").sort()).toEqual(["review:F-001:opus", "review:F-003:opus"]);
     // F-001 is already filed, F-002 still has to be filed.
     expect(seq("File")).toEqual(["file:F-002:sonnet"]);
+    // The resumed review keeps the chair's severity for the filer.
+    expect(calls.find((c) => c.label === "file:F-002")!.prompt).toContain("severity P1)");
     expect(result.report).toBe("/x/report.md");
   });
 
@@ -155,7 +157,7 @@ describe("swarm.workflow.js mock run", () => {
       done: {
         find: ["core-p2-critical-01__deep", "core-p2-critical-01__hygiene", "sync-p3-tests-01__tests"],
         verify: ["F-001", "F-002", "F-003"],
-        review: { "F-001": "APPROVE", "F-002": "APPROVE", "F-003": "REJECT" },
+        review: { "F-001": { decision: "APPROVE" }, "F-002": { decision: "APPROVE" }, "F-003": { decision: "REJECT" } },
         filed: ["F-001", "F-002"],
       },
     });
@@ -338,13 +340,13 @@ describe("make-args.ts", () => {
     writeFileSync(join(dir, "verdicts", "F-001__2.json"), "{}");
     writeFileSync(join(dir, "verdicts", "F-002__1.json"), "{}");
     writeFileSync(join(dir, "verdicts", "F-003__1.json"), "{}");
-    writeFileSync(join(dir, "review", "F-001.json"), JSON.stringify({ decision: "APPROVE" }));
+    writeFileSync(join(dir, "review", "F-001.json"), JSON.stringify({ decision: "APPROVE", finalSeverity: "P3" }));
     writeFileSync(join(dir, "review", "F-002.json"), "{ not json");
     writeFileSync(join(dir, "filed", "F-001.json"), "{}");
     const a = make(dir, ["--part", "1"]);
     expect(a.done.find).toEqual(["core-p1-critical-01__deep"]);
     expect(a.done.verify.sort()).toEqual(["F-001", "F-002"]);
-    expect(a.done.review).toEqual({ "F-001": "APPROVE" });
+    expect(a.done.review).toEqual({ "F-001": { decision: "APPROVE", finalSeverity: "P3" } });
     expect(a.done.filed).toEqual(["F-001"]);
     // The hygiene finder file is still missing, so the candidates are not reused yet.
     expect(a.reuseCandidates).toBe(false);

@@ -236,7 +236,7 @@ Return {id: "${c.id}", verifier: "${v.kind}-${v.n}", verdict, quotesMatch, evide
 
 const reviewStage = async (prev, c) => {
   if (!prev) return null
-  if (doneReview[c.id]) return { c, decision: doneReview[c.id], skippedReview: true }
+  if (doneReview[c.id]) return { c, decision: doneReview[c.id].decision, review: doneReview[c.id], skippedReview: true }
   if (prev.verdicts && prev.verdicts.length > 0 && prev.verdicts.every((v) => v.verdict === 'REFUTED')) {
     // Every verifier refuted it: still record the decision, with a cheap agent.
   }

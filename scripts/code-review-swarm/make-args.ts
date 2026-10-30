@@ -34,10 +34,11 @@ const sev: Record<string, string> = {};
 if (existsSync(`${S}/candidates.json`)) for (const c of JSON.parse(readFileSync(`${S}/candidates.json`, "utf8")).candidates ?? []) sev[c.id] = c.severity;
 const vfiles = ls("verdicts").map((f) => f.replace(/\.json$/, ""));
 const verify = Object.keys(sev).filter((id) => vfiles.includes(`${id}__1`) && (sev[id] === "P3" || vfiles.includes(`${id}__2`)));
-const review: Record<string, string> = {};
+const review: Record<string, { decision: string; finalSeverity?: string }> = {};
 for (const f of ls("review")) {
   try {
-    review[f.replace(/\.json$/, "")] = JSON.parse(readFileSync(`${S}/review/${f}`, "utf8")).decision;
+    const parsed = JSON.parse(readFileSync(`${S}/review/${f}`, "utf8"));
+    review[f.replace(/\.json$/, "")] = { decision: parsed.decision, finalSeverity: parsed.finalSeverity };
   } catch {
     // A half-written review file counts as not done.
   }
