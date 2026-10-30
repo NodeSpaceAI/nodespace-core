@@ -160,10 +160,6 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
   // navigating between nodes in the same tab
   const viewerId = (() => getViewerId(nodeId ?? 'default', tabId, paneId))();
 
-  // Track auto-focus nodes (viewer-local UI state)
-  // Use $state for reactive Set mutations
-  let autoFocusNodes = $state(new Set<string>());
-
   // Track if the viewer header input is being edited (for view/edit mode display)
   let isHeaderBeingEdited = $state(false);
 
@@ -232,7 +228,7 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
           depth,
           children,
           expanded: uiState?.expanded ?? true, // Default to true (expanded by default)
-          autoFocus: autoFocusNodes.has(node.id),
+          autoFocus: false,
           inheritHeaderLevel: uiState?.inheritHeaderLevel ?? 0,
           isPlaceholder: false
         };
@@ -538,28 +534,6 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
   }
 
   /**
-   * Add appropriate formatting syntax to content based on node type
-   * Used when creating new nodes from splits to preserve formatting
-   *
-   * NOTE: Header syntax inheritance is now handled in createNode() in reactiveNodeService.svelte.ts
-   * to avoid duplication and ensure consistent behavior.
-   */
-  function addFormattingSyntax(content: string): string {
-    // Header syntax inheritance is now handled in the createNode function
-    // to ensure consistent behavior and avoid duplication
-
-    // Return content as-is if no formatting needed
-    if (!content) return content;
-
-    // For task nodes: no automatic syntax addition
-    // Task checkbox syntax ([ ]) is only added when users type it as a shortcut
-    // Splitting a task node preserves the visual task state but not the syntax
-
-    // For other node types, return as-is
-    return content;
-  }
-
-  /**
    * Handle creating new nodes when Enter is pressed.
    * Promotes the viewer-local placeholder to a real persisted node (when Enter fires
    * on an empty page's placeholder), deferring store mutations to the next tick —
@@ -615,9 +589,8 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
       const parents = sharedNodeStore.getParentsForNode(afterNodeId);
       const explicitParentId = parents.length > 0 ? parents[0].id : (nodeId ?? null);
 
-      // Add formatting syntax to the new content based on node type and header level
-      // (applies to both empty and non-empty content for header inheritance)
-      const formattedNewContent = addFormattingSyntax(newContent || '');
+      // Header syntax inheritance is handled in createNode().
+      const formattedNewContent = newContent || '';
 
       // IMPORTANT: Enter key ALWAYS creates real persisted nodes (even if blank)
       // Only the first viewer-local placeholder uses the placeholder->promotion cycle
@@ -938,14 +911,6 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
     } catch (error) {
       log.error('Error during node deletion:', error);
     }
-  }
-
-  // Handle icon click events
-  // Note: Node-specific components handle their own icon behavior (e.g., TaskNode manages task states)
-  // This handler is for any viewer-level icon click coordination if needed in the future
-  function handleIconClick() {
-    // Currently a no-op - individual node components handle their own icon clicks
-    // This makes the system extensible for future node types that need viewer-level coordination
   }
 
   // Handle task state changes (checkbox toggles) — route through schema field update
@@ -1388,7 +1353,6 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
           onContentChanged={handleContentChanged}
           onNodeTypeChanged={handleNodeTypeChanged}
           onSlashCommandSelected={handleSlashCommandSelected}
-          onIconClick={handleIconClick}
           onTaskStateChanged={handleTaskStateChanged}
           onCombineWithPrevious={handleCombineWithPrevious}
           onDeleteNode={handleDeleteNode}

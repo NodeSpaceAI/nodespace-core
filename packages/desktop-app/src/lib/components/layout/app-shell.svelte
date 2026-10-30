@@ -23,8 +23,8 @@
   import type { Node } from '$lib/types';
   import { collectionsData } from '$lib/stores/collections.svelte';
   import { schemasData } from '$lib/stores/schemas.svelte';
-  import { loadPersistedState, addTab, navigationStore, setActiveTab } from '$lib/stores/navigation.svelte';
-  import { settingsStore } from '$lib/stores/settings.svelte';
+  import { loadPersistedState } from '$lib/stores/navigation.svelte';
+  import { openSettings } from '$lib/utils/open-settings';
   import { importModalStore } from '$lib/stores/import-modal.svelte';
   import ImportOptionsModal from '$lib/components/settings/import-options-modal.svelte';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
@@ -417,40 +417,12 @@
 
       // Listen for settings menu — open or focus settings tab
       unlistenSettings = listen('menu-open-settings', () => {
-        const state = navigationStore.state;
-        const existingSettingsTab = state.tabs.find((t) => t.type === 'settings');
-        if (existingSettingsTab) {
-          setActiveTab(existingSettingsTab.id, existingSettingsTab.paneId);
-        } else {
-          const activePaneId = state.activePaneId;
-          addTab({
-            id: 'settings',
-            title: 'Settings',
-            type: 'settings',
-            closeable: true,
-            paneId: activePaneId
-          });
-        }
+        openSettings();
       });
 
       // Listen for File → Integrations menu — open settings tab focused on Integrations.
-      // Sets settingsInitialCategory before addTab so the pane reads it synchronously on mount.
       unlistenIntegrations = listen('menu-open-integrations', () => {
-        settingsStore.initialCategory = 'integrations';
-        const state = navigationStore.state;
-        const existingSettingsTab = state.tabs.find((t) => t.type === 'settings');
-        if (existingSettingsTab) {
-          setActiveTab(existingSettingsTab.id, existingSettingsTab.paneId);
-        } else {
-          const activePaneId = state.activePaneId;
-          addTab({
-            id: 'settings',
-            title: 'Settings',
-            type: 'settings',
-            closeable: true,
-            paneId: activePaneId
-          });
-        }
+        openSettings('integrations');
       });
 
       // Set up MCP event listeners for real-time UI updates

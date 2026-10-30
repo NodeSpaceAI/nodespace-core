@@ -9,7 +9,7 @@
   OpenAI-compat configs from the settings store. Emits a ModelSelection via onSelect.
 
   For native models that need download, calls onSelect immediately with the selection
-  — the parent viewer owns the download modal.
+  — the parent viewer downloads the model when a message is sent.
 -->
 
 <script lang="ts" module>
@@ -38,7 +38,7 @@
   } from '$lib/services/tauri-commands';
   import { AGENT_EVENTS } from '$lib/types/agent-types';
   import { settingsStore } from '$lib/stores/settings.svelte';
-  import { addTab, navigationStore, setActiveTab } from '$lib/stores/navigation.svelte';
+  import { openSettings } from '$lib/utils/open-settings';
   import { createLogger } from '$lib/utils/logger';
   import { remoteModelOptions } from '$lib/utils/remote-model-options';
   import type { ProviderConfig } from '$lib/types';
@@ -173,31 +173,13 @@
     unlistenReady?.();
   });
 
-  /** Open the Settings tab pre-focused on the AI Models section. */
-  function openAiModelsSettings(): void {
-    settingsStore.initialCategory = 'ai-models';
-    const state = navigationStore.state;
-    const existing = state.tabs.find((t) => t.type === 'settings');
-    if (existing) {
-      setActiveTab(existing.id, existing.paneId);
-    } else {
-      addTab({
-        id: 'settings',
-        title: 'Settings',
-        type: 'settings',
-        closeable: true,
-        paneId: state.activePaneId,
-      });
-    }
-  }
-
   function handleChange(e: Event): void {
     const value = (e.currentTarget as HTMLSelectElement).value;
 
     if (!value || value.startsWith(HEADER_SENTINEL_PREFIX)) return;
 
     if (value === SETUP_SENTINEL) {
-      openAiModelsSettings();
+      openSettings('ai-models');
       // Reset the <select> back to the current value so it doesn't stay on "Set up…".
       (e.currentTarget as HTMLSelectElement).value = currentValue;
       return;

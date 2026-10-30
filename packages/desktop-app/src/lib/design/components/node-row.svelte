@@ -114,7 +114,7 @@
         on:nodeTypeChanged={(e: CustomEvent<NodeTypeChangedDetail>) => onNodeTypeChanged(node, e.detail)}
         on:slashCommandSelected={(e: CustomEvent<SlashCommandSelectedDetail>) =>
           onSlashCommandSelected(node, e.detail)}
-        on:iconClick={(e: CustomEvent<IconClickDetail>) => onIconClick(e.detail)}
+        on:iconClick={(e: CustomEvent<IconClickDetail>) => onIconClick?.(e.detail)}
         on:taskStateChanged={(e: CustomEvent<TaskStateChangedDetail>) => onTaskStateChanged(node, e.detail)}
         on:combineWithPrevious={(e: CustomEvent<CombineWithPreviousDetail>) =>
           onCombineWithPrevious(e.detail)}
@@ -155,7 +155,7 @@
         on:nodeTypeChanged={(e: CustomEvent<NodeTypeChangedDetail>) => onNodeTypeChanged(node, e.detail)}
         on:slashCommandSelected={(e: CustomEvent<SlashCommandSelectedDetail>) =>
           onSlashCommandSelected(node, e.detail)}
-        on:iconClick={(e: CustomEvent<IconClickDetail>) => onIconClick(e.detail)}
+        on:iconClick={(e: CustomEvent<IconClickDetail>) => onIconClick?.(e.detail)}
         on:taskStateChanged={(e: CustomEvent<TaskStateChangedDetail>) => onTaskStateChanged(node, e.detail)}
         on:combineWithPrevious={(e: CustomEvent<CombineWithPreviousDetail>) =>
           onCombineWithPrevious(e.detail)}

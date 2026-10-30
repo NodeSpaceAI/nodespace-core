@@ -8,7 +8,7 @@
     node. Renaming it MATERIALIZES a real `nodeType: 'query'` node and
     re-routes the tab to it, so subsequent edits persist.
   - query node → a SAVED query: reads the stored QueryDefinition + view config,
-    executes with filters (client-side — queryNodes only filters by nodeType),
+    executes with filters (applied in SQL by the backend),
     and persists edits back onto the node.
 
   Row clicks open the node in another panel. Follows the *NodeViewer pattern but
