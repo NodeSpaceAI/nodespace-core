@@ -22,8 +22,8 @@ describe('adapter-core: buildCreateNodeFields', () => {
       mentions: [],
       parentId: null,
       insertPosition: null,
-      collectionId: null,
     });
+    expect('collectionId' in fields).toBe(false);
   });
 
   it('carries the collection to file the new node into', () => {
