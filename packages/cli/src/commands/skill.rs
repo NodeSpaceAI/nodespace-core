@@ -382,12 +382,7 @@ pub async fn run_guidance(client: &mut NodeClient, args: GuidanceArgs, json: boo
         .into_inner();
 
     let tag = provenance_tag();
-    // The queries the daemon answers with a listing: none, whitespace, or `*`.
-    let request = if args.query.trim().is_empty() || args.query.trim() == "*" {
-        Fetch::Listing
-    } else {
-        Fetch::Task(&args.query)
-    };
+    let request = guidance_fetch(&args.query, &response);
     print_guidance(&mut std::io::stdout(), &response, request, json, &tag)
 }
 
@@ -425,6 +420,18 @@ pub async fn run_get(client: &mut NodeClient, args: GetArgs, json: bool) -> Resu
         json,
         &tag,
     )
+}
+
+/// What a guidance query asked for, as the daemon answered it. The daemon
+/// decides what counts as an enumerate request (empty, `*`, quote marks alone)
+/// and sets `version` in a listing only, so the response is the one source of
+/// truth rather than a second copy of that rule here.
+fn guidance_fetch<'a>(query: &'a str, response: &SkillGuidanceResponse) -> Fetch<'a> {
+    if response.version.is_empty() {
+        Fetch::Task(query)
+    } else {
+        Fetch::Listing
+    }
 }
 
 /// What a guidance response answers.
@@ -1509,14 +1516,33 @@ mod tests {
         }
     }
 
-    /// The request `run_guidance` makes of a query: a listing for none,
-    /// whitespace or `*`, a task otherwise.
+    /// The request a plain (unquoted) query makes of the daemon.
     fn fetch(query: &str) -> Fetch<'_> {
         if query.trim().is_empty() || query.trim() == "*" {
             Fetch::Listing
         } else {
             Fetch::Task(query)
         }
+    }
+
+    #[test]
+    fn a_response_with_a_version_is_a_listing_whatever_the_query_looked_like() {
+        let listing = SkillGuidanceResponse {
+            skills: Vec::new(),
+            schemas: Vec::new(),
+            version: "abc".to_string(),
+        };
+        let task = SkillGuidanceResponse {
+            version: String::new(),
+            ..listing.clone()
+        };
+        for q in ["\"*\"", "\"\"", "''", "`*`", ""] {
+            assert!(
+                matches!(guidance_fetch(q, &listing), Fetch::Listing),
+                "{q:?}"
+            );
+        }
+        assert!(matches!(guidance_fetch("fix a bug", &task), Fetch::Task(_)));
     }
 
     /// [`print_guidance`] for a fetch that returned skills and no schemas.
