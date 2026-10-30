@@ -684,10 +684,7 @@ impl BatchState {
 /// id, so until one is set the origin-filtered channel mirrors the main channel.
 ///
 /// Correctness depends on the excluded writer propagating its client id onto the
-/// event's `source_client_id`. Per-node and bulk `NodeService` writes do this;
-/// `SqliteStore::create_node_streaming` deliberately stamps a fixed source and
-/// would NOT carry the excluded origin — a writer that must be excluded here
-/// must not route through it.
+/// event's `source_client_id`, which per-node and bulk `NodeService` writes do.
 fn passes_origin_filter(
     excluded: &RwLock<Option<String>>,
     envelope: &crate::db::events::EventEnvelope,
@@ -2894,9 +2891,7 @@ impl NodeService {
     /// With no origin set it behaves like `subscribe_to_events`.
     ///
     /// Intended for a consumer whose buffer one origin's bulk writes must not
-    /// flood. A writer whose events must be excluded must not route through
-    /// `SqliteStore::create_node_streaming`, which stamps a fixed source rather
-    /// than the writer's client id.
+    /// flood.
     pub fn subscribe_to_events_excluding_origin(
         &self,
     ) -> broadcast::Receiver<crate::db::events::EventEnvelope> {

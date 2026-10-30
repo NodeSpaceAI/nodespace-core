@@ -1931,44 +1931,17 @@ impl SqliteStore {
         Ok(Ok(LeafDeleteOutcome::Deleted))
     }
 
-    /// Delete all descendants of `parent_id` (the full child subtree) without touching the parent.
+    /// Delete all descendants of `parent_id` (the full child subtree) without touching the parent,
+    /// against the caller's `tx` (ADR-069 §1a/S3, closing F4).
     ///
     /// Uses a recursive CTE to collect all descendant IDs, then deletes them in one statement.
-    /// FK CASCADE cleans relationship and embedding rows automatically.
-    /// No OCC check — intended for internal system operations where version checks are unnecessary.
-    ///
-    /// Bypasses `assert_schema_deletable`: the ids reached here are `has_child`
-    /// descendants (ordinary content, e.g. a schema's description subtree) —
-    /// never schema nodes themselves, since a schema is always a root (its
-    /// `must_be_root` structural rule refuses any `has_child` edge onto one).
-    /// Do not route schema-node ids through this.
-    pub async fn delete_children_subtree_unchecked(&self, parent_id: &str) -> Result<()> {
-        self.write()
-            .await
-            .execute(
-                r#"WITH RECURSIVE subtree(node_id) AS (
-                    SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
-                    UNION ALL
-                    SELECT r.out_node FROM relationship r
-                    JOIN subtree s ON r.in_node = s.node_id
-                    WHERE r.relationship_type = 'has_child'
-                )
-                DELETE FROM node WHERE id IN (SELECT DISTINCT node_id FROM subtree)"#,
-                libsql::params![parent_id.to_string()],
-            )
-            .await
-            .context("Failed to delete children subtree")?;
-        Ok(())
-    }
-
-    /// `_in_tx` twin of [`Self::delete_children_subtree_unchecked`] (ADR-069
-    /// §1a/S3, closing F4). Run against the caller's `tx` instead of opening
-    /// its own — this is what lets `replace_description_subtree` compose the
-    /// delete and the recreate that follows into one transaction, so a
-    /// failure recreating the subtree rolls back the delete instead of
-    /// leaving the schema's description gone with nothing replacing it.
-    /// Bypasses `assert_schema_deletable` for the same reason: a `has_child`
-    /// descendant is never a schema.
+    /// FK CASCADE cleans relationship and embedding rows automatically. No OCC check.
+    /// Running inside the caller's `tx` is what lets `replace_description_subtree` compose the
+    /// delete and the recreate that follows into one transaction, so a failure recreating the
+    /// subtree rolls back the delete instead of leaving the schema's description gone with
+    /// nothing replacing it.
+    /// Bypasses `assert_schema_deletable`: a `has_child` descendant is never a
+    /// schema (a schema is always a root).
     pub(crate) async fn delete_children_subtree_unchecked_in_tx(
         tx: &Tx<'_>,
         parent_id: &str,
@@ -3106,14 +3079,6 @@ impl SqliteStore {
         Ok((all_nodes, relationships))
     }
 
-    pub async fn get_relationships_in_subtree(
-        &self,
-        root_id: &str,
-    ) -> Result<Vec<RelationshipRecord>> {
-        let (_, relationships) = self.get_subtree_with_relationships(root_id).await?;
-        Ok(relationships)
-    }
-
     /// Refuse a `has_child` edge `parent_id → child_id` that would make
     /// `child_id` its own ancestor: `parent_id` is `child_id` itself or one of
     /// its descendants. Checked at every store site that attaches an existing
@@ -4163,68 +4128,6 @@ impl SqliteStore {
         }
 
         Ok(nodes.into_iter().map(|(id, ..)| id).collect())
-    }
-
-    pub async fn create_node_streaming(
-        &self,
-        id: String,
-        node_type: String,
-        content: String,
-        parent_id: Option<String>,
-        order: f64,
-        properties: serde_json::Value,
-    ) -> Result<String> {
-        let properties = if properties.is_null() {
-            serde_json::json!({})
-        } else {
-            properties
-        };
-        let props_json =
-            serde_json::to_string(&properties).context("Failed to serialize properties")?;
-        let now = Utc::now().to_rfc3339();
-
-        // One guard across the node insert and its parent edge, so no other
-        // writer can observe (or transactionally absorb) the half-built pair.
-        let db = self.write().await;
-        Self::validate_node_type(&db, &node_type).await?;
-        db.execute(
-            "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, NULL, 'active', 1, ?5, ?6)",
-            libsql::params![id.clone(), node_type.clone(), content.clone(), props_json, now.clone(), now.clone()],
-        ).await.context("Failed to create node (streaming)")?;
-
-        if let Some(ref parent) = parent_id {
-            let rel_id = uuid::Uuid::new_v4().to_string();
-            let rel_props = serde_json::json!({"order": order}).to_string();
-            db.execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
-                libsql::params![rel_id, parent.clone(), id.clone(), rel_props, now.clone(), now],
-            ).await.context("Failed to create relationship (streaming)")?;
-        }
-        drop(db);
-
-        let node = Node {
-            id: id.clone(),
-            node_type: node_type.clone(),
-            content,
-            version: 1,
-            created_at: Utc::now(),
-            modified_at: Utc::now(),
-            properties,
-            mentions: vec![],
-            mentioned_in: vec![],
-            title: None,
-            lifecycle_status: "active".to_string(),
-        };
-        self.notify(StoreChange {
-            operation: StoreOperation::Created,
-            node,
-            source: Some("streaming_import".to_string()),
-            previous_node: None,
-            playbook_context: None,
-            write_context: WriteContext::default(),
-        });
-
-        Ok(id)
     }
 
     /// Fetch a schema: the node row, filled with the `relationships` and the

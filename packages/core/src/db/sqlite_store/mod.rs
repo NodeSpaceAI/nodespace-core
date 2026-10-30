@@ -9,10 +9,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tx::Tx;
 
-const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 /// KNN over-fetch factor: vec0 returns top-k *chunks*, but search results are grouped
 /// by node and many chunks map to one node, so we fetch `limit * this` to cover enough
 /// distinct nodes.
@@ -492,7 +490,6 @@ pub struct SqliteStore {
     /// the `connections` submodule precisely so that the sibling modules of
     /// this one cannot reach around them. See that module's doc comment.
     conns: Connections,
-    event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
     notifier: Option<StoreNotifier>,
 }
 
@@ -510,11 +507,8 @@ impl SqliteStore {
         // so no reader connection can exist before the schema is created.
         Self::initialize_schema(&*conns.write().await).await?;
 
-        let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
-
         Ok(Self {
             conns,
-            event_tx,
             notifier: None,
         })
     }
@@ -674,10 +668,6 @@ impl SqliteStore {
         if let Some(notifier) = &self.notifier {
             notifier(change);
         }
-    }
-
-    pub fn subscribe_to_events(&self) -> broadcast::Receiver<crate::db::events::EventEnvelope> {
-        self.event_tx.subscribe()
     }
 
     /// Reject a `node_type` that no schema node declares.
