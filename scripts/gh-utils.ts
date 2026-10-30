@@ -99,7 +99,8 @@ class NodeSpaceGitHubManager {
     }
 
     if (options.assignee) {
-      apiOptions.assignee = options.assignee.replace("@", "");
+      apiOptions.assignee =
+        options.assignee === "@me" ? await this.client.getAuthenticatedUser() : options.assignee.replace("@", "");
     }
 
     const issues = await this.client.listIssues(apiOptions);

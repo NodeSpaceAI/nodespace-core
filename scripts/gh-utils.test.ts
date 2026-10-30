@@ -62,6 +62,41 @@ describe("NodeSpaceGitHubManager.assignIssues", () => {
   });
 });
 
+describe("NodeSpaceGitHubManager.listIssues", () => {
+  function makeListClient() {
+    const listIssues = mock(async (_options: { assignee?: string }) => []);
+    const getAuthenticatedUser = mock(async () => RESOLVED_LOGIN);
+    const client = { listIssues, getAuthenticatedUser } as unknown as GitHubClient;
+    return { client, listIssues, getAuthenticatedUser };
+  }
+
+  test('"@me" filters by the authenticated account', async () => {
+    const { client, listIssues, getAuthenticatedUser } = makeListClient();
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await new NodeSpaceGitHubManager(client).listIssues({ assignee: "@me" });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
+    expect(listIssues.mock.calls[0][0].assignee).toBe(RESOLVED_LOGIN);
+  });
+
+  test("an explicit username is passed through without the @", async () => {
+    const { client, listIssues, getAuthenticatedUser } = makeListClient();
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await new NodeSpaceGitHubManager(client).listIssues({ assignee: "@someone-else" });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(getAuthenticatedUser).not.toHaveBeenCalled();
+    expect(listIssues.mock.calls[0][0].assignee).toBe("someone-else");
+  });
+});
+
 describe("NodeSpaceGitHubManager.unassignIssues", () => {
   test('"@me" resolves via the authenticated-user API, not a hardcoded literal', async () => {
     const { client, getAuthenticatedUser, unassignIssues } = makeStubClient();
