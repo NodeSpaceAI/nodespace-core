@@ -108,7 +108,7 @@ describe('IntegrationsSettings status loading', () => {
     expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add to PATH' })).not.toBeInTheDocument();
     const retries = screen.getAllByRole('button', { name: 'Retry' });
-    expect(retries.length).toBeGreaterThan(0);
+    expect(retries).toHaveLength(2);
 
     await fireEvent.click(retries[0]);
 
@@ -130,5 +130,19 @@ describe('IntegrationsSettings status loading', () => {
     expect(await screen.findByText('Could not check agents')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add to PATH' })).toBeEnabled();
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
+  });
+
+  it('shows both failed states and no enabled Add to PATH when status and detection both fail', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'get_skill_setup_status') return Promise.resolve(SKILL);
+      return Promise.reject(new Error('boom'));
+    });
+
+    render(IntegrationsSettings);
+
+    expect(await screen.findByText('Could not check agents')).toBeInTheDocument();
+    expect(screen.getByText('Status unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add to PATH' })).not.toBeInTheDocument();
   });
 });
