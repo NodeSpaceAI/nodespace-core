@@ -11,6 +11,7 @@ import { flushSync } from 'svelte';
 import { SchemaFormLoader } from '$lib/design/components/schema-form-loader.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { taskNodePlugin, personNodePlugin } from '$lib/plugins/core-plugins';
+import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import type { SchemaNode } from '$lib/types/schema-node';
 
 vi.mock('$lib/services/backend-adapter', () => ({
@@ -79,6 +80,23 @@ describe('SchemaFormLoader', () => {
     expect(await loader.loadForm('task')).toBe(true);
     expect(getSchema).not.toHaveBeenCalled();
     expect(loader.genericSchema).toBeNull();
+  });
+
+  it('serves the typed form again once a disabled plugin is re-enabled', async () => {
+    getSchema.mockResolvedValue(schemaFor('task'));
+    const loader = new SchemaFormLoader();
+
+    pluginRegistry.setEnabled('task', false);
+    try {
+      // Disabled: no typed form, and that answer must not stick.
+      expect(await loader.loadForm('task')).toBe(false);
+      expect('task' in loader.loadedForms).toBe(false);
+    } finally {
+      pluginRegistry.setEnabled('task', true);
+    }
+
+    expect(await loader.loadForm('task')).toBe(true);
+    expect(loader.loadedForms['task']).not.toBeNull();
   });
 
   it.each(['date', 'text', 'header'])(

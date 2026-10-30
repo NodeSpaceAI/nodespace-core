@@ -21,7 +21,8 @@ const log = createLogger('SchemaFormLoader');
 export class SchemaFormLoader {
   /**
    * Cache of loaded schema-form components keyed by node type.
-   * `null` = checked, no type-specific form registered; a component = typed form.
+   * Only loaded components are recorded; a type with no usable form (none registered, plugin
+   * disabled, failed import) is absent, so a later call looks it up again.
    */
   loadedForms = $state<Record<string, unknown>>({});
 
@@ -86,7 +87,7 @@ export class SchemaFormLoader {
     return this.genericSchema?.titleTemplate != null;
   }
 
-  /** The loaded type-specific form for a node type (may be null if none registered). */
+  /** The loaded type-specific form for a node type (undefined until one has loaded). */
   getForm(nodeType: string): unknown {
     return this.loadedForms[nodeType];
   }
@@ -114,24 +115,16 @@ export class SchemaFormLoader {
     // lazy import resolves.
     this.currentNodeType = nodeType;
 
-    // Skip if already loaded (check for both component and explicit null).
-    // `null` means "checked, no type-specific form" — the component lookup is cached, but
-    // the generic schema is not: `resetGenericSchema()` clears it on every navigation, so
-    // it must be re-fetched here or revisiting a type would render no properties form.
-    if (nodeType in this.loadedForms) {
-      const cached = this.loadedForms[nodeType];
-      if (cached === null) {
-        this.loadGenericSchema(nodeType);
-        return false;
-      }
-      return true;
-    }
+    // Skip if the typed form is already loaded. Only a loaded component is cached: a type with
+    // no usable form (none registered, plugin disabled, or its import failed) is looked up
+    // again on the next call, so enabling the plugin later is picked up instead of the
+    // negative answer sticking until reload. The lookup is a registry predicate, and the
+    // generic schema it falls back to has a cache of its own.
+    const cached = this.loadedForms[nodeType];
+    if (cached) return true;
 
-    // Check if plugin has a schema form registered
+    // No typed form registered or enabled for this type: use the generic schema-driven form.
     if (needsGenericSchemaForm(nodeType)) {
-      // Mark as null to indicate we checked and there's no type-specific form
-      this.loadedForms = { ...this.loadedForms, [nodeType]: null };
-      // No hardcoded form for this type — fall back to the generic schema-driven form.
       // Unconditional by design: reaching this branch already means "no type-specific
       // form", which is the only thing the generic fallback depends on. Core types with
       // no registered form (e.g. project) need it exactly as much as user-defined ones.
@@ -146,12 +139,10 @@ export class SchemaFormLoader {
         this.loadedForms = { ...this.loadedForms, [nodeType]: component };
         return true;
       }
-      // Mark as null if loading failed
-      this.loadedForms = { ...this.loadedForms, [nodeType]: null };
+      // The registered form did not load; not cached, so the next call retries.
       return false;
     } catch (error) {
       log.warn(`Failed to load schema form for ${nodeType}:`, error);
-      this.loadedForms = { ...this.loadedForms, [nodeType]: null };
       return false;
     }
   }

@@ -1,3 +1,4 @@
+/* global HTMLButtonElement */
 /**
  * ModelManager — provider save failures.
  *
