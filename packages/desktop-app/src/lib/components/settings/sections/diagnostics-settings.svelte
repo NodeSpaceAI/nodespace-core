@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
     import { settingsStore } from '$lib/stores/settings.svelte';
+    import { updateStatus } from '$lib/stores/update-status.svelte';
     import { Button } from '$lib/components/ui/button';
     import { createLogger } from '$lib/utils/logger';
 
@@ -44,7 +45,7 @@
     <div class="flex flex-col gap-4">
         <div class="flex flex-col gap-1">
             <span class="text-muted-foreground text-xs font-medium uppercase tracking-widest">Version</span>
-            <span class="text-foreground text-sm">Development Build</span>
+            <span class="text-foreground text-sm">{updateStatus.current || 'Unknown'}</span>
         </div>
 
         <div class="flex flex-col gap-1">

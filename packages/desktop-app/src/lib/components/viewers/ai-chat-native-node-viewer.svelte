@@ -347,6 +347,12 @@
             }
           }
         );
+        // Destroyed while the subscription was pending: release it now,
+        // since cleanupListeners already ran over the earlier array.
+        if (destroyed) {
+          unlistenChunk();
+          return;
+        }
         eventUnlisteners.push(unlistenChunk);
 
         const unlistenError = await listen<string>(AGENT_EVENTS.LOCAL_AGENT_ERROR, (event) => {
@@ -355,6 +361,10 @@
           sendError = event.payload;
           streamingContent = '';
         });
+        if (destroyed) {
+          unlistenError();
+          return;
+        }
         eventUnlisteners.push(unlistenError);
       }
     } finally {

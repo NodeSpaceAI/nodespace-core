@@ -7,7 +7,7 @@
  * again on success.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 
 vi.mock('$lib/utils/logger', () => ({
@@ -28,6 +28,7 @@ vi.mock('@tauri-apps/api/core', () =>
 
 import DiagnosticsSettings from '$lib/components/settings/sections/diagnostics-settings.svelte';
 import { settingsStore } from '$lib/stores/settings.svelte';
+import { updateStatus } from '$lib/stores/update-status.svelte';
 
 describe('DiagnosticsSettings — Windows autorun cleanup', () => {
   beforeEach(() => {
@@ -98,5 +99,33 @@ describe('DiagnosticsSettings — Windows autorun cleanup', () => {
     expect(await screen.findByText(/failed to remove/i)).toBeInTheDocument();
     // Row stays visible so the user can retry.
     expect(screen.getByRole('button', { name: /remove/i })).toBeInTheDocument();
+  });
+});
+
+describe('DiagnosticsSettings — version row', () => {
+  afterEach(() => {
+    updateStatus.current = '';
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    settingsStore.appSettings = null;
+    mockInvoke.mockResolvedValue(false);
+  });
+
+  it('shows the app version from the update status', async () => {
+    updateStatus.current = '0.3.9';
+    render(DiagnosticsSettings);
+    expect(await screen.findByText('0.3.9')).toBeInTheDocument();
+    expect(screen.queryByText('Development Build')).not.toBeInTheDocument();
+  });
+
+  it('falls back to Unknown while the version is not yet known', async () => {
+    updateStatus.current = '';
+    settingsStore.appSettings = null;
+    render(DiagnosticsSettings);
+    // Database path also reads Unknown here; the version row must be one of two.
+    expect(await screen.findAllByText('Unknown')).toHaveLength(2);
+    expect(screen.queryByText('Development Build')).not.toBeInTheDocument();
   });
 });
