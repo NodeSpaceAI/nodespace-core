@@ -2300,14 +2300,6 @@ plugin_label = "blue"
         );
     }
 
-    /// `remove` must prune the removed id's per-id opening lock, not just its
-    /// registry entry and open handle.
-    ///
-    /// `DatabaseId::generate()` mints a fresh ULID per registration, so a
-    /// register→open→remove cycle (a supported workflow: scratch/test
-    /// databases, or any scripted create-then-delete flow) would otherwise
-    /// leave an orphaned `Arc<AsyncMutex<()>>` behind on every cycle, growing
-    /// `opening` unboundedly across a long-lived daemon process.
     /// `remove` must wait for an in-flight `get_or_open` of the same id, which
     /// holds the per-id lock while it builds the service set, so the set that
     /// open produces is closed by the removal and not left running.
@@ -2380,6 +2372,14 @@ plugin_label = "blue"
         }
     }
 
+    /// `remove` must prune the removed id's per-id opening lock, not just its
+    /// registry entry and open handle.
+    ///
+    /// `DatabaseId::generate()` mints a fresh ULID per registration, so a
+    /// register→open→remove cycle (a supported workflow: scratch/test
+    /// databases, or any scripted create-then-delete flow) would otherwise
+    /// leave an orphaned `Arc<AsyncMutex<()>>` behind on every cycle, growing
+    /// `opening` unboundedly across a long-lived daemon process.
     #[tokio::test]
     async fn remove_prunes_the_id_from_the_opening_lock_map() {
         let (mgr, dir, _registry_path) = temp_manager().await;
