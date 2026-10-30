@@ -12,26 +12,78 @@
  */
 
 /**
- * Markdown syntax markers with their lengths
- * Order matters: longer markers (**, __) must be checked before shorter ones (*, _)
+ * Markdown syntax markers that are recognised wherever they appear, with their lengths
+ * Order matters: longer markers (**) must be checked before shorter ones (*)
+ * Underscore emphasis is not listed: it applies only at word boundaries, see
+ * findUnderscoreMarkers.
  */
 const MARKDOWN_MARKERS: ReadonlyArray<readonly [string, number]> = [
   ['**', 2], // Bold (asterisk)
-  ['__', 2], // Bold (underscore)
   ['~~', 2], // Strikethrough
   ['*', 1], // Italic (asterisk)
-  ['_', 1], // Italic (underscore)
   ['`', 1] // Code
 ] as const;
 
 /**
- * Check if the remaining string starts with any markdown marker
- * @param remaining - The substring to check
+ * Underscore emphasis only at word boundaries, matching how view mode renders it:
+ * the opener must not follow a letter, number or underscore, and the closer must be
+ * followed by optional punctuation and then whitespace or the end. snake_case and
+ * __init__.py are plain text. Keep in sync with services/markdown-utils.ts.
+ */
+const UNDERSCORE_BOLD = /(?<![\p{L}\p{N}_])__(.+?)__(?=[.,;:!?)\]}"']*(?:\s|$))/gu;
+const UNDERSCORE_ITALIC = /(?<![\p{L}\p{N}_])_([^_]+)_(?=[.,;:!?)\]}"']*(?:\s|$))/gu;
+
+/**
+ * Find the underscore emphasis markers in a line
+ * @param line - The edit content
+ * @returns Map of marker start index to marker length
+ */
+function findUnderscoreMarkers(line: string): Map<number, number> {
+  const markers = new Map<number, number>();
+  if (!line.includes('_')) {
+    return markers;
+  }
+  // The renderer deletes the `*` and `~` markers before it looks at underscores
+  // (so `**_x_**` is italic and `a**_x_**` is intra-word), but leaves backticks in
+  // place (so underscores inside a code span stay plain). Work on the text without
+  // `*` and `~` and map each index back to the original line.
+  let text = '';
+  const origin: number[] = [];
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== '*' && line[i] !== '~') {
+      text += line[i];
+      origin.push(i);
+    }
+  }
+  const mark = (index: number, length: number) => {
+    markers.set(origin[index], length);
+  };
+  for (const m of text.matchAll(UNDERSCORE_BOLD)) {
+    mark(m.index, 2);
+    mark(m.index + m[0].length - 2, 2);
+  }
+  for (const m of text.matchAll(UNDERSCORE_ITALIC)) {
+    if (markers.has(origin[m.index])) continue;
+    mark(m.index, 1);
+    mark(m.index + m[0].length - 1, 1);
+  }
+  return markers;
+}
+
+/**
+ * Check if the content has a markdown marker at the given index
+ * @param content - The edit content
+ * @param index - Position to check
+ * @param underscores - Underscore markers of the content, from findUnderscoreMarkers
  * @returns Length of marker to skip, or 0 if no marker found
  */
-function getMarkerLength(remaining: string): number {
+function getMarkerLength(content: string, index: number, underscores: Map<number, number>): number {
+  const underscoreLength = underscores.get(index);
+  if (underscoreLength !== undefined) {
+    return underscoreLength;
+  }
   for (const [marker, length] of MARKDOWN_MARKERS) {
-    if (remaining.startsWith(marker)) {
+    if (content.startsWith(marker, index)) {
       return length;
     }
   }
@@ -104,13 +156,15 @@ export function mapViewPositionToEditPosition(
     return viewPosition;
   }
 
+  const underscores = findUnderscoreMarkers(editContent);
+
   // First, skip any prefix syntax at the start of the edit content
   let editIndex = getPrefixSyntaxLength(editContent);
 
   // Edge case: position 0 - skip leading inline syntax markers after prefix
   if (viewPosition === 0) {
     while (editIndex < editContent.length) {
-      const markerLength = getMarkerLength(editContent.substring(editIndex));
+      const markerLength = getMarkerLength(editContent, editIndex, underscores);
       if (markerLength > 0) {
         editIndex += markerLength;
         continue;
@@ -127,7 +181,7 @@ export function mapViewPositionToEditPosition(
 
   while (viewIndex < viewPosition && editIndex < editContent.length) {
     // Check if we're at an inline syntax marker in edit content
-    const markerLength = getMarkerLength(editContent.substring(editIndex));
+    const markerLength = getMarkerLength(editContent, editIndex, underscores);
 
     if (markerLength > 0) {
       // Skip markdown syntax markers (don't advance viewIndex)
@@ -144,14 +198,14 @@ export function mapViewPositionToEditPosition(
   // (markers that are followed by content, not at end/before closing markers)
   // This ensures cursor lands on actual content, not before an opening marker
   while (editIndex < editContent.length) {
-    const markerLength = getMarkerLength(editContent.substring(editIndex));
+    const markerLength = getMarkerLength(editContent, editIndex, underscores);
     if (markerLength > 0) {
       // Check if this is an opening marker (followed by content)
       const afterMarker = editIndex + markerLength;
       if (afterMarker < editContent.length) {
         // If the character after the marker is NOT another marker or end of string,
         // this is an opening marker - skip it
-        const nextMarkerLength = getMarkerLength(editContent.substring(afterMarker));
+        const nextMarkerLength = getMarkerLength(editContent, afterMarker, underscores);
         if (nextMarkerLength === 0) {
           // Opening marker followed by content - skip it
           editIndex += markerLength;
@@ -193,6 +247,8 @@ export function mapEditPositionToViewPosition(editPosition: number, editContent:
     return 0;
   }
 
+  const underscores = findUnderscoreMarkers(editContent);
+
   // First, skip any prefix syntax at the start
   const prefixLength = getPrefixSyntaxLength(editContent);
 
@@ -206,7 +262,7 @@ export function mapEditPositionToViewPosition(editPosition: number, editContent:
 
   while (editIndex < editPosition && editIndex < editContent.length) {
     // Check if we're at an inline syntax marker in edit content
-    const markerLength = getMarkerLength(editContent.substring(editIndex));
+    const markerLength = getMarkerLength(editContent, editIndex, underscores);
 
     if (markerLength > 0) {
       // Skip markdown syntax markers (don't advance viewIndex)
@@ -239,10 +295,10 @@ export function stripInlineMarkdown(line: string): string {
   // Strip only inline formatting markers, not prefix syntax
   return line
     .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
+    .replace(UNDERSCORE_BOLD, '$1')
     .replace(/~~(.*?)~~/g, '$1')
     .replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, '$1')
-    .replace(/(?<!_)_(?!_)([^_]+)_(?!_)/g, '$1')
+    .replace(UNDERSCORE_ITALIC, '$1')
     .replace(/`([^`]+)`/g, '$1');
 }
 
@@ -279,10 +335,10 @@ export function stripAllMarkdown(line: string): string {
   // Then strip inline formatting
   result = result
     .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
+    .replace(UNDERSCORE_BOLD, '$1')
     .replace(/~~(.*?)~~/g, '$1')
     .replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, '$1')
-    .replace(/(?<!_)_(?!_)([^_]+)_(?!_)/g, '$1')
+    .replace(UNDERSCORE_ITALIC, '$1')
     .replace(/`([^`]+)`/g, '$1');
 
   return result;

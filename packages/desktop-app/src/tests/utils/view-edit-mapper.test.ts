@@ -40,6 +40,62 @@ describe('stripAllMarkdown', () => {
   });
 });
 
+describe('intra-word underscores', () => {
+  it('keeps snake_case and dunder names when stripping', () => {
+    expect(stripAllMarkdown('Review my_config_file.rs')).toBe('Review my_config_file.rs');
+    expect(stripAllMarkdown('Open __init__.py now')).toBe('Open __init__.py now');
+    expect(stripInlineMarkdown('Review my_config_file.rs')).toBe('Review my_config_file.rs');
+  });
+
+  it('still strips underscore emphasis at word boundaries', () => {
+    expect(stripAllMarkdown('an _italic_ and __bold__ word')).toBe('an italic and bold word');
+  });
+
+  it('does not skip intra-word underscores when mapping view to edit', () => {
+    const edit = 'Review my_config_file.rs';
+    expect(mapViewPositionToEditPosition(10, stripAllMarkdown(edit), edit)).toBe(10);
+    expect(mapViewPositionToEditPosition(0, stripAllMarkdown('__init__.py'), '__init__.py')).toBe(
+      0
+    );
+  });
+
+  it('does not skip intra-word underscores when mapping edit to view', () => {
+    expect(mapEditPositionToViewPosition(14, 'Review my_config_file.rs')).toBe(14);
+  });
+
+  it('skips real underscore emphasis markers in both mappings', () => {
+    const edit = 'say _hi_ there';
+    expect(mapViewPositionToEditPosition(4, stripAllMarkdown(edit), edit)).toBe(5);
+    expect(mapEditPositionToViewPosition(5, edit)).toBe(4);
+  });
+
+  it.each([
+    // [edit, view position, edit position of that character]
+    ['`__init__`', 2, 3],
+    ['`_a_`', 1, 2],
+    ['a**_x_**', 1, 3],
+    ['a**_x_**', 2, 4],
+    ['**_x_**b', 3, 7]
+  ])('leaves underscores the renderer leaves in %s', (edit, viewPos, editPos) => {
+    const view = stripAllMarkdown(edit);
+    expect(mapViewPositionToEditPosition(viewPos, view, edit)).toBe(editPos);
+    expect(mapEditPositionToViewPosition(editPos, edit)).toBe(viewPos);
+  });
+
+  it.each([
+    ['**_x_**', 3],
+    ['~~_x_~~', 3],
+    ['*_x_*', 2],
+    ['_x_**', 1]
+  ])('maps underscore emphasis nested with other markers in %s', (edit, offset) => {
+    // View mode shows just "x" for each of these.
+    expect(mapViewPositionToEditPosition(0, 'x', edit)).toBe(offset);
+    expect(mapViewPositionToEditPosition(1, 'x', edit)).toBe(offset + 1);
+    expect(mapEditPositionToViewPosition(offset, edit)).toBe(0);
+    expect(mapEditPositionToViewPosition(offset + 1, edit)).toBe(1);
+  });
+});
+
 describe('mapViewPositionToEditPosition', () => {
   it('returns same position when view === edit (no syntax)', () => {
     expect(mapViewPositionToEditPosition(5, 'Hello world', 'Hello world')).toBe(5);
