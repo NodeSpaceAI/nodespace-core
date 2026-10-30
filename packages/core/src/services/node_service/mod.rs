@@ -7848,6 +7848,59 @@ mod tests {
         );
     }
 
+    /// A create under a missing date page that fails a later check (lifecycle
+    /// status, property validation) leaves no date page behind, and a
+    /// successful one still creates it.
+    #[tokio::test]
+    async fn test_create_node_with_parent_later_rejection_leaves_no_date_parent() {
+        let (service, _temp) = create_test_service().await;
+        let params = |date: &str, lifecycle_status: Option<&str>, properties| CreateNodeParams {
+            id: None,
+            node_type: "task".to_string(),
+            content: "content".to_string(),
+            parent_id: Some(date.to_string()),
+            position: crate::services::InsertPositionOwned::End,
+            properties,
+            lifecycle_status: lifecycle_status.map(str::to_string),
+        };
+
+        let bad_status = service
+            .create_node_with_parent(params("2027-01-01", Some("bogus"), json!({})))
+            .await;
+        assert!(
+            bad_status.is_err(),
+            "an invalid lifecycle_status is refused"
+        );
+        let bad_property = service
+            .create_node_with_parent(params("2027-01-02", None, json!({ "status": "bogus" })))
+            .await;
+        assert!(
+            bad_property.is_err(),
+            "an invalid property value is refused"
+        );
+        for date in ["2027-01-01", "2027-01-02"] {
+            assert!(
+                service.store.get_node(date).await.unwrap().is_none(),
+                "a rejected create must not leave the date page {date} behind"
+            );
+        }
+
+        let created = service
+            .create_node_with_parent(params("2027-01-03", None, json!({})))
+            .await
+            .unwrap();
+        assert!(service
+            .store
+            .get_node("2027-01-03")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            service.get_parent(&created).await.unwrap().unwrap().id,
+            "2027-01-03"
+        );
+    }
+
     /// A caller-supplied id for a non-date/non-schema node must be a UUID —
     /// there is no `test-` prefix exemption in the shipped validation path.
     #[tokio::test]
