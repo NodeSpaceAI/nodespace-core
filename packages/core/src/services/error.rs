@@ -106,13 +106,11 @@ pub enum NodeServiceError {
     #[error("Play validation failed: {errors}")]
     PlayValidationFailed { errors: String },
 
-    /// An invariant rule's action failed inside the creating transaction
-    /// (ADR-060 §1). Fail-closed: the triggering write is NOT committed —
-    /// the caller's `with_transaction` rolls back the whole unit of work,
-    /// so the node this error is attached to was never durably created.
-    #[error(
-        "Invariant rule '{rule_name}' (play {play_id}) failed: {message} — node was not created"
-    )]
+    /// An invariant rule's action failed inside the triggering write's
+    /// transaction (ADR-060 §1), whether that write is a create or an
+    /// update. Fail-closed: the triggering write is NOT committed — the
+    /// caller's `with_transaction` rolls back the whole unit of work.
+    #[error("Invariant rule '{rule_name}' (play {play_id}) failed: {message}")]
     InvariantRuleFailed {
         play_id: String,
         rule_name: String,
@@ -367,6 +365,18 @@ mod tests {
         let msg = err.to_string();
         assert!(matches!(err, NodeServiceError::NodeNotFound { .. }));
         assert!(msg.contains("test-id"));
+    }
+
+    #[test]
+    fn invariant_rule_failed_message_does_not_claim_a_create() {
+        let err = NodeServiceError::InvariantRuleFailed {
+            play_id: "p1".into(),
+            rule_name: "r1".into(),
+            message: "boom".into(),
+        };
+        let msg = err.to_string();
+        assert_eq!(msg, "Invariant rule 'r1' (play p1) failed: boom");
+        assert!(!msg.contains("not created"));
     }
 
     #[test]
