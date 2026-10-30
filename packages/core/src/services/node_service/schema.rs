@@ -1159,10 +1159,9 @@ impl NodeService {
 
         // Reject renaming a Core/System-protected field. `can_modify_field`
         // exists exactly for this — only a `User`-protected field's storage
-        // key may change. Checked before the migration below runs: renaming
-        // rekeys every existing node's property data and rewrites the schema
-        // as it goes, so a check that ran afterwards would find the damage
-        // already durably applied.
+        // key may change. Checked before the migration runs so a refused
+        // rename never rekeys any node data in the first place (the
+        // transaction would roll it back, but there is nothing to undo).
         if !schema.can_modify_field(from) {
             let protection = schema
                 .get_field(from)
