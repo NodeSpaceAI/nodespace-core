@@ -1281,7 +1281,7 @@ fn installer_in_dir(dir: &Path) -> Option<Installer> {
 /// `daemon_setup::sidecar_path_from_exe` uses for the identical reason.
 ///
 /// The directories holding `exe` come first; then the bundle recorded beside
-/// it (the staged copy in `~/.nodespace/bin`).
+/// it (the staged copy in `~/.nodespace/bin`, or `~/.nodespace/bin-dev` for a debug build).
 fn compiled_installer_beside(exe: &Path) -> Option<Installer> {
     for dir in exe_dirs(exe) {
         if let Some(installer) = installer_in_dir(&dir) {

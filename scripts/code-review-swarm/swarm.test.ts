@@ -221,6 +221,8 @@ describe("make-units.ts", () => {
     put(core, "packages/core/src/models/node.rs"); // a source directory named models is reviewed
     put(core, "packages/core/src/ops/entity_types_block.rs"); // block/lock in a name is not a lockfile
     put(core, "scripts/gate-lock.ts");
+    put(core, ".github/workflows/deploy-lock.yml"); // a workflow named *-lock is reviewed
+    put(core, "pnpm-lock.yaml"); // the one real YAML lockfile stays out
     put(core, "packages/core/Cargo.lock"); // real lockfiles stay out (extension not collected anyway)
     put(core, "scripts/pkg-resources/postinstall"); // extension-less root-run installer scripts
     put(core, "scripts/pkg-resources/component.plist");
@@ -244,6 +246,8 @@ describe("make-units.ts", () => {
     expect(where("scripts/build-pkg.sh")).toMatchObject({ part: 2, tier: "infra", model: "opus", lenses: ["deep"] });
     expect(where("packages/core/src/models/node.rs")).toMatchObject({ repo: "core", part: 2 });
     expect(where("packages/core/src/ops/entity_types_block.rs")).toMatchObject({ repo: "core", part: 2 });
+    expect(where(".github/workflows/deploy-lock.yml")).toBeDefined();
+    expect(where("pnpm-lock.yaml")).toBeUndefined();
     expect(where("scripts/gate-lock.ts")).toMatchObject({ repo: "core", tier: "infra" });
     expect(where("scripts/pkg-resources/postinstall")).toMatchObject({ repo: "core", tier: "infra" });
     expect(where("scripts/pkg-resources/component.plist")).toBeUndefined();

@@ -32,7 +32,7 @@ function walk(root: string, dir: string, out: SourceFile[]) {
       continue;
     }
     if (!EXT.has(extname(e.name)) && !EXTENSIONLESS_SCRIPT.test(relative(root, p))) continue;
-    if (/\.generated\.|\.d\.ts$|\.min\.|(^|[-.])lock\.ya?ml$|\.lock$/.test(e.name)) continue;
+    if (/\.generated\.|\.d\.ts$|\.min\.|^pnpm-lock\.yaml$|\.lock$/.test(e.name)) continue;
     const n = readFileSync(p, "utf8").split("\n").length;
     if (n > 40000) continue;
     out.push({ f: relative(root, p), n });

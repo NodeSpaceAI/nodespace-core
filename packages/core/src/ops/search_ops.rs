@@ -1080,7 +1080,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn excluded_members_are_collected_and_unknown_collections_skipped() {
+    async fn a_collection_without_members_excludes_nothing() {
         let (svc, _tmp) = exclusion_fixture().await;
         let cs = CollectionService::new(svc.store(), &svc);
         let paths = vec!["Private".to_string()];
@@ -1093,6 +1093,8 @@ mod tests {
         let (svc, _tmp) = exclusion_fixture().await;
         let cs = CollectionService::new(svc.store(), &svc);
         let paths = vec!["Private".to_string()];
+        // Resolving the path creates the collection, so the failure below is
+        // in reading its members, not in resolving it.
         excluded_member_ids(&cs, &paths).await.unwrap();
         svc.store()
             .write()
@@ -1102,7 +1104,11 @@ mod tests {
             .unwrap();
         let err = excluded_member_ids(&cs, &paths).await.unwrap_err();
         assert!(
-            matches!(&err, OpsError::Internal(m) if m.contains("excluded collection 'Private'")),
+            matches!(
+                &err,
+                OpsError::Internal(m)
+                    if m.starts_with("Failed to get members of excluded collection 'Private'")
+            ),
             "{err:?}"
         );
     }
