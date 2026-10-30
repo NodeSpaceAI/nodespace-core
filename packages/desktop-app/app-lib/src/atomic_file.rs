@@ -7,12 +7,15 @@ use std::path::Path;
 
 use serde::Serialize;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
 /// Serialize `value` as pretty JSON and write it to `dir/<filename>`,
 /// atomically: `dir` is created if missing, the write lands at
 /// `dir/<filename>.tmp` first, then an OS-level rename replaces the real
 /// file — so a crash or power loss mid-write can never leave a corrupt or
-/// partially-written file behind.
+/// partially-written file behind. The temp file is flushed to disk before the
+/// rename and the directory is flushed after it, so the rename cannot become
+/// durable ahead of the data it points at.
 ///
 /// Not safe against two *concurrent* callers writing the same
 /// `dir`/`filename` — both would race on the same temp path. Callers whose
@@ -33,14 +36,35 @@ pub(crate) async fn write_json<T: Serialize>(
 
     let path = dir.join(filename);
     let temp_path = dir.join(format!("{filename}.tmp"));
-    fs::write(&temp_path, serialized)
+    write_and_sync(&temp_path, serialized.as_bytes())
         .await
         .map_err(|e| format!("Failed to write {filename}: {e}"))?;
     fs::rename(&temp_path, &path)
         .await
         .map_err(|e| format!("Failed to save {filename}: {e}"))?;
+    sync_dir(dir).await;
 
     Ok(())
+}
+
+/// Creates (or truncates) `path`, writes `bytes` and flushes them to disk
+/// through the same handle.
+async fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::File::create(path).await?;
+    file.write_all(bytes).await?;
+    file.sync_all().await
+}
+
+/// Flushes `dir`'s entries so the rename survives a crash. Best effort: if it
+/// fails the old file is still intact. Skipped on Windows, where a directory
+/// cannot be opened as a file.
+async fn sync_dir(dir: &Path) {
+    if cfg!(windows) {
+        return;
+    }
+    if let Err(e) = async { fs::File::open(dir).await?.sync_all().await }.await {
+        tracing::debug!(dir = %dir.display(), error = %e, "could not flush the directory");
+    }
 }
 
 #[cfg(test)]

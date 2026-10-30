@@ -138,7 +138,7 @@ impl From<NodeServiceError> for OpsError {
                 rule_name,
                 message,
             } => OpsError::ValidationFailed(format!(
-                "invariant rule '{}' (play {}) failed: {} — node was not created",
+                "invariant rule '{}' (play {}) failed: {}",
                 rule_name, play_id, message
             )),
             NodeServiceError::PlayRuleRejected {
@@ -168,6 +168,26 @@ impl From<NodeServiceError> for OpsError {
             err @ NodeServiceError::EmbeddingUnavailable(_) => OpsError::Internal(err.to_string()),
             NodeServiceError::BulkOperationFailed { context } => OpsError::Internal(context),
             NodeServiceError::InitializationError(msg) => OpsError::Internal(msg),
+        }
+    }
+}
+
+#[cfg(test)]
+mod invariant_error_tests {
+    use super::*;
+
+    #[test]
+    fn invariant_rule_failure_does_not_claim_a_create() {
+        let err = OpsError::from(NodeServiceError::InvariantRuleFailed {
+            play_id: "p1".into(),
+            rule_name: "r1".into(),
+            message: "boom".into(),
+        });
+        match err {
+            OpsError::ValidationFailed(msg) => {
+                assert_eq!(msg, "invariant rule 'r1' (play p1) failed: boom");
+            }
+            other => panic!("unexpected variant: {other:?}"),
         }
     }
 }

@@ -30,7 +30,7 @@ use anyhow::{Context, Result};
 use nodespace_core::db::schema::SchemaMismatch;
 use nodespace_types::IncompatibleDatabase;
 
-use crate::services::DatabaseId;
+use crate::services::{DatabaseId, RegistryUnusable};
 use crate::{DatabaseManager, DatabaseServices};
 
 /// The marker path for this build flavour, under the same state directory the
@@ -99,6 +99,31 @@ pub fn stop_cleanly_on_incompatible_database(result: Result<()>) -> Result<()> {
                 "the daemon cannot open its database: it was created by a different \
                  version of NodeSpace. Stopping without a restart; the NodeSpace app \
                  offers to move the database aside and start fresh."
+            );
+            Ok(())
+        }
+        other => other,
+    }
+}
+
+/// Turn a database registry the daemon cannot use (empty or unparseable
+/// `databases.toml`) into a clean exit, for the same reason as
+/// [`stop_cleanly_on_incompatible_database`]: the file is identical on every
+/// attempt, so a service manager's restart can only repeat the failure every
+/// few seconds, forever. The error is logged with the registry path and the
+/// recovery step (restore a backup, or delete the file) before the clean exit.
+///
+/// Unlike the incompatible-database case this writes no marker, so the app
+/// shows its generic "daemon not running" state and the log is the
+/// explanation. A registry that could not be *read* (permissions, I/O) keeps
+/// its non-zero status, since that may be transient.
+pub fn stop_cleanly_on_unusable_registry(result: Result<()>) -> Result<()> {
+    match result {
+        Err(e) if RegistryUnusable::find_in(&e).is_some() => {
+            tracing::error!(
+                error = format!("{e:#}"),
+                "the daemon cannot use its database registry. Stopping without a restart; \
+                 fix or delete the file and start NodeSpace again."
             );
             Ok(())
         }
@@ -257,5 +282,41 @@ mod tests {
         assert!(!is_incompatible_database(&anyhow::anyhow!(
             "SQLite failure: database is locked"
         )));
+    }
+
+    /// An empty or unparseable registry ends the daemon with exit status 0 so
+    /// launchd/systemd do not respawn it into the same failure. A registry that
+    /// merely cannot be read keeps its non-zero status.
+    #[tokio::test]
+    async fn an_unusable_registry_stops_cleanly_but_other_failures_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+
+        for body in ["", "  \n", "databases = [[[ not toml"] {
+            std::fs::write(&path, body).unwrap();
+            let err = crate::services::Registry::load(&path).await.unwrap_err();
+            assert!(
+                stop_cleanly_on_unusable_registry(Err(err)).is_ok(),
+                "{body:?} must stop cleanly"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "left alone");
+        }
+
+        let wrapped = anyhow::Error::new(RegistryUnusable {
+            path: path.clone(),
+            detail: "empty".into(),
+        })
+        .context("loading registry");
+        assert!(stop_cleanly_on_unusable_registry(Err(wrapped)).is_ok());
+
+        // A directory where the file should be is a read failure, not content.
+        let unreadable = dir.path().join("dir-registry");
+        std::fs::create_dir(&unreadable).unwrap();
+        let err = crate::services::Registry::load(&unreadable)
+            .await
+            .unwrap_err();
+        assert!(stop_cleanly_on_unusable_registry(Err(err)).is_err());
+        assert!(stop_cleanly_on_unusable_registry(Err(anyhow::anyhow!("other"))).is_err());
+        assert!(stop_cleanly_on_unusable_registry(Ok(())).is_ok());
     }
 }

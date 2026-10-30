@@ -168,6 +168,43 @@ pub struct RegistrySnapshot {
     pub default_database: Option<DatabaseId>,
 }
 
+/// The registry file exists but its contents cannot be used: it is empty
+/// (what a crash or power loss leaves behind) or does not parse.
+///
+/// Retrying cannot change the outcome, since the file is the same on every
+/// attempt until someone repairs it. The daemon's startup keys its clean exit
+/// on this type (see `incompatible_database::stop_cleanly_on_unusable_registry`)
+/// so a service manager does not respawn it into the same failure forever. A
+/// read failure (permissions, I/O) is deliberately not this type: it may be
+/// transient.
+#[derive(Debug)]
+pub struct RegistryUnusable {
+    pub path: PathBuf,
+    pub detail: String,
+}
+
+impl std::fmt::Display for RegistryUnusable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "database registry {} cannot be used: {}. Restore it from a backup or delete it \
+             to start fresh; your database files are untouched",
+            self.path.display(),
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for RegistryUnusable {}
+
+impl RegistryUnusable {
+    /// Whether `err`, or anything in its context chain, is a [`RegistryUnusable`].
+    pub fn find_in(err: &anyhow::Error) -> Option<&RegistryUnusable> {
+        err.chain()
+            .find_map(|e| e.downcast_ref::<RegistryUnusable>())
+    }
+}
+
 /// On-disk representation of `~/.nodespace/databases.toml`.
 ///
 /// `Clone` backs [`DatabaseManager::mutate_and_save`]'s "compute a candidate,
@@ -197,14 +234,20 @@ impl Registry {
     /// the user's files and the broken registry in place for manual repair.
     pub async fn load(path: &Path) -> Result<Self> {
         match tokio::fs::read_to_string(path).await {
-            Ok(contents) if contents.trim().is_empty() => Err(anyhow!(
-                "database registry {} is empty (likely truncated by a crash or power loss); \
-                 refusing to start with no databases. Restore it from a backup or delete it \
-                 to start fresh; your database files are untouched",
-                path.display()
-            )),
-            Ok(contents) => toml::from_str(&contents)
-                .with_context(|| format!("parsing database registry {}", path.display())),
+            Ok(contents) if contents.trim().is_empty() => Err(RegistryUnusable {
+                path: path.to_path_buf(),
+                detail: "it is empty (likely truncated by a crash or power loss), and the \
+                         daemon refuses to start with no databases"
+                    .to_string(),
+            }
+            .into()),
+            Ok(contents) => toml::from_str(&contents).map_err(|e| {
+                RegistryUnusable {
+                    path: path.to_path_buf(),
+                    detail: format!("it could not be parsed: {e}"),
+                }
+                .into()
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => {
                 Err(e).with_context(|| format!("reading database registry {}", path.display()))
@@ -1861,7 +1904,7 @@ plugin_label = "blue"
         for body in ["", "   \n\t\n"] {
             std::fs::write(&path, body).unwrap();
             let err = format!("{:#}", Registry::load(&path).await.unwrap_err());
-            assert!(err.contains("is empty"), "got: {err}");
+            assert!(err.contains("it is empty"), "got: {err}");
             assert!(DatabaseManager::load(path.clone(), test_context())
                 .await
                 .is_err());
