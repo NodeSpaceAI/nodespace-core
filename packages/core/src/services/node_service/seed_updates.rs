@@ -18,7 +18,7 @@ use super::*;
 use crate::markdown::PreparedNode;
 use crate::models::schema_node::{is_core_schema, CONTEXT_PATHS_KEY};
 use crate::models::seed_update::{PendingSeedUpdate, PendingSeedUpdateRow};
-use crate::models::{SchemaNode, SKILL_ATTACHED_SKILLS, SKILL_ATTACHED_TO};
+use crate::models::{SchemaNode, SKILL_ATTACHED_TO};
 use nodespace_types::RelationshipPath;
 
 /// What a built-in skill ships attached to: the skill's id, and the ids of the
@@ -690,21 +690,20 @@ impl NodeService {
     /// not seeding created or deleted one. The public relationship calls (the
     /// CLI, the agent's tools, the daemon) mark; the transaction twins do not,
     /// so seeding, a reset and a play's own `add_relationship` and
-    /// `remove_relationship` actions leave the flag alone. `source_id` and `target_id` are
-    /// the edge as the caller named it, under `relationship_name` or its
-    /// reverse name. Best-effort, like the other `_seed` stamps: a failure to
+    /// `remove_relationship` actions leave the flag alone. `source_id` is the skill the
+    /// caller named as the source of an `attached_to` edge. Best-effort, like the other `_seed` stamps: a failure to
     /// stamp is logged and does not fail the edit it follows.
     pub(super) async fn mark_seeded_links_modified(
         &self,
         relationship_name: &str,
         source_id: &str,
-        target_id: &str,
     ) {
-        let skill_id = match relationship_name {
-            SKILL_ATTACHED_TO => source_id,
-            SKILL_ATTACHED_SKILLS => target_id,
-            _ => return,
-        };
+        // Only the forward name reaches here with a change: a write or delete
+        // through the reverse name stores or removes no edge.
+        if relationship_name != SKILL_ATTACHED_TO {
+            return;
+        }
+        let skill_id = source_id;
         let seeded = match self.store.get_node(skill_id).await {
             Ok(node) => node.is_some_and(|node| node.properties.get("_seed").is_some()),
             Err(e) => {

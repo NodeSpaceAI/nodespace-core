@@ -119,10 +119,9 @@ async fn a_deleted_link_stays_deleted() -> Result<()> {
     Ok(())
 }
 
-/// A link the user added is theirs too, and a deletion through the reverse
-/// name is the same edit.
+/// A link the user added is theirs too, and so is the deletion of one.
 #[tokio::test]
-async fn adding_or_deleting_through_either_name_marks_the_links() -> Result<()> {
+async fn adding_or_deleting_a_link_marks_the_links() -> Result<()> {
     let (service, _tmp) = test_service().await?;
     let skill = create_seeded_skill(&service, "Procedure").await?;
     let a = create_text(&service, "A").await?;
@@ -138,9 +137,38 @@ async fn adding_or_deleting_through_either_name_marks_the_links() -> Result<()> 
     assert_eq!(seed_block(&service, &skill).await?["links_modified"], false);
 
     service
-        .delete_relationship(&a, "attached_skills", &skill)
+        .delete_relationship(&skill, SKILL_ATTACHED_TO, &a)
         .await?;
     assert_eq!(seed_block(&service, &skill).await?["links_modified"], true);
+    Ok(())
+}
+
+/// A call that changes nothing is not the user's edit: creating an edge that
+/// is already there, or deleting one that is not, leaves the links unmarked.
+/// A delete through the reverse name removes no stored edge, so it is one.
+#[tokio::test]
+async fn a_call_that_changes_no_edge_does_not_mark_the_links() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let skill = create_seeded_skill(&service, "Procedure").await?;
+    let a = create_text(&service, "A").await?;
+    let b = create_text(&service, "B").await?;
+    reconcile(&service, &skill, &[&a]).await?;
+
+    service
+        .create_relationship(&skill, SKILL_ATTACHED_TO, &a, json!({}))
+        .await?;
+    service
+        .delete_relationship(&skill, SKILL_ATTACHED_TO, &b)
+        .await?;
+    service
+        .delete_relationship(&b, "attached_skills", &skill)
+        .await?;
+
+    assert!(seed_block(&service, &skill)
+        .await?
+        .get("links_modified")
+        .is_none());
+    assert_eq!(links_of(&service, &skill).await?, sorted(&[&a]));
     Ok(())
 }
 
