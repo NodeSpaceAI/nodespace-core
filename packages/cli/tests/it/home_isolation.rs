@@ -141,9 +141,14 @@ fn pkg_files_remain() -> bool {
         ]
         .iter()
         .any(|p| {
-            Path::new(p)
-                .symlink_metadata()
-                .is_ok_and(|m| !m.file_type().is_symlink())
+            let path = Path::new(p);
+            // Mirrors the command: a link into a Homebrew prefix is brew's.
+            path.symlink_metadata().is_ok()
+                && !std::fs::read_link(path).is_ok_and(|target| {
+                    target
+                        .components()
+                        .any(|c| matches!(c.as_os_str().to_str(), Some("Cellar" | "Caskroom")))
+                })
         })
 }
 
@@ -291,7 +296,16 @@ fn an_empty_nodespace_home_is_not_a_redirect_to_the_working_directory() {
         assert_refused(&output, real.path(), &real_before);
         return;
     }
-    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    if pkg_files_remain() {
+        assert!(!output.status.success(), "stdout: {}", stdout(&output));
+        assert!(
+            stderr(&output).contains("need administrator rights and were left in place"),
+            "got: {}",
+            stderr(&output)
+        );
+    } else {
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+    }
     assert!(
         !real.path().join(STATE_DIR).join("bin").exists(),
         "the user's own install is the one removed"

@@ -135,24 +135,26 @@ fn is_homebrew_link(path: &Path) -> bool {
 /// that remove them. The commands are only printed; this command never runs
 /// them.
 fn leftovers_message(leftovers: &[PathBuf], state_dir: &Path) -> String {
-    let paths = leftovers
+    let listed = leftovers
         .iter()
         .map(|p| p.display().to_string())
+        .collect::<Vec<_>>();
+    let quoted = listed
+        .iter()
+        .map(|p| format!("'{p}'"))
         .collect::<Vec<_>>()
         .join(" ");
     format!(
         "NodeSpace was not fully uninstalled.\n\
          Removed: the daemon service and files in your own home. Your data at {} has been preserved.\n\
          These files need administrator rights and were left in place:\n  {}\n\
-         To remove them, run:\n  sudo rm {}\n\
-         Until they are removed, launchd starts the daemon again at the next login.",
+         To remove them, run:\n  sudo rm -- {}\n\
+         Until they are removed, launchd starts the daemon again at the next login.\n\
+         /Applications/NodeSpace.app and the installer receipt also remain: move the app to the \
+         Trash, and run `sudo pkgutil --forget com.nodespace.pkg` to drop the receipt.",
         state_dir.join("database").display(),
-        leftovers
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n  "),
-        paths
+        listed.join("\n  "),
+        quoted
     )
 }
 
@@ -695,10 +697,12 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("need administrator rights and were left in place"));
         assert!(message.contains(
-            "sudo rm /Library/LaunchAgents/app.nodespace.daemon.plist /usr/local/bin/nodespace"
+            "sudo rm -- '/Library/LaunchAgents/app.nodespace.daemon.plist' '/usr/local/bin/nodespace'"
         ));
         assert!(!message.contains("/usr/local/bin/nodespaced"));
         assert!(!message.contains("NodeSpace uninstalled."));
+        assert!(message.contains("sudo pkgutil --forget com.nodespace.pkg"));
+        assert!(message.contains("/Applications/NodeSpace.app"));
     }
 
     /// A redirected run never touches the machine-wide install, so it does not
