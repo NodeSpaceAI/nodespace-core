@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Args;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::skill;
@@ -20,6 +20,17 @@ const INSTALLED_APP: Option<&str> = None;
 const PRODUCT_KEY: &str = "NodeSpaceProduct";
 const COMMUNITY_PRODUCT: &str = "community";
 
+/// What the macOS `.pkg` installer puts outside the user's home, all
+/// root-owned: the machine-wide LaunchAgent and the two binaries.
+#[cfg(target_os = "macos")]
+const PKG_INSTALLED_PATHS: &[&str] = &[
+    "/Library/LaunchAgents/app.nodespace.daemon.plist",
+    "/usr/local/bin/nodespace",
+    "/usr/local/bin/nodespaced",
+];
+#[cfg(not(target_os = "macos"))]
+const PKG_INSTALLED_PATHS: &[&str] = &[];
+
 const NOT_COMMUNITY_MESSAGE: &str = "The NodeSpace app on this Mac is a different NodeSpace \
     product, or an older NodeSpace that does not say which product it is. This command removes \
     only the free NodeSpace. To remove that app, move /Applications/NodeSpace.app to the Trash, \
@@ -31,11 +42,18 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     let state_dir = nodespace_daemon::nodespace_dir()?;
     let redirected = nodespace_daemon::nodespace_home_override().is_some();
 
-    uninstall(&state_dir, redirected, INSTALLED_APP.map(Path::new), || {
-        stop_daemon();
-        // Before the bin directory goes: the skill installer sits in it.
-        report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
-    })
+    let leftovers = root_owned_leftovers(PKG_INSTALLED_PATHS);
+    uninstall(
+        &state_dir,
+        redirected,
+        INSTALLED_APP.map(Path::new),
+        &leftovers,
+        || {
+            stop_daemon();
+            // Before the bin directory goes: the skill installer sits in it.
+            report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
+        },
+    )
 }
 
 /// Uninstalls the NodeSpace whose state directory is `state_dir`.
@@ -53,10 +71,18 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
 /// [`uninstall_blocker`]). A redirected run is not checked, because it leaves
 /// the daemon and everything else outside its own home alone, whichever app is
 /// installed.
+///
+/// `root_owned_leftovers` are the machine-wide files a `.pkg` install put
+/// outside the user's home (see [`root_owned_leftovers`]). They need
+/// administrator rights, which this command never asks for: everything the
+/// user owns is removed, then the command fails with the commands to run, in
+/// place of reporting an uninstall that did not happen. A redirected run
+/// leaves them alone, so it does not report them.
 fn uninstall(
     state_dir: &Path,
     redirected: bool,
     installed_app: Option<&Path>,
+    root_owned_leftovers: &[PathBuf],
     remove_from_user_home: impl FnOnce(),
 ) -> Result<()> {
     if redirected {
@@ -72,12 +98,64 @@ fn uninstall(
     remove_bin_dir(state_dir);
     remove_sock(state_dir);
 
+    if !redirected && !root_owned_leftovers.is_empty() {
+        anyhow::bail!(leftovers_message(root_owned_leftovers, state_dir));
+    }
+
     println!(
         "NodeSpace uninstalled. Your data at {} has been preserved.",
         state_dir.join("database").display()
     );
 
     Ok(())
+}
+
+/// The members of `candidates` that exist on this machine and belong to the
+/// install rather than to a package manager. A symlink into a Homebrew
+/// `Cellar` or `Caskroom` is Homebrew's to remove (`brew uninstall`), not a
+/// `.pkg` leftover.
+fn root_owned_leftovers(candidates: &[&str]) -> Vec<PathBuf> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| path.symlink_metadata().is_ok() && !is_homebrew_link(path))
+        .collect()
+}
+
+fn is_homebrew_link(path: &Path) -> bool {
+    fs::read_link(path).is_ok_and(|target| {
+        target
+            .components()
+            .any(|c| matches!(c.as_os_str().to_str(), Some("Cellar" | "Caskroom")))
+    })
+}
+
+/// The failure printed when `.pkg` files remain: what was removed, which files
+/// were left because they need administrator rights, and the exact commands
+/// that remove them. The commands are only printed; this command never runs
+/// them.
+fn leftovers_message(leftovers: &[PathBuf], state_dir: &Path) -> String {
+    let listed = leftovers
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>();
+    let quoted = listed
+        .iter()
+        .map(|p| format!("'{p}'"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "NodeSpace was not fully uninstalled.\n\
+         Removed: the daemon service and files in your own home. Your data at {} has been preserved.\n\
+         These files need administrator rights and were left in place:\n  {}\n\
+         To remove them, run:\n  sudo rm -- {}\n\
+         Until they are removed, launchd starts the daemon again at the next login.\n\
+         /Applications/NodeSpace.app and the installer receipt also remain: move the app to the \
+         Trash, and run `sudo pkgutil --forget com.nodespace.pkg` to drop the receipt.",
+        state_dir.join("database").display(),
+        listed.join("\n  "),
+        quoted
+    )
 }
 
 /// Why `uninstall` must not run with the app bundle at `app_bundle`
@@ -366,7 +444,7 @@ mod tests {
         let app = app_without_the_key(dir.path());
         let mut removed_from_user_home = false;
 
-        let error = uninstall(&state_dir, false, Some(&app), || {
+        let error = uninstall(&state_dir, false, Some(&app), &[], || {
             removed_from_user_home = true;
         })
         .expect_err("refused");
@@ -392,8 +470,10 @@ mod tests {
             let (state_dir, binary) = installed_state_dir(home.path());
             let mut removed_from_user_home = false;
 
-            uninstall(&state_dir, false, app, || removed_from_user_home = true)
-                .expect("uninstalled");
+            uninstall(&state_dir, false, app, &[], || {
+                removed_from_user_home = true
+            })
+            .expect("uninstalled");
 
             assert!(removed_from_user_home, "app: {app:?}");
             assert!(!binary.exists(), "app: {app:?}");
@@ -409,7 +489,7 @@ mod tests {
         let app = app_without_the_key(dir.path());
         let mut removed_from_user_home = false;
 
-        uninstall(&state_dir, true, Some(&app), || {
+        uninstall(&state_dir, true, Some(&app), &[], || {
             removed_from_user_home = true;
         })
         .expect("uninstalled");
@@ -427,8 +507,11 @@ mod tests {
         let source = include_str!("uninstall.rs");
         let run = &source[source.find("pub fn run(").expect("run")..];
         let run = &run[..run.find("\n}\n").expect("end of run")];
+        let compact: String = run.split_whitespace().collect();
         assert!(
-            run.contains("uninstall(&state_dir, redirected, INSTALLED_APP.map(Path::new), "),
+            compact.contains(
+                "uninstall(&state_dir,redirected,INSTALLED_APP.map(Path::new),&leftovers,"
+            ),
             "run no longer passes the installed app to uninstall:\n{run}"
         );
         #[cfg(target_os = "macos")]
@@ -589,5 +672,80 @@ mod tests {
         report_skill_removal(&mut buf, Ok(installer));
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("No installed NodeSpace skills found."));
+    }
+
+    /// A `.pkg` install leaves root-owned files: everything the user owns is
+    /// removed, then the command fails, names the files and the commands, and
+    /// never prints the success line.
+    #[test]
+    fn uninstall_fails_with_the_commands_when_root_owned_files_remain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, binary) = installed_state_dir(dir.path());
+        let leftovers = vec![
+            PathBuf::from("/Library/LaunchAgents/app.nodespace.daemon.plist"),
+            PathBuf::from("/usr/local/bin/nodespace"),
+        ];
+        let mut removed_from_user_home = false;
+
+        let error = uninstall(&state_dir, false, None, &leftovers, || {
+            removed_from_user_home = true;
+        })
+        .expect_err("a .pkg install cannot be fully removed without administrator rights");
+
+        assert!(removed_from_user_home, "the user's own files still go");
+        assert!(!binary.exists(), "the user's own files still go");
+        let message = error.to_string();
+        assert!(message.contains("need administrator rights and were left in place"));
+        assert!(message.contains(
+            "sudo rm -- '/Library/LaunchAgents/app.nodespace.daemon.plist' '/usr/local/bin/nodespace'"
+        ));
+        assert!(!message.contains("/usr/local/bin/nodespaced"));
+        assert!(!message.contains("NodeSpace uninstalled."));
+        assert!(message.contains("sudo pkgutil --forget com.nodespace.pkg"));
+        assert!(message.contains("/Applications/NodeSpace.app"));
+    }
+
+    /// A redirected run never touches the machine-wide install, so it does not
+    /// fail over it.
+    #[test]
+    fn a_redirected_uninstall_ignores_root_owned_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, _binary) = installed_state_dir(dir.path());
+        let leftovers = vec![PathBuf::from("/usr/local/bin/nodespace")];
+
+        uninstall(&state_dir, true, None, &leftovers, || {}).expect("uninstalled");
+    }
+
+    #[test]
+    fn root_owned_leftovers_lists_only_existing_paths() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let present = dir.path().join("nodespace");
+        fs::write(&present, "").expect("write");
+        let absent = dir.path().join("nodespaced");
+
+        let found = root_owned_leftovers(&[
+            present.to_str().expect("utf8"),
+            absent.to_str().expect("utf8"),
+        ]);
+
+        assert_eq!(found, vec![present]);
+    }
+
+    /// A link into a Homebrew prefix belongs to `brew`, not to a `.pkg`.
+    #[cfg(unix)]
+    #[test]
+    fn root_owned_leftovers_skips_a_homebrew_link() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cellar = dir
+            .path()
+            .join("Cellar")
+            .join("nodespace")
+            .join("nodespace");
+        fs::create_dir_all(cellar.parent().expect("parent")).expect("mkdir");
+        fs::write(&cellar, "").expect("write");
+        let link = dir.path().join("nodespace");
+        std::os::unix::fs::symlink(&cellar, &link).expect("symlink");
+
+        assert!(root_owned_leftovers(&[link.to_str().expect("utf8")]).is_empty());
     }
 }
