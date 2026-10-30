@@ -181,14 +181,43 @@ pub async fn create_node(
     input: CreateNodeInput,
 ) -> Result<CreateNodeOutput, OpsError> {
     let parent_id = input.parent_id.clone();
-    let collection_paths = input.collections.clone();
-    let collection_ids_requested = input.collection_ids.clone();
     let node_type = input.node_type.clone();
 
-    if !collection_paths.is_empty() && !collection_ids_requested.is_empty() {
+    if !input.collections.is_empty() && !input.collection_ids.is_empty() {
         return Err(OpsError::InvalidParams(
             "Pass collection paths or collection IDs, not both".to_string(),
         ));
+    }
+
+    // A node with a parent cannot be a member of a collection directly, and
+    // the join would refuse it only after the paths below had created
+    // collections and hierarchy edges, so it is refused first.
+    if input.parent_id.is_some() && !input.collections.is_empty() {
+        return Err(OpsError::InvalidParams(
+            "A node with a parent cannot be filed into collections; file its root node instead"
+                .to_string(),
+        ));
+    }
+
+    // Collections named by path are resolved (and created when missing) to
+    // ids before the node is written, so a bad path (too deep, invalid, a
+    // store error) fails the call with no node behind it, and the join to the
+    // leaf collections then goes through the create's own transaction like
+    // one requested by id. A collection resolved here and left empty by a
+    // later refusal is harmless: it is the node a retry resolves to.
+    let mut collection_ids_requested = input.collection_ids.clone();
+    if !input.collections.is_empty() {
+        let collection_service = CollectionService::new(node_service.store(), node_service);
+        for path in &input.collections {
+            let resolved = collection_service.resolve_path(path).await?;
+            // Two paths can end on the same collection; it is joined once.
+            if !collection_ids_requested
+                .iter()
+                .any(|id| id == resolved.leaf_id())
+            {
+                collection_ids_requested.push(resolved.leaf_id().to_string());
+            }
+        }
     }
 
     // A collection's id is derived from its name, so a collection created
@@ -230,22 +259,12 @@ pub async fn create_node(
         )
         .await?;
 
-    // Collections requested by id were joined inside the create's own
-    // transaction, so a failed join left no node behind. Collections named by
-    // path are resolved (and created when missing) after the node write, so
-    // that join is not atomic with it: a failure propagates, the node stays
-    // persisted, and the caller can retry the join.
-    let mut collection_ids = Vec::with_capacity(collection_paths.len());
-    if !collection_paths.is_empty() {
-        let collection_service = CollectionService::new(node_service.store(), node_service);
-        for path in &collection_paths {
-            let resolved = collection_service
-                .add_to_collection_by_path(&node_id, path)
-                .await?;
-            collection_ids.push(resolved.leaf_id().to_string());
-        }
-    }
-    collection_ids.extend(collection_ids_requested);
+    // Every requested collection, by path or by id, was joined inside the
+    // create's own transaction, so a failed join left no node behind. The one
+    // exception: a database-settings create that finds the singleton already
+    // present returns it without joining anything, though the ids are still
+    // echoed here.
+    let collection_ids = collection_ids_requested;
 
     // Re-fetch for final state
     let created_node = node_service
@@ -901,5 +920,172 @@ mod tests {
         let wrong = create_node(&ns, root_text_input(&wrong_id, vec![not_a_collection])).await;
         assert!(wrong.is_err(), "joining a non-collection must fail");
         assert!(ns.get_node(&wrong_id).await.unwrap().is_none());
+    }
+
+    fn root_text_input_with_paths(id: &str, collections: Vec<String>) -> CreateNodeInput {
+        CreateNodeInput {
+            collections,
+            ..root_text_input(id, Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn create_root_text_node_joins_collections_named_by_path_in_the_create() {
+        let ns = test_service("create_node_join_path").await;
+
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let out = create_node(
+            &ns,
+            root_text_input_with_paths(
+                &node_id,
+                vec!["hr:policy".to_string(), "hr:policy".to_string()],
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(out.collection_ids.len(), 1, "a repeated path joins once");
+        let memberships = ns.store().get_node_memberships(&out.node_id).await.unwrap();
+        assert_eq!(memberships, out.collection_ids);
+    }
+
+    /// A path that cannot be resolved fails the call before the node is
+    /// written, for the CLI and gRPC callers that name collections by path.
+    #[tokio::test]
+    async fn failed_collection_path_leaves_no_node_behind() {
+        let ns = test_service("create_node_path_invalid").await;
+
+        for path in ["", "a::b", "a:b:c:d:e:f:g:h:i:j:k"] {
+            let node_id = uuid::Uuid::new_v4().to_string();
+            let result = create_node(
+                &ns,
+                root_text_input_with_paths(&node_id, vec!["ok".to_string(), path.to_string()]),
+            )
+            .await;
+            assert!(result.is_err(), "path {path:?} must be refused");
+            assert!(
+                ns.get_node(&node_id).await.unwrap().is_none(),
+                "a refused path {path:?} must not leave the node persisted"
+            );
+        }
+    }
+
+    /// A collection id repeated in one request is joined once: the join is
+    /// idempotent, so the repeat neither fails nor doubles the membership.
+    #[tokio::test]
+    async fn duplicate_collection_id_joins_once() {
+        let ns = test_service("create_node_join_duplicate").await;
+        let collection = ns
+            .create_node(Node::new(
+                "collection".to_string(),
+                "Reading".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let out = create_node(
+            &ns,
+            root_text_input(&node_id, vec![collection.clone(), collection.clone()]),
+        )
+        .await
+        .expect("a repeated collection id is not an error");
+        let memberships = ns.store().get_node_memberships(&out.node_id).await.unwrap();
+        assert_eq!(memberships, vec![collection]);
+    }
+
+    /// A path with a parent is refused before any collection is created.
+    #[tokio::test]
+    async fn collection_path_with_a_parent_creates_no_collections() {
+        let ns = test_service("create_node_path_parent").await;
+        let parent_id = ns
+            .create_node(Node::new(
+                "text".to_string(),
+                "parent".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let result = create_node(
+            &ns,
+            CreateNodeInput {
+                parent_id: Some(parent_id),
+                ..root_text_input_with_paths(&node_id, vec!["hr:policy".to_string()])
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(OpsError::InvalidParams(_))),
+            "{result:?}"
+        );
+        assert!(ns.get_node(&node_id).await.unwrap().is_none());
+        let collections = ns.query_nodes_by_type("collection", false).await.unwrap();
+        assert!(
+            collections.is_empty(),
+            "no collection may be created for a refused call: {collections:?}"
+        );
+    }
+
+    /// A child created with a parent and a collection: a failed join takes the
+    /// node and its parent edge back out together.
+    #[tokio::test]
+    async fn failed_collection_join_rolls_back_a_child_with_its_parent_edge() {
+        use crate::services::CreateNodeParams;
+
+        let ns = test_service("create_placed_join_rollback").await;
+        let parent_id = ns
+            .create_node(Node::new(
+                "text".to_string(),
+                "parent".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        let params = |id: &str| CreateNodeParams {
+            id: Some(id.to_string()),
+            node_type: "text".to_string(),
+            content: "child".to_string(),
+            parent_id: Some(parent_id.clone()),
+            position: crate::services::InsertPositionOwned::End,
+            properties: serde_json::json!({}),
+            lifecycle_status: None,
+        };
+
+        let missing_child = uuid::Uuid::new_v4().to_string();
+        let result = ns
+            .create_placed_node_in_collections(
+                params(&missing_child),
+                vec![uuid::Uuid::new_v4().to_string()],
+            )
+            .await;
+        assert!(result.is_err(), "a missing collection must fail the create");
+        assert!(ns.get_node(&missing_child).await.unwrap().is_none());
+
+        // A real collection does not help: a node with a parent cannot be a
+        // member of one directly, which the join refuses after the insert and
+        // the parent edge are written.
+        let collection = ns
+            .create_node(Node::new(
+                "collection".to_string(),
+                "Reading".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        let filed_child = uuid::Uuid::new_v4().to_string();
+        let result = ns
+            .create_placed_node_in_collections(params(&filed_child), vec![collection])
+            .await;
+        assert!(result.is_err(), "a child cannot join a collection");
+        assert!(ns.get_node(&filed_child).await.unwrap().is_none());
+
+        let children = ns.get_children(&parent_id).await.unwrap();
+        assert!(
+            children.is_empty(),
+            "no parent edge may survive a rolled-back create: {children:?}"
+        );
     }
 }

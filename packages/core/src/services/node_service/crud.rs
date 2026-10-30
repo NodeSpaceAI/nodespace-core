@@ -446,6 +446,9 @@ impl NodeService {
     /// in `collection_ids`, in the same transaction as the insert: a collection
     /// that cannot be joined (missing, not a collection) fails the call and
     /// leaves no node behind.
+    ///
+    /// A database-settings node returns early when the singleton already
+    /// exists, and that early return ignores `collection_ids`.
     pub async fn create_node_in_collections(
         &self,
         mut node: Node,
