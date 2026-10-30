@@ -63,6 +63,17 @@ describe("parseFailingPaths", () => {
     expect(parseFailingPaths(CARGO_FAILURE)).toEqual(["packages/core/src/db/mod.rs"]);
   });
 
+  test("ignores the location of a compiler warning", () => {
+    const warning = `warning: unused variable: \`x\`\n  --> packages/core/src/unrelated.rs:3:9\n   |\n`;
+    expect(parseFailingPaths(warning)).toEqual([]);
+    expect(parseFailingPaths(warning + CARGO_FAILURE)).toEqual(["packages/core/src/db/mod.rs"]);
+  });
+
+  test("ignores a panic inside a dependency's registry source", () => {
+    const out = "thread 'main' (1) panicked at /Users/u/.cargo/registry/src/index/tokio-1.40.0/src/x.rs:10:5:\nboom";
+    expect(parseFailingPaths(out)).toEqual([]);
+  });
+
   test("extracts the panicking file from a cargo test assertion failure", () => {
     // Two of the gate's stages run cargo tests. A test that compiles and
     // then fails an assertion emits `panicked at` and never `-->`, so
