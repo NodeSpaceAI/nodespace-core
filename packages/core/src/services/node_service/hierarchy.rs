@@ -263,47 +263,6 @@ impl NodeService {
         }
     }
 
-    /// Bulk fetch all nodes belonging to an origin node (viewer/page)
-    ///
-    /// This is the efficient way to load a complete document tree:
-    /// 1. Single database query fetches all nodes with the same root_id
-    /// 2. In-memory hierarchy reconstruction using parent_id and before_sibling_id
-    ///
-    /// This avoids making multiple queries for each level of the tree.
-    ///
-    /// # Arguments
-    ///
-    /// * `root_node_id` - The ID of the origin node (e.g., date page ID)
-    ///
-    /// # Returns
-    ///
-    /// Vector of all nodes that belong to this origin, unsorted.
-    /// Caller should use `sort_by_sibling_order()` or build a tree structure.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SqliteStore;
-    /// # use std::path::PathBuf;
-    /// # use std::sync::Arc;
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut db = Arc::new(SqliteStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(&mut db).await?;
-    /// // Fetch all nodes for a date page
-    /// let nodes = service.get_nodes_by_root_id("2025-10-05").await?;
-    /// println!("Found {} nodes in this document", nodes.len());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_nodes_by_root_id(
-        &self,
-        root_node_id: &str,
-    ) -> Result<Vec<Node>, NodeServiceError> {
-        // Hierarchy is now managed via relationships - use get_children instead
-        self.get_children(root_node_id).await
-    }
-
     /// Hierarchy rules every move must satisfy, shared by `move_node` and
     /// `move_node_unchecked` so the two variants differ only in OCC: the new
     /// parent must exist, both structural rules must allow the node there
