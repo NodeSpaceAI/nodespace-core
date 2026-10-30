@@ -73,4 +73,19 @@ describe("prompt-dump reader", () => {
   test("--raw returns the lines untouched", () => {
     expect(renderDump(MIXED, new Set(["--raw"]))).toEqual(MIXED);
   });
+
+  test("--last ignores calls from an earlier run whose seq restarted in the same file", () => {
+    const run = (n: number, tag: string) =>
+      Array.from({ length: n }, (_, seq) => [
+        { kind: "prompt", engine: "native", seq, target: null, sent: `${tag} PROMPT ${seq}`, sent_len: 1 },
+        { kind: "response", engine: "native", seq, raw_response: `${tag} answer ${seq}`, raw_response_len: 1 },
+      ]).flat();
+    const appended = [...run(3, "OLD"), ...run(2, "NEW")].map((r) => JSON.stringify(r));
+    const text = renderDump(appended, new Set(["--last"])).join("\n");
+
+    expect(text).toContain("NEW PROMPT 1");
+    expect(text).toContain("NEW answer 1");
+    expect(text).not.toContain("OLD");
+    expect(text.match(/PROMPT #1/g)).toHaveLength(1);
+  });
 });

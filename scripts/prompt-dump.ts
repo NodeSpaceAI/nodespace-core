@@ -134,8 +134,14 @@ export function renderDump(lines: string[], flags: Set<string>): string[] {
 
   // --last: keep only the most recent call — the last prompt and its response.
   if (flags.has("--last")) {
-    const lastPrompt = [...records].reverse().find((r) => r.kind === "prompt");
-    records = lastPrompt ? records.filter((r) => r.seq === lastPrompt.seq) : [];
+    // `seq` restarts at 0 in every process while the file is appended to, so
+    // it is only unique within one run. Select by file position instead: the
+    // last prompt, plus the records after it that carry its seq.
+    const lastIdx = records.findLastIndex((r) => r.kind === "prompt");
+    records =
+      lastIdx < 0
+        ? []
+        : records.filter((r, i) => i === lastIdx || (i > lastIdx && r.seq === records[lastIdx].seq));
   }
 
   const out: string[] = [];
