@@ -425,19 +425,27 @@ async fn validate_node_type(
         .await
     {
         Ok(_) => Ok(()),
-        Err(s)
-            if s.code() == tonic::Code::NotFound || s.code() == tonic::Code::FailedPrecondition =>
-        {
-            Err(CommandError {
+        Err(s) => Err(schema_lookup_error(node_type, s)),
+    }
+}
+
+/// The error for a failed schema lookup: the required-extensions refusal when
+/// the daemon refused the database, SCHEMA_NOT_FOUND when the type has no
+/// schema, and the generic mapping otherwise.
+fn schema_lookup_error(node_type: &str, status: tonic::Status) -> CommandError {
+    refusal_or(status, |s| {
+        if s.code() == tonic::Code::NotFound || s.code() == tonic::Code::FailedPrecondition {
+            CommandError {
                 message: format!("No schema found for node type: {}", node_type),
                 code: "SCHEMA_NOT_FOUND".to_string(),
                 details: None,
                 conflict_data: None,
                 requires_extension: None,
-            })
+            }
+        } else {
+            status_to_command_error(s)
         }
-        Err(s) => Err(status_to_command_error(s)),
-    }
+    })
 }
 
 /// Convert a Node to its strongly-typed JSON representation
@@ -1783,6 +1791,29 @@ mod tests {
     /// A command that maps statuses to codes of its own still reports the
     /// refusal as REQUIRES_EXTENSION, and keeps its own mapping for any other
     /// status.
+    #[test]
+    fn schema_lookup_reports_a_refused_database_as_requires_extension() {
+        let err = schema_lookup_error("text", refusal(&["fixture"]));
+        assert_eq!(err.code, "REQUIRES_EXTENSION");
+        assert!(err.requires_extension.is_some());
+    }
+
+    #[test]
+    fn schema_lookup_keeps_schema_not_found_for_other_statuses() {
+        for status in [
+            tonic::Status::not_found("x"),
+            tonic::Status::failed_precondition("x"),
+        ] {
+            let err = schema_lookup_error("text", status);
+            assert_eq!(err.code, "SCHEMA_NOT_FOUND");
+            assert!(err.message.contains("text"));
+        }
+        assert_ne!(
+            schema_lookup_error("text", tonic::Status::internal("boom")).code,
+            "SCHEMA_NOT_FOUND"
+        );
+    }
+
     #[test]
     fn refusal_or_takes_the_refusal_before_the_commands_own_mapping() {
         let own = |s: tonic::Status| CommandError {
