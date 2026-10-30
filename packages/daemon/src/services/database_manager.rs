@@ -593,7 +593,8 @@ impl DatabaseManager {
     /// reports [`DatabaseStatus::Open`] and serves routed requests immediately.
     /// If registration fails after the file was created, the creation is rolled
     /// back — the handle is closed and the just-created file removed — leaving
-    /// the daemon exactly as it was before the call.
+    /// the daemon exactly as it was before the call. The same rollback runs if
+    /// the future is dropped part-way (a cancelled RPC).
     pub async fn create(&self, name: String, path: Option<PathBuf>) -> Result<DatabaseEntry> {
         let _creating = self.create_lock.lock().await;
         let id = DatabaseId::generate();
@@ -626,31 +627,67 @@ impl DatabaseManager {
             }
         }
 
+        // From here the path holds a file this call created. The rollback runs
+        // whether registration fails or this future is dropped (a client
+        // disconnect, a deadline) at any await below. The service set lives
+        // only in the rollback until it is cached, so nothing else keeps its
+        // store open when the files are removed.
+        let mut rollback = CreateRollback::new(id.clone(), path.clone());
+
         // Create and open the database (file, schema, service set) first.
         let (services, _embed_task) = build_database_services(&path, &self.context, id.as_str())
             .await
             .with_context(|| format!("creating database file {}", path.display()))?;
+        rollback.services = Some(Arc::new(services));
 
-        // Cache the open handle before the entry becomes resolvable: no request
-        // can route to the id until `insert_entry` persists it, so the first
-        // routed request reuses this handle instead of racing a second open.
-        self.open
-            .write()
-            .await
-            .insert(id.clone(), Arc::new(services));
-        self.touch(&id).await;
+        // Hold the id's open lock from registration until the handle is
+        // cached: a request routed to the id as soon as `insert_entry`
+        // persists it waits in `get_or_open` and then finds this handle,
+        // instead of racing a second open of the same file. A create that
+        // does not finish takes the id's entry back out of the lock map.
+        let mut opening_entry = OpeningEntryGuard::new(self, id.clone());
+        let opening = self.opening_lock(&id);
+        let _opening_guard = opening.lock().await;
 
-        match self.insert_entry(id.clone(), name, path.clone()).await {
-            Ok(entry) => Ok(entry),
+        // A future dropped while `insert_entry` saves can leave the registry
+        // entry in place (the save may still complete) with the file already
+        // removed by the rollback; that entry reports `Missing`.
+        let entry = match self.insert_entry(id.clone(), name, path.clone()).await {
+            Ok(entry) => entry,
             Err(e) => {
-                // Registration failed → roll back the creation: drop the open
-                // handle and remove the file this call just created, so a
-                // failed create leaves no half-registered state behind.
-                self.close(&id).await;
-                remove_database_files(&path).await;
-                Err(e)
+                // Registration failed → roll back the creation: shut the
+                // service set down and remove the file this call just
+                // created, so a failed create leaves no half-registered
+                // state behind.
+                rollback.run().await;
+                return Err(e);
+            }
+        };
+        // Registered: the file is now the registry's. From here a dropped
+        // future only has the service set left to shut down.
+        rollback.keep_files = true;
+
+        {
+            let mut open = self.open.write().await;
+            // Taken only once the lock is held, with no await after, so the
+            // set is never in a local that a cancellation could drop.
+            if let Some(services) = rollback.services.take() {
+                open.insert(id.clone(), services);
             }
         }
+        opening_entry.disarm();
+        self.touch(&id).await;
+        self.notify_changed();
+        Ok(entry)
+    }
+
+    /// The lock serializing the first open of `id` (see the `opening` field).
+    fn opening_lock(&self, id: &DatabaseId) -> Arc<AsyncMutex<()>> {
+        let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+        opening
+            .entry(id.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
     }
 
     /// Register an existing database file already present on disk. The name is
@@ -791,13 +828,7 @@ impl DatabaseManager {
         // Waiting for the per-id lock lets the open finish first, so the close
         // below retires it. Lock order matches `get_or_open`: per-id lock, then
         // registry.
-        let lock = {
-            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
-            opening
-                .entry(id.clone())
-                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-                .clone()
-        };
+        let lock = self.opening_lock(id);
         let _opening_guard = lock.lock().await;
         let registry = self.registry.write().await;
         registry.find_or_err(id)?;
@@ -1123,13 +1154,7 @@ impl DatabaseManager {
             return Ok(services);
         }
 
-        let lock = {
-            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
-            opening
-                .entry(id.clone())
-                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-                .clone()
-        };
+        let lock = self.opening_lock(id);
         let _opening_guard = lock.lock().await;
 
         // Re-check now that we hold the per-id lock: another caller may have
@@ -1404,16 +1429,183 @@ async fn file_identity(path: &Path) -> PathBuf {
     }
 }
 
-/// Best-effort removal of a database file and its SQLite sidecars (`-wal`,
-/// `-shm`) while rolling back a failed create. Failures are logged rather than
-/// returned — the caller is already unwinding a more meaningful error.
-async fn remove_database_files(path: &Path) {
-    let mut candidates = vec![path.to_path_buf()];
+/// Undoes a [`DatabaseManager::create`] that does not finish: closes the
+/// service set it built and removes the file it created.
+///
+/// It runs explicitly on a failed registration ([`Self::run`]) and, through
+/// `Drop`, when the create future is dropped part-way (the RPC was cancelled).
+/// `Drop` cannot await, so it hands the same work to a spawned task. It holds
+/// no reference to the manager: the service set stays out of the open set until
+/// registration has succeeded, so there is nothing to unregister.
+struct CreateRollback {
+    id: DatabaseId,
+    path: PathBuf,
+    /// The built service set, until it is cached as the open handle.
+    services: Option<Arc<DatabaseServices>>,
+    /// Set once the registry owns the file, so only the service set is closed.
+    keep_files: bool,
+}
+
+impl CreateRollback {
+    fn new(id: DatabaseId, path: PathBuf) -> Self {
+        Self {
+            id,
+            path,
+            services: None,
+            keep_files: false,
+        }
+    }
+
+    /// Roll back now, and leave nothing for `Drop`. The fields are cleared
+    /// only once the work is done, so a drop part-way repeats it.
+    async fn run(&mut self) {
+        #[cfg(test)]
+        let mut closed = true;
+        if let Some(services) = &self.services {
+            services.shutdown().await;
+            #[cfg(test)]
+            {
+                closed = services.is_shut_down();
+            }
+        }
+        // The rollback held the only handle: dropping it closes the store
+        // before the files go.
+        self.services = None;
+        if !self.keep_files {
+            remove_database_files(&self.path).await;
+        }
+        self.keep_files = true;
+        #[cfg(test)]
+        if closed {
+            record_rolled_back(&self.path);
+        }
+    }
+
+    /// `Drop`'s share of the rollback, for a set that still needs closing.
+    async fn undo(services: Arc<DatabaseServices>, path: PathBuf, remove: bool) {
+        services.shutdown().await;
+        #[cfg(test)]
+        let closed = services.is_shut_down();
+        drop(services);
+        if remove {
+            remove_database_files(&path).await;
+        }
+        #[cfg(test)]
+        if closed {
+            record_rolled_back(&path);
+        }
+    }
+}
+
+impl Drop for CreateRollback {
+    fn drop(&mut self) {
+        let services = self.services.take();
+        let remove = !self.keep_files;
+        if services.is_none() && !remove {
+            return;
+        }
+        tracing::warn!(
+            database_id = %self.id,
+            path = %self.path.display(),
+            "database create did not finish; rolling it back"
+        );
+        match (services, tokio::runtime::Handle::try_current()) {
+            (Some(services), Ok(runtime)) => {
+                runtime.spawn(Self::undo(services, self.path.clone(), remove));
+            }
+            // No set to close (the build itself failed or was dropped), or no
+            // runtime to close it on: remove the files now. Doing it on a
+            // spawned task would let a quick retry of the same path create a
+            // new database that the task then strips of its sidecars.
+            _ => {
+                if remove {
+                    remove_database_files_sync(&self.path);
+                }
+            }
+        }
+    }
+}
+
+/// Takes `id` back out of the manager's open-lock map when a create does not
+/// finish; [`DatabaseManager::remove`] prunes it for a registered id.
+struct OpeningEntryGuard<'a> {
+    manager: &'a DatabaseManager,
+    id: DatabaseId,
+    armed: bool,
+}
+
+impl<'a> OpeningEntryGuard<'a> {
+    fn new(manager: &'a DatabaseManager, id: DatabaseId) -> Self {
+        Self {
+            manager,
+            id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OpeningEntryGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.manager
+                .opening
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.id);
+        }
+    }
+}
+
+/// Paths whose create was rolled back after the service set was confirmed shut
+/// down and dropped; lets a test observe that the rollback really did that.
+#[cfg(test)]
+static ROLLED_BACK: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn record_rolled_back(path: &Path) {
+    ROLLED_BACK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(path.to_path_buf());
+}
+
+/// The database file and its sidecars, the sidecars first: the file is what a
+/// retry checks for, so while it exists no new database can start there.
+fn database_file_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
     for suffix in ["-wal", "-shm"] {
         let mut file = path.as_os_str().to_owned();
         file.push(suffix);
         candidates.push(PathBuf::from(file));
     }
+    candidates.push(path.to_path_buf());
+    candidates
+}
+
+/// Blocking twin of [`remove_database_files`], for `Drop`.
+fn remove_database_files_sync(path: &Path) {
+    for candidate in database_file_candidates(path) {
+        match std::fs::remove_file(&candidate) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                path = %candidate.display(),
+                error = %e,
+                "failed to remove database file while rolling back a failed create"
+            ),
+        }
+    }
+}
+
+/// Best-effort removal of a database file and its SQLite sidecars (`-wal`,
+/// `-shm`) while rolling back a failed create. Failures are logged rather than
+/// returned — the caller is already unwinding a more meaningful error.
+async fn remove_database_files(path: &Path) {
+    let candidates = database_file_candidates(path);
     for candidate in candidates {
         match tokio::fs::remove_file(&candidate).await {
             Ok(()) => {}
@@ -3029,6 +3221,85 @@ plugin_label = "blue"
         // afterward — the gate doesn't leave anything wedged.
         mgr.rename(&id, "Renamed".into()).await.unwrap();
         assert_eq!(mgr.list().await.databases[0].entry.name, "Renamed");
+    }
+
+    fn rolled_back(path: &Path) -> bool {
+        ROLLED_BACK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|p| p == path)
+    }
+
+    /// A create whose registration fails shuts its service set down, removes
+    /// the file and leaves no open-lock entry.
+    #[tokio::test]
+    async fn a_failed_create_closes_the_set_removes_the_file_and_the_lock_entry() {
+        let (mgr, dir, registry_path) = temp_manager().await;
+        let path = dir.path().join("failed.db");
+        break_registry_persistence(&registry_path).await;
+
+        mgr.create("Failed".into(), Some(path.clone()))
+            .await
+            .unwrap_err();
+
+        assert!(
+            rolled_back(&path),
+            "the service set was shut down and dropped"
+        );
+        assert!(!path.exists());
+        assert!(mgr.opening.lock().unwrap().is_empty());
+        assert!(mgr.open.read().await.is_empty());
+    }
+
+    /// A create whose future is dropped while the registry entry is being
+    /// saved leaves neither the database file nor an open service set behind,
+    /// and the same path can be created again.
+    #[tokio::test]
+    async fn dropping_a_create_mid_registration_removes_the_file_and_closes_the_set() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let mgr = Arc::new(mgr);
+        let path = dir.path().join("cancelled.db");
+
+        let gate = SaveGate::default();
+        mgr.set_save_gate(gate.clone());
+        let driver = {
+            let mgr = mgr.clone();
+            let path = path.clone();
+            tokio::spawn(async move { mgr.create("Cancelled".into(), Some(path)).await })
+        };
+        gate.entered.notified().await;
+        assert!(path.exists(), "precondition: the file was created");
+        driver.abort();
+        assert!(driver.await.unwrap_err().is_cancelled());
+        mgr.clear_save_gate();
+
+        // The rollback runs on a spawned task; give it a moment.
+        for _ in 0..200 {
+            if rolled_back(&path) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            rolled_back(&path),
+            "the cancelled create's service set must be shut down and dropped"
+        );
+        assert!(
+            !path.exists(),
+            "the cancelled create's file must be removed"
+        );
+        let snap = mgr.list().await;
+        assert!(snap.databases.is_empty(), "no registry entry");
+        assert!(
+            mgr.opening.lock().unwrap().is_empty(),
+            "a cancelled create leaves no open-lock entry"
+        );
+
+        mgr.create("Again".into(), Some(path.clone()))
+            .await
+            .unwrap();
+        assert!(path.exists());
     }
 
     /// Same proof as
