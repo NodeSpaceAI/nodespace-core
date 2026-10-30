@@ -331,13 +331,15 @@ pub(crate) struct NodeMove {
 }
 
 /// Finds `?2` among the `has_child` descendants of `?1`. Shared by
-/// `validate_no_cycle` and its `_in_tx` twin.
-const HAS_CHILD_CYCLE_SQL: &str = r#"WITH RECURSIVE desc(node_id, depth) AS (
-    SELECT out_node, 1 FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
-    UNION ALL
-    SELECT r.out_node, d.depth + 1 FROM relationship r
+/// `validate_no_cycle` and its `_in_tx` twin. Uncapped and cycle-safe:
+/// `UNION` over node ids walks each node once, so the search reaches any
+/// depth and ends even over an existing loop.
+const HAS_CHILD_CYCLE_SQL: &str = r#"WITH RECURSIVE desc(node_id) AS (
+    SELECT out_node FROM relationship WHERE in_node = ?1 AND relationship_type = 'has_child'
+    UNION
+    SELECT r.out_node FROM relationship r
     JOIN desc d ON r.in_node = d.node_id
-    WHERE r.relationship_type = 'has_child' AND d.depth < 100
+    WHERE r.relationship_type = 'has_child'
 )
 SELECT node_id FROM desc WHERE node_id = ?2 LIMIT 1"#;
 
@@ -3113,11 +3115,20 @@ impl SqliteStore {
         parent_id: &str,
         child_id: &str,
     ) -> Result<()> {
+        Self::validate_no_cycle_on_conn(tx.conn(), parent_id, child_id).await
+    }
+
+    /// Cycle check over an explicit connection, for write paths that hold a
+    /// raw transaction rather than a [`Tx`].
+    pub(crate) async fn validate_no_cycle_on_conn(
+        conn: &libsql::Connection,
+        parent_id: &str,
+        child_id: &str,
+    ) -> Result<()> {
         if parent_id == child_id {
             return Err(has_child_cycle_violation(parent_id, child_id));
         }
-        let mut rows = tx
-            .conn()
+        let mut rows = conn
             .query(
                 HAS_CHILD_CYCLE_SQL,
                 libsql::params![child_id.to_string(), parent_id.to_string()],

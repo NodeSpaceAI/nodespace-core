@@ -2857,6 +2857,37 @@ mod tests {
         Ok(())
     }
 
+    /// The cycle guard searches the whole subtree, not a depth-capped prefix:
+    /// attaching the top of a 120-level chain under its deepest node is refused.
+    #[tokio::test]
+    async fn test_has_child_cycle_guard_sees_past_one_hundred_levels() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        let top = Node::new("text".to_string(), "top".to_string(), json!({}));
+        let top_id = top.id.clone();
+        store.create_node(top, None, None).await?;
+        let mut parent_id = top_id.clone();
+        for level in 0..120 {
+            let node = Node::new("text".to_string(), format!("level {level}"), json!({}));
+            let node_id = node.id.clone();
+            store.create_node(node, None, None).await?;
+            store.move_node(&node_id, Some(&parent_id), None).await?;
+            parent_id = node_id;
+        }
+
+        let err = store
+            .move_node(&top_id, Some(&parent_id), None)
+            .await
+            .expect_err("the top of a deep chain cannot move under its deepest node");
+        let violation = err
+            .downcast_ref::<TreeInvariantViolation>()
+            .unwrap_or_else(|| panic!("expected a typed TreeInvariantViolation, got: {err:#}"));
+        assert_eq!(violation.rule, TreeInvariantRule::Cycle);
+        assert_eq!(store.get_parent_id(&top_id).await?, None);
+
+        Ok(())
+    }
+
     // C3c: store-layer atomicity — exercises the in-transaction version check
     // that the service-level pre-validation cannot catch (concurrent version bump).
     #[tokio::test]
