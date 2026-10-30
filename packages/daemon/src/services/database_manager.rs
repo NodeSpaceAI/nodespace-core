@@ -739,6 +739,23 @@ impl DatabaseManager {
     /// worse than every other method here already implicitly assuming
     /// uniqueness.
     pub async fn remove(&self, id: &DatabaseId) -> Result<()> {
+        // An unregistered id fails here, before it can record a per-id lock.
+        self.registry.read().await.find_or_err(id)?;
+        // Serialize with an in-flight `get_or_open(id)`: that call resolves the
+        // path, then builds the service set without holding the registry lock.
+        // Closing before it finishes would find nothing open, and its result
+        // would then be cached for a database that is no longer registered.
+        // Waiting for the per-id lock lets the open finish first, so the close
+        // below retires it. Lock order matches `get_or_open`: per-id lock, then
+        // registry.
+        let lock = {
+            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+            opening
+                .entry(id.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _opening_guard = lock.lock().await;
         let registry = self.registry.write().await;
         registry.find_or_err(id)?;
         self.mutate_and_save(registry, |registry| {
@@ -768,10 +785,9 @@ impl DatabaseManager {
         // fresh ULID per registration, so a register-open-remove cycle
         // (a supported workflow, e.g. scratch databases) would otherwise
         // accumulate an orphaned lock per cycle for the life of the process.
-        // Safe even if a concurrent `get_or_open(id)` is mid-flight holding
-        // a clone of this `Arc`: removing the map entry doesn't affect a
-        // clone already held elsewhere, it only stops a *future* caller from
-        // reusing this specific lock instance.
+        // A `get_or_open(id)` queued on this lock holds a clone of the `Arc`;
+        // removing the map entry doesn't affect it, and once it gets the lock
+        // it fails at the registry lookup.
         self.opening
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2282,6 +2298,78 @@ plugin_label = "blue"
             1,
             "removing an open database must notify exactly once, not twice"
         );
+    }
+
+    /// `remove` must wait for an in-flight `get_or_open` of the same id, which
+    /// holds the per-id lock while it builds the service set, so the set that
+    /// open produces is closed by the removal and not left running.
+    #[tokio::test]
+    async fn remove_waits_for_an_in_flight_open_of_the_same_id() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let id = mgr
+            .ensure_default_registered("Scratch".into(), dir.path().join("scratch.db"))
+            .await
+            .unwrap();
+        let mgr = Arc::new(mgr);
+        let lock = {
+            let mut opening = mgr.opening.lock().unwrap();
+            opening
+                .entry(id.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let in_flight_open = lock.lock().await;
+
+        let remover = {
+            let mgr = Arc::clone(&mgr);
+            let id = id.clone();
+            tokio::spawn(async move { mgr.remove(&id).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !remover.is_finished(),
+            "remove must wait while an open of the same id is in flight"
+        );
+        assert_eq!(
+            mgr.list().await.databases.len(),
+            1,
+            "the entry must stay registered until the open has finished"
+        );
+
+        drop(in_flight_open);
+        remover.await.unwrap().unwrap();
+        assert!(mgr.list().await.databases.is_empty());
+    }
+
+    /// Whichever way a concurrent `get_or_open` and `remove` of one id
+    /// interleave, no service set may stay open for the removed id.
+    #[tokio::test]
+    async fn concurrent_open_and_remove_leave_no_open_set_for_a_removed_id() {
+        for round in 0..6 {
+            let (mgr, dir, _registry_path) = temp_manager().await;
+            let id = mgr
+                .ensure_default_registered("Scratch".into(), dir.path().join("scratch.db"))
+                .await
+                .unwrap();
+            let mgr = Arc::new(mgr);
+            let opener = {
+                let (mgr, id) = (Arc::clone(&mgr), id.clone());
+                tokio::spawn(async move { mgr.get_or_open(&id).await.map(|_| ()) })
+            };
+            let remover = {
+                let (mgr, id) = (Arc::clone(&mgr), id.clone());
+                tokio::spawn(async move {
+                    tokio::task::yield_now().await;
+                    mgr.remove(&id).await
+                })
+            };
+            let _ = opener.await.unwrap();
+            remover.await.unwrap().unwrap();
+            assert!(
+                !mgr.open.read().await.contains_key(&id),
+                "round {round}: a removed database must not stay open"
+            );
+        }
     }
 
     /// `remove` must prune the removed id's per-id opening lock, not just its
