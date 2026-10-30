@@ -1210,6 +1210,14 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
+        // Search returns only the top-ranked results; a caller cannot page
+        // past them. Refuse an offset rather than answering page one again.
+        if req.offset != 0 {
+            return Err(Status::invalid_argument(
+                "SearchNodes does not support offset; raise limit instead",
+            ));
+        }
+
         // Clone the Arc and drop the guard immediately rather than holding the
         // read lock for the rest of this function — `include_markdown` can now
         // do real work (up to 5 subtree traversals) inside `search_semantic`,

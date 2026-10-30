@@ -82,3 +82,31 @@ async fn search_reports_a_failed_model_load_as_non_retryable() {
     assert!(failed.message().contains("failed to load"));
     assert!(!failed.message().contains("retry"));
 }
+
+/// Search cannot page, so a non-zero offset is refused instead of silently
+/// returning the first page again.
+#[tokio::test]
+async fn search_rejects_a_non_zero_offset() {
+    let tempdir = TempDir::new().unwrap();
+    let mut store = Arc::new(SqliteStore::new(tempdir.path().join("db")).await.unwrap());
+    let node_service = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+    let service = NodeServiceImpl::new(
+        node_service,
+        Arc::new(RwLock::new(None)),
+        Arc::new(EmbeddingScheduler::new()),
+    );
+
+    for offset in [20, -1] {
+        let status = service
+            .search_nodes(Request::new(SearchRequest {
+                query: "hello".into(),
+                limit: 20,
+                offset,
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().contains("offset"));
+    }
+}
