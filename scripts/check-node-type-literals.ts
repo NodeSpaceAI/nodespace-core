@@ -58,6 +58,12 @@ export const PATTERNS = {
     pattern: new RegExp(`(?<!typeof\\s+[\\w.?]*)${FIELD}(?:\\.as_str\\(\\))?\\s*(?:===|!==|==|!=)\\s*${QUOTE}${TYPE_ID}${QUOTE}`),
     summary: "a node type compared with a string literal",
   },
+  // `get_node_type(..).await?.as_deref() == Some("x")`: the type comes back
+  // optional, so the literal sits inside `Some(..)` rather than after `==`.
+  optionalComparison: {
+    pattern: new RegExp(`(?:get_node_type|${FIELD})\\b.*\\.as_deref\\(\\)\\s*(?:==|!=)\\s*Some\\(\\s*${QUOTE}${TYPE_ID}${QUOTE}\\s*\\)`),
+    summary: "an optional node type compared with Some of a string literal",
+  },
   reversedComparison: {
     pattern: new RegExp(`${QUOTE}${TYPE_ID}${QUOTE}\\s*(?:===|!==|==|!=)\\s*[\\w.?&()]*${FIELD}\\b`),
     summary: "a string literal compared with a node type",

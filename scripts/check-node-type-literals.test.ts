@@ -16,6 +16,7 @@ describe("patterns", () => {
   const banned: [string, string][] = [
     ["a.rs", `if node.node_type == "collection" {`],
     ["a.rs", `if node.node_type != "task" {`],
+    ["a.rs", `if self.get_node_type(member_id).await?.as_deref() == Some("collection") {`],
     ["a.rs", `if node.node_type.as_str() == "schema" {`],
     ["a.rs", `DomainEvent::NodeCreated { node_type, .. } if node_type == "play" => {`],
     ["a.rs", `if "task" == node.node_type {`],
@@ -48,6 +49,7 @@ describe("patterns", () => {
     ["a.rs", `"SELECT id FROM node WHERE node_type IN (?1, ?2)"`],
     ["a.rs", `if existing.node_type == updated.node_type {`],
     ["a.rs", `if node_type == other_type {`],
+    ["a.rs", `if self.get_node_type(id).await?.as_deref() == Some(expected) {`],
     ["a.rs", `"SELECT ancestor FROM type_ancestry WHERE node_type = ?1 ORDER BY depth"`],
     ["a.rs", `if relationship_type == "has_child" {`],
     ["a.ts", `if (isA(node.nodeType, 'task')) {`],

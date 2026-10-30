@@ -11376,6 +11376,54 @@ mod tests {
         holders
     }
 
+    /// A node whose type extends `collection` gets the same member_of cycle
+    /// guard as a plain collection when it is filed through the store directly.
+    #[tokio::test]
+    async fn test_store_add_to_collection_guards_cycle_for_collection_subtype() {
+        let (service, _temp) = create_test_service().await;
+        crate::schema::handle_create_schema(
+            &Arc::new(service.clone()),
+            json!({ "name": "Shelf", "extends": "collection", "fields": [] }),
+        )
+        .await
+        .unwrap();
+        let shelf = service
+            .create_node(Node::new(
+                "shelf".to_string(),
+                "Shelf".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let outer = service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "Outer".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        service
+            .store()
+            .add_to_collection(&shelf, &outer, &json!({}))
+            .await
+            .unwrap();
+        let err = service
+            .store()
+            .add_to_collection(&outer, &shelf, &json!({}))
+            .await
+            .expect_err("a member_of loop through a collection subtype must be refused");
+        assert!(err.to_string().contains("collection_cycle"), "got: {err}");
+
+        let err = service
+            .store()
+            .add_to_collection(&shelf, &shelf, &json!({}))
+            .await
+            .expect_err("a collection subtype cannot be filed into itself");
+        assert!(err.to_string().contains("collection_cycle"), "got: {err}");
+    }
+
     /// A user type extending `person` whose id sorts before it, and one
     /// instance of it created after the seeded local person.
     async fn person_subtype_instance(service: &NodeService) -> String {

@@ -894,7 +894,14 @@ impl SqliteStore {
         // direct callers (e.g. markdown import) are covered without relying on the
         // service. Content/person members have no member_of descendants and can't
         // cycle, so the check is limited to collection-typed members.
-        if self.get_node_type(member_id).await?.as_deref() == Some("collection") {
+        let member_is_collection = match self.get_node_type(member_id).await? {
+            Some(node_type) => {
+                self.type_is_a(&node_type, crate::models::CoreNodeType::Collection)
+                    .await?
+            }
+            None => false,
+        };
+        if member_is_collection {
             self.validate_no_member_of_cycle(member_id, collection_id)
                 .await?;
         }
