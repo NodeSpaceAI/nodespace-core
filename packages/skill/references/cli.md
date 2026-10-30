@@ -484,7 +484,7 @@ nodespace node batch-get --id <id1> --id <id2> --id <id3>
 nodespace node batch-update --updates '[{"node_id":"abc","content":"new text","version":3}]'
 ```
 
-Each object in the array: `node_id` (required), `version` (optional — omit to auto-fetch, note this bypasses OCC), `content`, `node_type`, `properties`.
+Each object in the array: `node_id` (required), `version` (optional — omitted or null means unguarded: the item updates whatever is current and bypasses OCC), `content`, `node_type`, `properties`.
 
 **Output:** `{"count":N,"updated":["id1",…],"failed":[{"node_id":"…","error":"…"}]}`
 
@@ -1131,7 +1131,7 @@ Operate on individual nodes (get, context, create, update, set-status, move, del
 
 **`nodespace node batch-update`** — Update multiple nodes in one request (OCC-aware)
 
-- `--updates <UPDATES>` — JSON-encoded array of update objects: [{"node_id":"…","content":"…","version":N}]. Each item may have: node_id (required), version (optional), content, node_type, properties (required)
+- `--updates <UPDATES>` — JSON-encoded array of update objects: [{"node_id":"…","content":"…","version":N}]. Each item may have: node_id (required), version (optional; an omitted or null version means unguarded: the item updates whatever is current), content, node_type, properties (required)
 
 ### `nodespace model`
 

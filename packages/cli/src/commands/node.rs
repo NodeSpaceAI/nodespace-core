@@ -372,7 +372,7 @@ pub struct BatchGetArgs {
 #[derive(Args, Debug)]
 pub struct BatchUpdateArgs {
     /// JSON-encoded array of update objects: [{"node_id":"…","content":"…","version":N}].
-    /// Each item may have: node_id (required), version (optional), content, node_type, properties.
+    /// Each item may have: node_id (required), version (optional; an omitted or null version means unguarded: the item updates whatever is current), content, node_type, properties.
     #[arg(long)]
     pub updates: String,
 }
