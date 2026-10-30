@@ -1120,7 +1120,11 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     // If the daemon is already running but the binary changed (e.g. dev rebuild),
     // kill it so the updated binary gets launched below.
     let binary_updated = extract_sidecar_if_changed(app, daemon_binary_name(), &bin_dir).await?;
-    extract_sidecar_if_changed(app, CLI_BINARY_NAME, &bin_dir).await?;
+    let cli_extraction = extract_sidecar_if_changed(app, CLI_BINARY_NAME, &bin_dir).await;
+    stop_replaced_daemon_on_failure(cli_extraction, binary_updated && !evicted, || {
+        kill_running_daemon(&socket_path)
+    })
+    .await?;
     // Best effort: a missing marker only leaves `nodespace skill ...` from the
     // staged copy unable to find the installer, and must not stop the daemon.
     match resolve_sidecar_path(app, CLI_BINARY_NAME) {
@@ -1589,6 +1593,33 @@ async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path)
     tokio::task::spawn_blocking(move || extract_sidecar_from(&src, &name, &bin_dir))
         .await
         .context("Sidecar extraction task panicked")?
+}
+
+/// Settles the CLI extraction that follows the daemon's. By then the new daemon
+/// binary is already in place and stamped, so a later launch would see it as
+/// unchanged and accept the old daemon still running from the replaced file.
+/// When the extraction failed after a daemon replacement (`restart_pending`),
+/// `stop_daemon` runs before the error is returned, so the next launch spawns
+/// the new binary.
+async fn stop_replaced_daemon_on_failure<F, Fut>(
+    cli_extraction: Result<bool>,
+    restart_pending: bool,
+    stop_daemon: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    match cli_extraction {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            if restart_pending {
+                tracing::warn!("CLI extraction failed after the daemon binary was replaced; stopping the old daemon");
+                stop_daemon().await;
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Records `bundled_cli` (the bundled `nodespace` sidecar) in the marker file
@@ -5792,5 +5823,41 @@ mod systemd_enable_tests {
             calls,
             vec![vec!["--user", "enable", "--now", "nodespace.service"]]
         );
+    }
+}
+
+#[cfg(test)]
+mod failed_cli_extraction_tests {
+    use super::stop_replaced_daemon_on_failure;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    async fn run(cli: anyhow::Result<bool>, pending: bool) -> (anyhow::Result<()>, bool) {
+        let stopped = AtomicBool::new(false);
+        let result = stop_replaced_daemon_on_failure(cli, pending, || async {
+            stopped.store(true, Ordering::SeqCst);
+        })
+        .await;
+        (result, stopped.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_failed_cli_extraction_after_a_daemon_replacement_stops_the_old_daemon() {
+        let (result, stopped) = run(Err(anyhow::anyhow!("copy failed")), true).await;
+        assert!(result.is_err());
+        assert!(stopped);
+    }
+
+    #[tokio::test]
+    async fn a_failed_cli_extraction_leaves_a_daemon_that_was_not_replaced() {
+        let (result, stopped) = run(Err(anyhow::anyhow!("copy failed")), false).await;
+        assert!(result.is_err());
+        assert!(!stopped);
+    }
+
+    #[tokio::test]
+    async fn a_successful_cli_extraction_does_not_stop_the_daemon() {
+        let (result, stopped) = run(Ok(true), true).await;
+        assert!(result.is_ok());
+        assert!(!stopped);
     }
 }
