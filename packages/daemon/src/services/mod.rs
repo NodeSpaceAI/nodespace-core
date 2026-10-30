@@ -31,7 +31,7 @@ pub use assembly::{
 };
 pub use database_manager::{
     DatabaseEntry, DatabaseId, DatabaseListing, DatabaseManager, DatabaseStatus, Registry,
-    RegistrySnapshot,
+    RegistrySnapshot, RegistryUnusable,
 };
 pub use database_service::DatabaseServiceImpl;
 pub use embeddings_service::{EmbeddingReady, EmbeddingsServiceImpl};

@@ -550,8 +550,10 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?;
 
     if !tray_mode(&args) {
-        let result = incompatible_database::stop_cleanly_on_incompatible_database(
-            runtime.block_on(async { serve_headless().await }),
+        let result = incompatible_database::stop_cleanly_on_unusable_registry(
+            incompatible_database::stop_cleanly_on_incompatible_database(
+                runtime.block_on(async { serve_headless().await }),
+            ),
         );
         if let Err(ref e) = result {
             // Log this immediately, loudly, and with the full context chain --
@@ -598,11 +600,13 @@ fn main() -> Result<()> {
         std::process::exit(0);
     });
 
-    let result = incompatible_database::stop_cleanly_on_incompatible_database(
-        runtime
-            .block_on(grpc_handle)
-            .context("gRPC task panicked")
-            .and_then(|served| served.context("gRPC server returned an error")),
+    let result = incompatible_database::stop_cleanly_on_unusable_registry(
+        incompatible_database::stop_cleanly_on_incompatible_database(
+            runtime
+                .block_on(grpc_handle)
+                .context("gRPC task panicked")
+                .and_then(|served| served.context("gRPC server returned an error")),
+        ),
     );
     defused.store(true, Ordering::SeqCst);
 
