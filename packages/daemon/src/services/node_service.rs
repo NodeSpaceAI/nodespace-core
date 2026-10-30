@@ -2723,14 +2723,22 @@ impl GrpcNodeService for NodeServiceImpl {
                 .await
                 .map_err(ops_error_to_status)?;
 
-        let collections = output
+        let (entries, nodes): (Vec<_>, Vec<_>) = output
             .collections
             .into_iter()
-            .map(|e| CollectionInfo {
-                node: Some(node_to_proto(e.node)),
-                member_count: e.member_count as u32,
-                parent_collection_ids: e.parent_collection_ids,
-            })
+            .map(|e| ((e.member_count, e.parent_collection_ids), e.node))
+            .unzip();
+        let collections = nodes_to_proto(&this.node_service, nodes)
+            .await?
+            .into_iter()
+            .zip(entries)
+            .map(
+                |(node, (member_count, parent_collection_ids))| CollectionInfo {
+                    node: Some(node),
+                    member_count: member_count as u32,
+                    parent_collection_ids,
+                },
+            )
             .collect();
 
         Ok(Response::new(CollectionListResponse { collections }))
@@ -2876,16 +2884,19 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let node_response = output.collection.map(|n| {
-            let node_type = n.node_type.clone();
-            let node_id = n.id.clone();
-            NodeResponse {
-                placement: None,
-                node_id,
-                node_type,
-                node_data: Some(node_to_proto(n)),
+        let node_response = match output.collection {
+            Some(n) => {
+                let node_type = n.node_type.clone();
+                let node_id = n.id.clone();
+                Some(NodeResponse {
+                    placement: None,
+                    node_id,
+                    node_type,
+                    node_data: Some(node_to_proto_collapsed(&this.node_service, n).await?),
+                })
             }
-        });
+            None => None,
+        };
         Ok(Response::new(OptionalNodeResponse {
             node: node_response,
         }))
@@ -2904,16 +2915,19 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let node_response = output.collection.map(|n| {
-            let node_type = n.node_type.clone();
-            let node_id = n.id.clone();
-            NodeResponse {
-                placement: None,
-                node_id,
-                node_type,
-                node_data: Some(node_to_proto(n)),
+        let node_response = match output.collection {
+            Some(n) => {
+                let node_type = n.node_type.clone();
+                let node_id = n.id.clone();
+                Some(NodeResponse {
+                    placement: None,
+                    node_id,
+                    node_type,
+                    node_data: Some(node_to_proto_collapsed(&this.node_service, n).await?),
+                })
             }
-        });
+            None => None,
+        };
         Ok(Response::new(OptionalNodeResponse {
             node: node_response,
         }))
@@ -2964,7 +2978,7 @@ impl GrpcNodeService for NodeServiceImpl {
             placement: None,
             node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -3164,10 +3178,11 @@ fn schema_encode_error(e: serde_json::Error) -> Status {
 /// rendered correctly on load lost its inherited properties on the next edit,
 /// which reads as data loss rather than a missing feature.
 ///
-/// The remaining in-module `node_to_proto` callers are nodes that cannot have
-/// an `extends` chain — collections and the fixed-type person/identity
-/// responses — where collapsing would be a no-op round trip through the
-/// store. A schema does not travel as a node at all: the schema reads return
+/// The remaining in-module `node_to_proto` callers are the fixed-type
+/// person/identity responses, which stay uncollapsed because onboarding reads
+/// the raw `person` bucket. Collections are not exempt: the collection queries
+/// match subtypes, and the sync daemon retypes workspace collections to a type
+/// that extends `collection`. A schema does not travel as a node at all: the schema reads return
 /// the typed `SchemaNode`.
 pub(crate) async fn nodes_to_proto(
     service: &Arc<CoreNodeService>,
@@ -7990,6 +8005,90 @@ mod tests {
             "an inherited field must survive get_node, got {props:?}"
         );
         assert_eq!(props["bug"]["severity"], "high");
+    }
+
+    /// A collection that extends `collection` reaches the wire with its
+    /// inherited `description` folded into its own bucket on every collection
+    /// RPC, exactly as `get_node` returns it.
+    #[tokio::test]
+    async fn collection_rpcs_collapse_the_chain_of_a_subtype_collection() {
+        use nodespace_core::schema::handle_create_schema;
+
+        let (svc, _tmp) = make_service().await;
+        let core = svc.node_service.clone();
+
+        handle_create_schema(
+            &core,
+            serde_json::json!({ "name": "Team Space", "extends": "collection", "fields": [] }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let id = core
+            .create_node(nodespace_core::models::Node::new(
+                "team-space".to_string(),
+                "Engineering".to_string(),
+                serde_json::json!({ "collection": { "description": "inherited text" } }),
+            ))
+            .await
+            .expect("subtype collection creation failed");
+
+        fn assert_collapsed(data: Option<NodeData>, rpc: &str) {
+            let data = data.unwrap_or_else(|| panic!("{rpc}: node_data missing"));
+            let props: serde_json::Value = serde_json::from_str(&data.properties).unwrap();
+            assert_eq!(
+                props["team-space"]["description"], "inherited text",
+                "{rpc} must fold the inherited bucket into the node's own, got {props:?}"
+            );
+        }
+
+        let all = svc
+            .get_all_collections(Request::new(GetAllCollectionsRequest {}))
+            .await
+            .expect("get_all_collections")
+            .into_inner();
+        let entry = all
+            .collections
+            .into_iter()
+            .find(|c| c.node.as_ref().is_some_and(|n| n.id == id))
+            .expect("subtype collection listed");
+        assert_collapsed(entry.node, "get_all_collections");
+
+        let by_name = svc
+            .get_collection_by_name(Request::new(GetCollectionByNameRequest {
+                name: "Engineering".into(),
+            }))
+            .await
+            .expect("get_collection_by_name")
+            .into_inner();
+        assert_collapsed(
+            by_name.node.and_then(|n| n.node_data),
+            "get_collection_by_name",
+        );
+
+        let by_path = svc
+            .find_collection_by_path(Request::new(FindCollectionByPathRequest {
+                collection_path: "Engineering".into(),
+            }))
+            .await
+            .expect("find_collection_by_path")
+            .into_inner();
+        assert_collapsed(
+            by_path.node.and_then(|n| n.node_data),
+            "find_collection_by_path",
+        );
+
+        let version = core.get_node(&id).await.unwrap().unwrap().version;
+        let renamed = svc
+            .rename_collection(Request::new(RenameCollectionRequest {
+                collection_id: id.clone(),
+                new_name: "Platform".into(),
+                version,
+            }))
+            .await
+            .expect("rename_collection")
+            .into_inner();
+        assert_collapsed(renamed.node_data, "rename_collection");
     }
 
     /// `get_schema_definition` on an extending schema reports inherited
