@@ -3748,17 +3748,19 @@ async fn confirmed_delete(
 /// fail the stream past it, so this stays well under.
 const MAX_VERSION_CONFLICT_HEADER_BYTES: usize = 8 * 1024;
 
-/// `value` as JSON text in ASCII: every character outside it is written as a
-/// `\u` escape (a surrogate pair above the basic plane). Such characters
-/// occur only inside JSON strings, where the escape means the same thing.
+/// `value` as JSON text that is a valid header value: every character outside
+/// printable ASCII (non-ASCII text, and the DEL control character that JSON
+/// leaves raw) is written as a `\u` escape (a surrogate pair above the basic
+/// plane). Such characters occur only inside JSON strings, where the escape
+/// means the same thing.
 fn ascii_json(value: &serde_json::Value) -> String {
     let json = value.to_string();
-    if json.is_ascii() {
+    if json.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
         return json;
     }
     let mut out = String::with_capacity(json.len());
     for c in json.chars() {
-        if c.is_ascii() {
+        if c.is_ascii() && !c.is_ascii_control() {
             out.push(c);
         } else {
             for unit in c.encode_utf16(&mut [0; 2]) {
@@ -7013,6 +7015,40 @@ mod tests {
         assert_eq!(json["expected"], 1);
         assert_eq!(json["actual"], 2);
         assert_eq!(json["current_node"]["content"], "résumé 🎉");
+    }
+
+    /// A header value cannot hold a control byte, DEL included, so `ascii_json`
+    /// escapes it; the output is always a valid header value.
+    #[test]
+    fn ascii_json_escapes_del_and_stays_a_valid_header_value() {
+        let value = serde_json::json!({ "content": "a\u{7f}b" });
+        let json = ascii_json(&value);
+        assert!(!json.contains('\u{7f}'));
+        assert!(json
+            .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            .is_ok());
+        let back: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, value);
+    }
+
+    /// A node holding DEL still reaches the client in the conflict header.
+    #[test]
+    fn version_conflict_with_del_in_node_keeps_the_header() {
+        let status = ops_error_to_status(OpsError::VersionConflict {
+            node_id: "n1".to_string(),
+            expected: 1,
+            actual: 2,
+            current_node: Some(serde_json::json!({ "content": "x\u{7f}y" })),
+        });
+        let header = status
+            .metadata()
+            .get("x-version-conflict")
+            .expect("x-version-conflict header missing")
+            .to_str()
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_str(header).unwrap();
+        assert_eq!(json["node_id"], "n1");
+        assert_eq!(json["current_node"]["content"], "x\u{7f}y");
     }
 
     #[tokio::test]
