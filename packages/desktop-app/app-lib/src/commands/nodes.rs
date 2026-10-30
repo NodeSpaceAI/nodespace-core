@@ -1788,9 +1788,6 @@ mod tests {
         assert_eq!(status_message(other.clone()), other.to_string());
     }
 
-    /// A command that maps statuses to codes of its own still reports the
-    /// refusal as REQUIRES_EXTENSION, and keeps its own mapping for any other
-    /// status.
     #[test]
     fn schema_lookup_reports_a_refused_database_as_requires_extension() {
         let err = schema_lookup_error("text", refusal(&["fixture"]));
@@ -1814,6 +1811,9 @@ mod tests {
         );
     }
 
+    /// A command that maps statuses to codes of its own still reports the
+    /// refusal as REQUIRES_EXTENSION, and keeps its own mapping for any other
+    /// status.
     #[test]
     fn refusal_or_takes_the_refusal_before_the_commands_own_mapping() {
         let own = |s: tonic::Status| CommandError {
