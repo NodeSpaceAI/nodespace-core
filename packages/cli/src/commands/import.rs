@@ -276,7 +276,9 @@ async fn run_one_dir(
     )?;
 
     if file_paths.is_empty() {
-        if !json {
+        if json {
+            println!("[]");
+        } else {
             eprintln!("No markdown files found in {}", directory);
         }
         return Ok(());
