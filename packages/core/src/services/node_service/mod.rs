@@ -1128,8 +1128,6 @@ pub(crate) fn is_date_node_id(id: &str) -> bool {
     chrono::NaiveDate::parse_from_str(id, "%Y-%m-%d").is_ok()
 }
 
-/// Check if a node is a root node based on its root_id
-///
 // Regex pattern for UUID validation (lowercase hex with standard UUID format)
 const UUID_PATTERN: &str = r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$";
 
