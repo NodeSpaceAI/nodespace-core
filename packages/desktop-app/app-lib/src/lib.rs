@@ -44,6 +44,10 @@ mod bundled_model;
 // First-launch skill installer
 pub mod skill_setup;
 
+// Routes AppKit's `terminate:` quits (Dock, logout) through the app's own quit path.
+#[cfg(target_os = "macos")]
+mod terminate_hook;
+
 // App update check (detect newer releases)
 pub mod update_check;
 
@@ -1108,6 +1112,11 @@ fn handle_run_event<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, event: 
         } => {
             persist_window_geometry(app_handle, label);
         }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Ready => {
+            let app = app_handle.clone();
+            terminate_hook::install(std::sync::Arc::new(move || quit_if_window_open(&app)));
+        }
         tauri::RunEvent::ExitRequested { code, .. } => {
             tracing::info!(
                 "App exit requested (code: {:?}), performing graceful shutdown...",
@@ -1350,6 +1359,19 @@ fn arm_quit_watchdog(
     });
 }
 
+/// Starts the quit path when there is a window to close and flush, and says
+/// whether it did. With no window open there is nothing to flush and the quit
+/// path could only wait out its watchdog, so the caller lets the platform exit
+/// normally instead.
+#[cfg(target_os = "macos")]
+fn quit_if_window_open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    if window_routing::resolve_focus_window(app).is_none() {
+        return false;
+    }
+    initiate_app_quit(app);
+    true
+}
+
 /// Shared body for every path that should fully quit this app through the
 /// normal window-close pipeline: the app's own "Quit" menu item / Cmd+Q, and
 /// a SIGTERM from the daemon's tray "Quit" (see [`listen_for_quit_signal`]).
@@ -1422,6 +1444,17 @@ async fn listen_for_quit_signal<R: tauri::Runtime>(app_handle: tauri::AppHandle<
     sigterm.recv().await;
     tracing::info!("SIGTERM received (Tray Quit) — closing window");
     initiate_app_quit(&app_handle);
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod quit_without_window_tests {
+    use super::quit_if_window_open;
+
+    #[test]
+    fn no_quit_is_started_when_no_window_is_open() {
+        let app = tauri::test::mock_app();
+        assert!(!quit_if_window_open(app.handle()));
+    }
 }
 
 #[cfg(test)]
@@ -1573,6 +1606,22 @@ mod quit_wiring_tests {
             window.contains("initiate_app_quit(app)"),
             "the app's own \"Quit\" menu item (and Cmd+Q, which shares its accelerator) must \
              call initiate_app_quit, not duplicate its own window-close logic: {window}"
+        );
+    }
+
+    #[test]
+    fn terminate_requests_from_appkit_route_through_initiate_app_quit() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("tauri::RunEvent::Ready =>")
+            .expect("Ready arm not found in lib.rs");
+        let window = &source[start..(start + 300).min(source.len())];
+
+        assert!(
+            window.contains("terminate_hook::install(")
+                && window.contains("quit_if_window_open(&app)"),
+            "a quit AppKit delivers as terminate: (Dock, logout) must reach the frontend flush \
+             through initiate_app_quit: {window}"
         );
     }
 
