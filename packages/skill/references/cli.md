@@ -488,6 +488,8 @@ Each object in the array: `node_id` (required), `version` (optional — omit to 
 
 **Output:** `{"count":N,"updated":["id1",…],"failed":[{"node_id":"…","error":"…"}]}`
 
+Items are applied independently. If any item lands in `failed` (node not found, invalid properties, or a stale `version`), the output is still printed in full and the command exits non-zero.
+
 ### Semantic search
 
 ```bash
