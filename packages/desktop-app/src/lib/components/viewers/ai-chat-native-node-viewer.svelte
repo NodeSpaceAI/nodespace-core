@@ -164,10 +164,9 @@
   /**
    * Handle a model selection from the AiChatModelSelector dropdown.
    *
-   * For native models: if the model is not yet downloaded (no status in the
-   * catalog list) this shows the download modal. The download modal listens for
-   * MODEL_DOWNLOAD_PROGRESS events and clears itself on MODEL_DOWNLOAD_READY.
-   * For openai-compat: write provider + model to the node immediately.
+   * For native and openai-compat models: write provider + model to the node
+   * immediately. A native model that is not yet downloaded is fetched when a
+   * message is sent (see `sendMessage`), with progress shown in the status overlay.
    * For a terminal harness: retype the node to `ai-chat-pty`.
    */
   function handleModelSelect(selection: ModelSelection): void {

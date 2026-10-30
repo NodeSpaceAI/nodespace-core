@@ -84,7 +84,7 @@ export interface NodeRowCallbacks {
   onContentChanged: (_node: ViewerRenderNode, _detail: ContentChangedDetail) => void;
   onNodeTypeChanged: (_node: ViewerRenderNode, _detail: NodeTypeChangedDetail) => void;
   onSlashCommandSelected: (_node: ViewerRenderNode, _detail: SlashCommandSelectedDetail) => void;
-  onIconClick: (_detail: IconClickDetail) => void;
+  onIconClick?: (_detail: IconClickDetail) => void;
   onTaskStateChanged: (_node: ViewerRenderNode, _detail: TaskStateChangedDetail) => void;
   onCombineWithPrevious: (_detail: CombineWithPreviousDetail) => void;
   onDeleteNode: (_detail: DeleteNodeDetail) => void;

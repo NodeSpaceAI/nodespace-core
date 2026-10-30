@@ -3,9 +3,6 @@
   import { onMount } from 'svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
-  // Import icon configuration from registry for consistency
-  import { getIconConfig } from '$lib/design/icons/registry';
-
   // Types for node results
   interface NodeResult {
     id: string;
@@ -44,27 +41,6 @@
   let selectedIndex: number = 0;
   let containerRef: HTMLElement | undefined = undefined; // Explicitly assigned
   let itemRefs: HTMLElement[] = [];
-
-  // Helper function to get node configuration
-  function getNodeConfig(nodeType: NodeType) {
-    const iconConfig = getIconConfig(nodeType);
-    const labels: Record<NodeType, string> = {
-      text: 'Text',
-      document: 'Document',
-      task: 'Task',
-      'ai-chat-native': 'AI Chat',
-      'ai-chat-pty': 'AI Chat',
-      user: 'User',
-      entity: 'Entity',
-      query: 'Query'
-    };
-
-    return {
-      label: labels[nodeType] || 'Node',
-      color: iconConfig.colorVar,
-      semanticClass: iconConfig.semanticClass
-    };
-  }
 
   // Smart positioning to avoid viewport edges
   function getSmartPosition(pos: { x: number; y: number }) {
@@ -284,15 +260,7 @@
               <div
                 style="width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;"
               >
-                {#if result.nodeType && getNodeConfig(result.nodeType)}
-                  <!-- Future: Dynamic icon based on node type -->
-                  <Icon name={result.nodeType as any} size={16} />
-                {:else}
-                  <!-- Fallback: Static text circle -->
-                  <div class="node-icon">
-                    <div class="text-circle"></div>
-                  </div>
-                {/if}
+                <Icon name={result.nodeType as any} size={16} />
               </div>
               <div style="font-weight: 500;">{result.title}</div>
             </div>
