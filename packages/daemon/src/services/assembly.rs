@@ -237,6 +237,13 @@ pub struct DatabaseServices {
 }
 
 impl DatabaseServices {
+    /// Whether [`Self::shutdown`] has run, for tests that check a retired set
+    /// was closed.
+    #[cfg(test)]
+    pub(crate) fn is_shut_down(&self) -> bool {
+        self.shutdown_token.is_cancelled()
+    }
+
     /// Stop everything [`build_database_services`] started for this database
     /// (ADR-053: per-database compute scoping): the ai-chat event watcher, any
     /// turn still in flight, and this database's embedding processor.

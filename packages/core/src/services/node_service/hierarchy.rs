@@ -1015,6 +1015,11 @@ impl NodeService {
             },
         );
 
+        // The node was created before this edge, so anything that derived its
+        // title in between (an invariant rule's update) saw a root.
+        self.refresh_for_rootness_in_tx(tx, child_id, false, None)
+            .await?;
+
         Ok(placement)
     }
 
@@ -1028,7 +1033,8 @@ impl NodeService {
     /// single DB transaction, not the events.) `edges` is `(parent, child, order)`
     /// carrying the sender's sibling order; a child that already has a parent is
     /// skipped in the store (see `bulk_create_has_child`), so this only attaches
-    /// genuinely-unparented children. Returns the number of edges created.
+    /// genuinely-unparented children, and an edge that would close a loop is skipped
+    /// (logged by the store). Returns the number of edges created.
     ///
     /// Unlike `create_parent_edge` this does NOT reposition — it is intended for a
     /// from-scratch batch where every parent is fresh, so the sender's `order`
@@ -1041,7 +1047,7 @@ impl NodeService {
         if edges.is_empty() {
             return Ok(0);
         }
-        let created = self
+        let crate::db::BulkHasChildOutcome { created, .. } = self
             .store
             .bulk_create_has_child(edges)
             .await

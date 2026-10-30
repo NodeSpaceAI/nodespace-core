@@ -18,7 +18,8 @@ pub(crate) use sqlite_store::tx::Tx;
 pub(crate) use sqlite_store::Placed;
 pub(crate) use sqlite_store::{composite_similarity_score, cosine_similarity, NodeMove};
 pub use sqlite_store::{
-    ensure_sqlite_vec_registered, BulkNodeRow, ChildPlacement, KnowledgeListing, LeafDeleteOutcome,
-    PathReach, RelationshipRecord, ResolvedEntity, SqliteStore, StoreChange, StoreOperation,
-    SubtreeDeleteOutcome, TreeInvariantRule, TreeInvariantViolation, VersionConflict,
+    ensure_sqlite_vec_registered, BulkHasChildOutcome, BulkNodeRow, ChildPlacement,
+    KnowledgeListing, LeafDeleteOutcome, PathReach, RelationshipRecord, ResolvedEntity,
+    SqliteStore, StoreChange, StoreOperation, SubtreeDeleteOutcome, TreeInvariantRule,
+    TreeInvariantViolation, VersionConflict,
 };

@@ -810,6 +810,41 @@ impl NodeService {
             .map_err(NodeServiceError::invalid_update)
     }
 
+    /// Whether the edge a caller names is already stored, under the forward
+    /// spelling a write would store it with. Read inside `tx`, ahead of the
+    /// write, so a public call can tell a no-op from a real change.
+    async fn named_edge_exists_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+    ) -> Result<bool, NodeServiceError> {
+        let source_type = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
+            .await
+            .map_err(NodeServiceError::from_store)?
+            .map(|n| n.node_type);
+        let forward_name = self
+            .in_declaration_forward_name(source_type.as_deref(), relationship_name)
+            .await?;
+        let (source_id, relationship_name, target_id) = forward_endpoints(
+            forward_name.as_deref(),
+            source_id,
+            relationship_name,
+            target_id,
+        );
+        crate::db::SqliteStore::relationship_exists_in_tx(
+            tx.store_tx(),
+            source_id,
+            target_id,
+            relationship_name,
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to check existing relationship: {}", e))
+        })
+    }
+
     pub async fn create_relationship(
         &self,
         source_id: &str,
@@ -840,7 +875,7 @@ impl NodeService {
             let source_id = source_id.to_string();
             let relationship_name = relationship_name.to_string();
             let target_id = target_id.to_string();
-            let created = service
+            let (created, existed) = service
                 .with_transaction({
                     let (source_id, relationship_name, target_id) = (
                         source_id.clone(),
@@ -849,7 +884,15 @@ impl NodeService {
                     );
                     move |tx| {
                         Box::pin(async move {
-                            service_for_tx
+                            let existed = service_for_tx
+                                .named_edge_exists_in_tx(
+                                    tx,
+                                    &source_id,
+                                    &relationship_name,
+                                    &target_id,
+                                )
+                                .await?;
+                            let created = service_for_tx
                                 .create_relationship_in_tx(
                                     tx,
                                     &source_id,
@@ -857,16 +900,20 @@ impl NodeService {
                                     &target_id,
                                     edge_data,
                                 )
-                                .await
+                                .await?;
+                            Ok((created, existed))
                         })
                     }
                 })
                 .await?;
             // A user's link on a built-in skill is theirs; seeding writes
-            // through the transaction twin and never reaches here.
-            service
-                .mark_seeded_links_modified(&relationship_name, &source_id, &target_id)
-                .await;
+            // through the transaction twin and never reaches here. A create
+            // of an edge already stored changed nothing.
+            if !existed {
+                service
+                    .mark_seeded_links_modified(&relationship_name, &source_id)
+                    .await;
+            }
             return Ok(created);
         }
 
@@ -2246,7 +2293,7 @@ impl NodeService {
             let source_id = source_id.to_string();
             let relationship_name = relationship_name.to_string();
             let target_id = target_id.to_string();
-            service
+            let existed = service
                 .with_transaction({
                     let (source_id, relationship_name, target_id) = (
                         source_id.clone(),
@@ -2255,6 +2302,14 @@ impl NodeService {
                     );
                     move |tx| {
                         Box::pin(async move {
+                            let existed = service_for_tx
+                                .named_edge_exists_in_tx(
+                                    tx,
+                                    &source_id,
+                                    &relationship_name,
+                                    &target_id,
+                                )
+                                .await?;
                             service_for_tx
                                 .remove_relationship_in_tx(
                                     tx,
@@ -2262,14 +2317,18 @@ impl NodeService {
                                     &relationship_name,
                                     &target_id,
                                 )
-                                .await
+                                .await?;
+                            Ok(existed)
                         })
                     }
                 })
                 .await?;
-            service
-                .mark_seeded_links_modified(&relationship_name, &source_id, &target_id)
-                .await;
+            // Removing an edge that is not stored changed nothing.
+            if existed {
+                service
+                    .mark_seeded_links_modified(&relationship_name, &source_id)
+                    .await;
+            }
             return Ok(());
         }
 

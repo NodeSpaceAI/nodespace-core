@@ -284,6 +284,15 @@ fn check_root_only_member(
     Ok(())
 }
 
+/// What [`SqliteStore::bulk_create_has_child`] did with a batch.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct BulkHasChildOutcome {
+    /// `(parent, child, order)` for each edge inserted.
+    pub created: Vec<(String, String, f64)>,
+    /// `(parent, child)` for each edge skipped because it would close a loop.
+    pub skipped_cycles: Vec<(String, String)>,
+}
+
 impl SqliteStore {
     pub async fn create_mention(&self, source_id: &str, target_id: &str) -> Result<Option<String>> {
         // Guard spans the existence check and the insert: without it two
@@ -885,7 +894,14 @@ impl SqliteStore {
         // direct callers (e.g. markdown import) are covered without relying on the
         // service. Content/person members have no member_of descendants and can't
         // cycle, so the check is limited to collection-typed members.
-        if self.get_node_type(member_id).await?.as_deref() == Some("collection") {
+        let member_is_collection = match self.get_node_type(member_id).await? {
+            Some(node_type) => {
+                self.type_is_a(&node_type, crate::models::CoreNodeType::Collection)
+                    .await?
+            }
+            None => false,
+        };
+        if member_is_collection {
             self.validate_no_member_of_cycle(member_id, collection_id)
                 .await?;
         }
@@ -1413,15 +1429,19 @@ impl SqliteStore {
     /// Idempotent and safe for a from-scratch batch: a child that ALREADY has a
     /// parent `has_child` edge is skipped (a node has at most one parent), so this
     /// only ever attaches genuinely-unparented children — it never re-parents.
+    /// An edge that would close a `has_child` loop (the child is the parent or
+    /// one of its ancestors, counting edges earlier in the same batch) is
+    /// skipped like an already-parented child.
     /// Direction matches `move_node`/`get_children`: `in_node = parent, out_node =
     /// child`. Returns the edges actually inserted, so the caller can emit one
-    /// `RelationshipCreated` per edge.
+    /// `RelationshipCreated` per edge, and the `(parent, child)` pairs skipped
+    /// for closing a loop.
     pub async fn bulk_create_has_child(
         &self,
         edges: &[(String, String, f64)],
-    ) -> Result<Vec<(String, String, f64)>> {
+    ) -> Result<BulkHasChildOutcome> {
         if edges.is_empty() {
-            return Ok(Vec::new());
+            return Ok(BulkHasChildOutcome::default());
         }
 
         // ADR-059 §2 (reparent side): this bulk attach path must not give a
@@ -1444,6 +1464,7 @@ impl SqliteStore {
             .context("Failed to begin bulk has_child transaction")?;
 
         let mut created = Vec::with_capacity(edges.len());
+        let mut skipped_cycles = Vec::new();
         for (parent, child, order) in edges {
             // A node has at most one parent — skip if this child is already parented
             // (idempotent re-run; never re-parent a child that landed via another path).
@@ -1455,6 +1476,26 @@ impl SqliteStore {
                 .await
                 .context("Failed to check existing parent edge")?;
             if rows.next().await?.is_some() {
+                continue;
+            }
+
+            // Skip an edge that would make the child its own ancestor. Read
+            // through `tx`, so an edge inserted earlier in this batch counts.
+            // Only the cycle refusal skips; any other error (a busy or
+            // corrupt database) fails the batch.
+            if let Err(e) = Self::validate_no_cycle_on_conn(&tx, parent, child).await {
+                let is_cycle = e
+                    .downcast_ref::<super::TreeInvariantViolation>()
+                    .is_some_and(|v| v.rule == super::TreeInvariantRule::Cycle);
+                if !is_cycle {
+                    return Err(e);
+                }
+                tracing::warn!(
+                    parent_id = %parent,
+                    child_id = %child,
+                    "bulk_create_has_child: skipping has_child edge that would close a loop"
+                );
+                skipped_cycles.push((parent.clone(), child.clone()));
                 continue;
             }
 
@@ -1472,7 +1513,10 @@ impl SqliteStore {
         tx.commit()
             .await
             .context("Failed to commit bulk has_child")?;
-        Ok(created)
+        Ok(BulkHasChildOutcome {
+            created,
+            skipped_cycles,
+        })
     }
 
     /// The subset of `ids` whose node is a `collection`, chunked under SQLite's

@@ -924,6 +924,9 @@ impl NodeService {
             service
                 .with_transaction(move |tx| {
                     Box::pin(async move {
+                        service_for_tx
+                            .ensure_date_exists_in_tx(tx, &parent_id)
+                            .await?;
                         let created_id = service_for_tx.create_node_in_tx(tx, node, false).await?;
                         let placement = service_for_tx
                             .create_parent_edge_in_tx(
@@ -976,6 +979,9 @@ impl NodeService {
     ) -> Result<String, NodeServiceError> {
         let (node, parent, _node_type) = self.prepare_create_node_with_parent(params).await?;
 
+        if let Some((parent_id, _)) = &parent {
+            self.ensure_date_exists_in_tx(tx, parent_id).await?;
+        }
         let created_id = self.create_node_in_tx(tx, node, parent.is_none()).await?;
         if let Some((parent_id, position)) = parent {
             self.create_parent_edge_in_tx(tx, &created_id, &parent_id, position.as_ref())
@@ -1002,7 +1008,7 @@ impl NodeService {
     /// Shared validation/preparation pipeline for
     /// [`Self::create_node_with_parent`] and
     /// [`Self::create_node_with_parent_in_tx`] (steps 1-6 of the original
-    /// method): date-container bootstrap, node_type/parent/sibling
+    /// method): node_type/parent/sibling
     /// validation, ID generation, and title computation. Returns the fully
     /// constructed `Node` plus, when a parent was requested, its resolved
     /// `(parent_id, position)` — everything the caller needs to perform
@@ -1047,10 +1053,10 @@ impl NodeService {
                 .map_err(NodeServiceError::from_store)?;
         }
 
-        // Step 2: Auto-create date container if parent is a date ID
-        if let Some(ref parent_id) = params.parent_id {
-            self.ensure_date_exists(parent_id).await?;
-        }
+        // Step 2: A date parent that has no row yet reads as a virtual node
+        // below. Its row is created inside the create transaction
+        // (`ensure_date_exists_in_tx`), so a later rejection rolls it back
+        // with the rest and leaves no empty date container behind.
 
         // Step 3: The parent exists, and both structural rules allow the new
         // node under it (ADR-089).

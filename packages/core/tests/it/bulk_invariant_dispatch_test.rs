@@ -992,3 +992,49 @@ async fn bulk_create_journals_collection_name_collisions() -> Result<()> {
     );
     Ok(())
 }
+
+/// A node created under a parent is titled as a child even when an invariant
+/// `update_node` rule rewrites it while the create is still running, before
+/// its parent edge exists: the title follows the edge once it lands.
+#[tokio::test]
+async fn an_invariant_update_on_a_created_child_leaves_it_untitled() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "bi-stamp",
+        json!([
+            { "name": "status", "type": "text" },
+            { "name": "approved", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let _engine = activate_rules(&service, stamp_approved_on_create("bi-stamp"));
+    let parent = service
+        .create_node(Node::new(
+            "text".to_string(),
+            "parent".to_string(),
+            json!({}),
+        ))
+        .await?;
+
+    let child = service
+        .create_node_with_parent(nodespace_core::services::CreateNodeParams {
+            id: None,
+            node_type: "bi-stamp".to_string(),
+            content: "child line".to_string(),
+            parent_id: Some(parent),
+            position: nodespace_core::services::InsertPositionOwned::End,
+            properties: json!({ "status": "pending" }),
+            lifecycle_status: None,
+        })
+        .await?;
+
+    let node = service.get_node(&child).await?.expect("child exists");
+    assert_eq!(
+        user_field(&node, "bi-stamp", "approved"),
+        Some(&json!(true)),
+        "precondition: the invariant action ran"
+    );
+    assert_eq!(node.title, None, "a child line is not titled as a document");
+    Ok(())
+}

@@ -2209,8 +2209,11 @@ impl NodeService {
                 .unwrap_or_default();
 
             let Some(existing_node) = existing_by_id.get(&root.id) else {
-                // Absent: create root + children together.
-                self.create_node_with_parent(CreateNodeParams {
+                // Absent: create root + children in one transaction, so an
+                // interruption never leaves a root that carries the template's
+                // `guidance_version` with none of its children (reconciliation
+                // would then take the body for current and never create it).
+                let root_params = CreateNodeParams {
                     id: Some(root.id.clone()),
                     node_type: root.node_type.clone(),
                     content: root.content.clone(),
@@ -2218,12 +2221,26 @@ impl NodeService {
                     parent_id: None,
                     position: crate::services::InsertPositionOwned::End,
                     lifecycle_status: None,
+                };
+                let child_rows = Self::seed_children_rows(children);
+                let service = self.clone();
+                self.with_transaction(move |tx| {
+                    Box::pin(async move {
+                        service
+                            .create_node_with_parent_in_tx(tx, root_params)
+                            .await?;
+                        service.bulk_create_hierarchy_in_tx(tx, child_rows).await?;
+                        Ok(())
+                    })
                 })
                 .await?;
                 created_roots += 1;
-
+                created_children += children.len() as u32;
+                self.queue_created_root_for_embedding(&root.id, &root.node_type, false)
+                    .await;
+                #[cfg(feature = "nlp")]
                 if !children.is_empty() {
-                    created_children += self.bulk_create_seed_children(children).await?;
+                    self.queue_root_for_embedding(&root.id).await;
                 }
                 self.record_seeded_guidance(&root.id).await?;
                 continue;
@@ -2331,14 +2348,23 @@ impl NodeService {
         if children.is_empty() {
             return Ok(0);
         }
-        let bulk_nodes: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )> = children
+        self.bulk_create_hierarchy(Self::seed_children_rows(children))
+            .await?;
+        Ok(children.len() as u32)
+    }
+
+    /// A template's children as the rows `bulk_create_hierarchy` takes.
+    fn seed_children_rows(
+        children: &[crate::markdown::PreparedNode],
+    ) -> Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        f64,
+        serde_json::Value,
+    )> {
+        children
             .iter()
             .map(|n| {
                 (
@@ -2350,9 +2376,7 @@ impl NodeService {
                     n.properties.clone(),
                 )
             })
-            .collect();
-        self.bulk_create_hierarchy(bulk_nodes).await?;
-        Ok(children.len() as u32)
+            .collect()
     }
 
     /// Config-only replace: merge the template's `root_properties` (including
@@ -7848,6 +7872,59 @@ mod tests {
         );
     }
 
+    /// A create under a missing date page that fails a later check (lifecycle
+    /// status, property validation) leaves no date page behind, and a
+    /// successful one still creates it.
+    #[tokio::test]
+    async fn test_create_node_with_parent_later_rejection_leaves_no_date_parent() {
+        let (service, _temp) = create_test_service().await;
+        let params = |date: &str, lifecycle_status: Option<&str>, properties| CreateNodeParams {
+            id: None,
+            node_type: "task".to_string(),
+            content: "content".to_string(),
+            parent_id: Some(date.to_string()),
+            position: crate::services::InsertPositionOwned::End,
+            properties,
+            lifecycle_status: lifecycle_status.map(str::to_string),
+        };
+
+        let bad_status = service
+            .create_node_with_parent(params("2027-01-01", Some("bogus"), json!({})))
+            .await;
+        assert!(
+            bad_status.is_err(),
+            "an invalid lifecycle_status is refused"
+        );
+        let bad_property = service
+            .create_node_with_parent(params("2027-01-02", None, json!({ "status": "bogus" })))
+            .await;
+        assert!(
+            bad_property.is_err(),
+            "an invalid property value is refused"
+        );
+        for date in ["2027-01-01", "2027-01-02"] {
+            assert!(
+                service.store.get_node(date).await.unwrap().is_none(),
+                "a rejected create must not leave the date page {date} behind"
+            );
+        }
+
+        let created = service
+            .create_node_with_parent(params("2027-01-03", None, json!({})))
+            .await
+            .unwrap();
+        assert!(service
+            .store
+            .get_node("2027-01-03")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            service.get_parent(&created).await.unwrap().unwrap().id,
+            "2027-01-03"
+        );
+    }
+
     /// A caller-supplied id for a non-date/non-schema node must be a UUID —
     /// there is no `test-` prefix exemption in the shipped validation path.
     #[tokio::test]
@@ -11376,6 +11453,54 @@ mod tests {
         holders
     }
 
+    /// A node whose type extends `collection` gets the same member_of cycle
+    /// guard as a plain collection when it is filed through the store directly.
+    #[tokio::test]
+    async fn test_store_add_to_collection_guards_cycle_for_collection_subtype() {
+        let (service, _temp) = create_test_service().await;
+        crate::schema::handle_create_schema(
+            &Arc::new(service.clone()),
+            json!({ "name": "Shelf", "extends": "collection", "fields": [] }),
+        )
+        .await
+        .unwrap();
+        let shelf = service
+            .create_node(Node::new(
+                "shelf".to_string(),
+                "Shelf".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let outer = service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "Outer".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        service
+            .store()
+            .add_to_collection(&shelf, &outer, &json!({}))
+            .await
+            .unwrap();
+        let err = service
+            .store()
+            .add_to_collection(&outer, &shelf, &json!({}))
+            .await
+            .expect_err("a member_of loop through a collection subtype must be refused");
+        assert!(err.to_string().contains("collection_cycle"), "got: {err}");
+
+        let err = service
+            .store()
+            .add_to_collection(&shelf, &shelf, &json!({}))
+            .await
+            .expect_err("a collection subtype cannot be filed into itself");
+        assert!(err.to_string().contains("collection_cycle"), "got: {err}");
+    }
+
     /// A user type extending `person` whose id sorts before it, and one
     /// instance of it created after the seeded local person.
     async fn person_subtype_instance(service: &NodeService) -> String {
@@ -12428,6 +12553,37 @@ mod tests {
         let children = service.get_children(&nodes[0].id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].content, "You are v2, rewritten.");
+    }
+
+    /// The root and its children of a seed that is not yet in the database
+    /// commit together: a children insert that fails leaves no root behind,
+    /// so the next open seeds it whole instead of finding a childless root
+    /// that already carries the template's guidance version.
+    #[tokio::test]
+    async fn seeding_an_absent_template_leaves_no_root_when_its_children_fail() {
+        use crate::markdown::{prepare_nodes_from_template, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+        let template = seed_template("Core Identity", "You are v1.", SeedTier::System);
+        let mut group = prepare_nodes_from_template(&template).unwrap();
+        group[1].node_type = "not-a-real-type".to_string();
+
+        let result = service.seed_nodes_from_templates(vec![group]).await;
+
+        assert!(
+            result.is_err(),
+            "a child that cannot be created fails the seed"
+        );
+        assert!(
+            service.get_node(TEST_SEED_ID).await.unwrap().is_none(),
+            "the root must roll back with its children"
+        );
+
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&template).unwrap()])
+            .await
+            .unwrap();
+        assert_eq!(service.get_children(TEST_SEED_ID).await.unwrap().len(), 1);
     }
 
     /// Seeding an unchanged template over a database that already holds it
