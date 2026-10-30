@@ -3020,10 +3020,17 @@ impl GrpcNodeService for NodeServiceImpl {
         // subscriber (a command waiting on a change) is nobody looking at the
         // database, so it takes no claim and releases none.
         let req = request.into_inner();
-        let claims_active = !req.background;
-        if claims_active {
+        // The guard that retracts the claim is built here, with the claim
+        // itself, and moved into the stream below. Building it inside the
+        // stream body would leave a stream dropped before its first poll with
+        // a claim and nothing to retract it.
+        let active_guard = (!req.background).then(|| {
             this.scheduler.set_active(Some(this.database_id.clone()));
-        }
+            ActiveDbGuard {
+                scheduler: this.scheduler.clone(),
+                database_id: this.database_id.clone(),
+            }
+        });
 
         if !req.node_type.is_empty() || !req.root_id.is_empty() {
             // Filtering is intentionally out of scope for the initial implementation
@@ -3054,15 +3061,11 @@ impl GrpcNodeService for NodeServiceImpl {
         // once that database is evicted and reopened as a fresh instance with
         // its own bus.
         let shutdown_token = this.shutdown_token.clone();
-        let scheduler = this.scheduler.clone();
 
         let stream = async_stream::stream! {
             // Retracts the active-database claim taken above on every exit
             // path from this generator — see `ActiveDbGuard`'s doc comment.
-            let _active_guard = claims_active.then(|| ActiveDbGuard {
-                scheduler,
-                database_id: database_id.clone(),
-            });
+            let _active_guard = active_guard;
 
             loop {
                 let envelope_result = tokio::select! {
@@ -7891,6 +7894,36 @@ mod tests {
             !scheduler.is_active("db-a"),
             "dropping the stream must retract its active-database claim, not leave the \
              database stuck eviction-immune forever"
+        );
+    }
+
+    /// A stream the client resets before the server ever polls it still
+    /// retracts its active-database claim: the guard lives in the handler's
+    /// return value, not in the generator body that only runs on first poll.
+    #[tokio::test]
+    async fn watch_nodes_clears_active_database_when_stream_is_dropped_unpolled() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
+        let core_svc = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+        let scheduler = Arc::new(EmbeddingScheduler::new());
+        let svc = Arc::new(
+            NodeServiceImpl::new(
+                core_svc,
+                Arc::new(tokio::sync::RwLock::new(None)),
+                scheduler.clone(),
+            )
+            .with_database_id("db-a".into()),
+        );
+
+        let stream = watch_as(&svc, None).await;
+        assert!(scheduler.is_active("db-a"));
+
+        drop(stream);
+
+        assert!(
+            !scheduler.is_active("db-a"),
+            "dropping a never-polled stream must retract the claim"
         );
     }
 
