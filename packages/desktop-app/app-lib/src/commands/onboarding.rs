@@ -140,12 +140,32 @@ async fn update_config_at(
 
 /// The comment line that opens the block NodeSpace writes into an rc file.
 const BLOCK_COMMENT: &str = "# NodeSpace CLI";
-/// The one line that follows [`BLOCK_COMMENT`], per shell family.
-const POSIX_EXPORT: &str = "export PATH=\"$HOME/.nodespace/bin:$PATH\"";
-const FISH_EXPORT: &str = "fish_add_path $HOME/.nodespace/bin";
+/// The sidecar directory a build installs the CLI into: `bin` for a release
+/// build, `bin-dev` for a debug build, so the PATH line must follow the build.
+fn bin_dir_name() -> &'static str {
+    nodespace_proto::socket::daemon_bin_dir_name(cfg!(debug_assertions))
+}
 
-const POSIX_EXPORT_LINE: &str = "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
-const FISH_EXPORT_LINE: &str = "\n# NodeSpace CLI\nfish_add_path $HOME/.nodespace/bin\n";
+/// The one line that follows [`BLOCK_COMMENT`], per shell family, for the
+/// sidecar directory `dir`.
+fn posix_export(dir: &str) -> String {
+    format!("export PATH=\"$HOME/.nodespace/{dir}:$PATH\"")
+}
+
+fn fish_export(dir: &str) -> String {
+    format!("fish_add_path $HOME/.nodespace/{dir}")
+}
+
+fn export_block(export: &str) -> String {
+    format!("\n{BLOCK_COMMENT}\n{export}\n")
+}
+
+/// True when `line` is an export line NodeSpace writes for either build flavour.
+fn is_export_line(line: &str) -> bool {
+    nodespace_proto::socket::DAEMON_BIN_DIR_NAMES
+        .iter()
+        .any(|dir| line == posix_export(dir) || line == fish_export(dir))
+}
 
 /// Byte ranges of every block NodeSpace wrote into `content`: the
 /// [`BLOCK_COMMENT`] line immediately followed by one of the exact export
@@ -165,7 +185,7 @@ fn nodespace_blocks(content: &str) -> Vec<std::ops::Range<usize>> {
     while i + 1 < lines.len() {
         let (start, _, text) = lines[i];
         let (next_start, next_len, next) = lines[i + 1];
-        if text == BLOCK_COMMENT && (next == POSIX_EXPORT || next == FISH_EXPORT) {
+        if text == BLOCK_COMMENT && is_export_line(next) {
             let mut from = start;
             if i > 0
                 && lines[i - 1].2.is_empty()
@@ -279,10 +299,11 @@ impl LoginShell {
         }
     }
 
-    fn export_line(self) -> &'static str {
+    /// The block to write for the sidecar directory `dir`.
+    fn export_line(self, dir: &str) -> String {
         match self {
-            Self::Fish => FISH_EXPORT_LINE,
-            _ => POSIX_EXPORT_LINE,
+            Self::Fish => export_block(&fish_export(dir)),
+            _ => export_block(&posix_export(dir)),
         }
     }
 }
@@ -427,7 +448,7 @@ async fn apply_path_config(home: &Path, shell: LoginShell) -> Result<Vec<PathFil
         return Ok(present);
     }
     let target = target_rc_file(home, shell);
-    let outcome = append_path_to_file(&target, shell.export_line()).await?;
+    let outcome = append_path_to_file(&target, &shell.export_line(bin_dir_name())).await?;
     Ok(vec![PathFileReport {
         path: target.display().to_string(),
         outcome,
@@ -869,6 +890,46 @@ pub async fn dismiss_identity_backfill_prompt() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const POSIX_EXPORT: &str = "export PATH=\"$HOME/.nodespace/bin:$PATH\"";
+    const POSIX_EXPORT_LINE: &str =
+        "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
+    const FISH_EXPORT_LINE: &str = "\n# NodeSpace CLI\nfish_add_path $HOME/.nodespace/bin\n";
+
+    #[test]
+    fn the_export_line_follows_the_build_flavour() {
+        assert_eq!(
+            LoginShell::Zsh.export_line("bin-dev"),
+            "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin-dev:$PATH\"\n"
+        );
+        assert_eq!(
+            LoginShell::Fish.export_line("bin-dev"),
+            "\n# NodeSpace CLI\nfish_add_path $HOME/.nodespace/bin-dev\n"
+        );
+        assert_eq!(LoginShell::Zsh.export_line("bin"), POSIX_EXPORT_LINE);
+        assert_eq!(LoginShell::Fish.export_line("bin"), FISH_EXPORT_LINE);
+    }
+
+    #[test]
+    fn blocks_of_either_flavour_are_recognised() {
+        for dir in ["bin", "bin-dev"] {
+            for block in [
+                LoginShell::Zsh.export_line(dir),
+                LoginShell::Fish.export_line(dir),
+            ] {
+                let content = format!("keep\n{block}after\n");
+                let ranges = nodespace_blocks(&content);
+                assert_eq!(ranges.len(), 1, "{dir}: {content:?}");
+                let mut rest = content.clone();
+                rest.replace_range(ranges[0].clone(), "");
+                assert_eq!(rest, "keep\nafter\n");
+            }
+        }
+        assert!(nodespace_blocks(
+            "# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin-x:$PATH\"\n"
+        )
+        .is_empty());
+    }
 
     /// Proves `CONFIG_LOCK` prevents the lost-update race: concurrent updates
     /// to DIFFERENT fields, all racing the same read-modify-write cycle.

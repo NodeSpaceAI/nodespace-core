@@ -1158,6 +1158,10 @@ fn persist_window_geometry<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, 
     let Some(window) = app_handle.get_webview_window(label) else {
         return;
     };
+    // A minimized window reports a degenerate client area and an off-screen
+    // position (Windows: 0x0 at -32000,-32000); saving that would overwrite
+    // the last good geometry.
+    let minimized = window.is_minimized().unwrap_or(false);
     let (Ok(size), Ok(position)) = (window.inner_size(), window.outer_position()) else {
         return;
     };
@@ -1168,6 +1172,9 @@ fn persist_window_geometry<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, 
         x: position.x,
         y: position.y,
     };
+    if !window_state::should_persist_geometry(minimized, &geometry) {
+        return;
+    }
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         if let Err(e) = window_state::save_geometry(&app_handle, &database_id, geometry).await {

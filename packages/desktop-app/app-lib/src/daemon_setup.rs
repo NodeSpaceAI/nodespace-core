@@ -2538,6 +2538,56 @@ fn systemd_user_service_dir(home: &Path) -> PathBuf {
     home.join(".config/systemd/user")
 }
 
+/// Escape a value for a systemd quoted word (`"..."` or `'...'`): systemd
+/// processes C-style escapes inside both quote styles, so `\` must be doubled,
+/// and `%` starts a specifier that is expanded in most unit settings.
+#[cfg(any(target_os = "linux", test))]
+fn systemd_escape_word(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "%%")
+}
+
+/// Build the text of the systemd user unit for nodespaced.
+///
+/// `ExecStart=` is split on whitespace, so the executable is written as a
+/// double-quoted word. `Environment=` values are single-quoted words. The
+/// `append:` log paths are the remainder of the line (spaces are fine) but
+/// still go through specifier expansion, so only `%` is escaped there.
+#[cfg(any(target_os = "linux", test))]
+fn systemd_unit_text(
+    bin: &str,
+    socket: &str,
+    ui_binary: &str,
+    log_out: &str,
+    log_err: &str,
+) -> String {
+    let dq_escape = |s: &str| systemd_escape_word(s).replace('"', "\\\"");
+    let sq_escape = |s: &str| systemd_escape_word(s).replace('\'', r"'\''");
+    let pct = |s: &str| s.replace('%', "%%");
+    format!(
+        "[Unit]\n\
+         Description=NodeSpace daemon\n\
+         After=network.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart=\"{bin}\" {launcher_args}\n\
+         Environment=NODESPACED_SOCKET='{socket}'\n\
+         Environment=NODESPACE_UI_BINARY='{ui_binary}'\n\
+         StandardOutput=append:{log_out}\n\
+         StandardError=append:{log_err}\n\
+         Restart=on-failure\n\
+         \n\
+         [Install]\n\
+         WantedBy=default.target\n",
+        bin = dq_escape(bin),
+        launcher_args = nodespace_proto::socket::LAUNCHER_ARGS.join(" "),
+        socket = sq_escape(socket),
+        ui_binary = sq_escape(ui_binary),
+        log_out = pct(log_out),
+        log_err = pct(log_err),
+    )
+}
+
 /// Write the systemd user service unit for nodespaced.
 #[cfg(target_os = "linux")]
 fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) -> Result<()> {
@@ -2555,33 +2605,7 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
 
     let ui_binary = current_exe_canonical()?.to_string_lossy().into_owned();
 
-    // systemd Environment= values with spaces must be single-quoted. Escape embedded
-    // single quotes as '\'' (end quote, literal single quote, reopen quote).
-    let sq_escape = |s: &str| s.replace('\'', r"'\''");
-
-    let unit = format!(
-        "[Unit]\n\
-         Description=NodeSpace daemon\n\
-         After=network.target\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         ExecStart={bin} {launcher_args}\n\
-         Environment=NODESPACED_SOCKET='{socket}'\n\
-         Environment=NODESPACE_UI_BINARY='{ui_binary}'\n\
-         StandardOutput=append:{log_out}\n\
-         StandardError=append:{log_err}\n\
-         Restart=on-failure\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        bin = bin_str,
-        launcher_args = nodespace_proto::socket::LAUNCHER_ARGS.join(" "),
-        socket = sq_escape(&socket_path),
-        ui_binary = sq_escape(&ui_binary),
-        log_out = log_out,
-        log_err = log_err,
-    );
+    let unit = systemd_unit_text(&bin_str, &socket_path, &ui_binary, &log_out, &log_err);
 
     std::fs::write(service_path, unit)
         .with_context(|| format!("Cannot write service file to {}", service_path.display()))
@@ -2610,6 +2634,24 @@ fn systemd_enable_args(binary_updated: bool, unit: &str) -> Vec<Vec<String>> {
     }
 }
 
+/// Run every command in `commands` through `run` (which reports whether it
+/// succeeded), even after one fails: `restart` does not depend on `enable`
+/// succeeding, and skipping it would leave the unit on the old binary. Returns
+/// whether all of them succeeded; an `Err` from `run` stops the sequence.
+#[cfg(any(target_os = "linux", test))]
+fn run_systemd_commands<F>(commands: &[Vec<String>], mut run: F) -> Result<bool>
+where
+    F: FnMut(&[String]) -> Result<bool>,
+{
+    let mut all_ok = true;
+    for args in commands {
+        if !run(args)? {
+            all_ok = false;
+        }
+    }
+    Ok(all_ok)
+}
+
 /// Enable and start the systemd user service, restarting it when the daemon
 /// binary was replaced.
 #[cfg(target_os = "linux")]
@@ -2624,20 +2666,27 @@ fn enable_systemd_service(binary_updated: bool) -> Result<()> {
         tracing::warn!("systemctl daemon-reload failed: {}", err);
     }
 
-    for args in systemd_enable_args(binary_updated, SYSTEMD_SERVICE_NAME) {
-        let out = std::process::Command::new("systemctl")
-            .args(&args)
-            .output()
-            .with_context(|| format!("Failed to run systemctl {}", args.join(" ")))?;
-        if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            tracing::warn!(
-                "systemctl {} failed (daemon may start on next login): {}",
-                args.join(" "),
-                err
-            );
-            return Ok(());
-        }
+    let all_ok = run_systemd_commands(
+        &systemd_enable_args(binary_updated, SYSTEMD_SERVICE_NAME),
+        |args| {
+            let out = std::process::Command::new("systemctl")
+                .args(args)
+                .output()
+                .with_context(|| format!("Failed to run systemctl {}", args.join(" ")))?;
+            if out.status.success() {
+                Ok(true)
+            } else {
+                tracing::warn!(
+                    "systemctl {} failed (daemon may start on next login): {}",
+                    args.join(" "),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                Ok(false)
+            }
+        },
+    )?;
+    if !all_ok {
+        return Ok(());
     }
     tracing::info!(
         "systemd user service enabled and started: {}",
@@ -5808,7 +5857,52 @@ mod bundle_marker_tests {
 
 #[cfg(test)]
 mod systemd_enable_tests {
-    use super::systemd_enable_args;
+    use super::{run_systemd_commands, systemd_enable_args, systemd_unit_text};
+
+    #[test]
+    fn a_failing_enable_still_runs_the_restart() {
+        let commands = systemd_enable_args(true, "nodespace.service");
+        let mut seen = Vec::new();
+        let all_ok = run_systemd_commands(&commands, |args| {
+            seen.push(args.join(" "));
+            Ok(!args.contains(&"enable".to_owned()))
+        })
+        .unwrap();
+        assert!(!all_ok, "a failed command is reported");
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[1].contains("restart"),
+            "restart ran after enable failed"
+        );
+    }
+
+    #[test]
+    fn all_commands_succeeding_reports_success() {
+        let commands = systemd_enable_args(true, "nodespace.service");
+        assert!(run_systemd_commands(&commands, |_| Ok(true)).unwrap());
+    }
+
+    #[test]
+    fn unit_quotes_the_executable_and_escapes_specifiers() {
+        let unit = systemd_unit_text(
+            "/home/Mary Ann/100%/.nodespace/bin/nodespaced",
+            "/home/Mary Ann/it's/sock",
+            "/opt/ui\\x/app",
+            "/home/Mary Ann/100%/log",
+            "/home/Mary Ann/100%/err",
+        );
+        assert!(unit.contains("ExecStart=\"/home/Mary Ann/100%%/.nodespace/bin/nodespaced\" "));
+        assert!(unit.contains("NODESPACED_SOCKET='/home/Mary Ann/it'\\''s/sock'"));
+        assert!(unit.contains("NODESPACE_UI_BINARY='/opt/ui\\\\x/app'"));
+        assert!(unit.contains("StandardOutput=append:/home/Mary Ann/100%%/log\n"));
+        assert!(unit.contains("StandardError=append:/home/Mary Ann/100%%/err\n"));
+    }
+
+    #[test]
+    fn unit_escapes_quotes_in_the_executable() {
+        let unit = systemd_unit_text("/a\"b/nodespaced", "/s", "/u", "/o", "/e");
+        assert!(unit.contains("ExecStart=\"/a\\\"b/nodespaced\" "));
+    }
 
     #[test]
     fn a_binary_update_restarts_the_unit_instead_of_relying_on_enable_now() {
