@@ -1031,6 +1031,8 @@ It removes only the free NodeSpace. On a Mac where `/Applications/NodeSpace.app`
 
 NodeSpace's `.pkg` installer and its Homebrew cask refuse the same way over such an app, and name the same remedy: the person moves `/Applications/NodeSpace.app` to the Trash, then the install is run again.
 
+On a Mac where the `.pkg` installer put files outside the home folder (`/Library/LaunchAgents/app.nodespace.daemon.plist`, `/usr/local/bin/nodespace`, `/usr/local/bin/nodespaced`), `nodespace uninstall` removes what the person owns, then exits non-zero without printing "NodeSpace uninstalled." It lists the files it left because they need administrator rights, and the `sudo rm` command that removes them. It never runs `sudo` itself. **Pass that command on for the person to run; don't run it yourself.**
+
 A run with `NODESPACE_HOME` set is not checked against the installed app. It removes only the binaries and sockets under that home, and leaves the daemon service, the agent skills and the app alone.
 
 ### Complete command surface

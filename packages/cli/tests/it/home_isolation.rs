@@ -128,6 +128,25 @@ fn installed_app_blocks_uninstall() -> bool {
     product != Some("community")
 }
 
+/// Whether this Mac holds files a `.pkg` install put outside the home folder.
+/// The compiled binary looks at the machine's real `/Library` and
+/// `/usr/local/bin`, so a test that runs it without a redirect expects it to
+/// remove the home's files and then fail over those.
+fn pkg_files_remain() -> bool {
+    cfg!(target_os = "macos")
+        && [
+            "/Library/LaunchAgents/app.nodespace.daemon.plist",
+            "/usr/local/bin/nodespace",
+            "/usr/local/bin/nodespaced",
+        ]
+        .iter()
+        .any(|p| {
+            Path::new(p)
+                .symlink_metadata()
+                .is_ok_and(|m| !m.file_type().is_symlink())
+        })
+}
+
 /// The refusal beside an app that is not the free NodeSpace: the command
 /// fails with the reason and removes nothing from `home`, which held `before`.
 fn assert_refused(output: &Output, home: &Path, before: &BTreeMap<PathBuf, Vec<u8>>) {
@@ -206,7 +225,17 @@ fn uninstall_without_a_redirect_removes_the_install_in_the_users_home() {
         assert_refused(&output, real.path(), &before);
         return;
     }
-    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let pkg_files = pkg_files_remain();
+    if pkg_files {
+        assert!(!output.status.success(), "stdout: {}", stdout(&output));
+        assert!(
+            stderr(&output).contains("need administrator rights and were left in place"),
+            "got: {}",
+            stderr(&output)
+        );
+    } else {
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+    }
     let state_dir = PathBuf::from(STATE_DIR);
     // The other platform's service file stands in for an unrelated file.
     let bystander = if cfg!(target_os = "macos") {
@@ -223,6 +252,9 @@ fn uninstall_without_a_redirect_removes_the_install_in_the_users_home() {
     let left: Vec<PathBuf> = snapshot(real.path()).into_keys().collect();
     assert_eq!(left, expected);
 
+    if pkg_files {
+        return;
+    }
     let out = stdout(&output);
     let kept = real.path().join(STATE_DIR).join("database");
     assert!(
