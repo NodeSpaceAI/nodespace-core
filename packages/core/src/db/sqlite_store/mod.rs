@@ -871,6 +871,7 @@ mod relationship_paths;
 pub(crate) use relationship_paths::path_reaches_condition;
 pub use relationship_paths::PathReach;
 mod relationships;
+pub use relationships::BulkHasChildOutcome;
 mod search;
 mod seed_updates;
 mod structure;
@@ -2884,6 +2885,48 @@ mod tests {
             .unwrap_or_else(|| panic!("expected a typed TreeInvariantViolation, got: {err:#}"));
         assert_eq!(violation.rule, TreeInvariantRule::Cycle);
         assert_eq!(store.get_parent_id(&top_id).await?, None);
+
+        Ok(())
+    }
+
+    /// A bulk batch cannot close a `has_child` loop: a reversed pair and an
+    /// edge from a root onto its own descendant are skipped, the rest attach.
+    #[tokio::test]
+    async fn test_bulk_create_has_child_skips_edges_that_close_a_loop() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        let mut ids = Vec::new();
+        for content in ["a", "b", "c", "d"] {
+            let node = Node::new("text".to_string(), content.to_string(), json!({}));
+            ids.push(node.id.clone());
+            store.create_node(node, None, None).await?;
+        }
+        let (a, b, c, d) = (&ids[0], &ids[1], &ids[2], &ids[3]);
+
+        let outcome = store
+            .bulk_create_has_child(&[
+                (a.clone(), b.clone(), 1.0),
+                (b.clone(), a.clone(), 2.0),
+                (b.clone(), c.clone(), 3.0),
+                (c.clone(), a.clone(), 4.0),
+                (c.clone(), d.clone(), 5.0),
+            ])
+            .await?;
+
+        assert_eq!(
+            outcome.created,
+            vec![
+                (a.clone(), b.clone(), 1.0),
+                (b.clone(), c.clone(), 3.0),
+                (c.clone(), d.clone(), 5.0),
+            ]
+        );
+        assert_eq!(
+            outcome.skipped_cycles,
+            vec![(b.clone(), a.clone()), (c.clone(), a.clone())],
+            "the skipped edges are reported"
+        );
+        assert_eq!(store.get_parent_id(a).await?, None);
 
         Ok(())
     }
