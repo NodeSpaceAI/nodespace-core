@@ -78,6 +78,13 @@ impl WindowGeometry {
     }
 }
 
+/// Whether a live window's geometry should overwrite the saved entry: not while
+/// the window is minimized (the OS reports a placeholder size and position),
+/// and never a geometry the restore path would reject.
+pub fn should_persist_geometry(minimized: bool, geometry: &WindowGeometry) -> bool {
+    !minimized && geometry.is_plausible()
+}
+
 /// `database_id -> WindowGeometry`.
 type GeometryMap = HashMap<String, WindowGeometry>;
 
@@ -348,6 +355,25 @@ mod tests {
         .expect("save failed");
         assert!(!dir.path().join(format!("{WINDOW_STATE_FILE}.tmp")).exists());
         assert!(dir.path().join(WINDOW_STATE_FILE).exists());
+    }
+
+    #[test]
+    fn minimized_or_degenerate_geometry_is_not_persisted() {
+        let good = WindowGeometry {
+            width: 1200,
+            height: 800,
+            x: 10,
+            y: 10,
+        };
+        assert!(should_persist_geometry(false, &good));
+        assert!(!should_persist_geometry(true, &good));
+        let degenerate = WindowGeometry {
+            width: 0,
+            height: 0,
+            x: -32000,
+            y: -32000,
+        };
+        assert!(!should_persist_geometry(false, &degenerate));
     }
 
     #[test]
