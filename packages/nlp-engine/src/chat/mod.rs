@@ -229,10 +229,12 @@ impl ChatEngine {
             // llama.cpp parses it with full authority. Mirrors the embedding-model
             // load gate; the digest is the selected catalog entry's pinned SHA-256.
             //
-            // Uses the verified-state cache: an unchanged file that was already
-            // verified (at download or a prior load) is not re-hashed. Any change
-            // to the file's identity (size/mtime/inode) still forces a full
-            // re-hash, so a post-install tamper is still refused.
+            // Uses the verified-state cache: an unchanged file with an
+            // authenticated record (keyed MAC under a per-install secret kept
+            // outside the models directory) is not re-hashed. Any change to the
+            // file's identity (size/mtime/inode/ctime), or a record that does not
+            // authenticate, forces a full re-hash. A process able to read the key
+            // file could still forge a record; that is the residual limit.
             match expected_sha256 {
                 Some(expected) => {
                     crate::config::verify_file_sha256_cached(path, expected)
