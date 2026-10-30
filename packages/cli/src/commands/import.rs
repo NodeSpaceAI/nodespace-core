@@ -590,11 +590,16 @@ fn collect_recursive(
             continue;
         }
 
-        // lstat semantics: a symlink is never descended into or imported, so a
-        // link back to the root or an ancestor cannot re-enter the tree.
-        let file_type = entry.file_type()?;
+        // lstat semantics for directories: a symlinked directory is never
+        // descended into, so a link back to the root or an ancestor cannot
+        // re-enter the tree. A symlink to a regular file is followed and
+        // imported like the file itself; a dangling link is skipped.
+        let mut file_type = entry.file_type()?;
         if file_type.is_symlink() {
-            continue;
+            match std::fs::metadata(&path) {
+                Ok(target) if target.is_file() => file_type = target.file_type(),
+                _ => continue,
+            }
         }
 
         if file_type.is_dir() {
@@ -909,5 +914,32 @@ mod tests {
             })
             .collect();
         assert_eq!(rel, vec!["a.md".to_string(), "sub/b.md".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_imports_symlinked_markdown_files_and_skips_dangling_links() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("notes");
+        fs::create_dir(&root).unwrap();
+        let outside = tmp.path().join("elsewhere.md");
+        fs::write(&outside, "# elsewhere").unwrap();
+        fs::write(root.join("a.md"), "# a").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("linked.md")).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("missing.md"), root.join("dangling.md"))
+            .unwrap();
+
+        let files = collect_markdown_files(root.to_str().unwrap(), &[], ALL_ON).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| {
+                std::path::Path::new(f)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, vec!["a.md".to_string(), "linked.md".to_string()]);
     }
 }
