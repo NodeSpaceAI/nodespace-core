@@ -438,7 +438,19 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn create_node(&self, mut node: Node) -> Result<String, NodeServiceError> {
+    pub async fn create_node(&self, node: Node) -> Result<String, NodeServiceError> {
+        self.create_node_in_collections(node, Vec::new()).await
+    }
+
+    /// [`Self::create_node`] that also files the new node into each collection
+    /// in `collection_ids`, in the same transaction as the insert: a collection
+    /// that cannot be joined (missing, not a collection) fails the call and
+    /// leaves no node behind.
+    pub async fn create_node_in_collections(
+        &self,
+        mut node: Node,
+        collection_ids: Vec<String>,
+    ) -> Result<String, NodeServiceError> {
         let start = std::time::Instant::now();
         tracing::debug!(node_type = %node.node_type, node_id = %node.id, "create_node: START");
 
@@ -517,9 +529,13 @@ impl NodeService {
         let created_id = service
             .with_transaction(move |tx| {
                 Box::pin(async move {
-                    service_for_tx
+                    let created_id = service_for_tx
                         .create_node_in_tx(tx, node_for_tx, true)
-                        .await
+                        .await?;
+                    service_for_tx
+                        .join_collections_in_tx(tx, &created_id, &collection_ids)
+                        .await?;
+                    Ok(created_id)
                 })
             })
             .await?;
@@ -883,6 +899,18 @@ impl NodeService {
         &self,
         params: CreateNodeParams,
     ) -> Result<(String, Option<crate::db::ChildPlacement>), NodeServiceError> {
+        self.create_placed_node_in_collections(params, Vec::new())
+            .await
+    }
+
+    /// [`Self::create_placed_node`] that also files the new node into each
+    /// collection in `collection_ids`, in the same transaction as the insert
+    /// and the parent edge. A failed join rolls the whole create back.
+    pub async fn create_placed_node_in_collections(
+        &self,
+        params: CreateNodeParams,
+        collection_ids: Vec<String>,
+    ) -> Result<(String, Option<crate::db::ChildPlacement>), NodeServiceError> {
         let (node, parent, node_type) = self.prepare_create_node_with_parent(params).await?;
         let has_parent = parent.is_some();
         let content = node.content.clone();
@@ -902,12 +930,19 @@ impl NodeService {
                                 position.as_ref(),
                             )
                             .await?;
+                        service_for_tx
+                            .join_collections_in_tx(tx, &created_id, &collection_ids)
+                            .await?;
                         Ok((created_id, Some(placement)))
                     })
                 })
                 .await?
         } else {
-            (self.create_node(node).await?, None)
+            (
+                self.create_node_in_collections(node, collection_ids)
+                    .await?,
+                None,
+            )
         };
 
         self.queue_created_root_for_embedding(&created_id, &node_type, has_parent)

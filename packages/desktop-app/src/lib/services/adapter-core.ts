@@ -81,6 +81,11 @@ export interface CreateNodeInput {
   parentId?: string | null;
   /** Where to insert among siblings. Omit for End (default). */
   insertPosition?: InsertPosition | null;
+  /**
+   * Collection to file the new node into. The backend commits the node and its
+   * membership in one transaction, so a failed join leaves no node behind.
+   */
+  collectionId?: string | null;
 }
 
 export interface UpdateNodeInput {
@@ -296,6 +301,8 @@ export interface CreateNodeFields {
   mentions: string[];
   parentId: string | null;
   insertPosition: InsertPosition | null;
+  /** Present only when the node is to be filed into a collection. */
+  collectionId?: string;
 }
 
 export function buildCreateNodeFields(input: CreateNodeInput | Node): CreateNodeFields {
@@ -307,6 +314,9 @@ export function buildCreateNodeFields(input: CreateNodeInput | Node): CreateNode
     mentions: (input as CreateNodeInput).mentions ?? [],
     parentId: (input as CreateNodeInput).parentId ?? null,
     insertPosition: (input as CreateNodeInput).insertPosition ?? null,
+    ...((input as CreateNodeInput).collectionId
+      ? { collectionId: (input as CreateNodeInput).collectionId as string }
+      : {}),
   };
 }
 

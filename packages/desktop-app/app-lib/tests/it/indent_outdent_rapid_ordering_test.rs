@@ -25,6 +25,7 @@ fn text_input(id: &str, content: &str, parent_id: Option<String>) -> CreateNodeI
         parent_id,
         insert_position: None,
         properties: json!({}),
+        collection_id: None,
     }
 }
 

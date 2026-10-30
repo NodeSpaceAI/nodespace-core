@@ -1157,6 +1157,33 @@ impl NodeService {
         Ok(created)
     }
 
+    /// File `node_id` into each collection of `collection_ids` on the caller's
+    /// transaction, appending after each collection's current last member.
+    /// Any failure (a missing collection, a target that is not a collection)
+    /// propagates so the caller's transaction rolls back.
+    pub(crate) async fn join_collections_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
+        collection_ids: &[String],
+    ) -> Result<(), NodeServiceError> {
+        for collection_id in collection_ids {
+            let order =
+                crate::db::SqliteStore::get_next_member_order_in_tx(tx.store_tx(), collection_id)
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
+            self.create_relationship_in_tx(
+                tx,
+                node_id,
+                "member_of",
+                collection_id,
+                serde_json::json!({ "order": order }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// [`Self::create_relationship_in_tx`] without invariant-rule dispatch,
     /// for an invariant rule's own `add_relationship` action. ADR-060 §2
     /// requires invariant rules to be depth 1 — an invariant action must not

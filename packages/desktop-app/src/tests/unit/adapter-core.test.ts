@@ -23,6 +23,17 @@ describe('adapter-core: buildCreateNodeFields', () => {
       parentId: null,
       insertPosition: null,
     });
+    expect('collectionId' in fields).toBe(false);
+  });
+
+  it('carries the collection to file the new node into', () => {
+    const fields = buildCreateNodeFields({
+      id: 'n1',
+      nodeType: 'text',
+      content: '',
+      collectionId: 'col-1',
+    });
+    expect(fields.collectionId).toBe('col-1');
   });
 
   it('preserves an explicit parentId and insertPosition', () => {

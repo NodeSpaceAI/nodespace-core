@@ -51,6 +51,7 @@ fn ai_chat_input(id: &str, provider_model: &str, turn_status: &str) -> CreateNod
         content: "Test chat".to_string(),
         parent_id: None,
         insert_position: None,
+        collection_id: None,
         properties: json!({
             "agent": "nodespace",
             "provider": "native",
@@ -168,6 +169,7 @@ async fn ai_chat_send_reaches_idle_with_no_stuck_processing_state() {
             parent_id: Some(id.clone()),
             insert_position: None,
             properties: json!({ "role": "user" }),
+            collection_id: None,
         },
     )
     .await

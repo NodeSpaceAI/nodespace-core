@@ -216,24 +216,27 @@ pub async fn create_node(
     // the initial insert makes that window impossible: the status is part
     // of the one write that creates the row.
     let (node_id, placement) = node_service
-        .create_placed_node(crate::services::CreateNodeParams {
-            id,
-            node_type: input.node_type,
-            content: input.content,
-            parent_id: input.parent_id,
-            position: input.position,
-            properties: input.properties,
-            lifecycle_status: input.lifecycle_status,
-        })
+        .create_placed_node_in_collections(
+            crate::services::CreateNodeParams {
+                id,
+                node_type: input.node_type,
+                content: input.content,
+                parent_id: input.parent_id,
+                position: input.position,
+                properties: input.properties,
+                lifecycle_status: input.lifecycle_status,
+            },
+            collection_ids_requested.clone(),
+        )
         .await?;
 
-    // Add to every requested collection. A failure propagates rather than
-    // returning a success that hid an unfiled node — but it is not atomic with
-    // the node write above: the node stays persisted, as do any collections
-    // already joined before the failing one. The caller sees the error and can
-    // retry the join; it does not get a silent partial success.
+    // Collections requested by id were joined inside the create's own
+    // transaction, so a failed join left no node behind. Collections named by
+    // path are resolved (and created when missing) after the node write, so
+    // that join is not atomic with it: a failure propagates, the node stays
+    // persisted, and the caller can retry the join.
     let mut collection_ids = Vec::with_capacity(collection_paths.len());
-    if !collection_paths.is_empty() || !collection_ids_requested.is_empty() {
+    if !collection_paths.is_empty() {
         let collection_service = CollectionService::new(node_service.store(), node_service);
         for path in &collection_paths {
             let resolved = collection_service
@@ -241,13 +244,8 @@ pub async fn create_node(
                 .await?;
             collection_ids.push(resolved.leaf_id().to_string());
         }
-        for collection_id in &collection_ids_requested {
-            collection_service
-                .add_to_collection(&node_id, collection_id)
-                .await?;
-            collection_ids.push(collection_id.clone());
-        }
     }
+    collection_ids.extend(collection_ids_requested);
 
     // Re-fetch for final state
     let created_node = node_service
@@ -828,5 +826,80 @@ mod tests {
             "expected InvalidParams so the daemon reports INVALID_ARGUMENT, got: {:?}",
             err
         );
+    }
+    async fn test_service(tag: &str) -> std::sync::Arc<crate::services::NodeService> {
+        let temp_dir = std::env::temp_dir().join(format!("{tag}_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let store = crate::db::SqliteStore::new(temp_dir.join("test.db"))
+            .await
+            .unwrap();
+        let mut store = std::sync::Arc::new(store);
+        std::sync::Arc::new(crate::services::NodeService::new(&mut store).await.unwrap())
+    }
+
+    fn root_text_input(id: &str, collection_ids: Vec<String>) -> CreateNodeInput {
+        CreateNodeInput {
+            id: Some(id.to_string()),
+            node_type: "text".to_string(),
+            content: String::new(),
+            parent_id: None,
+            position: crate::services::InsertPositionOwned::End,
+            properties: serde_json::json!({}),
+            collections: Vec::new(),
+            collection_ids,
+            lifecycle_status: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_root_text_node_joins_collection_by_id() {
+        let ns = test_service("create_node_join_ok").await;
+        let collection = ns
+            .create_node(Node::new(
+                "collection".to_string(),
+                "Reading".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let node_id = uuid::Uuid::new_v4().to_string();
+        let out = create_node(&ns, root_text_input(&node_id, vec![collection.clone()]))
+            .await
+            .unwrap();
+
+        assert_eq!(out.collection_ids, vec![collection.clone()]);
+        let memberships = ns.store().get_node_memberships(&out.node_id).await.unwrap();
+        assert_eq!(memberships, vec![collection]);
+    }
+
+    #[tokio::test]
+    async fn failed_collection_join_by_id_leaves_no_node_behind() {
+        let ns = test_service("create_node_join_missing").await;
+
+        let missing_id = uuid::Uuid::new_v4().to_string();
+        let missing = create_node(
+            &ns,
+            root_text_input(&missing_id, vec![uuid::Uuid::new_v4().to_string()]),
+        )
+        .await;
+        assert!(missing.is_err(), "joining a missing collection must fail");
+        assert!(
+            ns.get_node(&missing_id).await.unwrap().is_none(),
+            "a failed join must not leave the node persisted"
+        );
+
+        let not_a_collection = ns
+            .create_node(Node::new(
+                "text".to_string(),
+                "plain".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        let wrong_id = uuid::Uuid::new_v4().to_string();
+        let wrong = create_node(&ns, root_text_input(&wrong_id, vec![not_a_collection])).await;
+        assert!(wrong.is_err(), "joining a non-collection must fail");
+        assert!(ns.get_node(&wrong_id).await.unwrap().is_none());
     }
 }
