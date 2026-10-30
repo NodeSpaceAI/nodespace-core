@@ -871,11 +871,11 @@ fn every_start_of_the_daemon_goes_through_the_start_attempt() {
         })
         .expect("the start attempt's call closes");
     assert!(
-        body[attempt..arguments_end].contains("bring_up_daemon(app)"),
+        body[attempt..arguments_end].contains("bring_up_daemon()"),
         "the launcher's steps are the start attempt's own"
     );
     assert_eq!(
-        setup.matches("bring_up_daemon(app)").count(),
+        setup.matches("bring_up_daemon(),").count(),
         1,
         "the launcher's steps run nowhere else"
     );

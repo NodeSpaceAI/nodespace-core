@@ -1041,7 +1041,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
         daemon_profile::active(),
         DAEMON_START_WAIT,
         crate::incompatible_database::refusal_recorded,
-        bring_up_daemon(app),
+        bring_up_daemon(),
     ))
     .await
 }
@@ -1066,7 +1066,7 @@ pub(crate) async fn record_outcome(
 /// daemon, installs the sidecars, and registers and starts this app's daemon
 /// unless a healthy one is already running. It does not wait for the daemon it
 /// starts; [`start_attempt`] does, and asks whichever daemon answers.
-async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
+async fn bring_up_daemon() -> Result<()> {
     let home = home_dir().context("Cannot resolve home directory")?;
     let DaemonInstall {
         bin_dir,
@@ -1119,15 +1119,15 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     // Always check whether the bundled sidecar differs from the installed binary.
     // If the daemon is already running but the binary changed (e.g. dev rebuild),
     // kill it so the updated binary gets launched below.
-    let binary_updated = extract_sidecar_if_changed(app, daemon_binary_name(), &bin_dir).await?;
-    let cli_extraction = extract_sidecar_if_changed(app, CLI_BINARY_NAME, &bin_dir).await;
+    let binary_updated = extract_sidecar_if_changed(daemon_binary_name(), &bin_dir).await?;
+    let cli_extraction = extract_sidecar_if_changed(CLI_BINARY_NAME, &bin_dir).await;
     stop_replaced_daemon_on_failure(cli_extraction, binary_updated && !evicted, || {
         kill_running_daemon(&socket_path)
     })
     .await?;
     // Best effort: a missing marker only leaves `nodespace skill ...` from the
     // staged copy unable to find the installer, and must not stop the daemon.
-    match resolve_sidecar_path(app, CLI_BINARY_NAME) {
+    match resolve_sidecar_path(CLI_BINARY_NAME) {
         Ok(bundled_cli) => {
             if let Err(e) = record_bundle_marker(&bin_dir, &bundled_cli) {
                 // Not being inside an .app (dev builds, Windows, Linux) is
@@ -1548,17 +1548,20 @@ pub async fn wait_for_daemon(socket_path: &Path, max_wait: Duration) -> DaemonSt
 
 /// Extract a sidecar binary from the Tauri bundle to the build flavour's install directory
 /// (`~/.nodespace/bin/`, or `~/.nodespace/bin-dev/` for a debug build),
-/// but only re-copy it if the destination is missing, has a different file
-/// size than the bundled source, or fails code-signature verification.
+/// but only re-copy it if the installed copy is not the extraction of the
+/// current bundled file (judged by the recorded `SidecarStamp` of the source's
+/// size, mtime and sha256 and the installed copy's size and mtime, see
+/// `installed_matches_source`), or if it fails code-signature verification.
+/// The bundled size is never compared with the installed size, because the
+/// ad-hoc re-sign changes the installed file's size.
 /// Returns true if the binary was (re-)extracted.
 ///
 /// Quarantine is cleared on `dest` unconditionally, even when re-copying is
 /// skipped: an ad-hoc signature stays valid regardless of quarantine state
 /// (see `clear_quarantine`'s doc comment), so a binary already on disk from
-/// before this check existed can be same-size and validly signed and still
-/// carry the flag that gets it killed by syspolicyd — a size/signature match
-/// alone would otherwise let that binary sit there untouched forever on any
-/// upgrade whose bundled daemon binary happens not to change size.
+/// before this check existed can match its stamp and be validly signed and
+/// still carry the flag that gets it killed by syspolicyd — a stamp/signature
+/// match alone would otherwise let that binary sit there untouched forever.
 ///
 /// When re-copying does happen, it writes to a temp path in the same
 /// directory, re-seals the ad-hoc signature and clears quarantine there too,
@@ -1586,8 +1589,8 @@ pub async fn wait_for_daemon(socket_path: &Path, max_wait: Duration) -> DaemonSt
 /// spawns and what `kill_running_daemon` targets, by construction, on every
 /// platform (a no-op on macOS/Linux, where `bundled_sidecar_name` returns
 /// `name` unchanged).
-async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path) -> Result<bool> {
-    let src = resolve_sidecar_path(app, name)?;
+async fn extract_sidecar_if_changed(name: &str, bin_dir: &Path) -> Result<bool> {
+    let src = resolve_sidecar_path(name)?;
     let bin_dir = bin_dir.to_path_buf();
     let name = name.to_string();
     tokio::task::spawn_blocking(move || extract_sidecar_from(&src, &name, &bin_dir))
@@ -2104,7 +2107,7 @@ fn verify_signature(_path: &Path) -> bool {
 ///    name** — confirmed directly against a real build output
 ///    (`Contents/MacOS/nodespaced`, no triple). The runtime lookup has to match
 ///    that renamed, installed file, not the source-tree name.
-fn resolve_sidecar_path(_app: &AppHandle, name: &str) -> Result<PathBuf> {
+fn resolve_sidecar_path(name: &str) -> Result<PathBuf> {
     let exe = std::env::current_exe().context("Cannot resolve current executable path")?;
     sidecar_path_from_exe(&exe, &bundled_sidecar_name(name))
         .with_context(|| format!("Cannot resolve sidecar path for '{}'", name))

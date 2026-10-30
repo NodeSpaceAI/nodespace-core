@@ -936,7 +936,6 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             commands::nodes::delete_node,
             commands::nodes::get_children,
             commands::nodes::get_children_tree,
-            commands::nodes::get_nodes_by_root_id,
             commands::nodes::query_nodes_simple,
             commands::nodes::execute_query,
             commands::nodes::count_query,

@@ -927,29 +927,6 @@ pub async fn get_children_tree(
     })
 }
 
-/// Bulk fetch all nodes belonging to a root node (viewer/page)
-#[tauri::command]
-pub async fn get_nodes_by_root_id(
-    client: State<'_, GrpcClient>,
-    root_id: String,
-) -> Result<Vec<Value>, CommandError> {
-    let mut c = client.client().await;
-    // Phase 5: Redirect to get_children (graph-native)
-    let resp = c
-        .get_children(Request::new(GetChildrenRequest { node_id: root_id }))
-        .await
-        .map_err(status_to_command_error)?;
-
-    let nodes: Result<Vec<Node>, CommandError> = resp
-        .into_inner()
-        .nodes
-        .into_iter()
-        .map(proto_node_data_to_node)
-        .collect();
-
-    nodes_to_typed_values(nodes?)
-}
-
 /// Query nodes with flexible filtering
 #[tauri::command]
 pub async fn query_nodes_simple(
