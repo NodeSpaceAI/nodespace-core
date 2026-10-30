@@ -1115,7 +1115,7 @@ fn handle_run_event<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>, event: 
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Ready => {
             let app = app_handle.clone();
-            terminate_hook::install(Box::new(move || initiate_app_quit(&app)));
+            terminate_hook::install(std::sync::Arc::new(move || quit_if_window_open(&app)));
         }
         tauri::RunEvent::ExitRequested { code, .. } => {
             tracing::info!(
@@ -1371,6 +1371,19 @@ fn arm_quit_watchdog(
 /// the webview has crashed/hung, so a bare `window.close()` would otherwise
 /// silently do nothing. [`arm_quit_watchdog`] bounds how long this waits
 /// before forcing an unconditional exit.
+/// Starts the quit path when there is a window to close and flush, and says
+/// whether it did. With no window open there is nothing to flush and the quit
+/// path could only wait out its watchdog, so the caller lets the platform exit
+/// normally instead.
+#[cfg(target_os = "macos")]
+fn quit_if_window_open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    if window_routing::resolve_focus_window(app).is_none() {
+        return false;
+    }
+    initiate_app_quit(app);
+    true
+}
+
 fn initiate_app_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
 
@@ -1431,6 +1444,17 @@ async fn listen_for_quit_signal<R: tauri::Runtime>(app_handle: tauri::AppHandle<
     sigterm.recv().await;
     tracing::info!("SIGTERM received (Tray Quit) — closing window");
     initiate_app_quit(&app_handle);
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod quit_without_window_tests {
+    use super::quit_if_window_open;
+
+    #[test]
+    fn no_quit_is_started_when_no_window_is_open() {
+        let app = tauri::test::mock_app();
+        assert!(!quit_if_window_open(app.handle()));
+    }
 }
 
 #[cfg(test)]
@@ -1595,7 +1619,7 @@ mod quit_wiring_tests {
 
         assert!(
             window.contains("terminate_hook::install(")
-                && window.contains("initiate_app_quit(&app)"),
+                && window.contains("quit_if_window_open(&app)"),
             "a quit AppKit delivers as terminate: (Dock, logout) must reach the frontend flush \
              through initiate_app_quit: {window}"
         );
