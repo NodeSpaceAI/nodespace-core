@@ -105,6 +105,10 @@ pub struct CreateNodeInput {
     #[serde(default)]
     pub insert_position: Option<InsertPositionInput>,
     pub properties: serde_json::Value,
+    /// Collection to file the new node into. The daemon commits the node and
+    /// its membership in one transaction.
+    #[serde(default)]
+    pub collection_id: Option<String>,
 }
 
 /// Structured error type for Tauri commands
@@ -507,7 +511,7 @@ pub async fn create_node(
             position,
             properties: properties_str,
             collections: Vec::new(),
-            collection_ids: Vec::new(),
+            collection_ids: node.collection_id.into_iter().collect(),
             lifecycle_status: None,
         }))
         .await

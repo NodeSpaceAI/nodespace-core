@@ -5,7 +5,7 @@
  * full collection viewer (`collection-node-viewer.svelte`) and the sidebar
  * sub-panel (`collection-sub-panel.svelte`) offer. A collection is a
  * `member_of` grouping over outliner nodes, so both actions ultimately call
- * `collectionService.addNodeToCollection`. Extracting them here keeps the two
+ * attach a node to the collection. Extracting them here keeps the two
  * components in lock-step (no duplicated authoring rules) and makes the
  * behaviour unit-testable without a DOM.
  */
@@ -13,12 +13,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
-import { collectionService } from '$lib/services/collection-service';
 import { isNonContentNodeType } from '$lib/stores/collections.svelte';
 import type { Node } from '$lib/types';
 
 /**
  * Mint a fresh, empty `text` node and attach it to the given collection.
+ *
+ * Create and join are one backend write: the node and its membership commit in
+ * one transaction, so a failed join (the collection was deleted in another
+ * pane, say) leaves no node behind.
  *
  * The node is created as a root (`parentId: null`) with empty content so the
  * caller can immediately open it for editing. Returns the new node's id.
@@ -32,8 +35,8 @@ export async function createNodeInCollection(collectionId: string): Promise<stri
     properties: {},
     mentions: [],
     parentId: null,
+    collectionId,
   });
-  await collectionService.addNodeToCollection(newId, collectionId);
   return newId;
 }
 

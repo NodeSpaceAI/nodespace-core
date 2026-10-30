@@ -483,6 +483,30 @@ impl SqliteStore {
         Ok(FractionalOrderCalculator::calculate_order(last_order, None))
     }
 
+    /// `_in_tx` twin of [`Self::get_next_member_order`]: the order key that
+    /// appends after the collection's current last member, read through the
+    /// caller's transaction so the key and the edge written with it commit
+    /// together.
+    pub(crate) async fn get_next_member_order_in_tx(
+        tx: &Tx<'_>,
+        collection_id: &str,
+    ) -> Result<f64> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT json_extract(properties, '$.order') as ord FROM relationship WHERE out_node = ?1 AND relationship_type = 'member_of' ORDER BY json_extract(properties, '$.order') DESC LIMIT 1",
+                libsql::params![collection_id.to_string()],
+            )
+            .await
+            .context("Failed to get last member order")?;
+        let last_order: Option<f64> = if let Some(row) = rows.next().await? {
+            Some(edge_order(&row, 0)?.unwrap_or(0.0))
+        } else {
+            None
+        };
+        Ok(FractionalOrderCalculator::calculate_order(last_order, None))
+    }
+
     pub async fn get_next_member_order(&self, collection_id: &str) -> Result<f64> {
         self.get_next_order_for_relationship(collection_id, "member_of", true)
             .await

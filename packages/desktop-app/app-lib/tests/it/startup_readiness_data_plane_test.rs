@@ -36,6 +36,7 @@ fn text_input(id: &str) -> CreateNodeInput {
         parent_id: None,
         insert_position: None,
         properties: json!({}),
+        collection_id: None,
     }
 }
 

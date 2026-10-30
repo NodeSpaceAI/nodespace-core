@@ -36,6 +36,7 @@ fn text_input(id: &str, content: &str, parent_id: Option<String>) -> CreateNodeI
         parent_id,
         insert_position: None,
         properties: json!({}),
+        collection_id: None,
     }
 }
 
@@ -47,6 +48,7 @@ fn task_input(id: &str) -> CreateNodeInput {
         parent_id: None,
         insert_position: None,
         properties: json!({}),
+        collection_id: None,
     }
 }
 
@@ -124,6 +126,7 @@ async fn person_typed_update_matches_the_http_adapter_contract() {
             parent_id: None,
             insert_position: None,
             properties: json!({ "first_name": "Ada" }),
+            collection_id: None,
         },
     )
     .await
@@ -185,6 +188,7 @@ async fn query_typed_update_matches_the_http_adapter_contract() {
             content: "Open tasks".to_string(),
             parent_id: None,
             insert_position: None,
+            collection_id: None,
             properties: json!({
                 "target_type": "task",
                 "filters": [],
@@ -252,6 +256,7 @@ async fn play_typed_update_matches_the_http_adapter_contract() {
             parent_id: None,
             insert_position: None,
             properties: json!({ "rules": [] }),
+            collection_id: None,
         },
     )
     .await
@@ -324,6 +329,7 @@ async fn collection_typed_update_matches_the_http_adapter_contract() {
             parent_id: None,
             insert_position: None,
             properties: json!({}),
+            collection_id: None,
         },
     )
     .await
@@ -379,6 +385,7 @@ async fn skill_typed_update_matches_the_http_adapter_contract() {
             content: "Contract Skill".to_string(),
             parent_id: None,
             insert_position: None,
+            collection_id: None,
             properties: json!({
                 "use_for": "Update a record",
                 "tool_whitelist": ["update_node"],

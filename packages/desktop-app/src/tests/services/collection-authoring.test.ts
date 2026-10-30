@@ -5,6 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Node } from '$lib/types';
+import type { CreateNodeInput } from '$lib/services/adapter-core';
 
 vi.mock('$lib/utils/logger', () => ({
   createLogger: () => ({
@@ -56,31 +57,33 @@ beforeEach(() => {
 });
 
 describe('createNodeInCollection', () => {
-  it('mints an empty text root node then attaches it, returning the new id', async () => {
+  it('creates an empty text root node filed into the collection in one call, returning the new id', async () => {
     const returnedId = await createNodeInCollection('col-42');
 
-    // createNode was called once with a text root (empty content, no parent).
     expect(createNodeMock).toHaveBeenCalledTimes(1);
-    const createArg = createNodeMock.mock.calls[0][0];
+    const createArg = createNodeMock.mock.calls[0][0] as CreateNodeInput;
     expect(createArg).toEqual(
-      expect.objectContaining({ nodeType: 'text', content: '', parentId: null })
+      expect.objectContaining({
+        nodeType: 'text',
+        content: '',
+        parentId: null,
+        collectionId: 'col-42'
+      })
     );
-
-    // The generated id is threaded through the membership edge and returned.
     expect(typeof createArg.id).toBe('string');
     expect(createArg.id.length).toBeGreaterThan(0);
     expect(returnedId).toBe(createArg.id);
-    expect(addNodeToCollectionMock).toHaveBeenCalledTimes(1);
-    expect(addNodeToCollectionMock).toHaveBeenCalledWith(returnedId, 'col-42');
   });
 
-  it('creates the node before writing the membership edge', async () => {
-    await createNodeInCollection('col-order');
+  it('writes no separate membership edge, so a failed join cannot orphan the node', async () => {
+    await createNodeInCollection('col-atomic');
+    expect(addNodeToCollectionMock).not.toHaveBeenCalled();
+  });
 
-    // The node must exist before it can be made a member.
-    expect(createNodeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      addNodeToCollectionMock.mock.invocationCallOrder[0]
-    );
+  it('propagates a create failure and never attaches anything', async () => {
+    createNodeMock.mockRejectedValueOnce(new Error('collection gone'));
+    await expect(createNodeInCollection('col-gone')).rejects.toThrow('collection gone');
+    expect(addNodeToCollectionMock).not.toHaveBeenCalled();
   });
 
   it('mints a distinct id per call', async () => {

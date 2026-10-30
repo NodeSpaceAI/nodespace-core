@@ -542,9 +542,10 @@ export class HttpAdapter implements BackendAdapter {
 
   async createNode(input: CreateNodeInput | Node): Promise<CreatedNode> {
     const now = new Date().toISOString();
-    const fields = buildCreateNodeFields(input);
+    const { collectionId, ...fields } = buildCreateNodeFields(input);
     const requestBody = {
       ...fields,
+      ...(collectionId ? { collectionIds: [collectionId] } : {}),
       createdAt: now,
       modifiedAt: now,
       version: 1
