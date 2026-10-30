@@ -1359,18 +1359,6 @@ fn arm_quit_watchdog(
     });
 }
 
-/// Shared body for every path that should fully quit this app through the
-/// normal window-close pipeline: the app's own "Quit" menu item / Cmd+Q, and
-/// a SIGTERM from the daemon's tray "Quit" (see [`listen_for_quit_signal`]).
-///
-/// Still starts the normal window-close path when a window exists -- it's
-/// what carries the pending-write flush (see `app-initialization.ts`'s
-/// `registerTauriCloseHandler`) -- but that path depends on a window
-/// existing at all and on its webview being alive enough to run the flush
-/// and call `destroy()`. Neither holds if every window is already closed or
-/// the webview has crashed/hung, so a bare `window.close()` would otherwise
-/// silently do nothing. [`arm_quit_watchdog`] bounds how long this waits
-/// before forcing an unconditional exit.
 /// Starts the quit path when there is a window to close and flush, and says
 /// whether it did. With no window open there is nothing to flush and the quit
 /// path could only wait out its watchdog, so the caller lets the platform exit
@@ -1384,6 +1372,18 @@ fn quit_if_window_open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     true
 }
 
+/// Shared body for every path that should fully quit this app through the
+/// normal window-close pipeline: the app's own "Quit" menu item / Cmd+Q, and
+/// a SIGTERM from the daemon's tray "Quit" (see [`listen_for_quit_signal`]).
+///
+/// Still starts the normal window-close path when a window exists -- it's
+/// what carries the pending-write flush (see `app-initialization.ts`'s
+/// `registerTauriCloseHandler`) -- but that path depends on a window
+/// existing at all and on its webview being alive enough to run the flush
+/// and call `destroy()`. Neither holds if every window is already closed or
+/// the webview has crashed/hung, so a bare `window.close()` would otherwise
+/// silently do nothing. [`arm_quit_watchdog`] bounds how long this waits
+/// before forcing an unconditional exit.
 fn initiate_app_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     use tauri::Manager;
 
