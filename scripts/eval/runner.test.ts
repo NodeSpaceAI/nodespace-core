@@ -20,6 +20,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   aggregateReps,
+  baselineVerdictLine,
   buildTraceLines,
   checkGuidanceDrift,
   checkUniformity,
@@ -1324,5 +1325,18 @@ describe("send-failed exclusion", () => {
     expect(describeExclusions({ emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0, sendFailed: 2 })).toBe(
       "send failed",
     );
+  });
+});
+
+describe("baselineVerdictLine", () => {
+  test("a run that scored nothing is not reported as free of regressions", () => {
+    const line = baselineVerdictLine("e", 0, 0);
+    expect(line).toContain("Nothing was scored");
+    expect(line).not.toContain("✓");
+  });
+
+  test("reports regressions and a clean comparison for a scored run", () => {
+    expect(baselineVerdictLine("e", 3, 2)).toContain("✗ 2 regression(s)");
+    expect(baselineVerdictLine("e", 3, 0)).toContain("✓ No regressions");
   });
 });
