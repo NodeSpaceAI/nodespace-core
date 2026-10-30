@@ -892,7 +892,8 @@ mod tests {
     use super::*;
 
     const POSIX_EXPORT: &str = "export PATH=\"$HOME/.nodespace/bin:$PATH\"";
-    const POSIX_EXPORT_LINE: &str = "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
+    const POSIX_EXPORT_LINE: &str =
+        "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";
     const FISH_EXPORT_LINE: &str = "\n# NodeSpace CLI\nfish_add_path $HOME/.nodespace/bin\n";
 
     #[test]
@@ -924,8 +925,10 @@ mod tests {
                 assert_eq!(rest, "keep\nafter\n");
             }
         }
-        assert!(nodespace_blocks("# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin-x:$PATH\"\n")
-            .is_empty());
+        assert!(nodespace_blocks(
+            "# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin-x:$PATH\"\n"
+        )
+        .is_empty());
     }
 
     /// Proves `CONFIG_LOCK` prevents the lost-update race: concurrent updates
