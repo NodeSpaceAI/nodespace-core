@@ -325,6 +325,58 @@ async fn import_dir_multi_directory_failure_does_not_abort_the_rest_but_the_call
     let _ = shutdown.send(());
 }
 
+/// A file whose requested collection cannot be assigned fails the import, and
+/// the failure reaches the process exit status.
+#[tokio::test]
+async fn import_file_with_unassignable_collection_errors() {
+    let (sock, _node_service, shutdown, _tempdir) = spawn_import_test_daemon().await;
+    let mut client = connect_import(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let dir = TempDir::new().unwrap();
+    let file = write_md(dir.path(), "notes.md", "# Unassignable collection file");
+
+    let err = commands::import::run(
+        &mut client,
+        commands::import::ImportAction::File(commands::import::ImportFileArgs {
+            file,
+            collection: Some("docs::rust".to_string()),
+            use_filename_as_title: false,
+            auto_collection_routing: false,
+            replace: false,
+        }),
+        true,
+    )
+    .await
+    .expect_err("a failed file import must be a non-zero exit");
+    assert!(err.to_string().contains("failed to import"), "{err}");
+
+    let _ = shutdown.send(());
+}
+
+/// A single directory whose files cannot be assigned to the requested
+/// collection fails the import.
+#[tokio::test]
+async fn import_dir_with_unassignable_collection_errors() {
+    let (sock, _node_service, shutdown, _tempdir) = spawn_import_test_daemon().await;
+    let mut client = connect_import(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let dir = TempDir::new().unwrap();
+    write_md(dir.path(), "notes.md", "# Unassignable collection dir");
+    let mut args = dir_args(vec![dir.path().to_str().unwrap().to_string()], false);
+    args.collection = Some("docs::rust".to_string());
+
+    let err = commands::import::run(&mut client, commands::import::ImportAction::Dir(args), true)
+        .await
+        .expect_err("a failed directory import must be a non-zero exit");
+    assert!(err.to_string().contains("failed to import"), "{err}");
+
+    let _ = shutdown.send(());
+}
+
 /// A single directory (the original one-directory form) keeps behaving
 /// exactly as before: still imports normally through the same `run_dir` entry point.
 #[tokio::test]

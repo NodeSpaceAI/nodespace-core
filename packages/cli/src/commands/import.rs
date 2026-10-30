@@ -219,9 +219,9 @@ fn ensure_no_failures(results: &[FileImportResult]) -> Result<()> {
     let failed = results.iter().filter(|r| !r.success).count();
     if failed > 0 {
         return Err(anyhow::anyhow!(
-            "{failed} of {} file(s)/director{} failed to import",
+            "{failed} of {} {} failed to import",
             results.len(),
-            if results.len() == 1 { "y" } else { "ies" }
+            if results.len() == 1 { "item" } else { "items" }
         ));
     }
     Ok(())
@@ -636,7 +636,9 @@ mod path_tests {
         assert!(ensure_no_failures(&[]).is_ok());
         assert!(ensure_no_failures(&[result(true), result(true)]).is_ok());
         let err = ensure_no_failures(&[result(true), result(false)]).unwrap_err();
-        assert!(err.to_string().starts_with("1 of 2 "), "{err}");
+        assert_eq!(err.to_string(), "1 of 2 items failed to import");
+        let err = ensure_no_failures(&[result(false)]).unwrap_err();
+        assert_eq!(err.to_string(), "1 of 1 item failed to import");
     }
 
     #[test]
