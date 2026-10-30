@@ -2087,6 +2087,17 @@ impl LocalAgentServiceImpl {
             let swapped = self
                 .replace_engine_if_changed(model_id, engine.clone())
                 .await;
+            // The engine just swapped out may have been the GGUF model the
+            // catalog still marks Loaded. Clear that bookkeeping so the
+            // catalog does not list a model as resident that no longer is,
+            // and so a later Unload cannot reset the remote engine now in use.
+            if swapped {
+                if let Some(manager) = self.model_manager() {
+                    if let Err(e) = manager.unload().await {
+                        tracing::warn!(error = %e, "could not clear the local model's loaded state");
+                    }
+                }
+            }
 
             // Routing-reliability probe (Option C): the matrix in
             // `tests/it/live_openai_compat_routing.rs` found Stage-2 candidate
@@ -6965,6 +6976,57 @@ mod tests {
             .expect("a ready event should be emitted");
         assert_eq!(ready_event.engine_swapped, Some(true));
         assert!(events.iter().all(|e| e.event_type != "error"));
+    }
+
+    /// Loading an OpenAI-compatible model replaces the local engine, so the
+    /// GGUF catalog must stop reporting the previous local model as loaded.
+    /// Otherwise Settings keeps offering Unload for it, and that Unload would
+    /// reset the remote engine now in use.
+    #[tokio::test]
+    async fn loading_an_openai_compat_model_clears_the_gguf_loaded_state() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let models_dir = tempdir.path().join("models");
+        let discovery = GgufModelManager::with_dir(models_dir.clone()).expect("model manager");
+        let entry = discovery
+            .list()
+            .await
+            .expect("list")
+            .into_iter()
+            .next()
+            .expect("catalog has at least one entry");
+        let filename = entry
+            .filename
+            .clone()
+            .expect("catalog entry has a filename");
+        std::fs::write(models_dir.join(&filename), b"fake gguf").expect("write fake model file");
+
+        let mgr = Arc::new(GgufModelManager::with_dir(models_dir).expect("model manager"));
+        mgr.load(&entry.id).await.expect("load");
+        let shared =
+            SharedLocalAgent::from_model_manager(Some(mgr.clone()), MODEL_SPEC_SNAPSHOT_TIMEOUT);
+        let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
+        let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
+        let svc = LocalAgentServiceImpl::new(shared, node_service.clone(), embedding);
+        svc.replace_engine_if_changed(
+            &entry.id,
+            Arc::new(SpecEngine {
+                model_id: "/fake/resolved.gguf".to_string(),
+                context_window: 4096,
+            }),
+        )
+        .await;
+        set_providers(&node_service, vec![provider("")]).await;
+
+        let events = svc
+            .load_model_and_collect_events(&format!("openai-compat:{PROVIDER_ID}"), None)
+            .await;
+        assert!(events.iter().any(|e| e.event_type == "ready"));
+
+        assert_eq!(
+            mgr.loaded_model().await.expect("loaded_model"),
+            None,
+            "the replaced GGUF model must no longer be marked loaded"
+        );
     }
 
     /// Regression: a single-model server
