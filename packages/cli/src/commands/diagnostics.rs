@@ -345,6 +345,10 @@ fn record_failure(rpc: &str, status: tonic::Status, errors: &mut Vec<String>) ->
 /// failure mode is precisely what an operator running `nodespace
 /// diagnostics` is usually trying to debug.
 fn database_size(path: &Path, errors: &mut Vec<String>) -> u64 {
+    // A registered path may be a symlink to the real file; size the target
+    // (and its sidecars, which sit beside the target) rather than the link.
+    let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved.as_path();
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => directory_size(path, errors),
         Ok(meta) if meta.is_file() => {
@@ -562,5 +566,20 @@ mod tests {
             errors.is_empty(),
             "happy path must not produce errors: {errors:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_size_follows_a_symlinked_database_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real.db");
+        fs::write(&real, vec![0u8; 300]).expect("write db");
+        fs::write(tmp.path().join("real.db-wal"), vec![0u8; 20]).expect("write wal");
+        let link = tmp.path().join("link.db");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let mut errors = Vec::new();
+        assert_eq!(database_size(&link, &mut errors), 320);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 }
