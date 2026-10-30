@@ -73,8 +73,9 @@ pub async fn cron_runner_loop(
                 last_checked =
                     check_and_enqueue(&lifecycle, &node_service, &queue_tx, last_checked).await;
             }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
+            res = shutdown_rx.changed() => {
+                // A dropped sender can never signal again: treat it as shutdown.
+                if res.is_err() || *shutdown_rx.borrow() {
                     debug!("CronRunner received shutdown signal");
                     break;
                 }
@@ -1099,5 +1100,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn loop_exits_when_the_shutdown_sender_is_dropped() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(
+            crate::db::SqliteStore::new(temp_dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        let (queue_tx, _queue_rx) = mpsc::channel(1);
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(cron_runner_loop(lifecycle, node_service, queue_tx, rx));
+        drop(tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("loop must exit once the sender is gone")
+            .unwrap();
     }
 }
