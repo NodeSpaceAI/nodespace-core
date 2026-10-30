@@ -243,10 +243,13 @@ fn load_or_create_key(state_dir: &Path) -> Option<[u8; VERIFY_KEY_LEN]> {
         .read_exact(&mut key)
         .ok()?;
 
+    // Unique per call, so two threads in one process never share a temp name.
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tmp = state_dir.join(format!(
-        "{}.{}.tmp",
+        "{}.{}.{}.tmp",
         VERIFY_KEY_FILE_NAME,
-        std::process::id()
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_file(&tmp);
     let written = (|| {
@@ -754,6 +757,7 @@ mod tests {
         model.parent().unwrap().join("state")
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_cached_verify_hits_cache_on_unchanged_file() {
         let (_dir, path) = temp_model_file(b"model bytes v1");
@@ -824,6 +828,7 @@ mod tests {
         assert!(verify_cached_in(Some(&state_of(&path)), &path, &digest).is_ok());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_is_verification_cached_reflects_hit_and_miss() {
         let (_dir, path) = temp_model_file(b"model bytes for cached-check probe");
@@ -845,6 +850,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_record_verified_sha256_makes_is_verification_cached_true() {
         let (_dir, path) = temp_model_file(b"model bytes, verified elsewhere");
@@ -917,6 +923,7 @@ mod tests {
 
     /// A model file whose bytes differ from `pinned`'s, with a sidecar that an
     /// attacker without the key wrote: correct digest, correct identity.
+    #[cfg(unix)]
     fn forged_fixture(mac: &str) -> (tempfile::TempDir, PathBuf, String) {
         let (_d, orig) = temp_model_file(b"original bytes");
         let pinned = compute_file_sha256(&orig).unwrap();
@@ -1038,6 +1045,31 @@ mod tests {
         std::fs::copy(&path, &other).unwrap();
         write_verified_record(&cache_sidecar_path(&other), &good).unwrap();
         assert!(!is_cached_in(Some(&state), &other, &digest));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_record_mac_binds_model_file_name() {
+        let (_dir, path) = temp_model_file(b"model bytes, name binding");
+        let digest = compute_file_sha256(&path).unwrap();
+        let identity = FileIdentity::read(&path).unwrap();
+        let key = [9u8; VERIFY_KEY_LEN];
+        let a = path.with_file_name("a.gguf");
+        let b = path.with_file_name("b.gguf");
+        let mac_a = record_mac(&key, &a, &digest, &identity)
+            .finalize()
+            .into_bytes();
+        let mac_b = record_mac(&key, &b, &digest, &identity)
+            .finalize()
+            .into_bytes();
+        assert_ne!(mac_a, mac_b);
+        let record = VerifiedRecord {
+            digest: digest.clone(),
+            identity: identity.clone(),
+            mac: hex_encode(&mac_a),
+        };
+        assert!(record_mac_is_valid(&key, &a, &record));
+        assert!(!record_mac_is_valid(&key, &b, &record));
     }
 
     #[cfg(unix)]
