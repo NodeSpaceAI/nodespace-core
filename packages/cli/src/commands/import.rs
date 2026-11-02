@@ -131,10 +131,10 @@ fn import_file_request(
     })
 }
 
-/// Walk `dir` (as the user typed it, so `--exclude` patterns match exactly what
-/// the user sees and never the ancestors of the cwd) and return the absolute
-/// base directory plus the absolute paths of the files found. The daemon
-/// resolves paths against its own cwd, so only absolute paths go on the wire.
+/// Walk `dir` and return the absolute base directory plus the absolute paths
+/// of the files found. `--exclude` patterns match only the part of a path
+/// below `dir`, never `dir` itself or its ancestors. The daemon resolves paths
+/// against its own cwd, so only absolute paths go on the wire.
 fn scan_directory(
     dir: &str,
     cwd: &std::path::Path,
@@ -142,12 +142,7 @@ fn scan_directory(
     filters: WalkFilters,
 ) -> Result<(String, Vec<String>)> {
     let base = paths::absolute_in(dir, cwd)?;
-    let files = walk_markdown_files(
-        std::path::Path::new(&base),
-        std::path::Path::new(dir),
-        exclude_patterns,
-        filters,
-    )?;
+    let files = walk_markdown_files(std::path::Path::new(&base), exclude_patterns, filters)?;
     Ok((base, files))
 }
 
@@ -534,34 +529,26 @@ fn collect_markdown_files(
     exclude_patterns: &[String],
     filters: WalkFilters,
 ) -> Result<Vec<String>> {
-    let root = std::path::Path::new(dir);
-    walk_markdown_files(root, root, exclude_patterns, filters)
+    walk_markdown_files(std::path::Path::new(dir), exclude_patterns, filters)
 }
 
 /// Walk `walk_root` and report its files, matching `--exclude` patterns
-/// against each entry's path as spelled under `display_root` (the directory as
-/// the user typed it) so ancestors of the walk root never match a pattern.
+/// against each entry's path relative to `walk_root` so neither the root nor
+/// its ancestors ever match a pattern.
 fn walk_markdown_files(
     walk_root: &std::path::Path,
-    display_root: &std::path::Path,
     exclude_patterns: &[String],
     filters: WalkFilters,
 ) -> Result<Vec<String>> {
     let mut files = Vec::new();
-    collect_recursive(
-        walk_root,
-        (walk_root, display_root),
-        &mut files,
-        exclude_patterns,
-        filters,
-    )?;
+    collect_recursive(walk_root, walk_root, &mut files, exclude_patterns, filters)?;
     files.sort();
     Ok(files)
 }
 
 fn collect_recursive(
     dir: &std::path::Path,
-    roots: (&std::path::Path, &std::path::Path),
+    root: &std::path::Path,
     files: &mut Vec<String>,
     exclude_patterns: &[String],
     filters: WalkFilters,
@@ -569,7 +556,7 @@ fn collect_recursive(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        let shown = roots.1.join(path.strip_prefix(roots.0).unwrap_or(&path));
+        let shown = path.strip_prefix(root).unwrap_or(&path);
         let path_str = shown.to_string_lossy();
 
         // User-supplied --exclude patterns (component name or path substring),
@@ -606,7 +593,7 @@ fn collect_recursive(
 
         if file_type.is_dir() {
             if filters.recursive {
-                collect_recursive(&path, roots, files, exclude_patterns, filters)?;
+                collect_recursive(&path, root, files, exclude_patterns, filters)?;
             }
         } else if file_type.is_file() && path.extension().map(|e| e == "md").unwrap_or(false) {
             if filters.exclude_agent_files && is_agent_file(&path) {
@@ -701,6 +688,24 @@ mod path_tests {
         std::fs::write(cwd.join("a.md"), "# a").unwrap();
         let (_, files) = scan_directory(".", &cwd, &["archive".to_string()], filters()).unwrap();
         assert_eq!(files.len(), 1, "cwd ancestor name must not exclude files");
+    }
+
+    #[test]
+    fn exclude_does_not_match_the_typed_import_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("archive").join("latest");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.md"), "# a").unwrap();
+        for pattern in ["archive", "test", "latest"] {
+            let typed = root.to_string_lossy().to_string();
+            let (_, files) =
+                scan_directory(&typed, tmp.path(), &[pattern.to_string()], filters()).unwrap();
+            assert_eq!(
+                files.len(),
+                1,
+                "{pattern:?} in the root path must not exclude"
+            );
+        }
     }
 
     #[test]
