@@ -105,16 +105,19 @@ export interface Hit {
 
 const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|<!--|--\s)/;
 const RUST_TEST_MODULE = /^\s*#\[cfg\(test\)\]\s*$/;
+// An inline module body opens with `{`; a gated `mod name;` declaration only
+// points at another file and is followed by production code.
+const RUST_INLINE_MODULE = /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/;
 
 /**
  * The lines of a file that are in scope: code lines only, and for a Rust
- * source file only those before its first `#[cfg(test)]` module.
+ * source file only those before its first inline `#[cfg(test)]` module.
  */
 export function codeLines(file: string, text: string): { line: number; text: string }[] {
   const lines = text.split("\n");
   const out: { line: number; text: string }[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if (file.endsWith(".rs") && RUST_TEST_MODULE.test(lines[i]) && /^\s*(?:pub\s+)?mod\s+\w+/.test(lines[i + 1] ?? "")) break;
+    if (file.endsWith(".rs") && RUST_TEST_MODULE.test(lines[i]) && RUST_INLINE_MODULE.test(lines[i + 1] ?? "")) break;
     if (COMMENT_LINE.test(lines[i])) continue;
     out.push({ line: i + 1, text: lines[i] });
   }

@@ -82,6 +82,16 @@ describe("scope", () => {
     expect(findHits("packages/core/src/a.rs", text).map((hit) => hit.line)).toEqual([3]);
   });
 
+  test("a cfg(test) gated out-of-line mod declaration does not end the scan", () => {
+    const text = ["pub mod a;", "", "#[cfg(test)]", "mod dry_run_tests;", "#[cfg(test)]", "pub(crate) mod more_tests;", 'fn rule(node: &Node) -> bool { node.node_type == "task" }'].join("\n");
+    expect(findHits("packages/core/src/a.rs", text).map((hit) => hit.line)).toEqual([7]);
+  });
+
+  test("a pub(crate) inline test module ends the scan", () => {
+    const text = ['fn rule(node: &Node) -> bool { node.node_type == "task" }', "#[cfg(test)]", "pub(crate) mod tests {", '    fn t(node: &Node) -> bool { node.node_type == "task" }', "}"].join("\n");
+    expect(findHits("packages/core/src/a.rs", text).map((hit) => hit.line)).toEqual([1]);
+  });
+
   test("test files and the registry modules are out of scope", () => {
     expect(isTestPath("packages/core/tests/it/a.rs")).toBe(true);
     expect(isTestPath("packages/core/src/schema/schema_test.rs")).toBe(true);
