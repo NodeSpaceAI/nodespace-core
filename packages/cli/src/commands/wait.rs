@@ -127,6 +127,10 @@ pub struct QueryWaitArgs {
     pub timing: TimingArgs,
 }
 
+/// The longest duration `--timeout` and `--interval` take: far beyond any real
+/// wait, and small enough that adding it to the current instant cannot overflow.
+const MAX_DURATION_SECS: u64 = 10 * 365 * 24 * 3600;
+
 /// A duration as `--timeout` and `--interval` take it: seconds, or a number
 /// with a unit.
 fn parse_duration(s: &str) -> Result<Duration, String> {
@@ -147,6 +151,9 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         .ok_or_else(|| format!("'{s}' is not a duration: use 90s, 30m or 3h"))?;
     if seconds == 0 {
         return Err("a duration must be greater than zero".to_string());
+    }
+    if seconds > MAX_DURATION_SECS {
+        return Err(format!("'{s}' is too long: the limit is 10 years"));
     }
     Ok(Duration::from_secs(seconds))
 }
@@ -752,6 +759,19 @@ mod tests {
         for bad in ["", "0", "0m", "h", "3d", "1.5h", "-3", "3 h"] {
             assert!(parse_duration(bad).is_err(), "{bad:?} must be refused");
         }
+    }
+
+    #[test]
+    fn a_duration_too_long_to_add_to_an_instant_is_refused() {
+        for huge in [
+            "9999999999999999999",
+            "18446744073709551615",
+            "5124095576030431h",
+        ] {
+            assert!(parse_duration(huge).is_err(), "{huge:?} must be refused");
+        }
+        let longest = parse_duration("87600h").expect("ten years is accepted");
+        assert!(Instant::now().checked_add(longest).is_some());
     }
 
     #[test]

@@ -62,116 +62,18 @@ impl NodeService {
     /// This is a non-blocking operation - errors are logged but don't fail the caller.
     #[cfg(feature = "nlp")]
     pub async fn queue_root_for_embedding(&self, node_id: &str) {
-        // Find the embedding root of this node.
-        let root_id = match self.get_embedding_root_id(node_id).await {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to find root for node {} (embedding not queued): {}",
-                    node_id,
-                    e
-                );
-                return;
-            }
-        };
-
-        // Get root node type to check if it's embeddable (optimized - no full node fetch)
-        let root_type = match self.store.get_node_type(&root_id).await {
-            Ok(Some(node_type)) => node_type,
-            Ok(None) => {
-                tracing::warn!("Root node {} not found (embedding not queued)", root_id);
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to get root node type {} (embedding not queued): {}",
-                    root_id,
-                    e
-                );
-                return;
-            }
-        };
-
-        // An archived root is not queued: it has no place in the vector
-        // index (ADR-087 §2). The marker write below refuses it as well; this
-        // keeps an existing row from being marked stale for nothing.
-        match self.store.node_participates(&root_id).await {
-            Ok(true) => {}
-            Ok(false) => {
-                tracing::debug!("Root {} is archived, skipping embedding queue", root_id);
-                return;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to read participation of root {} (embedding not queued): {}",
-                    root_id,
-                    e
-                );
-                return;
-            }
-        }
-
-        // Only queue if root is an embeddable type
-        if !self.is_embeddable_type(&root_type).await {
-            tracing::debug!(
-                "Root {} is not embeddable (type: {}), skipping embedding queue",
-                root_id,
-                root_type
-            );
-            return;
-        }
-
-        // Check if embedding exists for this root
-        let has_embedding = match self.store.has_embeddings(&root_id).await {
-            Ok(has) => has,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to check embeddings for root {} (assuming none exist): {}",
-                    root_id,
-                    e
-                );
-                false
-            }
-        };
-
-        // Mark existing embedding as stale or create new stale marker
-        let result = if has_embedding {
-            self.store.mark_root_embedding_stale(&root_id).await
-        } else {
-            self.store.create_stale_embedding_marker(&root_id).await
-        };
-
-        if let Err(e) = result {
-            tracing::warn!(
-                "Failed to queue root {} for embedding (via node {}): {}",
-                root_id,
-                node_id,
-                e
-            );
-        } else {
-            tracing::debug!(
-                "📥 Queued root {} for embedding (triggered by node {})",
-                root_id,
-                node_id
-            );
-
-            // Wake the embedding processor (fire-and-forget)
-            if let Some(waker) = self.embedding_waker.get() {
-                tracing::debug!("🔔 Waking embedding processor for root {}", root_id);
-                waker.wake();
-            } else {
-                tracing::debug!(
-                    "Embedding waker not yet configured — root {} will be processed on next wake",
-                    root_id
-                );
-            }
-        }
+        Self::queue_root_for_embedding_async(
+            &self.store,
+            &self.behaviors,
+            node_id,
+            self.embedding_waker.get(),
+        )
+        .await;
     }
 
-    /// Static async version of queue_root_for_embedding for use in spawned tasks
-    ///
-    /// This is used when we want to fire-and-forget the embedding queue operation
-    /// without blocking the calling thread (e.g., during node updates).
+    /// The single implementation behind `queue_root_for_embedding`, taking the
+    /// store, behaviors and waker explicitly so spawned tasks (e.g. during
+    /// node updates) can run it without borrowing the service.
     #[cfg(feature = "nlp")]
     pub(crate) async fn queue_root_for_embedding_async(
         store: &std::sync::Arc<crate::db::SqliteStore>,
@@ -209,28 +111,34 @@ impl NodeService {
             }
         };
 
+        // An archived root is not queued: it has no place in the vector
+        // index (ADR-087 §2). The stale-marker insert refuses it as well; this
+        // keeps an existing row from being marked stale for nothing.
+        match store.node_participates(&root_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::debug!("Root {} is archived, skipping embedding queue", root_id);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read participation of root {} (embedding not queued): {}",
+                    root_id,
+                    e
+                );
+                return;
+            }
+        }
+
         // Only queue if root is an embeddable type (behavior-driven), resolved
         // through the root type's chain so a subtype follows the type it
-        // extends.
+        // extends. An unreadable chain falls back to the type alone: the
+        // embedding queue is derived state.
         let chain = store
             .type_chain(&root_type)
             .await
             .unwrap_or_else(|_| vec![root_type.clone()]);
-        let behavior = behaviors.resolve(&chain);
-        let probe = Node {
-            id: "probe".to_string(),
-            node_type: root_type.clone(),
-            content: "probe".to_string(),
-            version: 1,
-            properties: serde_json::json!({}),
-            mentions: vec![],
-            mentioned_in: vec![],
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
-            title: None,
-            lifecycle_status: "active".to_string(),
-        };
-        if behavior.get_embeddable_content(&probe).is_none() {
+        if !super::behavior_is_embeddable(behaviors, &chain) {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping embedding queue",
                 root_id,

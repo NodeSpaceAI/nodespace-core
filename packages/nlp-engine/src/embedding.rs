@@ -13,6 +13,7 @@ use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
 use lru::LruCache;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 /// Embedding vector dimension for nomic-embed-vision-v1.5
@@ -427,6 +428,9 @@ pub struct EmbeddingService {
     state: Arc<Mutex<Option<LlamaState>>>,
     cache: Arc<Mutex<LruCache<String, Vec<f32>>>>,
     initialized: bool,
+    /// Set by `release_gpu_context`: the loaded state is gone for good, which
+    /// must not be mistaken for stub mode (a model that was never found).
+    released: AtomicBool,
     #[cfg(feature = "embedding-service")]
     embedding_dimension: usize,
 }
@@ -445,6 +449,7 @@ impl EmbeddingService {
             state: Arc::new(Mutex::new(None)),
             cache: Arc::new(Mutex::new(LruCache::new(cache_capacity))),
             initialized: false,
+            released: AtomicBool::new(false),
             #[cfg(feature = "embedding-service")]
             embedding_dimension: EMBEDDING_DIMENSION,
         })
@@ -461,10 +466,15 @@ impl EmbeddingService {
     /// ## Performance
     /// Creates a persistent LlamaContext that is reused across all embedding calls.
     /// This avoids the overhead of Metal kernel compilation on each embedding request.
+    ///
+    /// A service released with `release_gpu_context` stays released: this
+    /// returns early while `initialized` is set. Only `shutdown` followed by
+    /// `initialize` re-arms it.
     pub fn initialize(&mut self) -> Result<()> {
         if self.initialized {
             return Ok(());
         }
+        *self.released.get_mut() = false;
 
         #[cfg(feature = "embedding-service")]
         {
@@ -593,6 +603,11 @@ impl EmbeddingService {
             ));
         }
 
+        // A released service answers nothing, not even from its cache.
+        if self.released.load(Ordering::Acquire) {
+            return Err(EmbeddingError::ModelNotInitialized);
+        }
+
         // Check cache first
         {
             let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
@@ -611,6 +626,12 @@ impl EmbeddingService {
             {
                 let state_guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 if state_guard.is_none() {
+                    // `release_gpu_context` raises `released` before it takes
+                    // the state, so a released service is seen here even when
+                    // the release landed after the check above.
+                    if self.released.load(Ordering::Acquire) {
+                        return Err(EmbeddingError::ModelNotInitialized);
+                    }
                     return Ok(vec![0.0; self.embedding_dimension]);
                 }
             }
@@ -791,6 +812,7 @@ impl EmbeddingService {
     /// This is a one-way operation intended for application shutdown.
     pub fn release_gpu_context(&self) {
         tracing::info!("Releasing ALL GPU resources (model + context)...");
+        self.released.store(true, Ordering::Release);
 
         #[cfg(feature = "embedding-service")]
         {
@@ -877,6 +899,34 @@ mod tests {
             "expected ModelLoadError, got {err:?}"
         );
         assert!(!service.is_initialized());
+    }
+
+    /// After `release_gpu_context` an embed call fails rather than returning the
+    /// stub-mode zero vector.
+    #[test]
+    fn embedding_after_release_is_an_error_not_a_zero_vector() {
+        let mut service = EmbeddingService::new(EmbeddingConfig::default()).unwrap();
+        // Stand in for a service that was initialized (stub or loaded).
+        service.initialized = true;
+        // A cached vector must not outlive the release either.
+        service
+            .cache
+            .lock()
+            .unwrap()
+            .put("cached".to_string(), vec![1.0]);
+        service.release_gpu_context();
+        assert!(matches!(
+            service.generate_embedding_internal("cached", "cached"),
+            Err(EmbeddingError::ModelNotInitialized)
+        ));
+        assert!(matches!(
+            service.embed_document("late call"),
+            Err(EmbeddingError::ModelNotInitialized)
+        ));
+        assert!(matches!(
+            service.embed_query("late call"),
+            Err(EmbeddingError::ModelNotInitialized)
+        ));
     }
 
     #[test]

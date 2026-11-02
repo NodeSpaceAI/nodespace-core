@@ -759,8 +759,8 @@ impl SqliteStore {
         let created_at_str: String = row.get(7)?;
         let modified_at_str: String = row.get(8)?;
 
-        let properties: Value =
-            serde_json::from_str(&properties_str).unwrap_or(serde_json::json!({}));
+        let properties: Value = serde_json::from_str(&properties_str)
+            .with_context(|| format!("Invalid properties JSON on node {id}"))?;
         let created_at = DateTime::parse_from_rfc3339(&created_at_str)
             .with_context(|| format!("Invalid created_at timestamp: {}", created_at_str))?
             .with_timezone(&Utc);
@@ -789,7 +789,8 @@ impl SqliteStore {
         let out_node: String = row.get(2)?;
         let relationship_type: String = row.get(3)?;
         let props_str: String = row.get(4)?;
-        let properties: Value = serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
+        let properties: Value = serde_json::from_str(&props_str)
+            .with_context(|| format!("Invalid properties JSON on relationship {id}"))?;
         Ok(RelationshipRecord {
             id,
             in_node,
@@ -1370,6 +1371,13 @@ mod tests {
         assert_eq!(
             title_fts_ids(&store, "northwind").await?,
             vec!["a".to_string()]
+        );
+        // The row count above cannot tell "left alone" from "refilled with the
+        // same row"; the repair verdict can.
+        assert_eq!(
+            SqliteStore::backfill_title_fts_if_stale(&*store.write().await).await?,
+            TitleFtsRepair::AlreadyHealthy,
+            "a database with NULL and empty titles is healthy and must not be refilled"
         );
         Ok(())
     }
@@ -2259,6 +2267,61 @@ mod tests {
         assert_eq!(node.version, 7);
         assert_eq!(node.created_at.to_rfc3339(), "2026-01-02T03:04:05+00:00");
         assert_eq!(node.modified_at.to_rfc3339(), "2026-02-03T04:05:06+00:00");
+        Ok(())
+    }
+
+    /// A properties column that is not valid JSON is an error naming the row,
+    /// not an empty object a later write would store over the original text.
+    /// The expression indexes on `node.properties` reject a malformed insert,
+    /// so the test drops them to stand in for a corrupt database.
+    #[tokio::test]
+    async fn test_unparseable_properties_json_is_an_error_naming_the_row() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let conn = store.write().await;
+        for index in [
+            "idx_task_status",
+            "idx_task_due_date",
+            "idx_task_priority",
+            "idx_task_status_due_date",
+            "idx_issue_status",
+            "idx_project_status",
+            "idx_project_priority",
+        ] {
+            conn.execute(&format!("DROP INDEX {index}"), ()).await?;
+        }
+        conn.execute(
+            "INSERT INTO node (id, node_type, content, properties, lifecycle_status, \
+             version, created_at, modified_at) VALUES ('bad-props', 'text', 'x', 'not json', \
+             'active', 1, '2026-01-02T03:04:05Z', '2026-01-02T03:04:05Z')",
+            (),
+        )
+        .await?;
+        conn.execute(
+            "INSERT INTO node (id, node_type, content, properties, lifecycle_status, \
+             version, created_at, modified_at) VALUES ('other', 'text', 'y', '{}', \
+             'active', 1, '2026-01-02T03:04:05Z', '2026-01-02T03:04:05Z')",
+            (),
+        )
+        .await?;
+        conn.execute(
+            "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, \
+             created_at, modified_at) VALUES ('bad-rel', 'bad-props', 'other', 'links', \
+             '{broken', '2026-01-02T03:04:05Z', '2026-01-02T03:04:05Z')",
+            (),
+        )
+        .await?;
+        drop(conn);
+
+        let node_err = store.get_node("bad-props").await.unwrap_err();
+        assert!(
+            format!("{node_err:#}").contains("bad-props"),
+            "{node_err:#}"
+        );
+        let rel_err = store
+            .get_relationship_record("bad-props", "other", "links")
+            .await
+            .unwrap_err();
+        assert!(format!("{rel_err:#}").contains("bad-rel"), "{rel_err:#}");
         Ok(())
     }
 

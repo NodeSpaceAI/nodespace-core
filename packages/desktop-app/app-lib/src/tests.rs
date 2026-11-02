@@ -149,43 +149,6 @@ mod nodespace_tests {
     }
 
     // ========================================================================
-    // Tauri Command Tests (testing actual application logic)
-    // ========================================================================
-
-    use crate::{greet, toggle_sidebar};
-
-    #[test]
-    fn test_greet_command() {
-        let result = greet("NodeSpace");
-
-        assert_eq!(result, "Hello, NodeSpace! You've been greeted from Rust!");
-    }
-
-    #[test]
-    fn test_greet_command_empty_name() {
-        let result = greet("");
-
-        assert_eq!(result, "Hello, ! You've been greeted from Rust!");
-    }
-
-    #[test]
-    fn test_greet_command_special_characters() {
-        let result = greet("Test User & Co.");
-
-        assert_eq!(
-            result,
-            "Hello, Test User & Co.! You've been greeted from Rust!"
-        );
-    }
-
-    #[test]
-    fn test_toggle_sidebar_command() {
-        let result = toggle_sidebar();
-
-        assert_eq!(result, "Sidebar toggled!");
-    }
-
-    // ========================================================================
     // Debug Channel Tests (frontend_log / frontend_log_enabled — NDJSON sink)
     // ========================================================================
 

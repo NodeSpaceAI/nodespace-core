@@ -79,17 +79,6 @@ pub mod window_routing;
 // Per-database window size/position persistence.
 pub mod window_state;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
-fn toggle_sidebar() -> String {
-    "Sidebar toggled!".to_string()
-}
-
 /// True when the frontend debug channel is enabled (env `NS_FRONTEND_LOG` set to
 /// a file path). The frontend gates its forwarding on this so normal builds pay
 /// no IPC cost; diagnostics set the env per window to capture console messages,
@@ -894,8 +883,6 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            greet,
-            toggle_sidebar,
             frontend_log_enabled,
             frontend_log,
             check_daemon_status,
