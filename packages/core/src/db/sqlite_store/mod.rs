@@ -1372,6 +1372,13 @@ mod tests {
             title_fts_ids(&store, "northwind").await?,
             vec!["a".to_string()]
         );
+        // The row count above cannot tell "left alone" from "refilled with the
+        // same row"; the repair verdict can.
+        assert_eq!(
+            SqliteStore::backfill_title_fts_if_stale(&*store.write().await).await?,
+            TitleFtsRepair::AlreadyHealthy,
+            "a database with NULL and empty titles is healthy and must not be refilled"
+        );
         Ok(())
     }
 
