@@ -25,6 +25,9 @@ pub struct SchemaDescription<'a> {
     pub fields: &'a [SchemaField],
     /// The schema that declares each field, by field name.
     pub owners: &'a HashMap<String, String>,
+    /// The display name of each type this description names (the parent and the
+    /// field owners), by type id. A type missing from it is shown by its id.
+    pub names: &'a HashMap<String, String>,
 }
 
 /// The type in a paragraph and a list of its fields. `link` is the markdown
@@ -35,6 +38,7 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
         purpose,
         fields,
         owners,
+        names,
     } = input;
     let mut message = format!("Here is what {link} is.");
     if let Some(purpose) = purpose.map(one_line).filter(|p| !p.is_empty()) {
@@ -43,7 +47,7 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
     }
 
     message.push_str("\n\n");
-    message.push_str(&standing(schema));
+    message.push_str(&standing(schema, names));
     if schema.is_abstract {
         message.push_str(
             " It is abstract: no node is created as it directly, only as a type that extends it.",
@@ -62,7 +66,7 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
         // What core refuses to change: a field it protects. A `User` field,
         // seeded or added under a prefix, is the user's to change.
         let fixed = field.protection != SchemaProtectionLevel::User;
-        message.push_str(&field_line(field, owner, &schema.envelope.id, fixed));
+        message.push_str(&field_line(field, owner, &schema.envelope.id, fixed, names));
     }
 
     if !schema.relationships.is_empty() {
@@ -97,11 +101,16 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
 
 /// Whether the type is built in or the user's own, what extends what, and what
 /// that lets a person change.
-fn standing(schema: &SchemaNode) -> String {
+fn standing(schema: &SchemaNode, names: &HashMap<String, String>) -> String {
     let extends = schema
         .extends
         .as_deref()
-        .map(|parent| format!(" It extends `{parent}`, so it has that type's fields as well."))
+        .map(|parent| {
+            format!(
+                " It extends {}, so it has that type's fields as well.",
+                type_link(parent, names)
+            )
+        })
         .unwrap_or_default();
     if schema.is_core {
         format!(
@@ -116,7 +125,13 @@ fn standing(schema: &SchemaNode) -> String {
 }
 
 /// One field: its stored name, type and description, then what constrains it.
-fn field_line(field: &SchemaField, owner: Option<&String>, schema_id: &str, fixed: bool) -> String {
+fn field_line(
+    field: &SchemaField,
+    owner: Option<&String>,
+    schema_id: &str,
+    fixed: bool,
+    names: &HashMap<String, String>,
+) -> String {
     let mut kind = field.field_type.as_str().to_string();
     if field.field_type == SchemaFieldType::Array {
         if let Some(item) = field.item_type {
@@ -154,7 +169,7 @@ fn field_line(field: &SchemaField, owner: Option<&String>, schema_id: &str, fixe
         notes.push("Built in: it cannot be changed or removed.".to_string());
     }
     if let Some(owner) = owner.filter(|owner| owner.as_str() != schema_id) {
-        notes.push(format!("From `{owner}`."));
+        notes.push(format!("From {}.", type_link(owner, names)));
     }
     if !notes.is_empty() {
         let sep = if line.ends_with(')') { ": " } else { " " };
@@ -162,6 +177,24 @@ fn field_line(field: &SchemaField, owner: Option<&String>, schema_id: &str, fixe
         line.push_str(&notes.join(" "));
     }
     line
+}
+
+/// A markdown link to a type, in the form the chat view opens: its display name
+/// (or its id when none is known) with the characters that would end the link
+/// removed.
+fn type_link(id: &str, names: &HashMap<String, String>) -> String {
+    let label: String = names
+        .get(id)
+        .map(String::as_str)
+        .unwrap_or(id)
+        .chars()
+        .filter(|c| !matches!(c, '[' | ']' | '\n' | '\r'))
+        .collect();
+    let label = label.trim();
+    format!(
+        "[{}](nodespace://{id})",
+        if label.is_empty() { id } else { label }
+    )
 }
 
 /// A stored value as text: a string without its quotes.
@@ -215,6 +248,7 @@ mod tests {
                 purpose: Some("A support request.\nOne per customer issue."),
                 fields,
                 owners: &owners,
+                names: &HashMap::new(),
             },
         )
     }
@@ -316,6 +350,7 @@ mod tests {
             ..Default::default()
         };
         let owners = HashMap::from([("status".to_string(), "task".to_string())]);
+        let names = HashMap::from([("task".to_string(), "Task".to_string())]);
 
         let text = describe_schema(
             "[Bug](nodespace://bug)",
@@ -324,16 +359,19 @@ mod tests {
                 purpose: None,
                 fields: &[inherited],
                 owners: &owners,
+                names: &names,
             },
         );
         assert!(
-            text.contains("It extends `task`, so it has that type's fields as well."),
+            text.contains(
+                "It extends [Task](nodespace://task), so it has that type's fields as well."
+            ),
             "{text}"
         );
         // The field is core-protected, so it is fixed here too.
         assert!(
             text.contains(
-                "- **status** (text): Built in: it cannot be changed or removed. From `task`."
+                "- **status** (text): Built in: it cannot be changed or removed. From [Task](nodespace://task)."
             ),
             "{text}"
         );

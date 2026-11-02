@@ -20,15 +20,21 @@
   const isUser = $derived(message.role === 'user');
   const isAssistant = $derived(message.role === 'assistant');
   /**
-   * The text to show above the option chips: `content` minus the bullet list
-   * (rendered as chips instead), keeping the backend's opener + question
-   * framing ("I can take that a couple of ways...") intact.
+   * The text to show above the option chips: `content` minus the trailing bullet
+   * list of a clarification (rendered as chips instead), keeping the backend's
+   * opener + question framing ("I can take that a couple of ways...") intact.
+   * A message whose options are not a trailing bullet list, such as a bound
+   * chat's opening description that ends in a question, is shown whole.
    */
-  const clarifyHeaderText = $derived(
-    message.options && message.options.length > 0
-      ? message.content.split('\n\n')[0]
-      : message.content
-  );
+  const clarifyHeaderText = $derived.by(() => {
+    if (!message.options || message.options.length === 0) return message.content;
+    const paragraphs = message.content.split('\n\n');
+    const last = paragraphs[paragraphs.length - 1];
+    const isBulletList = last.split('\n').every((line) => /^\s*[-*\u2022]\s+/.test(line));
+    return isBulletList && paragraphs.length > 1
+      ? paragraphs.slice(0, -1).join('\n\n')
+      : message.content;
+  });
 
   async function copyContent() {
     try {
