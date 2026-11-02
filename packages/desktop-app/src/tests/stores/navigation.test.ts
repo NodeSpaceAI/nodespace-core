@@ -1209,6 +1209,35 @@ describe('Navigation Store - Tab Management', () => {
       vi.restoreAllMocks();
     });
 
+    it('does not overwrite live tab state when superseded while lookups are pending', async () => {
+      resetTabState();
+      const tabs = [nodeTab('old', 'live-node', 'text')];
+      vi.spyOn(TabPersistenceService, 'load').mockReturnValue({
+        version: 1,
+        tabs,
+        panes: [{ id: DEFAULT_PANE_ID, width: 100, tabIds: ['old'] }],
+        activePaneId: DEFAULT_PANE_ID,
+        activeTabIds: { [DEFAULT_PANE_ID]: 'old' }
+      });
+      let release: (ok: boolean) => void = () => {};
+      let superseded = false;
+
+      const pending = restorePersistedState(
+        'db-1',
+        () => new Promise<boolean>((resolve) => (release = resolve)),
+        () => superseded
+      );
+      // A database switch lands while the lookups are still outstanding.
+      superseded = true;
+      resetTabState();
+      const live = navigationStore.state.tabs.map((t) => t.id);
+      release(true);
+
+      expect(await pending).toBe(false);
+      expect(navigationStore.state.tabs.map((t) => t.id)).toEqual(live);
+      vi.restoreAllMocks();
+    });
+
     it('falls back to the default state when no restored tab resolves', async () => {
       resetTabState();
       const tabs = [nodeTab('missing', 'gone-node', 'text')];

@@ -197,7 +197,11 @@ class DatabaseStore {
       this.databases = [IMPLICIT_BROWSER_DATABASE];
       this.defaultDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
       if (this.activeDatabaseId === null) {
-        await restorePersistedState(IMPLICIT_BROWSER_DATABASE.id, isTabResolvable);
+        await restorePersistedState(
+          IMPLICIT_BROWSER_DATABASE.id,
+          isTabResolvable,
+          () => this.activeDatabaseId !== null
+        );
         if (this.activeDatabaseId === null) {
           this.activeDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
         }
@@ -252,7 +256,7 @@ class DatabaseStore {
         // Restore this database's saved tabs, dropping any that no longer resolve,
         // before the workspace mounts (it waits on `activeDatabaseId`).
         if (resolved !== null) {
-          await restorePersistedState(resolved, isTabResolvable);
+          await restorePersistedState(resolved, isTabResolvable, superseded);
           if (superseded()) return;
         }
 

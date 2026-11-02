@@ -201,11 +201,14 @@ class NavigationStore {
    * database, so tabs saved against another database are never considered.
    * @param databaseId - The database whose tabs to restore
    * @param isResolvable - Whether a persisted tab still exists in that database
+   * @param isSuperseded - Checked after the lookups: when true, the caller has moved on
+   *   (a newer load or a database switch owns the tabs) and nothing is applied
    * @returns True if at least one tab was restored
    */
   async restorePersistedState(
     databaseId: string,
-    isResolvable: (tab: Tab) => Promise<boolean>
+    isResolvable: (tab: Tab) => Promise<boolean>,
+    isSuperseded: () => boolean = () => false
   ): Promise<boolean> {
     const persisted = TabPersistenceService.load(databaseId);
     let restored = false;
@@ -213,6 +216,7 @@ class NavigationStore {
       const verdicts = await Promise.all(
         persisted.tabs.map(async (tab) => [tab.id, await isResolvable(tab)] as const)
       );
+      if (isSuperseded()) return false;
       const keepIds = new Set(verdicts.filter(([, ok]) => ok).map(([id]) => id));
       const dropped = persisted.tabs.length - keepIds.size;
       if (dropped > 0) log.warn(`Dropped ${dropped} restored tab(s) that no longer resolve`);
@@ -708,8 +712,9 @@ export const loadPersistedState = (): boolean => navigationStore.loadPersistedSt
 
 export const restorePersistedState = (
   databaseId: string,
-  isResolvable: (tab: Tab) => Promise<boolean>
-): Promise<boolean> => navigationStore.restorePersistedState(databaseId, isResolvable);
+  isResolvable: (tab: Tab) => Promise<boolean>,
+  isSuperseded?: () => boolean
+): Promise<boolean> => navigationStore.restorePersistedState(databaseId, isResolvable, isSuperseded);
 export const resetTabState = (): void => navigationStore.resetTabState();
 export const clearAllTabs = (): void => navigationStore.clearAllTabs();
 export const createPane = (): Pane | null => navigationStore.createPane();
