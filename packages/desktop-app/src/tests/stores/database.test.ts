@@ -319,7 +319,11 @@ describe('Database Store', () => {
 
       await databaseStore.load();
 
-      expect(restorePersistedState).toHaveBeenCalledWith('c', expect.any(Function));
+      expect(restorePersistedState).toHaveBeenCalledWith(
+        'c',
+        expect.any(Function),
+        expect.any(Function)
+      );
       expect(activeWhenRestored).toBeNull();
     });
 
