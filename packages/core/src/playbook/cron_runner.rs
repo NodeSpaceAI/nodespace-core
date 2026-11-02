@@ -215,24 +215,47 @@ pub(crate) async fn check_and_enqueue(
                 scan: Some(Arc::clone(&scan)),
             };
 
-            if let Err(e) = queue_tx.try_send(work_item) {
-                match e {
-                    mpsc::error::TrySendError::Full(_) => {
-                        warn!(
-                            "ExecutionQueue full, dropping cron work item for selector '{}'",
-                            entry.select
-                        );
-                    }
-                    mpsc::error::TrySendError::Closed(_) => {
-                        debug!("ExecutionQueue closed, CronRunner stopping enqueue");
-                        return now;
-                    }
-                }
+            if !enqueue_scheduled(queue_tx, work_item).await {
+                debug!("ExecutionQueue closed, CronRunner stopping enqueue");
+                return now;
             }
         }
     }
 
     now
+}
+
+/// How long a scheduled scan waits before re-checking for queue capacity.
+const ENQUEUE_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Enqueue one scheduled work item, waiting for capacity instead of dropping it.
+///
+/// A scan can select more nodes than the queue holds, and the single consumer
+/// drains it one item at a time, so a full queue means "wait", never "discard".
+/// The scan stops filling the queue once only an eighth of it is free, leaving
+/// that headroom for reactive work, which enqueues without waiting and would
+/// otherwise be dropped while a long scan holds the queue full.
+///
+/// Returns `false` when the queue is closed and the item was not enqueued.
+async fn enqueue_scheduled(
+    queue_tx: &mpsc::Sender<ExecutionWorkItem>,
+    mut work_item: ExecutionWorkItem,
+) -> bool {
+    let reserved = queue_tx.max_capacity() / 8;
+    loop {
+        if queue_tx.is_closed() {
+            return false;
+        }
+        if queue_tx.capacity() > reserved {
+            match queue_tx.try_send(work_item) {
+                Ok(()) => return true,
+                Err(mpsc::error::TrySendError::Closed(_)) => return false,
+                // Reactive work took the slot first: wait again.
+                Err(mpsc::error::TrySendError::Full(item)) => work_item = item,
+            }
+        }
+        tokio::time::sleep(ENQUEUE_RETRY_INTERVAL).await;
+    }
 }
 
 /// Create a synthetic `EventEnvelope` for cron-triggered work items.
@@ -315,6 +338,51 @@ mod tests {
             }
             _ => panic!("expected NodeCreated variant in synthetic envelope"),
         }
+    }
+
+    fn scan_item(i: usize) -> ExecutionWorkItem {
+        let node = crate::models::Node::new(
+            "cr-task".to_string(),
+            format!("task {i}"),
+            serde_json::json!({}),
+        );
+        ExecutionWorkItem {
+            rules: vec![],
+            trigger_event: synthetic_cron_envelope(&node.id),
+            trigger_node: node,
+            scan: None,
+        }
+    }
+
+    /// A scan larger than the queue waits for the consumer; nothing is dropped,
+    /// and the scan leaves an eighth of the queue free for reactive work.
+    #[tokio::test]
+    async fn a_scan_larger_than_the_queue_drops_nothing() {
+        let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(16);
+        let consumer = tokio::spawn(async move {
+            let mut got = 0;
+            while rx.recv().await.is_some() {
+                got += 1;
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            got
+        });
+        for i in 0..100 {
+            assert!(enqueue_scheduled(&tx, scan_item(i)).await);
+            assert!(
+                tx.capacity() >= 1,
+                "the scan must leave room for reactive work"
+            );
+        }
+        drop(tx);
+        assert_eq!(consumer.await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn enqueue_scheduled_stops_when_the_queue_is_closed() {
+        let (tx, rx) = mpsc::channel::<ExecutionWorkItem>(4);
+        drop(rx);
+        assert!(!enqueue_scheduled(&tx, scan_item(0)).await);
     }
 
     #[test]
