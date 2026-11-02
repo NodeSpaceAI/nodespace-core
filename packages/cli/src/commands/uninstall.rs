@@ -42,6 +42,12 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     let state_dir = nodespace_daemon::nodespace_dir()?;
     let redirected = nodespace_daemon::nodespace_home_override().is_some();
 
+    if cfg!(windows) {
+        if let Some(message) = windows_manual_steps(&state_dir, redirected) {
+            anyhow::bail!(message);
+        }
+    }
+
     let leftovers = root_owned_leftovers(PKG_INSTALLED_PATHS);
     uninstall(
         &state_dir,
@@ -95,8 +101,11 @@ fn uninstall(
         }
         remove_from_user_home();
     }
-    remove_bin_dir(state_dir);
+    let failures = remove_bin_dir(state_dir);
     remove_sock(state_dir);
+    if !failures.is_empty() {
+        anyhow::bail!(bin_dir_failure_message(&failures, state_dir));
+    }
 
     if !redirected && !root_owned_leftovers.is_empty() {
         anyhow::bail!(leftovers_message(root_owned_leftovers, state_dir));
@@ -108,6 +117,49 @@ fn uninstall(
     );
 
     Ok(())
+}
+
+/// Why Windows cannot run this command, or `None` when it can.
+///
+/// Windows has no daemon stop or autorun removal here, so removing the binaries
+/// would fail while they are open and leave the daemon and its `Run` registry
+/// entry in place. The command refuses before touching anything and prints the
+/// commands to run instead. They are only printed, never run. A redirected run
+/// leaves the daemon and the registry alone, so it is not refused.
+fn windows_manual_steps(state_dir: &Path, redirected: bool) -> Option<String> {
+    if redirected {
+        return None;
+    }
+    let bins = nodespace_proto::socket::DAEMON_BIN_DIR_NAMES
+        .iter()
+        .map(|name| format!("rmdir /s /q \"{}\"", state_dir.join(name).display()))
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    Some(format!(
+        "NodeSpace cannot be uninstalled by this command on Windows, and nothing was removed.\n\
+         It does not stop the daemon or remove its autorun entry, so the daemon would start again at the next login.\n\
+         To uninstall, run in a Command Prompt:\n  \
+         taskkill /F /IM nodespaced.exe\n  \
+         reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v NodeSpaceDaemon /f\n  \
+         {bins}\n\
+         Your data at {} is not touched by these commands.",
+        state_dir.join("database").display()
+    ))
+}
+
+/// The failure printed when install directories could not be removed: which
+/// paths remain and why, in place of a success line.
+fn bin_dir_failure_message(failures: &[(PathBuf, std::io::Error)], state_dir: &Path) -> String {
+    let listed = failures
+        .iter()
+        .map(|(path, e)| format!("{}: {e}", path.display()))
+        .collect::<Vec<_>>()
+        .join("\n  ");
+    format!(
+        "NodeSpace was not fully uninstalled. These paths could not be removed:\n  {listed}\n\
+         Close anything using them and remove them yourself. Your data at {} has been preserved.",
+        state_dir.join("database").display()
+    )
 }
 
 /// The members of `candidates` that exist on this machine and belong to the
@@ -277,10 +329,20 @@ fn stop_daemon() {}
 /// Remove both build flavours' sidecar install directories, for the same
 /// reason as [`remove_sock`]: this binary cannot tell which flavour installed
 /// what is on disk.
-fn remove_bin_dir(state_dir: &Path) {
+///
+/// Returns every directory that exists but could not be removed; a directory
+/// that is already gone is not a failure.
+fn remove_bin_dir(state_dir: &Path) -> Vec<(PathBuf, std::io::Error)> {
+    let mut failures = Vec::new();
     for name in nodespace_proto::socket::DAEMON_BIN_DIR_NAMES {
-        let _ = fs::remove_dir_all(state_dir.join(name));
+        let dir = state_dir.join(name);
+        if let Err(e) = fs::remove_dir_all(&dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                failures.push((dir, e));
+            }
+        }
     }
+    failures
 }
 
 /// Remove both build flavours' sockets, not just the release one. A single
@@ -531,7 +593,7 @@ mod tests {
             fs::write(dir.join("nodespaced"), "").expect("write binary");
         }
 
-        remove_bin_dir(&state_dir);
+        assert!(remove_bin_dir(&state_dir).is_empty());
 
         for name in nodespace_proto::socket::DAEMON_BIN_DIR_NAMES {
             assert!(!state_dir.join(name).exists(), "{name} survived");
@@ -714,6 +776,44 @@ mod tests {
         let leftovers = vec![PathBuf::from("/usr/local/bin/nodespace")];
 
         uninstall(&state_dir, true, None, &leftovers, || {}).expect("uninstalled");
+    }
+
+    /// Windows refuses with the commands and removes nothing; a redirected run
+    /// is not refused.
+    #[test]
+    fn windows_manual_steps_prints_the_commands_and_refuses() {
+        let state_dir = Path::new("C:\\Users\\a\\.nodespace");
+        let message = windows_manual_steps(state_dir, false).expect("refused");
+        assert!(message.contains("taskkill /F /IM nodespaced.exe"));
+        assert!(message.contains(
+            "reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v NodeSpaceDaemon /f"
+        ));
+        assert!(message.contains("rmdir /s /q"));
+        assert!(message.contains("nothing was removed"));
+        assert!(!message.contains("NodeSpace uninstalled."));
+        assert!(windows_manual_steps(state_dir, true).is_none());
+    }
+
+    /// A bin directory that cannot be removed fails the command with the path,
+    /// and no success line.
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_fails_when_a_bin_dir_cannot_be_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, _binary) = installed_state_dir(dir.path());
+        let bin = state_dir.join("bin");
+        let inner = bin.join("locked");
+        fs::create_dir_all(&inner).expect("inner");
+        fs::write(inner.join("f"), "").expect("file");
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o500)).expect("chmod");
+        let result = uninstall(&state_dir, true, None, &[], || {});
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o700)).expect("restore");
+        let error = result.expect_err("an undeletable directory must fail the uninstall");
+        let message = error.to_string();
+        assert!(message.contains("could not be removed"));
+        assert!(message.contains(&bin.display().to_string()));
+        assert!(!message.contains("NodeSpace uninstalled."));
     }
 
     #[test]
