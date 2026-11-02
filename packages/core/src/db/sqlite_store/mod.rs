@@ -2670,31 +2670,48 @@ mod tests {
                 None,
             )
             .await?;
-        store
+        let written = store
             .upsert_embeddings(
                 &node.id,
                 vec![unit_embedding(&node.id, 0)],
                 chrono::Utc::now(),
             )
             .await?;
+        assert!(written, "the vectors were written");
+        // Seeded nodes may sit in the queue too; only this root matters.
         assert!(
-            store
+            !store
                 .get_stale_embedding_root_ids(None, 0, 3)
                 .await?
-                .is_empty(),
+                .contains(&node.id),
             "freshly embedded"
         );
+
+        store
+            .record_embedding_error(&node.id, "inference failed")
+            .await?;
+        let vectors_before = vec_row_count(&store).await?;
+        assert!(vectors_before >= 1, "the old vector is indexed");
 
         store
             .requeue_root_embeddings(std::slice::from_ref(&node.id))
             .await?;
 
-        assert_eq!(vec_row_count(&store).await?, 0, "old vector not searchable");
         assert_eq!(
-            store.get_stale_embedding_root_ids(None, 0, 3).await?,
-            vec![node.id.clone()],
+            vec_row_count(&store).await?,
+            vectors_before - 1,
+            "old vector not searchable"
+        );
+        assert!(
+            store
+                .get_stale_embedding_root_ids(None, 0, 3)
+                .await?
+                .contains(&node.id),
             "root is queued again"
         );
+        let rows = store.get_embeddings(&node.id).await?;
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|r| r.stale && r.error_count == 0));
 
         let bare = store
             .create_node(
