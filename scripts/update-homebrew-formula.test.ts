@@ -44,11 +44,10 @@ describe("required target constants", () => {
 });
 
 describe("renderFormula", () => {
-  test("renders the version stanza and both version-bearing prose comments", () => {
+  test("renders the version stanza and the version-bearing prose comment", () => {
     const formula = renderFormula("v0.3.0", digests);
     expect(formula).toContain('version "0.3.0"');
     expect(formula).toContain("v0.3.0 has no macOS Intel build");
-    expect(formula).toContain("`gh release view v0.3.0 --json assets`");
     expect(formula).not.toContain("0.2.0");
   });
 
@@ -165,13 +164,9 @@ describe("renderFormula", () => {
   # Ships prebuilt binaries from nodespace-core's GitHub Releases, same as
   # the cask -- there's no source build here, just like the cask's .dmg.
   #
-  # v0.2.0 has no macOS Intel build (see the on_intel odie below). NOTE:
-  # the release's own SHA256SUMS file lists checksums for
-  # nodespace-x86_64-apple-darwin / nodespaced-x86_64-apple-darwin even
-  # though neither is an actual uploaded release asset -- verified against
-  # \`gh release view v0.2.0 --json assets\`, not just SHA256SUMS. Every
+  # v0.2.0 has no macOS Intel build (see the on_intel odie below). Every
   # digest below was computed locally from bytes actually downloaded from
-  # the release, never copied from SHA256SUMS.
+  # the release.
   on_macos do
     on_arm do
       url "https://github.com/NodeSpaceAI/nodespace-core/releases/download/v#{release_version}/nodespace-aarch64-apple-darwin"

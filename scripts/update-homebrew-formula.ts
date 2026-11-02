@@ -167,12 +167,11 @@ export async function resolveFormulaDigests(
 }
 
 /** Renders the full Formula/nodespace-cli.rb content for the resolved
- * digests. Full re-render, not a two-line regex patch: the file has two
- * prose comments that mention the version by name (the "vX.Y.Z has no
- * macOS Intel build" note and its "gh release view vX.Y.Z" aside) in
- * addition to the `version "X.Y.Z"` stanza itself, so patching only the
- * stanza would leave those comments stale the moment a release actually
- * bumps the version -- the same reasoning renderCask() in
+ * digests. Full re-render, not a two-line regex patch: the file has a
+ * prose comment that mentions the version by name (the "vX.Y.Z has no
+ * macOS Intel build" note) in addition to the `version "X.Y.Z"` stanza
+ * itself, so patching only the stanza would leave that comment stale the
+ * moment a release actually bumps the version -- the same reasoning renderCask() in
  * update-homebrew-cask.ts documents for always re-rendering the whole
  * cask rather than patching fields in place. */
 export function renderFormula(version: string, digests: FormulaDigests): string {
@@ -223,13 +222,9 @@ export function renderFormula(version: string, digests: FormulaDigests): string 
   # Ships prebuilt binaries from nodespace-core's GitHub Releases, same as
   # the cask -- there's no source build here, just like the cask's .dmg.
   #
-  # v${v} has no macOS Intel build (see the on_intel odie below). NOTE:
-  # the release's own SHA256SUMS file lists checksums for
-  # nodespace-x86_64-apple-darwin / nodespaced-x86_64-apple-darwin even
-  # though neither is an actual uploaded release asset -- verified against
-  # \`gh release view v${v} --json assets\`, not just SHA256SUMS. Every
+  # v${v} has no macOS Intel build (see the on_intel odie below). Every
   # digest below was computed locally from bytes actually downloaded from
-  # the release, never copied from SHA256SUMS.
+  # the release.
   on_macos do
     on_arm do
       url "https://github.com/NodeSpaceAI/nodespace-core/releases/download/v#{release_version}/${digests.macosArm.cli.fileName}"
