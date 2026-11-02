@@ -167,8 +167,21 @@ It installs the sidecars into `~/.nodespace/bin-dev`, kills a daemon on the defa
 socket, and registers the debug launchd label (`app.nodespace.daemon.dev`). That
 label is per user, so neither `HOME` nor `NODESPACE_HOME` scopes it, and the app
 re-registers it whenever it rebuilds or finds a changed sidecar. A scratch
-`HOME` keeps the files and database out of the real home; it does **not** stop
+`HOME` moves the files the app itself writes; it does **not** stop
 the app replacing the user's loaded job with one pointing at the scratch install.
+The daemon that job starts is run by launchd, which gives it the account's real
+`HOME`, so the app writes `HOME` (and `NODESPACE_HOME`, when set) into the job's
+environment whenever they differ from the account's; a daemon registered by an
+older build lacks them and would create `databases.toml` and `nodespace.db` under
+the real `~/.nodespace`. After a scratch launch, check that `~/.nodespace` gained no
+`databases.toml`, `database/` or `.model-verify-key`.
+
+The webview's storage is **not** relocated by `HOME`: WKWebView keeps
+`localStorage` under the account's real home, so a scratch launch starts with the
+previous install's tab state and active database id. The app discards a remembered
+database id the daemon has not registered, and tabs saved for another database are
+never restored into this one; to start from empty storage regardless, run
+`localStorage.clear()` in the app's web inspector (or `webview-execute-js`).
 Pre-seeding the sidecars only avoids re-registration while they stay unchanged
 and validly signed, and `dev:tauri` rebuilds them first, so do not rely on it.
 Get the user's go-ahead before launching it, and restore afterwards.

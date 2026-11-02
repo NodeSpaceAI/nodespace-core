@@ -1216,8 +1216,19 @@ async fn bring_up_daemon() -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let plist_path = launch_agents_dir(&home).join(plist_filename());
-        write_plist(&home, &plist_path, &daemon_bin, daemon_profile::active())
-            .context("Failed to write launchd plist")?;
+        let redirect_env = home_redirect_env(
+            &home,
+            account_home_dir().as_deref(),
+            std::env::var_os("NODESPACE_HOME"),
+        );
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            daemon_profile::active(),
+            &redirect_env,
+        )
+        .context("Failed to write launchd plist")?;
         bootstrap_launchd_agent(&plist_path)?;
     }
 
@@ -2203,6 +2214,57 @@ fn launch_agents_dir(home: &Path) -> PathBuf {
     home.join("Library/LaunchAgents")
 }
 
+/// The home directory the account database names for the current user, which is
+/// the home a launchd job starts with whatever `HOME` the launching process had.
+#[cfg(target_os = "macos")]
+fn account_home_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: `getpwuid_r` fills the caller's buffer and `passwd` struct; the
+    // directory is copied out before either goes out of scope.
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut buf = vec![0u8; 4096];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &mut result,
+        );
+        if rc != 0 || result.is_null() || pwd.pw_dir.is_null() {
+            return None;
+        }
+        let dir = std::ffi::CStr::from_ptr(pwd.pw_dir);
+        Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
+    }
+}
+
+/// The variables that keep a daemon started by launchd in the home the app itself
+/// runs in.
+///
+/// launchd starts a job with the account's home as `HOME` and none of the
+/// launcher's other variables, so an app run with a scratch `HOME` or a
+/// `NODESPACE_HOME` would have its daemon read and write the real
+/// `~/.nodespace` while the app, resolving the scratch home, looked in another
+/// registry. Each is written only when it differs from what the job would get
+/// anyway, so an ordinary install's registration is unchanged.
+#[cfg(any(target_os = "macos", test))]
+fn home_redirect_env(
+    home: &Path,
+    account_home: Option<&Path>,
+    nodespace_home: Option<std::ffi::OsString>,
+) -> Vec<(&'static str, String)> {
+    let mut env = Vec::new();
+    if account_home != Some(home) {
+        env.push(("HOME", home.to_string_lossy().into_owned()));
+    }
+    if let Some(custom) = nodespace_home.filter(|value| !value.is_empty()) {
+        env.push(("NODESPACE_HOME", custom.to_string_lossy().into_owned()));
+    }
+    env
+}
+
 /// Write the launchd plist for the nodespaced user agent.
 ///
 /// `KeepAlive` is the conditional `{SuccessfulExit: false}` form, NOT bare
@@ -2229,6 +2291,7 @@ fn write_plist(
     plist_path: &Path,
     daemon_bin: &Path,
     profile: &DaemonProfile,
+    redirect_env: &[(&'static str, String)],
 ) -> Result<()> {
     let launch_agents = plist_path
         .parent()
@@ -2247,6 +2310,19 @@ fn write_plist(
     let label_escaped = xml_escape(launch_agent_label());
 
     let ui_binary = xml_escape(&current_exe_canonical()?.to_string_lossy());
+
+    // `HOME` and `NODESPACE_HOME`, when the app runs in a home other than the
+    // account's, so the daemon it registers uses the same registry and database.
+    let redirect_env: String = redirect_env
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "        <key>{}</key>\n        <string>{}</string>\n",
+                xml_escape(key),
+                xml_escape(value)
+            )
+        })
+        .collect();
 
     // The profile's extra environment, rendered as `<key>`/`<string>` pairs after
     // core's own two, the variables of `daemon_profile::CORE_SERVICE_ENV`, which
@@ -2288,7 +2364,7 @@ fn write_plist(
         <string>{socket}</string>
         <key>{ui_binary_key}</key>
         <string>{ui_binary}</string>
-{service_env}    </dict>
+{redirect_env}{service_env}    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -2310,6 +2386,7 @@ fn write_plist(
         socket = socket_path,
         ui_binary_key = daemon_profile::UI_BINARY_ENV_VAR,
         ui_binary = ui_binary,
+        redirect_env = redirect_env,
         service_env = service_env,
         log_out = log_out,
         log_err = log_err,
@@ -3542,7 +3619,7 @@ mod macos_codesign_tests {
 /// checking the plist parses.
 #[cfg(all(test, target_os = "macos"))]
 mod macos_plist_keepalive_tests {
-    use super::{write_plist, DaemonProfile};
+    use super::{home_redirect_env, write_plist, DaemonProfile};
     use crate::daemon_profile::CORE_SERVICE_ENV;
     use nodespace_proto::socket::LAUNCHER_ARGS;
     use std::path::{Path, PathBuf};
@@ -3563,8 +3640,14 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
-            .expect("write_plist should succeed");
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            &DaemonProfile::community(),
+            &[],
+        )
+        .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
         assert!(
@@ -3597,8 +3680,14 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
-            .expect("write_plist should succeed");
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            &DaemonProfile::community(),
+            &[],
+        )
+        .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
         let expected = std::env::current_exe()
@@ -3629,8 +3718,14 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
-            .expect("write_plist should succeed");
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            &DaemonProfile::community(),
+            &[],
+        )
+        .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
 
         let launcher_args: String = LAUNCHER_ARGS
@@ -3655,8 +3750,14 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
-            .expect("write_plist should succeed");
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            &DaemonProfile::community(),
+            &[],
+        )
+        .expect("write_plist should succeed");
         assert!(
             plist_path.exists(),
             "write_plist should have created the file"
@@ -3702,9 +3803,60 @@ mod macos_plist_keepalive_tests {
         let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
         let daemon_bin = home.join("bin/nodespaced");
 
-        write_plist(&home, &plist_path, &daemon_bin, profile).expect("write_plist should succeed");
+        write_plist(&home, &plist_path, &daemon_bin, profile, &[])
+            .expect("write_plist should succeed");
         let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
         (home, plist_path, contents)
+    }
+
+    /// The app and the daemon launchd starts for it must agree on the home: a scratch
+    /// `HOME` or a `NODESPACE_HOME` is forwarded, and the account's own home is not.
+    #[test]
+    fn home_redirect_env_forwards_only_what_differs_from_the_account() {
+        let real = Path::new("/Users/someone");
+        assert!(home_redirect_env(real, Some(real), None).is_empty());
+        assert!(home_redirect_env(real, Some(real), Some("".into())).is_empty());
+
+        let scratch = Path::new("/tmp/nsh");
+        assert_eq!(
+            home_redirect_env(scratch, Some(real), None),
+            [("HOME", "/tmp/nsh".to_string())]
+        );
+        assert_eq!(
+            home_redirect_env(real, Some(real), Some("/tmp/nsh/.nodespace".into())),
+            [("NODESPACE_HOME", "/tmp/nsh/.nodespace".to_string())]
+        );
+        // With the account's home unknown the app's home is written rather than guessed.
+        assert_eq!(
+            home_redirect_env(scratch, None, None),
+            [("HOME", "/tmp/nsh".to_string())]
+        );
+    }
+
+    /// The redirect variables reach the registration, so a daemon launchd starts
+    /// resolves the same home as the app that registered it.
+    #[test]
+    fn plist_carries_the_home_redirect_variables() {
+        let home = scratch_dir("redirect");
+        let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
+        let daemon_bin = home.join("bin/nodespaced");
+        let redirect = home_redirect_env(&home, Some(Path::new("/Users/someone")), None);
+
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            &DaemonProfile::community(),
+            &redirect,
+        )
+        .expect("write_plist should succeed");
+
+        let plist = parsed_plist(&plist_path);
+        assert_eq!(
+            plist["EnvironmentVariables"]["HOME"],
+            home.to_string_lossy().as_ref()
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// A profile with no extra environment must leave the daemon's environment
