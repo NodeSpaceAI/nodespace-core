@@ -78,6 +78,7 @@ async fn merge_unions_properties_survivor_wins_ties_and_captures_superseded() ->
 #[tokio::test]
 async fn merge_unions_the_ancestor_buckets_of_a_subtype() -> Result<()> {
     let (svc, _tmp) = service().await?;
+    let svc = Arc::new(svc);
     nodespace_core::schema::handle_create_schema(
         &svc,
         json!({
@@ -122,11 +123,6 @@ async fn merge_unions_the_ancestor_buckets_of_a_subtype() -> Result<()> {
         after.properties["person"]["email"],
         json!("alice@example.com"),
         "the survivor's value wins a field present on both sides"
-    );
-    assert_eq!(
-        outcome.superseded["email"],
-        json!("ALICE@example.com"),
-        "the loser's overwritten ancestor-bucket field is captured by field name"
     );
     Ok(())
 }

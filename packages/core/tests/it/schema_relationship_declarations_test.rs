@@ -779,12 +779,10 @@ async fn edges_under_a_subtypes_own_declaration_do_not_block_removing_the_ancest
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    handle_update_schema(
-        &svc,
-        json!({ "schema_id": "rack", "add_relationships": [holds] }),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The shadowing state is built at the store level: `update_schema`
+    // refuses a base type adding a name its subtype already declares.
+    let holds: nodespace_core::models::schema::SchemaRelationship = serde_json::from_value(holds)?;
+    svc.set_schema_relationships("rack", &[holds]).await?;
     make_node(&svc, "2f0c0b8e-5f8e-5c55-9a59-3b1d7f6e4c21", "subrack").await?;
     make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
     svc.create_relationship(
