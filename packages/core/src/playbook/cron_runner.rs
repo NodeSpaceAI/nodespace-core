@@ -71,7 +71,14 @@ pub async fn cron_runner_loop(
         tokio::select! {
             () = tokio::time::sleep(POLL_INTERVAL) => {
                 last_checked =
-                    check_and_enqueue(&lifecycle, &node_service, &queue_tx, last_checked).await;
+                    check_and_enqueue_until(
+                        &lifecycle,
+                        &node_service,
+                        &queue_tx,
+                        last_checked,
+                        &mut shutdown_rx,
+                    )
+                    .await;
             }
             res = shutdown_rx.changed() => {
                 // A dropped sender can never signal again: treat it as shutdown.
@@ -114,11 +121,15 @@ fn fires_in_window(
 /// Check all cron entries against the window since `last_checked` and enqueue
 /// work items for matching nodes. Returns the window end, which the caller
 /// passes back as `last_checked` on the next check.
-pub(crate) async fn check_and_enqueue(
+///
+/// Waiting for queue capacity ends early when `shutdown_rx` signals, so a long
+/// scan never delays shutdown.
+pub(crate) async fn check_and_enqueue_until(
     lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
     node_service: &Arc<NodeService>,
     queue_tx: &mpsc::Sender<ExecutionWorkItem>,
     last_checked: chrono::DateTime<chrono::Local>,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
 ) -> chrono::DateTime<chrono::Local> {
     let now = chrono::Local::now();
     let start = window_start(last_checked, now);
@@ -215,8 +226,8 @@ pub(crate) async fn check_and_enqueue(
                 scan: Some(Arc::clone(&scan)),
             };
 
-            if !enqueue_scheduled(queue_tx, work_item).await {
-                debug!("ExecutionQueue closed, CronRunner stopping enqueue");
+            if !enqueue_scheduled(queue_tx, work_item, shutdown_rx).await {
+                debug!("ExecutionQueue closed or shutting down, CronRunner stopping enqueue");
                 return now;
             }
         }
@@ -236,14 +247,16 @@ const ENQUEUE_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 /// that headroom for reactive work, which enqueues without waiting and would
 /// otherwise be dropped while a long scan holds the queue full.
 ///
-/// Returns `false` when the queue is closed and the item was not enqueued.
+/// Returns `false` when the queue is closed or shutdown was signalled (or its
+/// sender dropped) and the item was not enqueued.
 async fn enqueue_scheduled(
     queue_tx: &mpsc::Sender<ExecutionWorkItem>,
     mut work_item: ExecutionWorkItem,
+    shutdown_rx: &mut tokio::sync::watch::Receiver<bool>,
 ) -> bool {
     let reserved = queue_tx.max_capacity() / 8;
     loop {
-        if queue_tx.is_closed() {
+        if queue_tx.is_closed() || *shutdown_rx.borrow() {
             return false;
         }
         if queue_tx.capacity() > reserved {
@@ -254,8 +267,27 @@ async fn enqueue_scheduled(
                 Err(mpsc::error::TrySendError::Full(item)) => work_item = item,
             }
         }
-        tokio::time::sleep(ENQUEUE_RETRY_INTERVAL).await;
+        tokio::select! {
+            () = tokio::time::sleep(ENQUEUE_RETRY_INTERVAL) => {}
+            res = shutdown_rx.changed() => {
+                if res.is_err() {
+                    return false;
+                }
+            }
+        }
     }
+}
+
+/// [`check_and_enqueue_until`] with a shutdown signal that never fires.
+#[cfg(test)]
+pub(crate) async fn check_and_enqueue(
+    lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
+    node_service: &Arc<NodeService>,
+    queue_tx: &mpsc::Sender<ExecutionWorkItem>,
+    last_checked: chrono::DateTime<chrono::Local>,
+) -> chrono::DateTime<chrono::Local> {
+    let (_tx, mut rx) = tokio::sync::watch::channel(false);
+    check_and_enqueue_until(lifecycle, node_service, queue_tx, last_checked, &mut rx).await
 }
 
 /// Create a synthetic `EventEnvelope` for cron-triggered work items.
@@ -354,6 +386,34 @@ mod tests {
         }
     }
 
+    /// A shutdown receiver that never fires (its sender is leaked).
+    fn idle_shutdown() -> tokio::sync::watch::Receiver<bool> {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(tx);
+        rx
+    }
+
+    /// A scan waiting on a full queue nobody drains stops when shutdown is
+    /// signalled.
+    #[tokio::test]
+    async fn a_waiting_scan_stops_on_shutdown() {
+        let (tx, _rx) = mpsc::channel::<ExecutionWorkItem>(4);
+        for i in 0..4 {
+            tx.try_send(scan_item(i)).unwrap();
+        }
+        let (sd_tx, mut sd_rx) = tokio::sync::watch::channel(false);
+        let waiter =
+            tokio::spawn(async move { enqueue_scheduled(&tx, scan_item(9), &mut sd_rx).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished(), "must be waiting on the full queue");
+        sd_tx.send(true).unwrap();
+        let stopped = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("shutdown must end the wait promptly")
+            .unwrap();
+        assert!(!stopped);
+    }
+
     /// A scan larger than the queue waits for the consumer; nothing is dropped,
     /// and the scan leaves an eighth of the queue free for reactive work.
     #[tokio::test]
@@ -368,7 +428,7 @@ mod tests {
             got
         });
         for i in 0..100 {
-            assert!(enqueue_scheduled(&tx, scan_item(i)).await);
+            assert!(enqueue_scheduled(&tx, scan_item(i), &mut idle_shutdown()).await);
             assert!(
                 tx.capacity() >= 1,
                 "the scan must leave room for reactive work"
@@ -382,7 +442,7 @@ mod tests {
     async fn enqueue_scheduled_stops_when_the_queue_is_closed() {
         let (tx, rx) = mpsc::channel::<ExecutionWorkItem>(4);
         drop(rx);
-        assert!(!enqueue_scheduled(&tx, scan_item(0)).await);
+        assert!(!enqueue_scheduled(&tx, scan_item(0), &mut idle_shutdown()).await);
     }
 
     #[test]

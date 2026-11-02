@@ -3134,6 +3134,55 @@ mod tests {
         );
     }
 
+    /// A directory path that cannot form a collection hierarchy (a repeated
+    /// name closing a cycle) fails only its own file; the other file still
+    /// imports and joins its collection.
+    #[tokio::test]
+    async fn an_unresolvable_collection_path_fails_only_its_own_files() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("vault");
+        std::fs::create_dir_all(src.join("mypkg/mypkg")).unwrap();
+        std::fs::create_dir_all(src.join("ok")).unwrap();
+        std::fs::write(src.join("mypkg/mypkg/a.md"), "# A\n").unwrap();
+        std::fs::write(src.join("ok/b.md"), "# B\n").unwrap();
+        let files = vec![
+            src.join("mypkg/mypkg/a.md").to_str().unwrap().to_string(),
+            src.join("ok/b.md").to_str().unwrap().to_string(),
+        ];
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            auto_collection_routing: true,
+            ..Default::default()
+        };
+
+        let done = run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+
+        let result = |suffix: &str| {
+            done.results
+                .iter()
+                .find(|r| r.file_path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no result for {suffix}"))
+        };
+        let a = result("a.md");
+        assert!(!a.success, "{a:?}");
+        assert!(
+            a.error.contains("Collection resolution failed for"),
+            "{}",
+            a.error
+        );
+        let b = result("b.md");
+        assert!(b.success, "{b:?}");
+        assert!(
+            !ns.store()
+                .get_node_memberships(&root_of(&src, "ok/b.md"))
+                .await
+                .unwrap()
+                .is_empty(),
+            "b is in its collection",
+        );
+    }
+
     /// Import `README.md` of `base` as its own tree under the given options.
     async fn import_readme(
         ns: &Arc<CoreNodeService>,
