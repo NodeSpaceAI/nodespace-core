@@ -16,6 +16,7 @@ import {
   reorderTab,
   moveTabBetweenPanes,
   loadPersistedState,
+  restorePersistedState,
   updateTabContent,
   getOrderedTabsForPane,
   DEFAULT_PANE_ID,
@@ -1166,6 +1167,64 @@ describe('Navigation Store - Tab Management', () => {
       // Should only return the valid tab (Daily Journal)
       expect(orderedTabs.length).toBe(1);
       expect(orderedTabs[0].id).toBe(DAILY_JOURNAL_TAB_ID);
+    });
+  });
+
+  describe('restorePersistedState', () => {
+    const nodeTab = (id: string, nodeId: string, nodeType: string): Tab => ({
+      id,
+      title: id,
+      type: 'node',
+      content: { nodeId, nodeType },
+      closeable: true,
+      paneId: DEFAULT_PANE_ID
+    });
+
+    it('keeps only tabs that resolve in the active database', async () => {
+      resetTabState();
+      const tabs = [
+        nodeTab('missing', 'gone-node', 'text'),
+        nodeTab('valid', 'live-node', 'text'),
+        nodeTab('type-ok', 'task', 'query'),
+        nodeTab('type-stale', 'removed-type', 'query')
+      ];
+      vi.spyOn(TabPersistenceService, 'load').mockReturnValue({
+        version: 1,
+        tabs,
+        panes: [{ id: DEFAULT_PANE_ID, width: 100, tabIds: tabs.map((t) => t.id) }],
+        activePaneId: DEFAULT_PANE_ID,
+        activeTabIds: { [DEFAULT_PANE_ID]: 'missing' }
+      });
+      const existing = new Set(['live-node', 'task']);
+
+      const restored = await restorePersistedState('db-1', async (tab) =>
+        existing.has(tab.content?.nodeId ?? '')
+      );
+
+      expect(restored).toBe(true);
+      expect(TabPersistenceService.load).toHaveBeenCalledWith('db-1');
+      expect(navigationStore.state.tabs.map((t) => t.id)).toEqual(['valid', 'type-ok']);
+      expect(navigationStore.state.panes[0].tabIds).toEqual(['valid', 'type-ok']);
+      expect(navigationStore.state.activeTabIds[DEFAULT_PANE_ID]).toBe('valid');
+      vi.restoreAllMocks();
+    });
+
+    it('falls back to the default state when no restored tab resolves', async () => {
+      resetTabState();
+      const tabs = [nodeTab('missing', 'gone-node', 'text')];
+      vi.spyOn(TabPersistenceService, 'load').mockReturnValue({
+        version: 1,
+        tabs,
+        panes: [{ id: DEFAULT_PANE_ID, width: 100, tabIds: ['missing'] }],
+        activePaneId: DEFAULT_PANE_ID,
+        activeTabIds: { [DEFAULT_PANE_ID]: 'missing' }
+      });
+
+      const restored = await restorePersistedState('db-1', async () => false);
+
+      expect(restored).toBe(false);
+      expect(navigationStore.state.tabs.map((t) => t.id)).toEqual([DAILY_JOURNAL_TAB_ID]);
+      vi.restoreAllMocks();
     });
   });
 

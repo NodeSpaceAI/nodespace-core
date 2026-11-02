@@ -30,6 +30,25 @@ export class TabPersistenceService {
 
   private static saveTimer: ReturnType<typeof setTimeout> | null = null;
   private static pendingState: TabState | null = null;
+  private static pendingKey: string | null = null;
+  private static scopeProvider: (() => string | null) | null = null;
+
+  /**
+   * Register the source of the active database id. Tab state is stored under a key
+   * that includes it, so one database's tabs are never restored into another.
+   */
+  static setScopeProvider(provider: (() => string | null) | null): void {
+    this.scopeProvider = provider;
+  }
+
+  /** Storage key for a database id; the bare key when no database is known. */
+  private static keyFor(databaseId: string | null | undefined): string {
+    return databaseId ? `${this.STORAGE_KEY}:${databaseId}` : this.STORAGE_KEY;
+  }
+
+  private static currentKey(): string {
+    return this.keyFor(this.scopeProvider ? this.scopeProvider() : null);
+  }
 
   /**
    * Save tab state to persistent storage (debounced)
@@ -41,21 +60,26 @@ export class TabPersistenceService {
       clearTimeout(this.saveTimer);
     }
 
-    // Store pending state for flush()
+    // Store pending state for flush(). The key is fixed now, so a database switch
+    // inside the debounce window cannot write this state under the new database.
+    const key = this.currentKey();
     this.pendingState = state;
+    this.pendingKey = key;
 
     // Debounce the save operation
     this.saveTimer = setTimeout(() => {
-      this.saveImmediate(state);
+      this.saveImmediate(state, key);
       this.pendingState = null;
+      this.pendingKey = null;
     }, this.DEBOUNCE_MS);
   }
 
   /**
    * Save tab state immediately without debouncing
    * @param state - The current tab state to save
+   * @param key - Storage key to write; defaults to the active database's key
    */
-  private static saveImmediate(state: TabState): void {
+  private static saveImmediate(state: TabState, key: string = this.currentKey()): void {
     try {
       const persisted: PersistedTabState = {
         version: 1,
@@ -66,7 +90,7 @@ export class TabPersistenceService {
       };
 
       // For now, use localStorage (Tauri store integration can be added later)
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(persisted));
+      localStorage.setItem(key, JSON.stringify(persisted));
 
       log.debug('State saved successfully');
     } catch (error) {
@@ -76,11 +100,13 @@ export class TabPersistenceService {
 
   /**
    * Load persisted tab state from storage
+   * @param databaseId - Database whose tabs to load; defaults to the active database
    * @returns The loaded tab state or null if no valid state exists
    */
-  static load(): PersistedTabState | null {
+  static load(databaseId?: string | null): PersistedTabState | null {
     try {
-      const stored = localStorage.getItem(this.STORAGE_KEY);
+      const key = databaseId === undefined ? this.currentKey() : this.keyFor(databaseId);
+      const stored = localStorage.getItem(key);
 
       if (!stored) {
         log.debug('No saved state found');
@@ -249,12 +275,36 @@ export class TabPersistenceService {
   }
 
   /**
+   * Keep only the tabs whose ids are in `keepIds`, dropping them from their panes and
+   * repointing a pane's active tab when the active one was dropped.
+   * @returns A new state; the input is not modified
+   */
+  static pruneTabs(state: PersistedTabState, keepIds: ReadonlySet<string>): PersistedTabState {
+    const panes = state.panes.map((pane) => ({
+      ...pane,
+      tabIds: pane.tabIds.filter((id) => keepIds.has(id))
+    }));
+    const activeTabIds: Record<string, string> = {};
+    for (const pane of panes) {
+      const active = state.activeTabIds[pane.id];
+      const next = active !== undefined && keepIds.has(active) ? active : pane.tabIds[0];
+      if (next !== undefined) activeTabIds[pane.id] = next;
+    }
+    return {
+      ...state,
+      tabs: state.tabs.filter((tab) => keepIds.has(tab.id)),
+      panes,
+      activeTabIds
+    };
+  }
+
+  /**
    * Clear all persisted tab state
    * Useful for testing or resetting to default state
    */
   static clear(): void {
     try {
-      localStorage.removeItem(this.STORAGE_KEY);
+      localStorage.removeItem(this.currentKey());
       log.debug('State cleared');
     } catch (error) {
       log.error('Failed to clear state:', error);
@@ -273,8 +323,9 @@ export class TabPersistenceService {
 
     // If there's a pending state, save it immediately
     if (this.pendingState) {
-      this.saveImmediate(this.pendingState);
+      this.saveImmediate(this.pendingState, this.pendingKey ?? undefined);
       this.pendingState = null;
+      this.pendingKey = null;
     }
   }
 

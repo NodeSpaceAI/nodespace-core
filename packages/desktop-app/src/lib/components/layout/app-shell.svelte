@@ -23,7 +23,6 @@
   import type { Node } from '$lib/types';
   import { collectionsData } from '$lib/stores/collections.svelte';
   import { schemasData } from '$lib/stores/schemas.svelte';
-  import { loadPersistedState } from '$lib/stores/navigation.svelte';
   import { openSettings } from '$lib/utils/open-settings';
   import { importModalStore } from '$lib/stores/import-modal.svelte';
   import ImportOptionsModal from '$lib/components/settings/import-options-modal.svelte';
@@ -248,13 +247,8 @@
     // surfaces the non-blocking <UpdateBanner /> only when a newer release exists.
     void updateStatus.init();
 
-    // Load persisted tab state from storage
-    const stateLoaded = loadPersistedState();
-    if (stateLoaded) {
-      log.debug('Persisted tab state loaded successfully');
-    } else {
-      log.debug('No persisted tab state found, using default state');
-    }
+    // Persisted tab state is restored by the database store once the active database
+    // is known (tabs are saved per database and checked against it).
 
     // Load persisted layout state (sidebar collapsed/expanded) from storage
     const layoutStateLoaded = loadPersistedLayoutState();
