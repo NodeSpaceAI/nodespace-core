@@ -263,6 +263,12 @@ pub struct SharedLocalAgent {
     /// probe together queue behind the first instead of each firing one. A
     /// waiter re-reads the verdict or failure the leader recorded.
     routing_probe_flight: Mutex<()>,
+    /// Held while a load installs its engine and updates the catalog's loaded
+    /// state, so an OpenAI-compatible swap (replace the engine, then unload
+    /// the catalog's local model) and a GGUF install (mark loaded, then
+    /// replace the engine) cannot interleave and leave the engine on a model
+    /// the catalog reports as unloaded. Never held across a weight load.
+    model_swap: Mutex<()>,
     routing_probe_hooks: std::sync::RwLock<Arc<RoutingProbeHooks>>,
     /// The loaded model's geometry, captured at engine-swap time.
     ///
@@ -333,6 +339,7 @@ impl SharedLocalAgent {
             active_model_routing_key: Mutex::new(None),
             routing_probe_failure: Mutex::new(None),
             routing_probe_flight: Mutex::new(()),
+            model_swap: Mutex::new(()),
             routing_probe_hooks: std::sync::RwLock::new(Arc::new(RoutingProbeHooks::production())),
             loaded_model_spec: Mutex::new(None),
             model_spec_snapshot_timeout,
@@ -2093,6 +2100,7 @@ impl LocalAgentServiceImpl {
                 config.api_key.clone(),
                 model.clone(),
             ));
+            let swap_guard = self.inner.shared.model_swap.lock().await;
             let swapped = self
                 .replace_engine_if_changed(model_id, engine.clone())
                 .await;
@@ -2107,6 +2115,7 @@ impl LocalAgentServiceImpl {
                     }
                 }
             }
+            drop(swap_guard);
 
             // Routing-reliability probe (Option C): the matrix in
             // `tests/it/live_openai_compat_routing.rs` found Stage-2 candidate
@@ -2457,6 +2466,7 @@ impl LocalAgentServiceImpl {
             }
         };
 
+        let swap_guard = self.inner.shared.model_swap.lock().await;
         if let Err(e) = manager.load(model_id).await {
             emit!(ModelLoadProgressEvent {
                 event_type: "error".to_string(),
@@ -2475,6 +2485,7 @@ impl LocalAgentServiceImpl {
         *self.inner.shared.active_model_routing_disabled.lock().await = false;
         *self.inner.shared.active_model_routing_key.lock().await = None;
         *self.inner.shared.routing_probe_failure.lock().await = None;
+        drop(swap_guard);
 
         emit!(ModelLoadProgressEvent {
             event_type: "ready".to_string(),
@@ -6929,6 +6940,29 @@ mod tests {
         assert_eq!(event.model_id, "m1");
         assert_eq!(event.bytes_downloaded, Some(10));
         assert_eq!(event.bytes_total, Some(40));
+    }
+
+    /// An OpenAI-compatible swap waits for whoever holds the swap lock, so it
+    /// cannot replace the engine in the middle of another load's install.
+    #[tokio::test]
+    async fn openai_compat_swap_waits_for_the_model_swap_lock() {
+        let (svc, node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+
+        let held = shared.model_swap.lock().await;
+        let svc2 = svc.clone();
+        let id2 = model_id.clone();
+        let load =
+            tokio::spawn(async move { svc2.load_model_and_collect_events(&id2, None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!load.is_finished(), "the swap ran while the lock was held");
+        assert_eq!(*shared.active_model_id.lock().await, None);
+
+        drop(held);
+        let events = load.await.unwrap();
+        assert!(events.iter().any(|e| e.event_type == "ready"), "{events:?}");
     }
 
     #[tokio::test]
