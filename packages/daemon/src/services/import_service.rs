@@ -1072,11 +1072,7 @@ impl Phase2Writer {
         // roots already get their markers inside bulk_create_hierarchy_trusted.
         if !refreshed_roots.is_empty() {
             let root_ids: Vec<String> = refreshed_roots.into_iter().map(|(r, _)| r).collect();
-            if let Err(e) = self
-                .store
-                .create_stale_embedding_markers_bulk(&root_ids)
-                .await
-            {
+            if let Err(e) = self.store.requeue_root_embeddings(&root_ids).await {
                 tracing::warn!(
                     "Failed to re-mark {} replaced root(s) stale: {}",
                     root_ids.len(),
@@ -1771,7 +1767,7 @@ async fn import_markdown_content(
     if exists && !is_archived {
         if let Err(e) = node_service
             .store()
-            .create_stale_embedding_markers_bulk(&[root_id.to_string()])
+            .requeue_root_embeddings(&[root_id.to_string()])
             .await
         {
             tracing::warn!("Failed to re-mark replaced root {} stale: {}", root_id, e);

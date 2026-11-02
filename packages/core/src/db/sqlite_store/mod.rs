@@ -2658,6 +2658,61 @@ mod tests {
         Ok(())
     }
 
+    /// A root whose content was replaced wholesale keeps its old rows; they
+    /// must turn stale (and leave the vector index) with a fresh retry budget.
+    #[tokio::test]
+    async fn test_requeue_root_embeddings_stales_existing_rows() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let node = store
+            .create_node(
+                Node::new("text".to_string(), "old text".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        store
+            .upsert_embeddings(
+                &node.id,
+                vec![unit_embedding(&node.id, 0)],
+                chrono::Utc::now(),
+            )
+            .await?;
+        assert!(
+            store
+                .get_stale_embedding_root_ids(None, 0, 3)
+                .await?
+                .is_empty(),
+            "freshly embedded"
+        );
+
+        store
+            .requeue_root_embeddings(std::slice::from_ref(&node.id))
+            .await?;
+
+        assert_eq!(vec_row_count(&store).await?, 0, "old vector not searchable");
+        assert_eq!(
+            store.get_stale_embedding_root_ids(None, 0, 3).await?,
+            vec![node.id.clone()],
+            "root is queued again"
+        );
+
+        let bare = store
+            .create_node(
+                Node::new("text".to_string(), "no rows".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        store
+            .requeue_root_embeddings(std::slice::from_ref(&bare.id))
+            .await?;
+        assert!(store
+            .get_stale_embedding_root_ids(None, 0, 3)
+            .await?
+            .contains(&bare.id));
+        Ok(())
+    }
+
     /// A node whose embedding failed every retry has no real vector: its
     /// rows hold the queue marker's placeholder (or the vector of content it
     /// no longer has). Neither search path may score them.
