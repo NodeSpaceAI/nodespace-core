@@ -1,11 +1,14 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { navigationStore, setTabSearchTerm } from '$lib/stores/navigation.svelte';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { createLogger } from '$lib/utils/logger';
   import type { Node } from '$lib/types/node';
   import { toError } from '$lib/types/errors';
+
+  let { tabId }: { tabId: string } = $props();
 
   const log = createLogger('SearchPane');
 
@@ -24,7 +27,19 @@
   // the results of a later one.
   let requestToken = 0;
 
-  onMount(() => inputEl?.focus());
+  // The term lives on the tab, so it outlives this component (the pane unmounts it
+  // whenever another tab is shown). Coming back re-runs the search rather than
+  // restoring results that may have gone stale while the tab was away.
+  onMount(() => {
+    const saved = untrack(
+      () => navigationStore.state.tabs.find((tab) => tab.id === tabId)?.searchTerm ?? ''
+    );
+    if (saved) {
+      query = saved;
+      void runSearch(saved);
+    }
+    inputEl?.focus();
+  });
   onDestroy(() => clearTimeout(debounceTimer));
 
   async function runSearch(term: string) {
@@ -61,6 +76,7 @@
   }
 
   function onInput() {
+    setTabSearchTerm(tabId, query);
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => runSearch(query), DEBOUNCE_MS);
   }
@@ -90,7 +106,7 @@
       bind:this={inputEl}
       class="search-input"
       type="text"
-      placeholder="Search nodes…"
+      placeholder="Search root nodes by title or text…"
       bind:value={query}
       oninput={onInput}
       onkeydown={onKeydown}
@@ -116,7 +132,7 @@
         {/each}
       </ul>
     {:else}
-      <div class="search-status">Type to search your nodes.</div>
+      <div class="search-status">Type to search the titles and text of your root nodes.</div>
     {/if}
   </div>
 </div>

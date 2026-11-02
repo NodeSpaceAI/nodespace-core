@@ -194,7 +194,9 @@
 {#if activeTab?.type === 'settings'}
   <SettingsPane />
 {:else if activeTab?.type === 'search'}
-  <SearchPane />
+  {#key activeTab.id}
+    <SearchPane tabId={activeTab.id} />
+  {/key}
 {:else if activeTab?.type === 'conflicts'}
   <ConflictsPane />
 {:else if activeTab?.content}

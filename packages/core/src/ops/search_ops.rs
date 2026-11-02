@@ -136,7 +136,8 @@ pub struct SearchSemanticInput {
     /// search at any threshold. A human typing a title into a search box
     /// expects to find it regardless, which is what this flag is for; the
     /// agent/CLI meaning-based paths leave it off. See [`title_match_nodes`]
-    /// for the matching and ranking rules.
+    /// for the matching and ranking rules. Keyword hits are limited to root nodes,
+    /// like the semantic ones.
     /// Default: false.
     pub include_title_matches: Option<bool>,
 }
@@ -473,7 +474,8 @@ fn keyword_match_score(text: &str, query_lower: &str) -> Option<f64> {
     }
 }
 
-/// Keyword (title/content substring) retrieval for human-facing search.
+/// Keyword (title/content substring) retrieval for human-facing search, limited to
+/// root nodes.
 ///
 /// Runs two store queries rather than one because `NodeQuery`'s
 /// `title_contains` and `content_contains` are AND-chained into a single
@@ -504,7 +506,9 @@ async fn title_match_nodes(
         return Ok(Vec::new());
     }
 
-    let per_query_limit = ENUMERATE_PAGE_CAP.min(limit.max(1) * 3);
+    // Child nodes are dropped after the store query, so the window is the widest the
+    // store allows: a term common in body paragraphs must not crowd out its roots.
+    let per_query_limit = ENUMERATE_PAGE_CAP;
     let node_types = filters
         .and_then(|f| f.node_types.as_ref())
         .filter(|types| !types.is_empty());
@@ -585,8 +589,26 @@ async fn title_match_nodes(
     }
 
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
-    Ok(scored)
+
+    // Only roots are listed. A body paragraph that happens to contain the query is
+    // part of its root's text, and the root is what a person opens; embeddings
+    // exist for roots only, so the semantic half is already limited the same way.
+    // Walked best-first and stopped at `limit`, so a query that mostly matches
+    // child nodes costs no more parent lookups than the list needs.
+    let mut roots: Vec<(Node, f64)> = Vec::new();
+    for (node, score) in scored {
+        if roots.len() >= limit {
+            break;
+        }
+        let is_root = node_service
+            .is_root_node(&node.id)
+            .await
+            .map_err(|e| OpsError::Internal(format!("Failed to check search result: {}", e)))?;
+        if is_root {
+            roots.push((node, score));
+        }
+    }
+    Ok(roots)
 }
 
 // ============================================================================
@@ -1079,6 +1101,37 @@ mod tests {
         let mut store = Arc::new(SqliteStore::new(tmp.path().join("t.db")).await.unwrap());
         let svc = Arc::new(NodeService::new(&mut store).await.unwrap());
         (svc, tmp)
+    }
+
+    #[tokio::test]
+    async fn title_matches_are_limited_to_root_nodes() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+        let (svc, _tmp) = exclusion_fixture().await;
+        let make = |content: &str, parent_id: Option<String>| CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: content.to_string(),
+            parent_id,
+            position: InsertPositionOwned::End,
+            properties: serde_json::json!({}),
+            lifecycle_status: None,
+        };
+        let root = svc
+            .create_node_with_parent(make("Graph notes", None))
+            .await
+            .unwrap();
+        let child = svc
+            .create_node_with_parent(make("a paragraph about the graph", Some(root.clone())))
+            .await
+            .unwrap();
+
+        let hits = title_match_nodes(&svc, "graph", 10, None, false)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = hits.iter().map(|(n, _)| n.id.as_str()).collect();
+
+        assert!(ids.contains(&root.as_str()), "{ids:?}");
+        assert!(!ids.contains(&child.as_str()), "{ids:?}");
     }
 
     #[tokio::test]

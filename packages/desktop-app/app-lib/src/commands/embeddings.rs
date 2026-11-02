@@ -93,8 +93,10 @@ pub struct SearchRootsParams {
     pub limit: Option<usize>,
 }
 
-/// Search nodes for a person typing into the UI: title/keyword matches merged
-/// with semantic matches, in one round trip.
+/// Search root nodes for a person typing into the UI: title/keyword matches
+/// merged with semantic matches, in one round trip. Only root nodes are
+/// returned; a child node (a paragraph inside a page) is reached through its
+/// root.
 ///
 /// Both halves are needed because they cover disjoint ground. Embeddings only
 /// exist for the embeddable types (ADR-029), so a `task` called "Draft Q3 architecture review" has

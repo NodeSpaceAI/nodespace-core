@@ -18,6 +18,7 @@ export interface Tab {
   };
   closeable: boolean;
   paneId: string; // Which pane this tab belongs to
+  searchTerm?: string; // Search tabs only: the term typed, restored when the tab is shown again
   collapsedNodeIds?: string[]; // Sparse array: only store collapsed node IDs (viewers load nodes expanded)
 }
 
@@ -555,6 +556,15 @@ class NavigationStore {
     this.#persist();
   }
 
+  /** Remember the term typed into a Search tab so it survives the tab losing focus. */
+  setTabSearchTerm(tabId: string, searchTerm: string): void {
+    this.state = {
+      ...this.state,
+      tabs: this.state.tabs.map((tab) => (tab.id === tabId ? { ...tab, searchTerm } : tab)),
+    };
+    this.#persist();
+  }
+
   /** Reorder a tab within the same pane */
   reorderTab(tabId: string, newIndex: number, paneId: string): void {
     const state = this.state;
@@ -716,6 +726,8 @@ export const updateTabContent = (
   tabId: string,
   content: { nodeId: string; nodeType?: string }
 ): void => navigationStore.updateTabContent(tabId, content);
+export const setTabSearchTerm = (tabId: string, searchTerm: string): void =>
+  navigationStore.setTabSearchTerm(tabId, searchTerm);
 export const reorderTab = (tabId: string, newIndex: number, paneId: string): void =>
   navigationStore.reorderTab(tabId, newIndex, paneId);
 export const moveTabBetweenPanes = (
