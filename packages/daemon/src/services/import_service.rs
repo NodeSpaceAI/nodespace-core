@@ -593,17 +593,23 @@ async fn run_batch_import(
         .await;
 
         let collection_service = CollectionService::new(&store, &node_service_clone);
-        let collection_map = match collection_service
-            .bulk_resolve_collections(&unique_collections)
-            .await
-        {
-            Ok(map) => map,
-            Err(e) => {
-                tracing::error!("Failed to bulk resolve collections: {:?}", e);
-                import_error = Some(format!("Collection resolution failed: {e}"));
-                HashMap::new()
+        // Each path resolves on its own, so one that cannot form a valid
+        // hierarchy (a repeated name closing a cycle, a blank segment) fails
+        // only the files routed to it and not every file in the import.
+        let mut collection_map: HashMap<String, String> = HashMap::new();
+        let mut collection_failures: HashMap<String, String> = HashMap::new();
+        for path in &unique_collections {
+            match collection_service
+                .bulk_resolve_collections(std::slice::from_ref(path))
+                .await
+            {
+                Ok(resolved) => collection_map.extend(resolved),
+                Err(e) => {
+                    tracing::error!("Failed to resolve collection '{}': {:?}", path, e);
+                    collection_failures.insert(path.clone(), e.to_string());
+                }
             }
-        };
+        }
 
         let mut writer = Phase2Writer::new(node_service_clone, Arc::clone(&store), replace);
         writer.collection_map = collection_map;
@@ -721,6 +727,7 @@ async fn run_batch_import(
         // behind "nodes land with zero member_of edges while the CLI reports
         // success".
         apply_phase2_error(&mut phase1_results, &import_error);
+        let collection_error = apply_collection_failures(&mut phase1_results, &collection_failures);
 
         let mut summary = format!(
             "Imported {} files ({} nodes)",
@@ -736,7 +743,11 @@ async fn run_batch_import(
         all_results.append(&mut phase1_results);
 
         let failed_docs = all_results.iter().filter(|r| !r.success).count();
-        let message = match import_error.as_ref().or(writer.first_error.as_ref()) {
+        let message = match import_error
+            .as_ref()
+            .or(writer.first_error.as_ref())
+            .or(collection_error.as_ref())
+        {
             Some(err) => {
                 let mut message =
                     format!("Import completed with errors: {err}. {summary}, {failed_docs} failed");
@@ -799,6 +810,28 @@ fn apply_phase2_error(results: &mut [LocalFileImportResult], error: &Option<Stri
             r.error = Some(err.clone());
         }
     }
+}
+
+/// Fail the files routed to a collection path that could not be resolved,
+/// leaving every other file's result alone. Returns the first failure, for the
+/// summary message.
+fn apply_collection_failures(
+    results: &mut [LocalFileImportResult],
+    failures: &HashMap<String, String>,
+) -> Option<String> {
+    let mut first: Option<String> = None;
+    for r in results.iter_mut().filter(|r| r.success) {
+        let Some(path) = r.collection.as_ref() else {
+            continue;
+        };
+        if let Some(err) = failures.get(path) {
+            let message = format!("Collection resolution failed for '{path}': {err}");
+            r.success = false;
+            r.error = Some(message.clone());
+            first.get_or_insert(message);
+        }
+    }
+    first
 }
 
 /// One node row for `bulk_create_hierarchy_trusted`:
@@ -1864,6 +1897,29 @@ mod tests {
             results[1].error.as_deref(),
             Some("Node insertion failed: rejected"),
             "a file's own failure is not overwritten",
+        );
+    }
+
+    /// A collection path that cannot resolve fails only the files routed to it.
+    #[test]
+    fn collection_failures_fail_only_the_files_routed_to_that_path() {
+        let mut results = vec![ok_result("a.md"), ok_result("b.md"), ok_result("c.md")];
+        results[1].collection = Some("bad:bad".to_string());
+        results[2].collection = None;
+        let failures = HashMap::from([("bad:bad".to_string(), "cycle".to_string())]);
+
+        let first = apply_collection_failures(&mut results, &failures);
+
+        assert!(results[0].success && results[2].success);
+        assert!(!results[1].success);
+        assert_eq!(
+            results[1].error.as_deref(),
+            Some("Collection resolution failed for 'bad:bad': cycle")
+        );
+        assert_eq!(first, results[1].error);
+        assert_eq!(
+            apply_collection_failures(&mut results, &HashMap::new()),
+            None
         );
     }
 
@@ -3075,6 +3131,55 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "collection membership survives replace",
+        );
+    }
+
+    /// A directory path that cannot form a collection hierarchy (a repeated
+    /// name closing a cycle) fails only its own file; the other file still
+    /// imports and joins its collection.
+    #[tokio::test]
+    async fn an_unresolvable_collection_path_fails_only_its_own_files() {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let src = dir.path().join("vault");
+        std::fs::create_dir_all(src.join("mypkg/mypkg")).unwrap();
+        std::fs::create_dir_all(src.join("ok")).unwrap();
+        std::fs::write(src.join("mypkg/mypkg/a.md"), "# A\n").unwrap();
+        std::fs::write(src.join("ok/b.md"), "# B\n").unwrap();
+        let files = vec![
+            src.join("mypkg/mypkg/a.md").to_str().unwrap().to_string(),
+            src.join("ok/b.md").to_str().unwrap().to_string(),
+        ];
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            auto_collection_routing: true,
+            ..Default::default()
+        };
+
+        let done = run_batch_and_wait(Arc::clone(&ns), files, opts).await;
+
+        let result = |suffix: &str| {
+            done.results
+                .iter()
+                .find(|r| r.file_path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no result for {suffix}"))
+        };
+        let a = result("a.md");
+        assert!(!a.success, "{a:?}");
+        assert!(
+            a.error.contains("Collection resolution failed for"),
+            "{}",
+            a.error
+        );
+        let b = result("b.md");
+        assert!(b.success, "{b:?}");
+        assert!(
+            !ns.store()
+                .get_node_memberships(&root_of(&src, "ok/b.md"))
+                .await
+                .unwrap()
+                .is_empty(),
+            "b is in its collection",
         );
     }
 
