@@ -353,7 +353,7 @@ pub use error::NodeServiceError;
 pub use node_service::{
     normalize_schema_id, render_subtree_markdown, CompletenessResult, CreateNodeParams,
     CreatedRelationship, DryRunVerdict, NewRelationship, NodeService, ShippedLinks, StoredEdge,
-    SubtreeData, WriteVerificationFault, DEFAULT_QUERY_LIMIT,
+    SubtreeData, TrustedImportFollowUp, WriteVerificationFault, DEFAULT_QUERY_LIMIT,
 };
 pub use query_service::{
     FilterAnchor, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,

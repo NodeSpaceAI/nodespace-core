@@ -665,52 +665,55 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // reverted by an abort (the content is then duplicated, never lost), and text typed
       // into the merged row is discarded when the merge succeeds.
       combiningNodeIds.add(currentNodeId);
-      void trackMoveOperation(currentNodeId, async (ticket) => {
-        const committed = new Set<string>();
-        try {
-          await waitForPendingMoveOperations();
-          // Pending creates/edits of the children must reach the daemon before they move.
-          ticket.coverWritesThrough(sharedNodeStore.persistenceSequence());
-          await sharedNodeStore.flushAllPendingSaves();
+      void trackMoveOperation(
+        [currentNodeId, ...promotions.map((p) => p.childId)],
+        async (ticket) => {
+          const committed = new Set<string>();
+          try {
+            await waitForPendingMoveOperations();
+            // Pending creates/edits of the children must reach the daemon before they move.
+            ticket.coverWritesThrough(sharedNodeStore.persistenceSequence());
+            await sharedNodeStore.flushAllPendingSaves();
 
-          let previousChildId: string | null = null;
-          for (const promotion of promotions) {
-            const fresh = sharedNodeStore.getNode(promotion.childId);
-            if (!fresh) throw new Error(`Child ${promotion.childId} no longer exists`);
-            // Keep the children's relative order: the first goes after the anchor, the rest
-            // after the child before them.
-            const position: InsertPosition =
-              previousChildId !== null && promotion.insertPosition.type === 'after'
-                ? { type: 'after', siblingId: previousChildId }
-                : promotion.insertPosition;
-            await persistMove(promotion.childId, fresh.version, promotion.newParentId, position);
-            committed.add(promotion.childId);
-            previousChildId = promotion.childId;
-          }
-          finishMerge();
-        } catch (error) {
-          log.error('[combineNodes] Child promotion failed, aborting merge:', error);
-          // Children that already moved stay where the daemon has them; the rest return to
-          // the merged node. Nothing is deleted.
-          rollbackChildPromotions(
-            currentNodeId,
-            promotions.filter((p) => !committed.has(p.childId))
-          );
-          const target = sharedNodeStore.getNode(previousNodeId);
-          if (target && target.content === combinedContent) {
-            sharedNodeStore.updateNode(
-              previousNodeId,
-              { content: previousNode.content },
-              contentUpdateSource,
-              { persist: 'immediate' }
+            let previousChildId: string | null = null;
+            for (const promotion of promotions) {
+              const fresh = sharedNodeStore.getNode(promotion.childId);
+              if (!fresh) throw new Error(`Child ${promotion.childId} no longer exists`);
+              // Keep the children's relative order: the first goes after the anchor, the rest
+              // after the child before them.
+              const position: InsertPosition =
+                previousChildId !== null && promotion.insertPosition.type === 'after'
+                  ? { type: 'after', siblingId: previousChildId }
+                  : promotion.insertPosition;
+              await persistMove(promotion.childId, fresh.version, promotion.newParentId, position);
+              committed.add(promotion.childId);
+              previousChildId = promotion.childId;
+            }
+            finishMerge();
+          } catch (error) {
+            log.error('[combineNodes] Child promotion failed, aborting merge:', error);
+            // Children that already moved stay where the daemon has them; the rest return to
+            // the merged node. Nothing is deleted.
+            rollbackChildPromotions(
+              currentNodeId,
+              promotions.filter((p) => !committed.has(p.childId))
             );
+            const target = sharedNodeStore.getNode(previousNodeId);
+            if (target && target.content === combinedContent) {
+              sharedNodeStore.updateNode(
+                previousNodeId,
+                { content: previousNode.content },
+                contentUpdateSource,
+                { persist: 'immediate' }
+              );
+            }
+            events.hierarchyChanged();
+            notifyChildTransferFailure(currentNodeId);
+          } finally {
+            combiningNodeIds.delete(currentNodeId);
           }
-          events.hierarchyChanged();
-          notifyChildTransferFailure(currentNodeId);
-        } finally {
-          combiningNodeIds.delete(currentNodeId);
         }
-      }).catch((error) => {
+      ).catch((error) => {
         log.error('[combineNodes] Unexpected failure while aborting merge:', error);
       });
     }

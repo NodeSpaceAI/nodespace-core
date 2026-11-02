@@ -3637,4 +3637,68 @@ mod tests {
             .unwrap();
         assert_eq!(ids(&results), [assigned_to_local.as_str()]);
     }
+
+    async fn archive_person(node_service: &NodeService, id: &str) {
+        let person = node_service.get_node(id).await.unwrap().unwrap();
+        node_service
+            .update_node(
+                id,
+                person.version,
+                crate::models::NodeUpdate::new()
+                    .with_lifecycle_status(crate::governance::ARCHIVED.to_string()),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn drop_owner_edge(node_service: &NodeService, owner: &str) {
+        node_service
+            .store()
+            .delete_generic_relationship(
+                owner,
+                nodespace_types::DATABASE_SETTINGS_NODE_ID,
+                "has_role",
+            )
+            .await
+            .unwrap();
+    }
+
+    /// With no owner edge, an archived first person is passed over by the
+    /// anchor exactly as `get_local_person` passes it over.
+    #[tokio::test]
+    async fn test_current_person_anchor_skips_an_archived_first_person_without_an_owner_edge() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let q = queue(&node_service).await;
+        let me = node_service.get_local_person().await.unwrap().unwrap().id;
+        drop_owner_edge(&node_service, &me).await;
+        archive_person(&node_service, &me).await;
+
+        let local = node_service.get_local_person().await.unwrap().unwrap().id;
+        assert_eq!(local, q.other_person, "the live person is the local one");
+        let results = query_service
+            .execute(&tasks_where(vec![assigned_to_me()]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [q.theirs.as_str()]);
+    }
+
+    /// When every person is archived the anchor still names the earliest one,
+    /// as `get_local_person` does.
+    #[tokio::test]
+    async fn test_current_person_anchor_falls_back_to_an_archived_person_when_none_is_live() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let q = queue(&node_service).await;
+        let me = node_service.get_local_person().await.unwrap().unwrap().id;
+        drop_owner_edge(&node_service, &me).await;
+        archive_person(&node_service, &me).await;
+        archive_person(&node_service, &q.other_person).await;
+
+        let local = node_service.get_local_person().await.unwrap().unwrap().id;
+        assert_eq!(local, me, "the earliest person, archived");
+        let results = query_service
+            .execute(&tasks_where(vec![assigned_to_me()]))
+            .await
+            .unwrap();
+        assert_eq!(ids(&results), [q.mine.as_str()]);
+    }
 }

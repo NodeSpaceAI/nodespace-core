@@ -21,7 +21,10 @@ import {
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import type { Node } from '$lib/types';
 import { DEFAULT_PANE_ID as _DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
-import { waitForPendingMoveOperations } from '$lib/services/pending-operations';
+import {
+  waitForPendingMoveOperations,
+  movesAheadOfWrite
+} from '$lib/services/pending-operations';
 import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
 
 // Mock backend-adapter to avoid backend calls in tests
@@ -2041,6 +2044,30 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
       expect(deleteSpy).toHaveBeenCalledTimes(1);
       // Merged once, not twice
       expect(service.findNode('target')?.content).toBe('TargetCurrent');
+    });
+
+    it('orders a write to a promoted child behind its in-flight move', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      await setupMerge(['kid']);
+      let resolveMove: (value: MoveReply) => void = () => {};
+      let moveStarted = false;
+      vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+        moveStarted = true;
+        return new Promise((resolve) => {
+          resolveMove = resolve;
+        });
+      });
+
+      service.combineNodes('current', 'target');
+      await vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 });
+
+      // The move bumps the child's version, so a later write must wait for it
+      const laterWrite = _sharedNodeStore.persistenceSequence() + 1;
+      expect(movesAheadOfWrite('kid', laterWrite)).toBeDefined();
+
+      resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+      expect(movesAheadOfWrite('kid', laterWrite)).toBeUndefined();
     });
 
     it('ignores a merge into a node whose own children are still being moved', async () => {

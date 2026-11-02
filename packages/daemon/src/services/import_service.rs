@@ -1647,6 +1647,26 @@ async fn import_markdown_content(
         .is_some();
 
     if exists && !replace {
+        // A document imported before stays untouched, but its archival is
+        // asserted again so a run that was cut short cannot leave an archived
+        // document live.
+        let already_archived = node_service
+            .get_node(root_id)
+            .await
+            .map_err(|e| format!("Failed to check existing document: {}", e))?
+            .is_some_and(|root| !nodespace_core::governance::participates(&root));
+        if is_archived && !already_archived {
+            node_service
+                .store()
+                .update_node(
+                    root_id,
+                    archive_update(),
+                    Some("import".to_string()),
+                    nodespace_core::WriteContext::default(),
+                )
+                .await
+                .map_err(|e| format!("Failed to archive imported root: {}", e))?;
+        }
         return Ok((root_id.to_string(), 0));
     }
 
@@ -1683,56 +1703,39 @@ async fn import_markdown_content(
         )
     }));
 
-    // Old child ids captured before insert; pruned only after the fresh subtree
-    // lands, so a failed insert leaves the previous content intact.
-    let mut prune_after_insert: Vec<String> = Vec::new();
+    // Everything that makes the document what the import says it is happens in
+    // the insert's own transaction: a new archived root is archived before it
+    // is ever visible, and a replaced document's root refresh and prune of the
+    // old children commit with the fresh subtree or not at all. Lifecycle is
+    // the node's envelope field and nothing else, never a property (ADR-087 §4).
+    let mut follow_up = nodespace_core::services::TrustedImportFollowUp::default();
     if exists {
+        // Old child ids captured before insert; pruned in the same transaction
+        // as the fresh subtree. Refresh in place: keep + update the root
+        // (non-destructive) so inbound links/mentions survive.
         let descendants = node_service
             .get_descendants(root_id)
             .await
             .map_err(|e| format!("Failed to read existing subtree: {}", e))?;
-        prune_after_insert.extend(descendants.into_iter().map(|n| n.id));
-    }
-
-    // Lifecycle is the node's envelope field and nothing else, never a
-    // property (ADR-087 §4). The bulk insert creates the root active, so
-    // archival is applied below, once the document's rows have committed.
-    let nodes_created = node_service
-        .bulk_create_hierarchy_trusted(rows)
-        .await
-        .map_err(|e| format!("Failed to bulk create nodes: {}", e))?
-        .len();
-
-    if exists {
-        // Refresh in place: keep + update the root (non-destructive) so inbound
-        // links/mentions survive.
+        follow_up.prune_ids = descendants.into_iter().map(|n| n.id).collect();
         let mut update = nodespace_core::NodeUpdate::new().with_content(root_content);
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
         }
-        refresh_root(node_service, root_id, update)
-            .await
-            .map_err(|e| format!("Failed to refresh root node: {}", e))?;
+        follow_up.refresh_root = Some((root_id.to_string(), update));
     } else if is_archived {
-        node_service
-            .store()
-            .update_node(
-                root_id,
-                archive_update(),
-                Some("import".to_string()),
-                nodespace_core::WriteContext::default(),
-            )
-            .await
-            .map_err(|e| format!("Failed to archive imported root: {}", e))?;
+        follow_up.archive_ids.push(root_id.to_string());
     }
 
-    // On replace, prune the OLD children now that the fresh subtree is in place,
-    // and re-mark the (kept) root stale so it re-embeds with the new content.
-    if exists {
-        node_service
-            .bulk_delete(prune_after_insert)
-            .await
-            .map_err(|e| format!("Failed to prune stale subtree: {}", e))?;
+    let nodes_created = node_service
+        .bulk_create_hierarchy_trusted_with(rows, follow_up)
+        .await
+        .map_err(|e| format!("Failed to bulk create nodes: {}", e))?
+        .len();
+
+    // On replace, re-mark the (kept) root stale so it re-embeds with the new
+    // content.
+    if exists && !is_archived {
         if let Err(e) = node_service
             .store()
             .create_stale_embedding_markers_bulk(&[root_id.to_string()])
@@ -2301,6 +2304,125 @@ mod tests {
         let children = ns.get_children(&root_id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].content, "old body");
+    }
+
+    /// Re-importing a document that is already present, without `--replace`,
+    /// still asserts its archival, so a run cut short before the archive
+    /// cannot leave an archived document permanently live.
+    #[tokio::test]
+    async fn single_file_reimport_reasserts_archival() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let root_id = deterministic_root_id("old.md");
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# Old",
+            false,
+            "# Old\n\nbody\n",
+            false,
+            false,
+        )
+        .await
+        .expect("first import");
+        assert_eq!(
+            ns.get_node(&root_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle_status,
+            "active"
+        );
+
+        let (_, created) = import_markdown_content(
+            &ns,
+            &root_id,
+            "# Old",
+            false,
+            "# Old\n\nbody\n",
+            true,
+            false,
+        )
+        .await
+        .expect("re-import");
+        assert_eq!(created, 0, "nothing is rewritten");
+        assert_eq!(
+            ns.get_node(&root_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle_status,
+            "archived"
+        );
+    }
+
+    /// Re-importing an archived document without `--replace` writes nothing:
+    /// the root keeps its version.
+    #[tokio::test]
+    async fn single_file_reimport_of_an_archived_document_writes_nothing() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let root_id = deterministic_root_id("old.md");
+        let content = "# Old\n\nbody\n";
+        import_markdown_content(&ns, &root_id, "# Old", false, content, true, false)
+            .await
+            .expect("first import");
+        let before = ns.get_node(&root_id).await.unwrap().unwrap().version;
+
+        import_markdown_content(&ns, &root_id, "# Old", false, content, true, false)
+            .await
+            .expect("re-import");
+        assert_eq!(
+            ns.get_node(&root_id).await.unwrap().unwrap().version,
+            before
+        );
+    }
+
+    /// A replace of an archived document commits the new children, the
+    /// refreshed root and the prune of the old children together.
+    #[tokio::test]
+    async fn single_file_replace_refreshes_and_prunes_together() {
+        let (ns, _dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let root_id = deterministic_root_id("plan.md");
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# Old",
+            false,
+            "# Old\n\nold body\n",
+            true,
+            false,
+        )
+        .await
+        .expect("first import");
+        assert_eq!(
+            ns.get_node(&root_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .lifecycle_status,
+            "archived",
+            "a new archived document commits archived"
+        );
+
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# New",
+            false,
+            "# New\n\nnew body\n",
+            true,
+            true,
+        )
+        .await
+        .expect("replace");
+        let root = ns.get_node(&root_id).await.unwrap().unwrap();
+        assert_eq!(root.content, "New");
+        assert_eq!(root.lifecycle_status, "archived");
+        let children = ns.get_children(&root_id).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].content, "new body");
     }
 
     /// A failed insert in a later chunk makes the import an explicit partial

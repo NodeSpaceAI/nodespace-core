@@ -50,16 +50,21 @@ export async function waitForPendingMoveOperations(): Promise<void> {
 }
 
 /**
- * Run a move operation for `nodeId` and track it until it settles.
+ * Run a move operation and track it until it settles, under every node it
+ * moves: `nodeIds` names the moved nodes themselves (a merge that promotes
+ * children names the children, not only the merged parent), so a write to any
+ * of them is ordered behind the move.
  *
  * `run` starts synchronously, before the move is registered, so a
  * `waitForPendingMoveOperations()` at its start waits only on earlier moves.
  */
 export function trackMoveOperation(
-  nodeId: string,
+  nodeIds: string | readonly string[],
   run: (ticket: MoveTicket) => Promise<void>
 ): Promise<void> {
-  log.debug(`Tracking move for ${nodeId.substring(0, 8)}`);
+  const keys = typeof nodeIds === 'string' ? [nodeIds] : [...new Set(nodeIds)];
+  const label = keys.map((id) => id.substring(0, 8)).join(',');
+  log.debug(`Tracking move for ${label}`);
   const move: TrackedMove = { promise: Promise.resolve(), coversWritesThrough: null };
   const operation = run({
     coverWritesThrough: (sequence) => {
@@ -67,14 +72,18 @@ export function trackMoveOperation(
     }
   });
   move.promise = operation.finally(() => {
-    log.debug(`Move completed for ${nodeId.substring(0, 8)}`);
-    const moves = pendingMoves.get(nodeId);
-    moves?.delete(move);
-    if (moves?.size === 0) pendingMoves.delete(nodeId);
+    log.debug(`Move completed for ${label}`);
+    for (const key of keys) {
+      const moves = pendingMoves.get(key);
+      moves?.delete(move);
+      if (moves?.size === 0) pendingMoves.delete(key);
+    }
   });
-  const moves = pendingMoves.get(nodeId) ?? new Set<TrackedMove>();
-  moves.add(move);
-  pendingMoves.set(nodeId, moves);
+  for (const key of keys) {
+    const moves = pendingMoves.get(key) ?? new Set<TrackedMove>();
+    moves.add(move);
+    pendingMoves.set(key, moves);
+  }
   return move.promise;
 }
 

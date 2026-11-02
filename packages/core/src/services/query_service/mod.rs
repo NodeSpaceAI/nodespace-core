@@ -288,7 +288,8 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
 ///
 /// The person holding the `has_role` edge to the database settings node, the
 /// earliest created when more than one does; with no such edge, the first
-/// person node, the one the next open re-attaches the edge to. It is
+/// person node, the one the next open re-attaches the edge to: a live person
+/// before an archived one, which is chosen only when none is live. It is
 /// evaluated by the statement each time the query runs, so a saved query
 /// stores the anchor and never an id.
 fn current_person_seed() -> String {
@@ -298,10 +299,11 @@ fn current_person_seed() -> String {
           WHERE r.out_node = '{settings}' AND r.relationship_type = 'has_role' \
           ORDER BY o.created_at, o.id LIMIT 1), \
          (SELECT p.id FROM node p WHERE {is_person} \
-          ORDER BY p.created_at, p.id LIMIT 1))",
+          ORDER BY CASE WHEN {participates} THEN 0 ELSE 1 END, p.created_at, p.id LIMIT 1))",
         settings = nodespace_types::DATABASE_SETTINGS_NODE_ID,
         is_person =
             crate::db::schema::is_a_sql("p.node_type", &[crate::models::CoreNodeType::Person]),
+        participates = crate::governance::participates_sql("p"),
     )
 }
 
