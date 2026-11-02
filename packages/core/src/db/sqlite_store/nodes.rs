@@ -2250,7 +2250,7 @@ impl SqliteStore {
         let (mut conditions, bind_values) =
             Self::build_scalar_conditions_with_subtypes(&query, subtypes.as_deref());
         conditions.extend(crate::governance::excluded_types_sql("node_type", excluded));
-        conditions.extend(extra);
+        conditions.extend(extra.iter().cloned());
 
         // id-scoping (e.g. a collection's members). Build `id IN (…)` and
         // CHUNK it under SQLite's bound-parameter ceiling so a large member set
@@ -2351,7 +2351,7 @@ impl SqliteStore {
                             search_q,
                             query.node_type.as_deref(),
                             query.include_archived,
-                            excluded,
+                            (excluded, &extra),
                             query.limit,
                             query.offset,
                         )
@@ -2724,7 +2724,7 @@ impl SqliteStore {
         search_q: &str,
         node_type: Option<&str>,
         include_archived: bool,
-        excluded: &[crate::models::CoreNodeType],
+        (excluded, extra): (&[crate::models::CoreNodeType], &[String]),
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<Node>> {
@@ -2749,9 +2749,13 @@ impl SqliteStore {
         // fell back to stem matching.
         let subtypes = self.resolve_query_subtypes(node_type).await?;
         let governed = format!(
-            "{}{}",
+            "{}{}{}",
             Self::and_default_query_conditions("", include_archived),
-            Self::and_excluded_types("node_type", excluded)
+            Self::and_excluded_types("node_type", excluded),
+            extra
+                .iter()
+                .map(|condition| format!(" AND {condition}"))
+                .collect::<String>()
         );
 
         let (sql, params) = match (node_type, subtypes.as_deref()) {
@@ -6426,7 +6430,48 @@ mod large_subtree_chunking_tests {
 #[cfg(test)]
 mod knowledge_listing_tests {
     use super::*;
+    use crate::models::NodeQuery;
+    use serde_json::json;
     use tempfile::TempDir;
+
+    /// A `title_contains` that misses on exact substring and falls through to
+    /// the stem match still carries the listing's own conditions.
+    #[tokio::test]
+    async fn knowledge_listing_title_stem_fallback_keeps_the_listing_conditions() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let store = SqliteStore::new(temp_dir.path().join("test.db")).await?;
+        let mut kept = Node::new(
+            "task".to_string(),
+            "Grocery store run".to_string(),
+            json!({}),
+        );
+        kept.title = Some("Grocery store run".to_string());
+        let kept_id = kept.id.clone();
+        store.create_node(kept, None, None).await?;
+        let mut system = Node::new(
+            "tool".to_string(),
+            "Grocery store tool".to_string(),
+            json!({}),
+        );
+        system.title = Some("Grocery store tool".to_string());
+        store.create_node(system, None, None).await?;
+
+        // "groceries" is not a substring of either title, so the stem fallback runs.
+        let found = store
+            .list_knowledge_nodes(
+                NodeQuery {
+                    title_contains: Some("groceries".to_string()),
+                    ..Default::default()
+                },
+                KnowledgeListing {
+                    scope_types_only: true,
+                },
+            )
+            .await?;
+        let ids: Vec<&str> = found.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec![kept_id.as_str()]);
+        Ok(())
+    }
 
     /// The listing's root walk must reach `relationship` by the node it is
     /// leaving, through `idx_rel_out (out_node, relationship_type)`, and
