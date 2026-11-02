@@ -1551,6 +1551,65 @@ async fn validate_no_field_redeclaration(
     Ok(())
 }
 
+/// Refuse a newly declared field or relationship name that a type extending
+/// this schema already declares.
+///
+/// The ancestor checks ([`validate_no_field_redeclaration`] and
+/// [`validate_no_relationship_redeclaration`]) look up the chain only, so a
+/// base type could still add a name one of its subtypes declares, leaving
+/// the override ADR-078 forbids. A name claimed by either a field or a
+/// relationship cannot be reused as the other, so both domains are compared.
+async fn validate_no_subtype_redeclaration(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    new_field_names: &[&str],
+    new_relationship_names: &[&str],
+) -> Result<(), MarkdownError> {
+    if new_field_names.is_empty() && new_relationship_names.is_empty() {
+        return Ok(());
+    }
+    let subtypes = node_service
+        .store()
+        .get_subtype_closure(schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve the types extending '{schema_id}': {e}"
+            ))
+        })?;
+    for subtype in subtypes.iter().filter(|id| id.as_str() != schema_id) {
+        let Some(schema) = node_service.get_schema_node(subtype).await.map_err(|e| {
+            MarkdownError::internal_error(format!("Failed to get schema '{subtype}': {e}"))
+        })?
+        else {
+            continue;
+        };
+        let clash = |name: &str| {
+            let as_field = schema.fields.iter().any(|f| f.name == name);
+            let as_relationship = schema.relationships.iter().any(|r| r.name == name);
+            (as_field, as_relationship)
+        };
+        for (names, kind) in [
+            (new_field_names, "Field"),
+            (new_relationship_names, "Relationship"),
+        ] {
+            for name in names {
+                let (as_field, as_relationship) = clash(name);
+                if as_field || as_relationship {
+                    let declared_as = if as_field { "field" } else { "relationship" };
+                    return Err(MarkdownError::invalid_params(format!(
+                        "{kind} '{name}' is already declared as a {declared_as} by '{subtype}', \
+                         which extends '{schema_id}', and cannot also be declared here — \
+                         composition is additive only, with no override. Give it a different \
+                         name, or remove it from '{subtype}' first."
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Refuse an extension field named after a declared field (ADR-097 §6).
 ///
 /// A rule or a query reads an extension field by its bare name
@@ -3489,6 +3548,10 @@ pub async fn update_schema(
         if let Some(ref parent) = current_ancestor_for_additive_check {
             validate_no_field_redeclaration(node_service, parent, add_fields).await?;
         }
+        // And the other direction: a type already extending this schema must
+        // not declare the name.
+        let added: Vec<&str> = add_fields.iter().map(|f| f.name.as_str()).collect();
+        validate_no_subtype_redeclaration(node_service, &params.schema_id, &added, &[]).await?;
         // Write-boundary friendly_name defaulting, with the current field
         // set (existing + removals already applied) as collision context —
         // see `apply_friendly_name_defaults`.
@@ -3639,6 +3702,8 @@ pub async fn update_schema(
         if let Some(ref parent) = current_ancestor_for_additive_check {
             validate_no_relationship_redeclaration(node_service, parent, add_rels).await?;
         }
+        let added: Vec<&str> = add_rels.iter().map(|r| r.name.as_str()).collect();
+        validate_no_subtype_redeclaration(node_service, &params.schema_id, &[], &added).await?;
         reject_reserved_relationship_names(add_rels)?;
         validate_edge_field_declarations(add_rels)?;
         // Reject a targetType that doesn't exist yet — see

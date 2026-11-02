@@ -5314,6 +5314,90 @@ async fn test_create_schema_rejects_a_relationship_colliding_with_an_inherited_r
 }
 
 #[tokio::test]
+async fn test_base_type_cannot_add_a_field_a_subtype_declares() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_fields": [
+                { "name": "severity", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect_err("a base type must not add a field name its subtype declares");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("severity") && msg.contains("bug") && msg.contains("additive"),
+        "error should name the field and the subtype: {msg}"
+    );
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_fields": [
+                { "name": "priority", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("an unclaimed name is still accepted");
+}
+
+#[tokio::test]
+async fn test_base_type_cannot_add_a_relationship_a_subtype_declares() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
+        .await
+        .expect("widget schema should be created");
+    handle_create_schema(&svc, json!({ "name": "Ticket", "fields": [] }))
+        .await
+        .expect("ticket schema should be created");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [],
+            "relationships": [widget_relationship("widgets", "widget", "bugs")]
+        }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_relationships": [widget_relationship("widgets", "widget", "tickets")]
+        }),
+    )
+    .await
+    .expect_err("a base type must not add a relationship name its subtype declares");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("widgets") && msg.contains("bug") && msg.contains("additive"),
+        "error should name the relationship and the subtype: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn test_add_relationships_only_call_rejects_a_redeclared_inherited_relationship() {
     let (svc, _tmp) = create_test_service().await;
     handle_create_schema(&svc, json!({ "name": "Widget", "fields": [] }))
