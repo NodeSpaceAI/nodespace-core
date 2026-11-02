@@ -329,15 +329,15 @@ export function renderFormula(version: string, digests: FormulaDigests): string 
 
   service do
     run [opt_bin/"nodespaced"]
-    # \`keep_alive false\` is a no-op, not "don't restart" -- Homebrew's
-    # \`keep_alive?\` is only true when this is explicitly set truthy, and
-    # false/omitted both leave it false either way. \`true\` here is what
-    # actually gets launchd/systemd to relaunch nodespaced if it crashes,
-    # which is the whole point of \`brew services start\` over just running
-    # the binary directly (see the caveats above). \`brew services stop\`
-    # still works normally -- it unloads the service definition rather
-    # than fighting KeepAlive.
-    keep_alive true
+    # Homebrew's \`keep_alive?\` is only true when this is set, so omitting it
+    # leaves nothing to relaunch nodespaced after a crash, which is the whole
+    # point of \`brew services start\` over running the binary directly (see
+    # the caveats above). \`successful_exit: false\` is the same condition the
+    # launchd plist and systemd unit the installer writes use: relaunch after
+    # a failure, but not after a deliberate clean exit (for example an
+    # unusable databases.toml). \`brew services stop\` still works normally --
+    # it unloads the service definition rather than fighting KeepAlive.
+    keep_alive successful_exit: false
     log_path var/"log/nodespace/nodespaced.log"
     error_log_path var/"log/nodespace/nodespaced.log"
   end
