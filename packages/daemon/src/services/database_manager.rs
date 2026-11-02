@@ -1517,7 +1517,9 @@ impl Drop for CreateRollback {
             // runtime to close it on: remove the files now. Doing it on a
             // spawned task would let a quick retry of the same path create a
             // new database that the task then strips of its sidecars.
-            _ => {
+            (services, _) => {
+                // Closing the store comes before the files go.
+                drop(services);
                 if remove {
                     remove_database_files_sync(&self.path);
                 }
@@ -1551,11 +1553,20 @@ impl<'a> OpeningEntryGuard<'a> {
 impl Drop for OpeningEntryGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.manager
+            let mut opening = self
+                .manager
                 .opening
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&self.id);
+                .unwrap_or_else(|e| e.into_inner());
+            // Another caller still holding this mutex (a `get_or_open` waiter)
+            // must keep sharing it with later callers, or a third caller would
+            // mint a fresh one and open the same file twice.
+            if opening
+                .get(&self.id)
+                .is_some_and(|lock| Arc::strong_count(lock) == 1)
+            {
+                opening.remove(&self.id);
+            }
         }
     }
 }
@@ -2605,6 +2616,28 @@ plugin_label = "blue"
                 "round {round}: a removed database must not stay open"
             );
         }
+    }
+
+    /// A dropped create guard must keep the id's opening lock while another
+    /// caller still holds it, and prune it once nobody does.
+    #[tokio::test]
+    async fn opening_entry_guard_keeps_a_lock_another_caller_holds() {
+        let (mgr, _dir, _registry_path) = temp_manager().await;
+        let id = DatabaseId::generate();
+
+        let held = mgr.opening_lock(&id);
+        drop(OpeningEntryGuard::new(&mgr, id.clone()));
+        assert!(
+            mgr.opening.lock().unwrap().contains_key(&id),
+            "a lock still held by another caller must stay in the map"
+        );
+
+        drop(held);
+        drop(OpeningEntryGuard::new(&mgr, id.clone()));
+        assert!(
+            !mgr.opening.lock().unwrap().contains_key(&id),
+            "an unheld lock must be pruned"
+        );
     }
 
     /// `remove` must prune the removed id's per-id opening lock, not just its
