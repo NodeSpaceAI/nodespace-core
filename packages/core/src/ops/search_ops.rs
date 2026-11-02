@@ -70,8 +70,10 @@ fn should_skip_scope_filter(node_types: Option<&[String]>, scope_is_default: boo
 /// its message text.
 fn semantic_search_error(e: NodeServiceError) -> OpsError {
     match e {
-        NodeServiceError::EmbeddingUnavailable(_) => {
-            OpsError::Internal("Embedding service not ready".to_string())
+        // Keep the detail the service reports so the caller can tell a model
+        // that is not loaded from one that failed its load or integrity check.
+        NodeServiceError::EmbeddingUnavailable(detail) => {
+            OpsError::Internal(format!("Embedding model unavailable: {detail}"))
         }
         // An empty or over-long query is the caller's input, not a fault.
         NodeServiceError::InvalidUpdate(msg) => OpsError::InvalidParams(msg),
@@ -1127,7 +1129,7 @@ mod tests {
 
         assert!(matches!(
             semantic_search_error(NodeServiceError::EmbeddingUnavailable("x".to_string())),
-            OpsError::Internal(m) if m == "Embedding service not ready"
+            OpsError::Internal(m) if m == "Embedding model unavailable: x"
         ));
         assert!(matches!(
             semantic_search_error(NodeServiceError::invalid_update("Search query is too long")),

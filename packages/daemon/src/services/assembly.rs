@@ -311,7 +311,7 @@ pub async fn build_shared_services(
     let has_model = model_path.is_some();
     SHARED_MODEL_MISSING.store(!has_model, Ordering::SeqCst);
     let (model_tx, model_rx) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
-    SHARED_MODEL_LOAD_FAILED.store(false, Ordering::SeqCst);
+    set_shared_model_load_failure(None);
     let model_task = model_path.map(|path| {
         // Flagged in flight at scheduling time, not when the task first runs, so
         // a shutdown that finishes before then still sees the pending load.
@@ -762,12 +762,18 @@ static SHARED_MODEL_LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// [`build_shared_services`], which runs once per process.
 static SHARED_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
 
-/// Whether the shared model's background load failed (corrupt file, engine
-/// init error). Process-global for the same reason as
-/// [`SHARED_MODEL_LOAD_IN_FLIGHT`]. A closed `model` channel cannot tell a
-/// failed load from one still running, so this is what separates them. Cleared
-/// by [`build_shared_services`], set by the load task.
-static SHARED_MODEL_LOAD_FAILED: AtomicBool = AtomicBool::new(false);
+/// Why the shared model's background load failed (corrupt file, engine init
+/// error), or `None` while no load has failed. Process-global for the same
+/// reason as [`SHARED_MODEL_LOAD_IN_FLIGHT`]. A closed `model` channel cannot
+/// tell a failed load from one still running, so this is what separates them.
+/// Cleared by [`build_shared_services`], set by the load task.
+static SHARED_MODEL_LOAD_FAILURE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_shared_model_load_failure(reason: Option<String>) {
+    *SHARED_MODEL_LOAD_FAILURE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = reason;
+}
 
 /// The status an embedding-backed RPC returns while no model is available.
 ///
@@ -775,10 +781,14 @@ static SHARED_MODEL_LOAD_FAILED: AtomicBool = AtomicBool::new(false);
 /// or the load failed, since no retry can fix either; `UNAVAILABLE` (safe to
 /// retry) otherwise, while a model may still be loading.
 pub fn embedding_model_unavailable() -> tonic::Status {
-    if SHARED_MODEL_LOAD_FAILED.load(Ordering::SeqCst) {
-        tonic::Status::failed_precondition(
-            "embedding model failed to load — semantic search unavailable",
-        )
+    let load_failure = SHARED_MODEL_LOAD_FAILURE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    if let Some(reason) = load_failure {
+        tonic::Status::failed_precondition(format!(
+            "embedding model failed to load — semantic search unavailable: {reason}"
+        ))
     } else if SHARED_MODEL_MISSING.load(Ordering::SeqCst) {
         tonic::Status::failed_precondition(
             "semantic search has no embedding model: no model file was found. \
@@ -823,7 +833,7 @@ impl Drop for SharedModelLoadGuard {
 /// Background task: load the NLP embedding model once for the whole process and
 /// publish it over `model_tx`. Non-fatal — on failure the channel simply never
 /// yields a model and embeddings stay disabled everywhere, but
-/// `SHARED_MODEL_LOAD_FAILED` is set first so a client is told the load is
+/// `SHARED_MODEL_LOAD_FAILURE` is set first so a client is told the load is
 /// never going to complete, instead of a channel that just looks the same as
 /// "still loading" forever.
 async fn load_shared_embedding_model_bg(
@@ -857,8 +867,12 @@ async fn load_shared_embedding_model_bg(
     .await
     {
         Ok(Ok(svc)) => Arc::new(svc),
-        Ok(Err(_)) | Err(_) => {
-            SHARED_MODEL_LOAD_FAILED.store(true, Ordering::SeqCst);
+        Ok(Err(e)) => {
+            set_shared_model_load_failure(Some(e.to_string()));
+            return;
+        }
+        Err(e) => {
+            set_shared_model_load_failure(Some(format!("the load task did not finish: {e}")));
             return;
         }
     };

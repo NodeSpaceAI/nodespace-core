@@ -80,6 +80,17 @@ async fn search_reports_a_failed_model_load_as_non_retryable() {
     let failed = service.search_nodes(search()).await.unwrap_err();
     assert_eq!(failed.code(), Code::FailedPrecondition);
     assert!(failed.message().contains("failed to load"));
+    // The reason the load failed is carried through, not dropped.
+    let reason = failed
+        .message()
+        .split_once("unavailable: ")
+        .map(|(_, r)| r)
+        .unwrap_or("");
+    assert!(
+        !reason.trim().is_empty(),
+        "no load failure reason in: {}",
+        failed.message()
+    );
     assert!(!failed.message().contains("retry"));
 }
 
