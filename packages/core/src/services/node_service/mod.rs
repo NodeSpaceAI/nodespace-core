@@ -54,6 +54,7 @@ mod dry_run_tests;
 #[cfg(test)]
 mod inherited_behavior_rule_tests;
 
+pub use bulk::TrustedImportFollowUp;
 pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::render_subtree_markdown;
 pub use invariants::DryRunVerdict;
@@ -10283,6 +10284,198 @@ mod tests {
         assert!(node_ids.contains(&root_id), "root event missing");
         assert!(node_ids.contains(&child1_id), "child1 event missing");
         assert!(node_ids.contains(&child2_id), "child2 event missing");
+    }
+
+    fn text_row(
+        id: &str,
+        content: &str,
+        parent: Option<&str>,
+        order: f64,
+    ) -> (
+        String,
+        String,
+        String,
+        Option<String>,
+        f64,
+        serde_json::Value,
+    ) {
+        (
+            id.to_string(),
+            "text".to_string(),
+            content.to_string(),
+            parent.map(str::to_string),
+            order,
+            serde_json::json!({}),
+        )
+    }
+
+    /// A follow-up write that fails rolls back the whole import: the old
+    /// subtree is intact, the new rows are absent and no event is published.
+    #[tokio::test]
+    async fn trusted_import_follow_up_failure_rolls_back_the_insert_and_prune() {
+        let (service, _temp) = create_test_service().await;
+        let root = uuid::Uuid::new_v4().to_string();
+        let old_child = uuid::Uuid::new_v4().to_string();
+        let new_child = uuid::Uuid::new_v4().to_string();
+        service
+            .bulk_create_hierarchy_trusted(vec![
+                text_row(&root, "root", None, 1.0),
+                text_row(&old_child, "old", Some(&root), 1.0),
+            ])
+            .await
+            .unwrap();
+        let mut rx = service.subscribe_to_events();
+
+        let follow_up = TrustedImportFollowUp {
+            archive_ids: vec![],
+            refresh_root: Some((
+                "no-such-root".to_string(),
+                NodeUpdate::new().with_content("renamed".to_string()),
+            )),
+            prune_ids: vec![old_child.clone()],
+        };
+        let result = service
+            .bulk_create_hierarchy_trusted_with(
+                vec![text_row(&new_child, "new", Some(&root), 2.0)],
+                follow_up,
+            )
+            .await;
+        assert!(result.is_err(), "the failed refresh fails the import");
+
+        assert!(service.get_node(&old_child).await.unwrap().is_some());
+        assert!(service.get_node(&new_child).await.unwrap().is_none());
+        assert_eq!(
+            service.get_node(&root).await.unwrap().unwrap().content,
+            "root"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a rolled-back import publishes nothing"
+        );
+    }
+
+    /// A new archived root is archived before the transaction commits, so a
+    /// subscriber never finds it active.
+    #[tokio::test]
+    async fn trusted_import_archives_a_new_root_before_it_is_observable() {
+        let (service, _temp) = create_test_service().await;
+        let mut rx = service.subscribe_to_events();
+        let root = uuid::Uuid::new_v4().to_string();
+        let child = uuid::Uuid::new_v4().to_string();
+
+        service
+            .bulk_create_hierarchy_trusted_with(
+                vec![
+                    text_row(&root, "root", None, 1.0),
+                    text_row(&child, "child", Some(&root), 1.0),
+                ],
+                TrustedImportFollowUp {
+                    archive_ids: vec![root.clone()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut seen_created = false;
+        while let Ok(envelope) = rx.try_recv() {
+            if let DomainEvent::NodeCreated { node_id, .. } = envelope.event {
+                seen_created = true;
+                let stored = service.get_node(&node_id).await.unwrap().unwrap();
+                if node_id == root {
+                    assert!(!crate::governance::participates(&stored));
+                }
+            }
+        }
+        assert!(seen_created);
+        let stored = service.get_node(&root).await.unwrap().unwrap();
+        assert!(!crate::governance::participates(&stored));
+    }
+
+    /// A refresh and prune ride the insert's transaction: the root takes its
+    /// new content and mentions, the old children go (with their events), and
+    /// ids that no longer exist are ignored.
+    #[tokio::test]
+    async fn trusted_import_follow_up_refreshes_the_root_and_prunes_the_old_subtree() {
+        let (service, _temp) = create_test_service().await;
+        let root = uuid::Uuid::new_v4().to_string();
+        let old_child = uuid::Uuid::new_v4().to_string();
+        let new_child = uuid::Uuid::new_v4().to_string();
+        let target = uuid::Uuid::new_v4().to_string();
+        service
+            .bulk_create_hierarchy_trusted(vec![
+                text_row(&root, "root", None, 1.0),
+                text_row(&old_child, "old", Some(&root), 1.0),
+                text_row(&target, "target", None, 1.0),
+            ])
+            .await
+            .unwrap();
+        let mut rx = service.subscribe_to_events();
+
+        let mention = format!("see [@target](nodespace://{target})");
+        service
+            .bulk_create_hierarchy_trusted_with(
+                vec![text_row(&new_child, "new", Some(&root), 2.0)],
+                TrustedImportFollowUp {
+                    archive_ids: vec![],
+                    refresh_root: Some((
+                        root.clone(),
+                        NodeUpdate::new().with_content(mention.clone()),
+                    )),
+                    prune_ids: vec![old_child.clone(), "gone".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(service.get_node(&old_child).await.unwrap().is_none());
+        let children = service.get_children(&root).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, new_child);
+        let refreshed = service.get_node(&root).await.unwrap().unwrap();
+        assert_eq!(refreshed.content, mention);
+        assert_eq!(refreshed.mentions, vec![target.clone()]);
+        let mut deleted = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let DomainEvent::NodeDeleted { id, .. } = envelope.event {
+                deleted.push(id);
+            }
+        }
+        assert_eq!(deleted, vec![old_child]);
+    }
+
+    /// `delete_nodes_in_tx` removes the rows that exist, reports only those,
+    /// and handles more ids than one statement carries.
+    #[tokio::test]
+    async fn delete_nodes_in_tx_skips_missing_ids_and_chunks_large_sets() {
+        let (service, _temp) = create_test_service().await;
+        let root = uuid::Uuid::new_v4().to_string();
+        let mut rows = vec![text_row(&root, "root", None, 1.0)];
+        let mut ids: Vec<String> = Vec::new();
+        for i in 0..1000 {
+            let id = uuid::Uuid::new_v4().to_string();
+            rows.push(text_row(&id, "c", Some(&root), i as f64 + 1.0));
+            ids.push(id);
+        }
+        service.bulk_create_hierarchy_trusted(rows).await.unwrap();
+        let mut request = ids.clone();
+        request.push("missing-a".to_string());
+        request.push("missing-b".to_string());
+
+        let deleted = service
+            .store()
+            .with_transaction(move |tx| {
+                Box::pin(async move { SqliteStore::delete_nodes_in_tx(tx, &request).await })
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(deleted.len(), 1000);
+        assert!(deleted
+            .iter()
+            .all(|(id, ty)| ids.contains(id) && ty == "text"));
+        assert!(service.get_children(&root).await.unwrap().is_empty());
+        assert!(service.get_node(&root).await.unwrap().is_some());
     }
 
     /// Start a transaction on another task that signals `started` once it

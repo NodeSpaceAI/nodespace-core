@@ -3,6 +3,17 @@
 use super::crud::FieldOwnershipInfo;
 use super::*;
 
+/// Writes applied in the same transaction as a trusted bulk import.
+#[derive(Debug, Default, Clone)]
+pub struct TrustedImportFollowUp {
+    /// Roots created by the import that are archived before it commits.
+    pub archive_ids: Vec<String>,
+    /// An existing root to update (new content, archival) in the transaction.
+    pub refresh_root: Option<(String, NodeUpdate)>,
+    /// Nodes of the previous subtree removed once the fresh one is in place.
+    pub prune_ids: Vec<String>,
+}
+
 impl NodeService {
     /// Attach each bulk row's title, derived by the same rule as single-node
     /// creation ([`Self::derive_title`]), with one schema lookup per type
@@ -698,6 +709,28 @@ impl NodeService {
             serde_json::Value,
         )>,
     ) -> Result<Vec<String>, NodeServiceError> {
+        self.bulk_create_hierarchy_trusted_with(nodes, TrustedImportFollowUp::default())
+            .await
+    }
+
+    /// [`Self::bulk_create_hierarchy_trusted`] with the writes that belong to
+    /// the same import applied in the same transaction: the listed roots are
+    /// archived, a kept root is refreshed, and the stale subtree is pruned.
+    /// Either all of it commits or none of it does, so a new archived document
+    /// is never visible active and a replaced one never holds old and new
+    /// children together.
+    pub async fn bulk_create_hierarchy_trusted_with(
+        &self,
+        nodes: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            f64,
+            serde_json::Value,
+        )>,
+        follow_up: TrustedImportFollowUp,
+    ) -> Result<Vec<String>, NodeServiceError> {
         if nodes.is_empty() {
             return Ok(Vec::new());
         }
@@ -756,13 +789,29 @@ impl NodeService {
         let root_ids: Vec<String> = nodes_normalized
             .iter()
             .filter_map(|(id, node_type, _, parent_id, _, _)| {
-                if parent_id.is_none() && embeddable_types.get(node_type) == Some(&true) {
+                // A root archived by this import has no vectors to build
+                if parent_id.is_none()
+                    && embeddable_types.get(node_type) == Some(&true)
+                    && !follow_up.archive_ids.contains(id)
+                {
                     Some(id.clone())
                 } else {
                     None
                 }
             })
             .collect();
+
+        // A refreshed root's mentions are re-synced after the commit, as a
+        // single update does, from the content it held before.
+        let mention_sync = match &follow_up.refresh_root {
+            Some((id, update)) => match (&update.content, self.get_node(id).await?) {
+                (Some(new), Some(old)) if *new != old.content => {
+                    Some((id.clone(), old.content, new.clone()))
+                }
+                _ => None,
+            },
+            None => None,
+        };
 
         // One transaction for the insert and its invariant-rule dispatch. Its
         // event buffer holds one Created event per node and flushes them
@@ -772,9 +821,35 @@ impl NodeService {
         let service = self.clone();
         let result = self
             .with_transaction(move |tx| {
-                Box::pin(async move { service.insert_bulk_hierarchy_rows_in_tx(tx, rows).await })
+                Box::pin(async move {
+                    let ids = service.insert_bulk_hierarchy_rows_in_tx(tx, rows).await?;
+                    for id in &follow_up.archive_ids {
+                        let archive = NodeUpdate::new()
+                            .with_lifecycle_status(crate::governance::ARCHIVED.to_string());
+                        service.update_node_in_tx(tx, id, archive).await?;
+                    }
+                    if let Some((id, update)) = follow_up.refresh_root {
+                        service.update_node_in_tx(tx, &id, update).await?;
+                    }
+                    let pruned = crate::db::SqliteStore::delete_nodes_in_tx(
+                        tx.store_tx(),
+                        &follow_up.prune_ids,
+                    )
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
+                    for (id, node_type) in pruned {
+                        service.emit_event_in_tx(tx, DomainEvent::NodeDeleted { id, node_type });
+                    }
+                    Ok(ids)
+                })
             })
             .await?;
+
+        if let Some((id, old, new)) = mention_sync {
+            if let Err(e) = self.sync_mentions(&id, &old, &new).await {
+                tracing::warn!("Failed to sync mentions for node {}: {}", id, e);
+            }
+        }
 
         // Create stale embedding markers in bulk (single transaction)
         if !root_ids.is_empty() {

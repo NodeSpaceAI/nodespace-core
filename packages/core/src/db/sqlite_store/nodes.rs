@@ -3934,6 +3934,47 @@ impl SqliteStore {
             .await
     }
 
+    /// Delete the rows named by `ids` that exist, in the caller's `tx`, and
+    /// return each deleted node's `(id, node_type)` so the caller can buffer
+    /// its `Deleted` events. Does not notify, like every `_in_tx` store method.
+    pub(crate) async fn delete_nodes_in_tx(
+        tx: &Tx<'_>,
+        ids: &[String],
+    ) -> Result<Vec<(String, String)>> {
+        const ID_CHUNK: usize = 900;
+        let mut deleted = Vec::new();
+        for chunk in ids.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|id| libsql::Value::Text(id.clone()))
+                .collect();
+            let mut rows = tx
+                .conn()
+                .query(
+                    &format!(
+                        "SELECT id, node_type FROM node WHERE id IN ({})",
+                        placeholders.join(", ")
+                    ),
+                    params.clone(),
+                )
+                .await
+                .context("Failed to read nodes to delete")?;
+            while let Some(row) = rows.next().await? {
+                deleted.push((row.get::<String>(0)?, row.get::<String>(1)?));
+            }
+            drop(rows);
+            tx.conn()
+                .execute(
+                    &format!("DELETE FROM node WHERE id IN ({})", placeholders.join(", ")),
+                    params,
+                )
+                .await
+                .context("Failed to delete nodes in transaction")?;
+        }
+        Ok(deleted)
+    }
+
     /// `_in_tx` twin of [`Self::bulk_update`] (ADR-069 §1a): the same
     /// statements against the caller's `tx`, so `NodeService::bulk_update`
     /// can run invariant-rule dispatch in the transaction that holds the
