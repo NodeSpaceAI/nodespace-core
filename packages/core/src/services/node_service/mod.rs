@@ -1893,21 +1893,24 @@ impl NodeService {
     }
 
     /// The first person node: the earliest created, then the lowest id, a
-    /// person subtype's and an archived one included. The local user when no
-    /// `has_role` edge says otherwise, and the one seeding attaches a missing
-    /// owner edge to; the same rule as the `current_person` query anchor.
+    /// person subtype's included. An archived person participates in nothing
+    /// (ADR-087 §2), so it is chosen only when no non-archived person exists.
+    /// The local user when no `has_role` edge says otherwise, and the one
+    /// seeding attaches a missing owner edge to.
     /// A query by type returns rows in no particular order, so taking its
     /// first row would pick whichever person the index reached first.
     async fn first_person(&self) -> Result<Option<Node>, NodeServiceError> {
-        Ok(self
-            .query_nodes_by_type("person", true)
-            .await?
-            .into_iter()
-            .min_by(|a, b| {
+        fn earliest(people: Vec<Node>) -> Option<Node> {
+            people.into_iter().min_by(|a, b| {
                 a.created_at
                     .cmp(&b.created_at)
                     .then_with(|| a.id.cmp(&b.id))
-            }))
+            })
+        }
+        if let Some(person) = earliest(self.query_nodes_by_type("person", false).await?) {
+            return Ok(Some(person));
+        }
+        Ok(earliest(self.query_nodes_by_type("person", true).await?))
     }
 
     /// ADR-037: write the local user's first/last name and email
@@ -11728,6 +11731,45 @@ mod tests {
             .unwrap()
             .expect("fallback must still resolve a local person");
         assert_eq!(local.id, seeded_id);
+    }
+
+    #[tokio::test]
+    async fn test_owner_edge_repair_skips_an_archived_first_person() {
+        let (service, _temp) = create_test_service().await;
+
+        let seeded = service.query_nodes_by_type("person", true).await.unwrap();
+        let seeded = &seeded[0];
+        let later_id = service
+            .create_node(Node::new(
+                "person".to_string(),
+                String::new(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+
+        // The earliest person is archived and the owner edge is gone.
+        service
+            .update_node(
+                &seeded.id,
+                seeded.version,
+                NodeUpdate::new().with_lifecycle_status(crate::governance::ARCHIVED.to_string()),
+            )
+            .await
+            .unwrap();
+        service
+            .delete_relationship(&seeded.id, "has_role", DATABASE_SETTINGS_NODE_ID)
+            .await
+            .unwrap();
+
+        service.seed_database_settings_if_needed().await.unwrap();
+
+        let owners = service
+            .get_related_nodes(DATABASE_SETTINGS_NODE_ID, "has_role", "in")
+            .await
+            .unwrap();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(owners[0].id, later_id, "ownership goes to a live person");
     }
 
     // Minimal tracing subscriber that records whether a `WARN`-level event
