@@ -3912,15 +3912,10 @@ mod tests {
         /// chain's *other* domain (the cross-domain counterpart to same-kind
         /// redeclaration rejection), so `vp-prec-sub` cannot declare
         /// relationship `owner` while `vp-prec-base` already has field
-        /// `owner`, or vice versa. The one channel ADR-078 leaves genuinely
-        /// open is retroactive: nothing re-validates an existing
-        /// descendant's declarations when an ancestor gains a new one later
-        /// (see `flatten_chain_by_name`'s doc comment on this being the
-        /// explicitly unresolved edge case), so the collision here is
-        /// produced by adding `vp-prec-base`'s `owner` field AFTER
-        /// `vp-prec-sub` already declares its own `owner` relationship —
-        /// still a real, reachable state, just no longer one a single
-        /// declaration can create.
+        /// `owner`, or vice versa, and `update_schema` likewise refuses a base
+        /// type adding a name a subtype already declares. The resolver still
+        /// has to behave when such a state exists, so the fixture writes the
+        /// ancestor's `owner` field beneath the schema API.
         #[tokio::test]
         async fn test_own_relationship_shadows_inherited_field_of_same_name() {
             let (svc, _tmp) = create_test_service().await;
@@ -3963,23 +3958,30 @@ mod tests {
             .await
             .expect("subtype schema creation failed");
 
-            // Retroactively add the colliding FIELD to the ancestor —
-            // nothing re-validates `vp-prec-sub`'s already-declared
-            // relationship against it, so this succeeds and produces the
-            // cross-domain collision this test exercises.
-            crate::schema::handle_update_schema(
-                &svc,
-                json!({
-                    "schema_id": "vp-prec-base",
-                    "add_fields": [
-                        { "name": "owner", "type": "text", "protection": "user", "indexed": false }
-                    ]
-                }),
-            )
-            .await
-            .expect(
-                "retroactively adding a field to the ancestor that collides with an existing \
-                 descendant's relationship is not write-time checked and must succeed",
+            // Put the colliding FIELD on the ancestor beneath the schema
+            // API, which refuses it (a base type may not add a name a
+            // subtype already declares): the state is still reachable from
+            // older data, and the resolver must keep the nearer
+            // declaration.
+            let field: crate::models::SchemaField = serde_json::from_value(json!(
+                { "name": "owner", "type": "text", "protection": "user", "indexed": false }
+            ))
+            .unwrap();
+            svc.store()
+                .update_node(
+                    "vp-prec-base",
+                    crate::models::NodeUpdate::default()
+                        .with_properties(json!({ "fields": [field] })),
+                    None,
+                    crate::db::WriteContext::default(),
+                )
+                .await
+                .unwrap();
+            let schema = svc.get_schema_node("vp-prec-base").await.unwrap().unwrap();
+            assert_eq!(
+                schema.fields.len(),
+                1,
+                "the ancestor now declares the field"
             );
 
             let rules = vec![make_rule(
