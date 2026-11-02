@@ -280,6 +280,24 @@ const ALLOWLIST: &[Allowed] = &[
               writing the schema back — the field counterpart of this \
               function's `relationships` entry's reason (2) above.",
     },
+    Allowed {
+        file: "schema/mod.rs",
+        function: "validate_no_subtype_redeclaration",
+        field_kind: "fields",
+        why: "Compares a name a base type is adding against what each \
+              subtype in its closure declares ITSELF: an override exists \
+              only where the subtype's own list holds the name, so the \
+              subtype's inherited set (which includes the base) is the \
+              wrong thing to read.",
+    },
+    Allowed {
+        file: "schema/mod.rs",
+        function: "validate_no_subtype_redeclaration",
+        field_kind: "relationships",
+        why: "The relationship counterpart of this function's `fields` \
+              entry: only a subtype's own declarations can override the \
+              name being added to the base.",
+    },
 ];
 
 /// Directories skipped entirely — generated/vendored code, not source this

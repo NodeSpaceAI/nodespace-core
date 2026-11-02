@@ -304,6 +304,21 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Queue each root's embedding for a rebuild after its content was
+    /// replaced wholesale (a re-import over an existing document).
+    ///
+    /// A root with no rows gets a stale marker; a root that already has rows
+    /// has them marked stale, cleared from the vector index and given a fresh
+    /// retry budget, so the old text stops being searchable and a used-up
+    /// retry count does not carry over to the new content.
+    pub async fn requeue_root_embeddings(&self, node_ids: &[String]) -> Result<()> {
+        self.create_stale_embedding_markers_bulk(node_ids).await?;
+        for node_id in node_ids {
+            self.mark_root_embedding_stale(node_id).await?;
+        }
+        Ok(())
+    }
+
     pub async fn get_stale_embedding_root_ids(
         &self,
         limit: Option<i64>,

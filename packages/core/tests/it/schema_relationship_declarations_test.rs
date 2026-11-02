@@ -696,6 +696,62 @@ async fn retargeting_a_declaration_a_subtype_instance_edge_uses_is_blocked() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn reparenting_away_from_the_declaration_a_subtype_instance_edge_uses_is_blocked(
+) -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_subtype_edge_under_inherited_declaration(&svc).await?;
+    handle_create_schema(&svc, json!({ "name": "Gear", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "subassembly", "extends": "gear" }),
+    )
+    .await
+    .expect_err("re-parenting away from a declaration a live edge uses must be blocked");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("widgets") && msg.contains("1 instance edge"),
+        "error should name the relationship and the edge count: {msg}"
+    );
+    let schema = svc
+        .get_schema_node("subassembly")
+        .await?
+        .expect("subassembly");
+    assert_eq!(schema.extends.as_deref(), Some("assembly"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn reparenting_is_allowed_when_no_edge_uses_the_old_declaration() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_widget_pair(&svc).await?;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Subassembly", "extends": "assembly", "fields": [] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    handle_create_schema(&svc, json!({ "name": "Gear", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "subassembly", "extends": "gear" }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let schema = svc
+        .get_schema_node("subassembly")
+        .await?
+        .expect("subassembly");
+    assert_eq!(schema.extends.as_deref(), Some("gear"));
+    Ok(())
+}
+
 /// A subtype that declares the name itself owns its instances' edges under
 /// that declaration, not the ancestor's: removing the ancestor's leaves them
 /// declared, so they do not block it.
@@ -723,12 +779,10 @@ async fn edges_under_a_subtypes_own_declaration_do_not_block_removing_the_ancest
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    handle_update_schema(
-        &svc,
-        json!({ "schema_id": "rack", "add_relationships": [holds] }),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The shadowing state is built at the store level: `update_schema`
+    // refuses a base type adding a name its subtype already declares.
+    let holds: nodespace_core::models::schema::SchemaRelationship = serde_json::from_value(holds)?;
+    svc.set_schema_relationships("rack", &[holds]).await?;
     make_node(&svc, "2f0c0b8e-5f8e-5c55-9a59-3b1d7f6e4c21", "subrack").await?;
     make_node(&svc, "5c115e74-4f2a-5af0-9741-d3d785a753b8", "widget").await?;
     svc.create_relationship(

@@ -76,6 +76,58 @@ async fn merge_unions_properties_survivor_wins_ties_and_captures_superseded() ->
 }
 
 #[tokio::test]
+async fn merge_unions_the_ancestor_buckets_of_a_subtype() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let svc = Arc::new(svc);
+    nodespace_core::schema::handle_create_schema(
+        &svc,
+        json!({
+            "name": "Customer",
+            "extends": "person",
+            "fields": [
+                { "name": "tier", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("customer schema: {e}"))?;
+
+    let survivor_id = svc
+        .create_node(Node::new(
+            "customer".to_string(),
+            String::new(),
+            json!({ "person": { "first_name": "Alice", "email": "alice@example.com" }, "customer": {} }),
+        ))
+        .await?;
+    let loser_id = svc
+        .create_node(Node::new(
+            "customer".to_string(),
+            String::new(),
+            json!({
+                "person": { "first_name": "Alice", "email": "ALICE@example.com", "last_name": "Smith" },
+                "customer": { "tier": "gold" }
+            }),
+        ))
+        .await?;
+
+    let outcome = svc.merge_nodes(&survivor_id, &loser_id, None).await?;
+
+    assert_eq!(
+        outcome.properties_merged, 2,
+        "last_name (ancestor bucket) and tier (own bucket) are absent on the survivor"
+    );
+    let after = svc.get_node(&survivor_id).await?.unwrap();
+    assert_eq!(after.properties["person"]["last_name"], json!("Smith"));
+    assert_eq!(after.properties["customer"]["tier"], json!("gold"));
+    assert_eq!(
+        after.properties["person"]["email"],
+        json!("alice@example.com"),
+        "the survivor's value wins a field present on both sides"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn merge_repoints_has_child_and_preserves_order() -> Result<()> {
     let (svc, _tmp) = service().await?;
 

@@ -1476,6 +1476,87 @@ impl NodeService {
                 )));
             }
         }
+        self.reject_reparent_stranding_edges(schema_id, existing, relationships)
+            .await
+    }
+
+    /// Refuse re-parenting a schema's `extends` when an instance edge of the
+    /// type (or of a subtype that inherits the declaration) is named by a
+    /// relationship only the old chain declares. The `extends` edge has no
+    /// instance edges of its own, so the loop above never sees the move; the
+    /// edges that depended on the old ancestor would be left under a name
+    /// nothing in the new chain declares.
+    async fn reject_reparent_stranding_edges(
+        &self,
+        schema_id: &str,
+        existing: &[crate::models::schema::SchemaRelationship],
+        relationships: &[crate::models::schema::SchemaRelationship],
+    ) -> Result<(), NodeServiceError> {
+        let parent_of = |rels: &[crate::models::schema::SchemaRelationship]| {
+            rels.iter()
+                .find(|r| r.name == EXTENDS_RELATIONSHIP)
+                .and_then(|r| r.target_type.clone())
+        };
+        let (Some(old_parent), Some(new_parent)) = (parent_of(existing), parent_of(relationships))
+        else {
+            return Ok(());
+        };
+        if old_parent == new_parent {
+            return Ok(());
+        }
+
+        let (_, current_owners) = self.resolve_relationships(schema_id).await?;
+        let (new_chain_rels, _) = self.resolve_relationships(&new_parent).await?;
+        let still_declared = |name: &str| {
+            new_chain_rels.iter().any(|r| r.name == name)
+                || relationships
+                    .iter()
+                    .any(|r| r.name == name && r.name != EXTENDS_RELATIONSHIP)
+        };
+
+        let mut inherited: Vec<(&String, &String)> = current_owners
+            .iter()
+            .filter(|(name, owner)| {
+                owner.as_str() != schema_id
+                    && name.as_str() != EXTENDS_RELATIONSHIP
+                    && !still_declared(name)
+            })
+            .collect();
+        inherited.sort();
+        if inherited.is_empty() {
+            return Ok(());
+        }
+
+        let closure = self
+            .store
+            .get_subtype_closure(schema_id)
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        for (name, owner) in inherited {
+            let mut source_types = Vec::new();
+            for source_type in &closure {
+                if source_type == schema_id
+                    || self
+                        .source_resolves_relationship_to(source_type, name, owner)
+                        .await?
+                {
+                    source_types.push(source_type.clone());
+                }
+            }
+            let live = self
+                .store
+                .count_instance_edges_from_types(name, &source_types)
+                .await
+                .map_err(NodeServiceError::from_store)?;
+            if live > 0 {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Cannot re-parent schema '{}' from '{}' to '{}': {} instance edge(s) use \
+                     relationship '{}', declared by '{}', which the new chain does not declare. \
+                     Delete those relationships first.",
+                    schema_id, old_parent, new_parent, live, name, owner
+                )));
+            }
+        }
         Ok(())
     }
 

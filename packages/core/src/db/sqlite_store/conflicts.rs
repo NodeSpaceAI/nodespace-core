@@ -400,6 +400,7 @@ impl SqliteStore {
         let mut merged_properties = survivor.properties.clone();
         let mut superseded = serde_json::Map::new();
         let mut properties_merged: u32 = 0;
+        let mut unioned: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         fn union_object(
             merged: &mut serde_json::Map<String, Value>,
@@ -428,24 +429,38 @@ impl SqliteStore {
             merged_properties.as_object_mut(),
             loser.properties.as_object(),
         ) {
-            // The shared type namespace, e.g. `person` — where the real
-            // per-field data lives when both nodes are the same type.
+            // The shared type namespaces, e.g. `person` — where the real
+            // per-field data lives when both nodes are the same type. A
+            // subtype keeps each inherited field in the bucket of the
+            // ancestor that declares it (ADR-078), so every bucket in the
+            // type's `extends` chain is unioned, not just the node's own.
             if survivor.node_type == loser.node_type {
-                if let Some(loser_ns) = loser_obj.get(&loser.node_type).and_then(|v| v.as_object())
-                {
-                    let merged_ns = merged_obj
-                        .entry(survivor.node_type.clone())
-                        .or_insert_with(|| Value::Object(serde_json::Map::new()))
-                        .as_object_mut()
-                        .expect("just inserted or pre-existing object under node_type key");
-                    union_object(merged_ns, loser_ns, &mut superseded, &mut properties_merged);
+                let mut buckets = Self::type_chain_in_tx(tx, &loser.node_type).await?;
+                if !buckets.contains(&loser.node_type) {
+                    buckets.push(loser.node_type.clone());
+                }
+                for bucket in &buckets {
+                    if let Some(loser_ns) = loser_obj.get(bucket).and_then(|v| v.as_object()) {
+                        let merged_ns = match merged_obj
+                            .entry(bucket.clone())
+                            .or_insert_with(|| Value::Object(serde_json::Map::new()))
+                            .as_object_mut()
+                        {
+                            Some(ns) => ns,
+                            // The survivor holds a non-object under this key:
+                            // leave it to the whole-value comparison below.
+                            None => continue,
+                        };
+                        union_object(merged_ns, loser_ns, &mut superseded, &mut properties_merged);
+                        unioned.insert(bucket.clone());
+                    }
                 }
             }
 
             // Any remaining top-level keys outside the type namespace
             // (`_seed`, a future non-namespaced bookkeeping key, …).
             for (key, loser_value) in loser_obj {
-                if *key == loser.node_type {
+                if unioned.contains(key) {
                     continue; // already unioned one level deeper, above
                 }
                 match merged_obj.get(key) {
