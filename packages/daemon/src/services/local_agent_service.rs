@@ -1877,8 +1877,13 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         &self,
         _request: Request<UnloadModelRequest>,
     ) -> Result<Response<UnloadModelResponse>, Status> {
-        self.model_manager()
-            .ok_or_else(|| Status::unavailable(MODEL_MANAGER_UNAVAILABLE))?
+        let manager = self
+            .model_manager()
+            .ok_or_else(|| Status::unavailable(MODEL_MANAGER_UNAVAILABLE))?;
+        // The catalog unload and the engine reset are one step: an install
+        // landing between them would leave the new engine reset to a no-op.
+        let _swap = self.inner.shared.model_swap.lock().await;
+        manager
             .unload()
             .await
             .map_err(|e| Status::internal(format!("Failed to unload model: {e}")))?;
@@ -2468,6 +2473,8 @@ impl LocalAgentServiceImpl {
 
         let swap_guard = self.inner.shared.model_swap.lock().await;
         if let Err(e) = manager.load(model_id).await {
+            // Emitting awaits the live sender, so never do it under the lock.
+            drop(swap_guard);
             emit!(ModelLoadProgressEvent {
                 event_type: "error".to_string(),
                 model_id: model_id.to_string(),
@@ -6940,6 +6947,24 @@ mod tests {
         assert_eq!(event.model_id, "m1");
         assert_eq!(event.bytes_downloaded, Some(10));
         assert_eq!(event.bytes_total, Some(40));
+    }
+
+    /// Unloading waits for the swap lock, so the catalog unload and the engine
+    /// reset cannot straddle another load's install.
+    #[tokio::test]
+    async fn unload_model_waits_for_the_model_swap_lock() {
+        let (svc, _node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+        let held = shared.model_swap.lock().await;
+        let svc2 = svc.clone();
+        let unload =
+            tokio::spawn(
+                async move { svc2.unload_model(Request::new(UnloadModelRequest {})).await },
+            );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!unload.is_finished(), "unload ran while the lock was held");
+        drop(held);
+        unload.await.unwrap().expect("unload_model");
     }
 
     /// An OpenAI-compatible swap waits for whoever holds the swap lock, so it

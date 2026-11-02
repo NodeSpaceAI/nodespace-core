@@ -73,7 +73,7 @@ fn semantic_search_error(e: NodeServiceError) -> OpsError {
         // Keep the detail the service reports so the caller can tell a model
         // that is not loaded from one that failed its load or integrity check.
         NodeServiceError::EmbeddingUnavailable(detail) => {
-            OpsError::Internal(format!("Embedding model not ready: {detail}"))
+            OpsError::Internal(format!("Embedding model unavailable: {detail}"))
         }
         // An empty or over-long query is the caller's input, not a fault.
         NodeServiceError::InvalidUpdate(msg) => OpsError::InvalidParams(msg),
@@ -1129,7 +1129,7 @@ mod tests {
 
         assert!(matches!(
             semantic_search_error(NodeServiceError::EmbeddingUnavailable("x".to_string())),
-            OpsError::Internal(m) if m == "Embedding model not ready: x"
+            OpsError::Internal(m) if m == "Embedding model unavailable: x"
         ));
         assert!(matches!(
             semantic_search_error(NodeServiceError::invalid_update("Search query is too long")),
