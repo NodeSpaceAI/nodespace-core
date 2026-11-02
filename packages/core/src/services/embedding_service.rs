@@ -66,9 +66,10 @@ pub use nodespace_nlp_engine::EMBEDDING_DIMENSION;
 /// is its own variant.
 fn query_embedding_error(e: EmbeddingError) -> NodeServiceError {
     match e {
-        e @ (EmbeddingError::ModelNotInitialized
-        | EmbeddingError::ModelLoadError(_)
-        | EmbeddingError::IntegrityError(_)) => {
+        EmbeddingError::ModelNotInitialized => NodeServiceError::EmbeddingUnavailable(
+            "the embedding model is not loaded yet; retry in a moment".to_string(),
+        ),
+        e @ (EmbeddingError::ModelLoadError(_) | EmbeddingError::IntegrityError(_)) => {
             NodeServiceError::EmbeddingUnavailable(e.to_string())
         }
         EmbeddingError::ContextOverflow(msg) => {
@@ -1183,6 +1184,19 @@ mod tests {
                 "expected EmbeddingUnavailable, got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn query_embedding_error_tells_loading_from_failed_load() {
+        let detail = |e| match query_embedding_error(e) {
+            NodeServiceError::EmbeddingUnavailable(d) => d,
+            other => panic!("expected EmbeddingUnavailable, got {other:?}"),
+        };
+        assert!(detail(EmbeddingError::ModelNotInitialized).contains("retry"));
+        let failed = detail(EmbeddingError::ModelLoadError("missing file".to_string()));
+        assert!(failed.contains("missing file") && !failed.contains("retry"));
+        let tampered = detail(EmbeddingError::IntegrityError("bad hash".to_string()));
+        assert!(tampered.contains("bad hash") && !tampered.contains("retry"));
     }
 
     #[test]
