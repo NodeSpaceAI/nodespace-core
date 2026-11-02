@@ -92,8 +92,10 @@ vi.mock('$lib/stores/conflicts.svelte', () => ({
 
 const clearAllTabs = vi.fn((..._a: unknown[]) => undefined);
 const addTab = vi.fn((..._a: unknown[]) => undefined);
+const restorePersistedState = vi.fn((..._a: unknown[]) => Promise.resolve(false));
 vi.mock('$lib/stores/navigation.svelte', () => ({
   clearAllTabs: (...a: unknown[]) => clearAllTabs(...a),
+  restorePersistedState: (...a: unknown[]) => restorePersistedState(...a),
   addTab: (...a: unknown[]) => addTab(...a),
   DAILY_JOURNAL_TAB_ID: 'daily-journal',
   DEFAULT_PANE_ID: 'pane-1'
@@ -278,6 +280,51 @@ describe('Database Store', () => {
       await databaseStore.load();
 
       expect(databaseStore.activeDatabaseId).toBe('a');
+    });
+
+    it('replaces a remembered database id the daemon has not registered with the default', async () => {
+      localStorage.setItem('nodespace.activeDatabaseId', 'stale');
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('c', { isDefault: true })],
+            defaultDatabaseId: 'c'
+          });
+        }
+        return Promise.resolve(undefined);
+      });
+
+      await databaseStore.load();
+
+      expect(databaseStore.activeDatabaseId).toBe('c');
+      expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'c' });
+      expect(mockInvoke).not.toHaveBeenCalledWith('set_active_database', { id: 'stale' });
+    });
+
+    it('restores tabs for the resolved database before committing the selection', async () => {
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('c', { isDefault: true })],
+            defaultDatabaseId: 'c'
+          });
+        }
+        return Promise.resolve(undefined);
+      });
+      let activeWhenRestored: string | null | undefined;
+      restorePersistedState.mockImplementationOnce(() => {
+        activeWhenRestored = databaseStore.activeDatabaseId;
+        return Promise.resolve(true);
+      });
+
+      await databaseStore.load();
+
+      expect(restorePersistedState).toHaveBeenCalledWith(
+        'c',
+        expect.any(Function),
+        expect.any(Function)
+      );
+      expect(activeWhenRestored).toBeNull();
     });
 
     it('does not let a concurrent load overwrite the selection already made', async () => {

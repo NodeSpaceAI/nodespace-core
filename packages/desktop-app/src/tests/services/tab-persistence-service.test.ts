@@ -420,4 +420,69 @@ describe('TabPersistenceService', () => {
     });
   });
 
+
+  describe('per-database scope', () => {
+    const state = (nodeId: string): TabState => ({
+      tabs: [
+        {
+          id: 'tab-1',
+          title: 'T',
+          type: 'node',
+          content: { nodeId, nodeType: 'text' },
+          closeable: true,
+          paneId: 'pane-1'
+        }
+      ],
+      panes: [{ id: 'pane-1', width: 100, tabIds: ['tab-1'] }],
+      activePaneId: 'pane-1',
+      activeTabIds: { 'pane-1': 'tab-1' }
+    });
+
+    afterEach(() => {
+      TabPersistenceService.setScopeProvider(null);
+    });
+
+    it('never loads one database tabs under another', () => {
+      let active: string | null = 'db-a';
+      TabPersistenceService.setScopeProvider(() => active);
+      TabPersistenceService.saveNow(state('node-a'));
+      active = 'db-b';
+
+      expect(TabPersistenceService.load('db-b')).toBeNull();
+      expect(TabPersistenceService.load('db-a')?.tabs[0].content?.nodeId).toBe('node-a');
+    });
+
+    it('writes a debounced save under the database active when it was requested', () => {
+      let active: string | null = 'db-a';
+      TabPersistenceService.setScopeProvider(() => active);
+      TabPersistenceService.save(state('node-a'));
+      active = 'db-b';
+      vi.advanceTimersByTime(1000);
+
+      expect(TabPersistenceService.load('db-b')).toBeNull();
+      expect(TabPersistenceService.load('db-a')).not.toBeNull();
+    });
+
+    it('prunes dropped tabs from panes and repoints the active tab', () => {
+      const persisted = {
+        version: 1,
+        tabs: ['x', 'y'].map((id) => ({
+          id,
+          title: id,
+          type: 'node' as const,
+          closeable: true,
+          paneId: 'pane-1'
+        })),
+        panes: [{ id: 'pane-1', width: 100, tabIds: ['x', 'y'] }],
+        activePaneId: 'pane-1',
+        activeTabIds: { 'pane-1': 'x' }
+      };
+
+      const pruned = TabPersistenceService.pruneTabs(persisted, new Set(['y']));
+
+      expect(pruned.tabs.map((t) => t.id)).toEqual(['y']);
+      expect(pruned.panes[0].tabIds).toEqual(['y']);
+      expect(pruned.activeTabIds).toEqual({ 'pane-1': 'y' });
+    });
+  });
 });

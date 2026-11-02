@@ -152,3 +152,37 @@ describe('ChatMessage clarify options', () => {
     }
   });
 });
+
+describe('ChatMessage bound-chat opening', () => {
+  const opening =
+    'Here is what [Software Project](nodespace://software-project) is.\n\n' +
+    'It extends [Project](nodespace://project), so it has that type\'s fields as well.\n\n' +
+    'It has one field.\n- **name** (text): From [Project](nodespace://project).\n\n' +
+    'What would you like to change?';
+
+  it('renders the whole description and the closing question above the chips', () => {
+    const { container } = render(ChatMessage, {
+      message: makeMessage({ content: opening, options: ['Explain this type', 'Add a field'] }),
+      isLatest: true,
+      onSelectOption: vi.fn(),
+    });
+
+    const messageText = container.querySelector('.message-content')?.textContent;
+    expect(messageText).toContain('It extends');
+    expect(messageText).toContain('It has one field.');
+    expect(messageText).toContain('What would you like to change?');
+    expect(container.querySelectorAll('button.clarify-option').length).toBe(2);
+  });
+
+  it('still shows only the opener and question of a clarify message', () => {
+    const { container } = render(ChatMessage, {
+      message: makeMessage({ options: ['Track who owes me money', 'Search existing notes'] }),
+      isLatest: true,
+      onSelectOption: vi.fn(),
+    });
+
+    const messageText = container.querySelector('.message-content')?.textContent;
+    expect(messageText).toContain('Did you want to track debts or search notes?');
+    expect(messageText).not.toContain('Track who owes me money');
+  });
+});

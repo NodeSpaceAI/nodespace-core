@@ -24,6 +24,7 @@ use nodespace_core::services::query_service::description::describe_query;
 use nodespace_core::services::{
     CreateNodeParams, InsertPositionOwned, NewRelationship, NodeService, NodeServiceError,
 };
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -344,6 +345,16 @@ fn describe_schema_node<'a>(
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
+        // The types the description names, shown by their names so each can be a link.
+        let mut names: HashMap<String, String> = HashMap::new();
+        for id in schema.extends.iter().chain(owners.values()) {
+            if names.contains_key(id) {
+                continue;
+            }
+            if let Ok(Some(named)) = node_service.get_schema_node(id).await {
+                names.insert(id.clone(), named.envelope.content);
+            }
+        }
         describe_schema(
             link,
             &SchemaDescription {
@@ -351,6 +362,7 @@ fn describe_schema_node<'a>(
                 purpose: Some(purpose.as_str()),
                 fields: &fields,
                 owners: &owners,
+                names: &names,
             },
         )
     })
@@ -1233,8 +1245,9 @@ mod tests {
             bug.content
         );
         assert!(
-            bug.content
-                .contains("It extends `task`, so it has that type's fields as well."),
+            bug.content.contains(
+                "It extends [Task](nodespace://task), so it has that type's fields as well."
+            ),
             "{}",
             bug.content
         );
@@ -1243,7 +1256,11 @@ mod tests {
             "{}",
             bug.content
         );
-        assert!(bug.content.contains("From `task`."), "{}", bug.content);
+        assert!(
+            bug.content.contains("From [Task](nodespace://task)."),
+            "{}",
+            bug.content
+        );
     }
 
     /// A title cannot break the link that records the mention.

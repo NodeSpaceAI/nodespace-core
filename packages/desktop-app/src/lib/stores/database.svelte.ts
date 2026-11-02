@@ -14,10 +14,13 @@ import { resyncSchemaPluginsForDatabaseSwitch } from '$lib/plugins/schema-plugin
 import { notifyDatabaseActivated } from '$lib/plugins/extension-lifecycle';
 import {
   clearAllTabs,
+  restorePersistedState,
   addTab,
   DAILY_JOURNAL_TAB_ID,
   DEFAULT_PANE_ID
 } from '$lib/stores/navigation.svelte';
+import { TabPersistenceService } from '$lib/services/tab-persistence-service';
+import { isTabResolvable } from '$lib/services/tab-restore-validation';
 import { formatDateISO } from '$lib/utils/date-formatting';
 import { toError } from '$lib/types/errors';
 import { isRequiresExtension, type RequiresExtensionPayload } from '$lib/types/requires-extension';
@@ -194,7 +197,14 @@ class DatabaseStore {
       this.databases = [IMPLICIT_BROWSER_DATABASE];
       this.defaultDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
       if (this.activeDatabaseId === null) {
-        this.activeDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
+        await restorePersistedState(
+          IMPLICIT_BROWSER_DATABASE.id,
+          isTabResolvable,
+          () => this.activeDatabaseId !== null
+        );
+        if (this.activeDatabaseId === null) {
+          this.activeDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
+        }
       }
       this.loading = false;
       return;
@@ -242,6 +252,13 @@ class DatabaseStore {
         // below leaves its selection alone.
         await invoke('set_active_database', { id: resolved });
         if (superseded()) return;
+
+        // Restore this database's saved tabs, dropping any that no longer resolve,
+        // before the workspace mounts (it waits on `activeDatabaseId`).
+        if (resolved !== null) {
+          await restorePersistedState(resolved, isTabResolvable, superseded);
+          if (superseded()) return;
+        }
 
         // A database the listing marks refused is read before the selection
         // commits, for the refusal's text, so the workspace never mounts
@@ -664,6 +681,9 @@ class DatabaseStore {
 }
 
 export const databaseStore = new DatabaseStore();
+
+// Tab state is saved per database: the persistence service reads the active id from here.
+TabPersistenceService.setScopeProvider(() => databaseStore.activeDatabaseId);
 
 // Retry the initial registry load once the daemon becomes reachable, mirroring
 // the collections/schemas stores: a `load()` that ran while the daemon was

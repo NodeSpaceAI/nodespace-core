@@ -1,6 +1,6 @@
 import { formatDateISO } from '$lib/utils/date-formatting';
 import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
-import { TabPersistenceService } from '$lib/services/tab-persistence-service';
+import { TabPersistenceService, type PersistedTabState } from '$lib/services/tab-persistence-service';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { isA } from '$lib/types/core-node-types';
@@ -18,6 +18,7 @@ export interface Tab {
   };
   closeable: boolean;
   paneId: string; // Which pane this tab belongs to
+  searchTerm?: string; // Search tabs only: the term typed, restored when the tab is shown again
   collapsedNodeIds?: string[]; // Sparse array: only store collapsed node IDs (viewers load nodes expanded)
 }
 
@@ -180,37 +181,7 @@ class NavigationStore {
    */
   loadPersistedState(): boolean {
     const persisted = TabPersistenceService.load();
-
-    if (persisted) {
-      // The Daily Journal tab always opens on the current date, whatever date
-      // it showed when the state was saved.
-      const tabs = persisted.tabs.map(withDailyJournalOnToday);
-      this.state = {
-        tabs,
-        panes: persisted.panes,
-        activePaneId: persisted.activePaneId,
-        activeTabIds: persisted.activeTabIds,
-      };
-
-      // Schedule expansion state restoration for each tab
-      // This will be applied when viewers register (deferred restoration pattern)
-      for (const tab of tabs) {
-        // Validate collapsedNodeIds before scheduling restoration
-        if (
-          tab.collapsedNodeIds &&
-          Array.isArray(tab.collapsedNodeIds) &&
-          tab.collapsedNodeIds.length > 0 &&
-          tab.collapsedNodeIds.every((id) => typeof id === 'string' && id.length > 0)
-        ) {
-          NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.collapsedNodeIds);
-        } else if (tab.collapsedNodeIds && !Array.isArray(tab.collapsedNodeIds)) {
-          // Log warning for malformed data but don't crash
-          log.warn(
-            `Invalid collapsedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.collapsedNodeIds}`
-          );
-        }
-      }
-    }
+    if (persisted) this.#applyPersisted(persisted);
 
     // Enable persistence after load attempt (whether successful or not)
     this.#isInitialized = true;
@@ -222,6 +193,73 @@ class NavigationStore {
     this.#syncNodeReachability();
 
     return !!persisted;
+  }
+
+  /**
+   * Restore the active database's persisted tabs, dropping every tab that
+   * `isResolvable` rejects before any of them renders. Persisted state is keyed by
+   * database, so tabs saved against another database are never considered.
+   * @param databaseId - The database whose tabs to restore
+   * @param isResolvable - Whether a persisted tab still exists in that database
+   * @param isSuperseded - Checked after the lookups: when true, the caller has moved on
+   *   (a newer load or a database switch owns the tabs) and nothing is applied
+   * @returns True if at least one tab was restored
+   */
+  async restorePersistedState(
+    databaseId: string,
+    isResolvable: (tab: Tab) => Promise<boolean>,
+    isSuperseded: () => boolean = () => false
+  ): Promise<boolean> {
+    const persisted = TabPersistenceService.load(databaseId);
+    let restored = false;
+    if (persisted) {
+      const verdicts = await Promise.all(
+        persisted.tabs.map(async (tab) => [tab.id, await isResolvable(tab)] as const)
+      );
+      if (isSuperseded()) return false;
+      const keepIds = new Set(verdicts.filter(([, ok]) => ok).map(([id]) => id));
+      const dropped = persisted.tabs.length - keepIds.size;
+      if (dropped > 0) log.warn(`Dropped ${dropped} restored tab(s) that no longer resolve`);
+      if (keepIds.size > 0) {
+        this.#applyPersisted(TabPersistenceService.pruneTabs(persisted, keepIds));
+        restored = true;
+      }
+    }
+
+    this.#isInitialized = true;
+    this.#syncNodeReachability();
+    return restored;
+  }
+
+  #applyPersisted(persisted: PersistedTabState): void {
+    // The Daily Journal tab always opens on the current date, whatever date
+    // it showed when the state was saved.
+    const tabs = persisted.tabs.map(withDailyJournalOnToday);
+    this.state = {
+      tabs,
+      panes: persisted.panes,
+      activePaneId: persisted.activePaneId,
+      activeTabIds: persisted.activeTabIds,
+    };
+
+    // Schedule expansion state restoration for each tab
+    // This will be applied when viewers register (deferred restoration pattern)
+    for (const tab of tabs) {
+      // Validate collapsedNodeIds before scheduling restoration
+      if (
+        tab.collapsedNodeIds &&
+        Array.isArray(tab.collapsedNodeIds) &&
+        tab.collapsedNodeIds.length > 0 &&
+        tab.collapsedNodeIds.every((id) => typeof id === 'string' && id.length > 0)
+      ) {
+        NodeExpansionCoordinator.scheduleRestoration(tab.id, tab.collapsedNodeIds);
+      } else if (tab.collapsedNodeIds && !Array.isArray(tab.collapsedNodeIds)) {
+        // Log warning for malformed data but don't crash
+        log.warn(
+          `Invalid collapsedNodeIds for tab ${tab.id}: expected array, got ${typeof tab.collapsedNodeIds}`
+        );
+      }
+    }
   }
 
   /** Test utility to reset store to initial state */
@@ -522,6 +560,15 @@ class NavigationStore {
     this.#persist();
   }
 
+  /** Remember the term typed into a Search tab so it survives the tab losing focus. */
+  setTabSearchTerm(tabId: string, searchTerm: string): void {
+    this.state = {
+      ...this.state,
+      tabs: this.state.tabs.map((tab) => (tab.id === tabId ? { ...tab, searchTerm } : tab)),
+    };
+    this.#persist();
+  }
+
   /** Reorder a tab within the same pane */
   reorderTab(tabId: string, newIndex: number, paneId: string): void {
     const state = this.state;
@@ -662,6 +709,12 @@ export const navigationStore = new NavigationStore();
 // ---------------------------------------------------------------------------
 
 export const loadPersistedState = (): boolean => navigationStore.loadPersistedState();
+
+export const restorePersistedState = (
+  databaseId: string,
+  isResolvable: (tab: Tab) => Promise<boolean>,
+  isSuperseded?: () => boolean
+): Promise<boolean> => navigationStore.restorePersistedState(databaseId, isResolvable, isSuperseded);
 export const resetTabState = (): void => navigationStore.resetTabState();
 export const clearAllTabs = (): void => navigationStore.clearAllTabs();
 export const createPane = (): Pane | null => navigationStore.createPane();
@@ -678,6 +731,8 @@ export const updateTabContent = (
   tabId: string,
   content: { nodeId: string; nodeType?: string }
 ): void => navigationStore.updateTabContent(tabId, content);
+export const setTabSearchTerm = (tabId: string, searchTerm: string): void =>
+  navigationStore.setTabSearchTerm(tabId, searchTerm);
 export const reorderTab = (tabId: string, newIndex: number, paneId: string): void =>
   navigationStore.reorderTab(tabId, newIndex, paneId);
 export const moveTabBetweenPanes = (
