@@ -60,6 +60,20 @@ describe("classify", () => {
     expect(classify(["packages/core/examples/dump_core_schemas.rs"]).rust).toBe(true);
   });
 
+  test("the shape record check runs in the Rust tier, so everything that can change the snapshot reaches it", () => {
+    for (const file of [
+      "packages/core/shape-record/current.json",
+      "packages/core/shape-record/change-log.json",
+      "packages/core/shape-record/snapshots/baseline.json",
+      "packages/core/src/models/core_schemas.rs",
+      "packages/core/src/db/schema.rs",
+      "packages/core/examples/shape_record.rs",
+      "packages/nodespace-types/src/schema.rs",
+    ]) {
+      expect(classify([file]).rust).toBe(true);
+    }
+  });
+
   test("a tooling script change runs only the scripts tests", () => {
     expect(classify(["scripts/gh-utils.ts"])).toEqual({ fullReason: null, ...NONE, scripts: true });
   });

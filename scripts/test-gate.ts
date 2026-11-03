@@ -310,6 +310,11 @@ await Promise.all([
     // without its regenerated TypeScript fails here in seconds. In this lane
     // because cargo allows one build in a target directory at a time.
     await run(TIERS.typesCheck);
+    // The built-in shape record: the snapshot regenerated from this build
+    // against the committed one, and the change log against the difference
+    // from the last release (ADR-104). Builds nodespace-core's example, so it
+    // sits in this lane with the other cargo builds.
+    await run(TIERS.shapeCheck);
     // Before the test binaries: clippy only checks, so a lint error fails here
     // without waiting for the full compile. In this lane because it builds in
     // the same target directory, and so under the machine slot.
