@@ -15,6 +15,7 @@ import { notifyDatabaseActivated } from '$lib/plugins/extension-lifecycle';
 import {
   clearAllTabs,
   restorePersistedState,
+  suspendTabsForDatabaseSwitch,
   addTab,
   DAILY_JOURNAL_TAB_ID,
   DEFAULT_PANE_ID
@@ -500,6 +501,9 @@ class DatabaseStore {
       // committing, and check any other after.
       const refusal = this.isListedRefused(id) ? await this.readRefusal() : null;
       if (seq !== this.switchSeq) return;
+      // Write the database being left's pending tab save under its own key and drop its
+      // tabs without persisting, before the active database (the storage key) changes.
+      suspendTabsForDatabaseSwitch();
       this.activeDatabaseId = id;
       this.refusal = refusal === null ? null : { databaseId: id, requiresExtension: refusal };
       // Remember the selection so a webview reload / app restart restores it
@@ -517,21 +521,34 @@ class DatabaseStore {
       notifyDatabaseActivated(id);
 
       // Reset the workspace: open tabs referenced the previous database's
-      // nodes, so drop them and land on the new database's daily journal
-      // (a date page exists in every database). Remounting the viewer reloads
-      // its content from the now-active database.
-      clearAllTabs();
-      addTab(
-        {
-          id: DAILY_JOURNAL_TAB_ID,
-          title: 'Daily Journal',
-          type: 'node',
-          content: { nodeId: formatDateISO(new Date()), nodeType: 'date' },
-          closeable: true,
-          paneId: DEFAULT_PANE_ID
-        },
-        true
+      // nodes. Restore the new database's own saved tabs with the same
+      // validation as boot (tabs whose nodes no longer resolve are dropped),
+      // and only when none restore land on its daily journal (a date page
+      // exists in every database). The restore reads the saved state first:
+      // clearing before it would persist an empty set under this database's
+      // key and destroy the tabs it saved. Remounting the viewer reloads its
+      // content from the now-active database.
+      const restored = await restorePersistedState(
+        id,
+        isTabResolvable,
+        () => seq !== this.switchSeq
       );
+      // A newer switch superseded this one while the tabs resolved — it owns them.
+      if (seq !== this.switchSeq) return;
+      if (!restored) {
+        clearAllTabs();
+        addTab(
+          {
+            id: DAILY_JOURNAL_TAB_ID,
+            title: 'Daily Journal',
+            type: 'node',
+            content: { nodeId: formatDateISO(new Date()), nodeType: 'date' },
+            closeable: true,
+            paneId: DEFAULT_PANE_ID
+          },
+          true
+        );
+      }
       if (refusal === null) void this.checkSelectedDatabase(id);
     } catch (err) {
       this.error = toError(err).message;

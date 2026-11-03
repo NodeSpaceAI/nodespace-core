@@ -158,20 +158,25 @@ class NavigationStore {
 
     // Debounce persistence to avoid rapid-fire saves during interactions
     this.#persistenceTimer = setTimeout(() => {
-      // Enrich tabs with expansion state before saving
-      const enrichedTabs = this.state.tabs.map((tab) => ({
-        ...tab,
-        collapsedNodeIds: NodeExpansionCoordinator.getCollapsedNodeIds(tab.id),
-      }));
-
-      TabPersistenceService.save({
-        ...this.state,
-        tabs: enrichedTabs,
-      });
-
-      // Closed tabs no longer need their pending collapsed ids
-      NodeExpansionCoordinator.retainViewers(this.state.tabs.map((tab) => tab.id));
+      this.#persistenceTimer = undefined;
+      this.#saveNow();
     }, PERSISTENCE_DEBOUNCE_MS);
+  }
+
+  #saveNow(): void {
+    // Enrich tabs with expansion state before saving
+    const enrichedTabs = this.state.tabs.map((tab) => ({
+      ...tab,
+      collapsedNodeIds: NodeExpansionCoordinator.getCollapsedNodeIds(tab.id),
+    }));
+
+    TabPersistenceService.save({
+      ...this.state,
+      tabs: enrichedTabs,
+    });
+
+    // Closed tabs no longer need their pending collapsed ids
+    NodeExpansionCoordinator.retainViewers(this.state.tabs.map((tab) => tab.id));
   }
 
   /**
@@ -210,25 +215,29 @@ class NavigationStore {
     isResolvable: (tab: Tab) => Promise<boolean>,
     isSuperseded: () => boolean = () => false
   ): Promise<boolean> {
-    const persisted = TabPersistenceService.load(databaseId);
-    let restored = false;
-    if (persisted) {
-      const verdicts = await Promise.all(
-        persisted.tabs.map(async (tab) => [tab.id, await isResolvable(tab)] as const)
-      );
-      if (isSuperseded()) return false;
-      const keepIds = new Set(verdicts.filter(([, ok]) => ok).map(([id]) => id));
-      const dropped = persisted.tabs.length - keepIds.size;
-      if (dropped > 0) log.warn(`Dropped ${dropped} restored tab(s) that no longer resolve`);
-      if (keepIds.size > 0) {
-        this.#applyPersisted(TabPersistenceService.pruneTabs(persisted, keepIds));
-        restored = true;
+    try {
+      const persisted = TabPersistenceService.load(databaseId);
+      let restored = false;
+      if (persisted) {
+        const verdicts = await Promise.all(
+          persisted.tabs.map(async (tab) => [tab.id, await isResolvable(tab)] as const)
+        );
+        if (isSuperseded()) return false;
+        const keepIds = new Set(verdicts.filter(([, ok]) => ok).map(([id]) => id));
+        const dropped = persisted.tabs.length - keepIds.size;
+        if (dropped > 0) log.warn(`Dropped ${dropped} restored tab(s) that no longer resolve`);
+        if (keepIds.size > 0) {
+          this.#applyPersisted(TabPersistenceService.pruneTabs(persisted, keepIds));
+          restored = true;
+        }
       }
+      return restored;
+    } finally {
+      // Every exit re-enables persistence (a database switch turned it off), including a
+      // superseded or failed restore; saves go under the current database's key.
+      this.#isInitialized = true;
+      this.#syncNodeReachability();
     }
-
-    this.#isInitialized = true;
-    this.#syncNodeReachability();
-    return restored;
   }
 
   #applyPersisted(persisted: PersistedTabState): void {
@@ -265,6 +274,30 @@ class NavigationStore {
   /** Test utility to reset store to initial state */
   resetTabState(): void {
     this.state = createInitialTabState();
+    this.#syncNodeReachability();
+  }
+
+  /**
+   * Leave the active database's tabs behind on a database switch. A save still pending is
+   * written now, under the database being left (the key is read before the caller changes
+   * the active database), and the open tabs are dropped without persisting, so the next
+   * database's saved set is not overwritten. Persistence stays off until
+   * `restorePersistedState` completes for the next database.
+   */
+  suspendForDatabaseSwitch(): void {
+    if (this.#persistenceTimer !== undefined) {
+      clearTimeout(this.#persistenceTimer);
+      this.#persistenceTimer = undefined;
+      if (this.#isInitialized) this.#saveNow();
+    }
+    TabPersistenceService.flush();
+    this.#isInitialized = false;
+    this.state = {
+      tabs: [],
+      panes: [{ id: DEFAULT_PANE_ID, width: 100, tabIds: [] }],
+      activePaneId: DEFAULT_PANE_ID,
+      activeTabIds: {},
+    };
     this.#syncNodeReachability();
   }
 
@@ -717,6 +750,8 @@ export const restorePersistedState = (
 ): Promise<boolean> => navigationStore.restorePersistedState(databaseId, isResolvable, isSuperseded);
 export const resetTabState = (): void => navigationStore.resetTabState();
 export const clearAllTabs = (): void => navigationStore.clearAllTabs();
+export const suspendTabsForDatabaseSwitch = (): void =>
+  navigationStore.suspendForDatabaseSwitch();
 export const createPane = (): Pane | null => navigationStore.createPane();
 export const closePane = (paneId: string): void => navigationStore.closePane(paneId);
 export const setActivePane = (paneId: string): void => navigationStore.setActivePane(paneId);
