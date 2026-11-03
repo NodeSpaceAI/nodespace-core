@@ -4363,7 +4363,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // A read that fails records no selection. Dispatch
                     // makes its own read and does not run the call on a
                     // failure.
-                    Some(id) => self.tool_executor.node_type(id).await.ok().flatten(),
+                    Some(id) => self.tool_executor.node_type(&id).await.ok().flatten(),
                     None => first_call
                         .as_ref()
                         .and_then(|(name, args)| decisions::selected_schema(name, args)),
@@ -5247,7 +5247,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 if let Some(id) =
                                     super::tools::held_node_id(&tc.function_name, &args)
                                 {
-                                    match self.tool_executor.node_type(id).await {
+                                    match self.tool_executor.node_type(&id).await {
                                         Ok(node_type) => target_node_type = node_type,
                                         Err(e) => target_node_unread = Some(e),
                                     }
