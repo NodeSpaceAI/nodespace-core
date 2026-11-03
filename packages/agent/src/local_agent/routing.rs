@@ -561,6 +561,67 @@ pub fn lookup_without_stage1(
     }
 }
 
+/// The decision for a question typed in a chat that pins a skill: a lookup of
+/// the message, or `None` when the ordinary route should decide.
+///
+/// The chat was opened to ask about a node and to change it, and asking comes
+/// first (ADR-100). A question there is about that node, so it is read as the
+/// options the chat offered are: a lookup, which runs the turn with the pinned
+/// skill's read tools and none of its write tools ([`read_only_candidates`]).
+/// Left to Stage 1 or to retrieval, "Does this type extend another type?" was
+/// ranked behind five skills about other things and offered their write
+/// tools.
+///
+/// Stripping write tools from a request to change something is the costly
+/// error, so this under-triggers. The message must open with an English
+/// question or retrieval word, which keeps out polite requests ("can you",
+/// "could you", "please", "go ahead", "sure") and requests in other languages
+/// that only end in a question mark, and no word of it may name a change,
+/// inflected or not. Anything else takes the ordinary route.
+pub fn decision_for_a_question_in_a_pinned_chat(message: &str) -> Option<RouteDecision> {
+    const OPENERS: [&str; 16] = [
+        "what", "which", "who", "whose", "how", "why", "when", "where", "does", "is", "are",
+        "show", "list", "tell", "describe", "explain",
+    ];
+    const ALSO_CHANGES: [&str; 5] = ["convert", "drop", "apply", "go", "extended"];
+    let message = message.trim();
+    let lowered = message.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if !words.first().is_some_and(|w| OPENERS.contains(w)) || asks_for_a_change(message) {
+        return None;
+    }
+    // Inflected forms: "adding", "added", "removes", "dropped". Stems are cut
+    // by characters, so a word in any script is safe.
+    let names_a_change = words.iter().any(|w| {
+        let mut forms = vec![w.to_string()];
+        for suffix in ["s", "es", "d", "ed", "ing"] {
+            if let Some(stem) = w.strip_suffix(suffix) {
+                forms.push(stem.to_string());
+                if suffix == "ing" {
+                    forms.push(format!("{stem}e"));
+                }
+                if suffix == "ing" || suffix == "ed" {
+                    let mut chars = stem.chars();
+                    if let (Some(last), Some(before)) = (chars.next_back(), chars.next_back()) {
+                        if last == before {
+                            forms.push(stem.chars().take(stem.chars().count() - 1).collect());
+                        }
+                    }
+                }
+            }
+        }
+        let refs: Vec<&str> = forms.iter().map(String::as_str).collect();
+        asks_for_a_write(&refs) || refs.iter().any(|f| ALSO_CHANGES.contains(f))
+    });
+    if names_a_change {
+        return None;
+    }
+    Some(RouteDecision::Lookup(message.to_string()))
+}
+
 /// Whether `message` is one of `options`, as the user would pick or retype
 /// it: compared without case, surrounding whitespace or closing punctuation.
 pub fn is_offered_option(message: &str, options: &[String]) -> bool {
@@ -4887,6 +4948,105 @@ mod tests {
                 "{change}"
             );
         }
+    }
+
+    /// A question typed in a pinned chat is a lookup of the message; a request
+    /// that names a change, however it is phrased, keeps the ordinary route
+    /// and with it the write tools.
+    #[test]
+    fn a_question_in_a_pinned_chat_is_a_lookup() {
+        for question in [
+            "Does this type extend another type?",
+            "Explain this type",
+            "what does this field mean",
+            "Which values does status take?",
+            "Is the owner field required?",
+        ] {
+            assert_eq!(
+                decision_for_a_question_in_a_pinned_chat(question),
+                Some(RouteDecision::Lookup(question.to_string())),
+                "{question}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_change_request_in_a_pinned_chat_keeps_the_ordinary_route() {
+        for other in [
+            "Add a field called owner",
+            "Can you remove the due date field?",
+            "Show me the type, then rename a field",
+            "owner should be a person",
+            "What about adding a field for the owner?",
+            "Can I get an owner field added?",
+            "Could you extend project instead?",
+            "Please convert status to a list?",
+            "What if we drop the due date?",
+            "Why not apply that to every task?",
+            "Go ahead and add it?",
+            "Sure, can you apply that?",
+            "Would you rename it?",
+            "Can you make it required?",
+            "Wie fuege ich ein Feld hinzu?",
+            "Kannst du ein Feld hinzufuegen?",
+            "What about removing the field?",
+            "Which field should be dropped?",
+            "Do it",
+            "Do that now",
+            "Do the change",
+            "How about renaming the status field?",
+        ] {
+            assert_eq!(
+                decision_for_a_question_in_a_pinned_chat(other),
+                None,
+                "{other}"
+            );
+        }
+    }
+
+    /// Inflection stemming cuts by characters: multibyte words, doubled or
+    /// not, never panic, and a change verb after them is still found.
+    #[test]
+    fn a_pinned_chat_question_with_multibyte_words_does_not_panic() {
+        for message in [
+            "What \u{1041}ed",
+            "What \u{1041}ing",
+            "What \u{1041}\u{1041}ing",
+            "Why \u{00e9}\u{00e9}ed",
+            "Which \u{1041}\u{1041}ed fields",
+        ] {
+            let _ = decision_for_a_question_in_a_pinned_chat(message);
+        }
+        assert_eq!(
+            decision_for_a_question_in_a_pinned_chat("What \u{1041}\u{1041}ing and dropping it?"),
+            None
+        );
+    }
+
+    /// The lookup a pinned question makes offers the pinned skill's read tools
+    /// and none of its write tools, and the skill leads the other candidates.
+    #[test]
+    fn a_pinned_question_leads_with_the_pinned_skill_and_reads_only() {
+        let mut type_skill =
+            candidate("type", 0.60, &["get_node", "update_schema", "search_nodes"]);
+        type_skill.pinned = true;
+        let others = [
+            candidate("relationships", 0.91, &["create_relationship", "get_node"]),
+            candidate("organization", 0.88, &["update_node"]),
+        ];
+        let mut all = others.to_vec();
+        all.push(type_skill);
+        let led = led_by_pinned_skills(all);
+        assert_eq!(led[0].name, "type");
+        let kept = read_only_candidates(led, false);
+        let tools: Vec<&str> = kept
+            .iter()
+            .flat_map(|c| c.tools.iter().map(String::as_str))
+            .collect();
+        assert!(tools.contains(&"get_node"));
+        assert!(!tools.contains(&"update_schema"));
+        assert!(!tools.contains(&"update_node"));
+        assert!(!tools.contains(&"create_relationship"));
     }
 
     /// A picked option is led by the pinned skill, whatever retrieval made of

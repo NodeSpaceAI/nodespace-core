@@ -6129,6 +6129,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             && routing::is_offered_option(message_alone, &session.offered_options))
         .then(|| routing::decision_for_an_offered_option(message_alone));
         let picked_an_option = picked_option.is_some();
+        // A question typed in such a chat is about the pinned node, whether or
+        // not it is one of the offered options: it is a lookup led by the
+        // pinned skill, and is not put to Stage 1.
+        let asked_about_the_pin = pinned_chat
+            .then(|| routing::decision_for_a_question_in_a_pinned_chat(message_alone))
+            .flatten();
+        let pinned_question = asked_about_the_pin.is_some();
+        let picked_option = picked_option.or(asked_about_the_pin);
         // A message whose decision is already settled is not put to Stage 1 at
         // all: the generation is the first of the turn's sequential requests,
         // and its answer would be overridden. See `routing::lookup_without_stage1`.
@@ -6425,7 +6433,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             routing::with_pinned_skills(selected, &session.pinned_skills, &retrieved_scores);
         // An option the chat offered belongs to the skill the chat pins,
         // whichever skill its few words retrieved first.
-        let merged = if picked_an_option {
+        let merged = if picked_an_option || pinned_question {
             routing::led_by_pinned_skills(merged)
         } else {
             merged
@@ -17489,6 +17497,127 @@ mod tests {
             "It closes a parent once its sub-tasks are done."
         );
         assert!(turn.result.tool_calls_made.is_empty());
+    }
+
+    /// A question typed in a chat that pins a skill, though it is not one of
+    /// the options the chat offered, skips Stage 1, is led by the pinned skill
+    /// and is offered its read tools only.
+    #[tokio::test]
+    async fn a_typed_question_in_a_pinned_chat_leads_with_the_pinned_skill_and_reads_only() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(true, &[]),
+            "What does this play do?",
+            vec![text_round("It closes a parent.")],
+        )
+        .await;
+
+        assert_eq!(turn.prompts.len(), 1, "no Stage-1 generation");
+        let authoring = turn.prompts[0]
+            .find("INSTRUCTIONS FOR authoring")
+            .expect("the pinned skill is rendered");
+        let research = turn.prompts[0]
+            .find("INSTRUCTIONS FOR research")
+            .expect("the retrieved skill is rendered");
+        assert!(authoring < research, "{}", turn.prompts[0]);
+        assert!(turn.tools[0].contains(&"get_play".to_string()));
+        assert!(!turn.tools[0].contains(&"update_play".to_string()));
+    }
+
+    /// Questions the lookup shortcut that needs no Stage 1 does not already
+    /// catch are still settled by the chat's pin: no Stage-1 generation, the
+    /// pinned skill first, read tools only.
+    #[tokio::test]
+    async fn a_pinned_chat_question_the_workspace_shortcut_misses_is_settled_by_the_pin() {
+        for message in ["Explain this play", "Is the owner field required?"] {
+            assert!(
+                routing::lookup_without_stage1(message, message, false).is_none(),
+                "{message} must not be caught by the older shortcut"
+            );
+            let turn = turn_in_a_play_edit_chat(
+                play_edit_session(true, &[]),
+                message,
+                vec![text_round("It closes a parent.")],
+            )
+            .await;
+            assert_eq!(turn.prompts.len(), 1, "no Stage-1 generation: {message}");
+            let authoring = turn.prompts[0]
+                .find("INSTRUCTIONS FOR authoring")
+                .expect("the pinned skill is rendered");
+            let research = turn.prompts[0]
+                .find("INSTRUCTIONS FOR research")
+                .expect("the retrieved skill is rendered");
+            assert!(authoring < research, "{}", turn.prompts[0]);
+            assert!(turn.tools[0].contains(&"get_play".to_string()));
+            assert!(!turn.tools[0].contains(&"update_play".to_string()));
+        }
+    }
+
+    /// A request to change something keeps the write tools, however it is
+    /// phrased: it is put to Stage 1 and the pinned skill's tools are whole.
+    #[tokio::test]
+    async fn a_change_request_in_a_pinned_chat_keeps_the_write_tools() {
+        for message in [
+            "Change when it runs",
+            "Can you change when it runs?",
+            "What about adding a rule?",
+        ] {
+            // A question-shaped message is put to Stage 1 alone first, then
+            // blended with the turns ahead of it.
+            let stage1_passes = if routing::is_lookup_shaped(message) {
+                2
+            } else {
+                1
+            };
+            let mut rounds: Vec<Vec<StreamingChunk>> = (0..stage1_passes)
+                .map(|_| {
+                    tool_round(
+                        "r1",
+                        routing::ROUTE_QUERY_TOOL,
+                        r#"{"query":"change when the rule runs"}"#,
+                    )
+                })
+                .collect();
+            rounds.push(text_round("Which rule?"));
+            let turn =
+                turn_in_a_play_edit_chat(play_edit_session(true, &[]), message, rounds).await;
+            assert_eq!(
+                turn.prompts.len(),
+                stage1_passes + 1,
+                "Stage 1, then Stage 2: {message}"
+            );
+            let stage2_tools = turn.tools.last().expect("Stage 2 offered tools");
+            assert!(
+                stage2_tools.contains(&"update_play".to_string()),
+                "{message}: {stage2_tools:?}"
+            );
+        }
+    }
+
+    /// The same question in a chat that pins nothing is routed as it always
+    /// was: put to Stage 1, with no skill led.
+    #[tokio::test]
+    async fn a_question_in_a_chat_that_pins_nothing_is_still_put_to_stage_1() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(false, &[]),
+            "What does this play do?",
+            vec![
+                tool_round(
+                    "r1",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"what a play does"}"#,
+                ),
+                text_round("It closes a parent."),
+            ],
+        )
+        .await;
+
+        assert!(turn.prompts.len() >= 2, "Stage 1 ran: {:?}", turn.prompts);
+        assert!(
+            turn.prompts
+                .iter()
+                .all(|p| !p.contains("INSTRUCTIONS FOR authoring")),
+            "no pinned skill in an unpinned chat"
+        );
     }
 
     #[test]

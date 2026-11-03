@@ -1,4 +1,4 @@
-When importing a document or creating multiple nodes from markdown:
+When importing a document, putting a document or a copied page into NodeSpace, or creating multiple nodes from markdown:
 
 <!-- include: bulk-import-steps -->
 
