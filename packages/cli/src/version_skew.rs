@@ -124,35 +124,96 @@ pub async fn daemon_version(sock: &std::path::Path) -> Option<String> {
         .flatten()
 }
 
-/// Adds the update advice to `error` for a daemon on `daemon` while the CLI is
-/// `cli`: only for a status that may come from skew, and with the original
-/// error first so the real error stays the headline. Any other error, or a
-/// matching version, is returned untouched.
-pub fn annotate(error: anyhow::Error, cli: &str, daemon: &str) -> anyhow::Error {
-    if !status_code(&error).is_some_and(may_come_from_skew) {
-        return error;
+/// The update advice for `error` when the daemon is on `daemon` and the CLI on
+/// `cli`: only for a status that may come from skew, `None` otherwise.
+pub fn skew_note(error: &anyhow::Error, cli: &str, daemon: &str) -> Option<String> {
+    if !status_code(error).is_some_and(may_come_from_skew) {
+        return None;
     }
-    match skew_message(cli, daemon) {
-        Some(note) => anyhow::anyhow!("{:?}\n\n{note}", crate::render_status(error)),
-        None => error,
+    skew_message(cli, daemon)
+}
+
+/// An error with advice after it. It prints the wrapped error's own message
+/// first, so the real error stays the headline, then the note; the wrapped
+/// error's causes stay its causes. The error is kept, not turned into text.
+#[derive(Debug)]
+struct WithNote {
+    error: anyhow::Error,
+    note: String,
+}
+
+impl std::fmt::Display for WithNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\n\n{}", self.error, self.note)
     }
 }
 
-/// [`annotate`] with the daemon's version fetched from `sock`. The lookup runs
-/// only for a status that may come from skew, so other failures pay nothing.
-pub async fn note_for(error: anyhow::Error, sock: &std::path::Path, cli: &str) -> anyhow::Error {
-    if !status_code(&error).is_some_and(may_come_from_skew) {
-        return error;
+impl std::error::Error for WithNote {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.chain().nth(1)
     }
-    match daemon_version(sock).await {
-        Some(daemon) => annotate(error, cli, &daemon),
-        None => error,
+}
+
+/// `error` with `note` after its own message; see [`WithNote`].
+pub fn with_note(error: anyhow::Error, note: String) -> anyhow::Error {
+    anyhow::Error::new(WithNote { error, note })
+}
+
+/// The error `main` prints for a failed command: the required-extensions
+/// refusal and the status text are rendered first, as for every other failure,
+/// and the update advice, when the daemon is on another release and the status
+/// may come from skew, follows. The lookup runs only for such a status, so
+/// other failures pay nothing.
+pub async fn render_failure(
+    error: anyhow::Error,
+    sock: &std::path::Path,
+    cli: &str,
+) -> anyhow::Error {
+    let candidate = status_code(&error).is_some_and(may_come_from_skew);
+    let note = if candidate {
+        match daemon_version(sock).await {
+            Some(daemon) => skew_note(&error, cli, &daemon),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let rendered = crate::render_status(crate::render_refusal(error));
+    match note {
+        Some(note) => with_note(rendered, note),
+        None => rendered,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct Marker;
+    impl std::fmt::Display for Marker {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "marker")
+        }
+    }
+    impl std::error::Error for Marker {}
+
+    #[test]
+    fn a_noted_error_keeps_its_causes_and_prints_its_message_first() {
+        let error = anyhow::Error::new(Marker)
+            .context("outer")
+            .context("outermost");
+        let noted = with_note(error, "ADVICE".into());
+        let text = format!("{noted:?}");
+        assert!(text.starts_with("outermost\n\nADVICE"), "{text}");
+        assert!(text.contains("outer") && text.contains("marker"), "{text}");
+        assert!(
+            noted
+                .chain()
+                .any(|cause| cause.downcast_ref::<Marker>().is_some()),
+            "a downcastable cause must survive the note"
+        );
+    }
 
     #[test]
     fn matching_versions_say_nothing() {
@@ -194,26 +255,28 @@ mod tests {
 
     #[test]
     fn mismatch_adds_advice_after_the_original_error() {
-        let error = annotate(status_error(tonic::Code::Unimplemented), "0.2.8", "0.3.10");
+        let error = status_error(tonic::Code::Unimplemented);
+        let note = skew_note(&error, "0.2.8", "0.3.10").expect("advice");
+        let error = with_note(crate::render_status(error), note);
         let text = format!("{error:?}");
         assert!(text.contains("boom"), "{text}");
         assert!(text.contains("0.2.8") && text.contains("0.3.10"), "{text}");
         assert!(
-            text.find("boom").unwrap() < text.find("update NodeSpace").unwrap(),
-            "the original error must come first: {text}"
+            text.starts_with("while doing it\n\n"),
+            "the original error must be the headline: {text}"
         );
     }
 
     #[test]
     fn matching_versions_leave_the_error_alone() {
-        let error = annotate(status_error(tonic::Code::Internal), "0.3.10", "0.3.10");
-        assert!(!format!("{error:?}").contains("update NodeSpace"));
+        let error = status_error(tonic::Code::Internal);
+        assert_eq!(skew_note(&error, "0.3.10", "0.3.10"), None);
     }
 
     #[test]
     fn an_error_that_is_not_a_status_is_untouched() {
-        let error = annotate(anyhow::anyhow!("bad argument"), "0.2.8", "0.3.10");
-        assert_eq!(format!("{error:?}"), "bad argument");
+        let error = anyhow::anyhow!("bad argument");
+        assert_eq!(skew_note(&error, "0.2.8", "0.3.10"), None);
     }
 
     #[test]
@@ -226,11 +289,8 @@ mod tests {
             Internal,
             FailedPrecondition,
         ] {
-            let error = annotate(status_error(code), "0.2.8", "0.3.10");
-            assert!(
-                format!("{error:?}").contains("update NodeSpace"),
-                "{code:?}"
-            );
+            let error = status_error(code);
+            assert!(skew_note(&error, "0.2.8", "0.3.10").is_some(), "{code:?}");
         }
         for code in [
             NotFound,
@@ -240,11 +300,8 @@ mod tests {
             Unavailable,
             Cancelled,
         ] {
-            let error = annotate(status_error(code), "0.2.8", "0.3.10");
-            assert!(
-                !format!("{error:?}").contains("update NodeSpace"),
-                "{code:?}"
-            );
+            let error = status_error(code);
+            assert!(skew_note(&error, "0.2.8", "0.3.10").is_none(), "{code:?}");
         }
     }
 

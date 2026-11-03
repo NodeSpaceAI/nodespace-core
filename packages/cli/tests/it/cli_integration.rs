@@ -1233,11 +1233,11 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
 /// nothing for other statuses, matching versions, or an unreachable daemon.
 #[tokio::test]
 async fn failed_command_against_a_mismatched_daemon_gets_update_advice() {
-    use nodespace_cli::version_skew::{note_for, CLI_VERSION};
+    use nodespace_cli::version_skew::{render_failure, CLI_VERSION};
     let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
     let status = |code| anyhow::Error::new(tonic::Status::new(code, "the real error"));
 
-    let noted = note_for(status(Code::Unimplemented), &sock, "0.0.1").await;
+    let noted = render_failure(status(Code::Unimplemented), &sock, "0.0.1").await;
     let text = format!("{noted:?}");
     assert!(
         text.contains("0.0.1") && text.contains(CLI_VERSION),
@@ -1249,17 +1249,34 @@ async fn failed_command_against_a_mismatched_daemon_gets_update_advice() {
         "{text}"
     );
 
-    let not_found = note_for(status(Code::NotFound), &sock, "0.0.1").await;
+    // A required-extensions refusal is a FailedPrecondition: it still renders
+    // the shared refusal text with its download line, and carries the advice.
+    let unsupported = vec!["nodespace-pro".to_string()];
+    let refused = render_failure(
+        anyhow::Error::new(nodespace_proto::requires_extension::status(&unsupported)),
+        &sock,
+        "0.0.1",
+    )
+    .await;
+    let text = format!("{refused:?}");
+    assert!(
+        text.contains(&nodespace_cli::refusal_text(&unsupported)),
+        "{text}"
+    );
+    assert!(text.contains("update NodeSpace"), "{text}");
+    assert!(!text.contains("FailedPrecondition"), "{text}");
+
+    let not_found = render_failure(status(Code::NotFound), &sock, "0.0.1").await;
     assert!(!format!("{not_found:?}").contains("update NodeSpace"));
 
-    let plain = note_for(anyhow::anyhow!("bad argument"), &sock, "0.0.1").await;
+    let plain = render_failure(anyhow::anyhow!("bad argument"), &sock, "0.0.1").await;
     assert_eq!(format!("{plain:?}"), "bad argument");
 
-    let matching = note_for(status(Code::Unimplemented), &sock, CLI_VERSION).await;
+    let matching = render_failure(status(Code::Unimplemented), &sock, CLI_VERSION).await;
     assert!(!format!("{matching:?}").contains("update NodeSpace"));
 
     let gone = tempfile::TempDir::new().unwrap().path().join("none.sock");
-    let unreachable = note_for(status(Code::Unimplemented), &gone, "0.0.1").await;
+    let unreachable = render_failure(status(Code::Unimplemented), &gone, "0.0.1").await;
     assert!(!format!("{unreachable:?}").contains("update NodeSpace"));
     let _ = shutdown.send(());
 }

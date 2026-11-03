@@ -719,8 +719,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             let sock = std::path::PathBuf::from(resolve_pipe_name(socket.as_deref()));
             // A failure the daemon reported may be a CLI and daemon from
             // different releases; only such a failure pays for the lookup.
-            let error = version_skew::note_for(error, &sock, version_skew::CLI_VERSION).await;
-            Err(render_status(render_refusal(error)))
+            Err(version_skew::render_failure(error, &sock, version_skew::CLI_VERSION).await)
         }
     }
 }
