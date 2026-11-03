@@ -43,6 +43,12 @@ import {
   treeSources,
   type SkillExtensions,
 } from "./build-skill";
+import {
+  cliSatisfies,
+  MIN_CLI_VERSION_PLACEHOLDER,
+  stampMinCliVersion,
+  workspaceVersion,
+} from "../packages/skill/src/min-cli-version";
 
 let root: string;
 
@@ -995,5 +1001,64 @@ describe("check-binary-arch.sh", () => {
 
   test("accepts an x86-64 ELF for the x86-64 Linux target", () => {
     expect(check(0x3e, "x86_64-unknown-linux-gnu")).toBe(0);
+  });
+});
+
+// SKILL.md asks for a minimum CLI version, stamped at build time from the
+// workspace version. These guard that the stamped minimum and the CLI built
+// from the same revision can satisfy each other.
+describe("minimum CLI version stamped into SKILL.md", () => {
+  const repoRoot = join(import.meta.dir, "..");
+  const skillDir = join(repoRoot, "packages", "skill");
+
+  const stagedSkillMd = (version: string): string => {
+    const source = stagedSources("SKILL.md", skillDir, undefined, version).get("")!;
+    if (!("bytes" in source)) throw new Error("SKILL.md was not stamped");
+    return Buffer.from(source.bytes).toString("utf8");
+  };
+
+  /** Every version the staged skill names as its minimum. */
+  const stampedMinimums = (text: string): string[] =>
+    [...text.matchAll(/version \*\*(\S+) or newer\*\*/g)].map((m) => m[1]!);
+
+  test("the CLI crate is versioned by the workspace, so the workspace version is the CLI version", () => {
+    expect(readFileSync(join(repoRoot, "packages", "cli", "Cargo.toml"), "utf8")).toMatch(
+      /^version\.workspace\s*=\s*true/m,
+    );
+  });
+
+  test("the staged skill asks for a minimum the workspace CLI satisfies", () => {
+    const cli = workspaceVersion(repoRoot);
+    const text = stagedSkillMd(cli);
+    expect(text).not.toContain(MIN_CLI_VERSION_PLACEHOLDER);
+    const minimums = stampedMinimums(text);
+    expect(minimums.length).toBeGreaterThan(0);
+    for (const minimum of minimums) {
+      expect(cliSatisfies(cli, minimum)).toBe(true);
+    }
+  });
+
+  test("a skill stamped newer than its CLI is not satisfied", () => {
+    const [major, minor, patch] = workspaceVersion(repoRoot).split(".").map(Number);
+    const newer = `${major}.${minor}.${patch! + 1}`;
+    for (const minimum of stampedMinimums(stagedSkillMd(newer))) {
+      expect(cliSatisfies(workspaceVersion(repoRoot), minimum)).toBe(false);
+    }
+  });
+
+  test("an old CLI does not satisfy the stamped minimum, numerically not lexically", () => {
+    expect(cliSatisfies("0.2.8", "0.3.10")).toBe(false);
+    expect(cliSatisfies("0.3.9", "0.3.10")).toBe(false);
+    expect(cliSatisfies("0.3.10", "0.3.9")).toBe(true);
+    expect(cliSatisfies("0.3.10", "0.3.10")).toBe(true);
+  });
+
+  test("stamping fails loudly when the source has no placeholder or the version is malformed", () => {
+    expect(() => stampMinCliVersion("no placeholder here", "0.3.10")).toThrow();
+    expect(() => stampMinCliVersion(MIN_CLI_VERSION_PLACEHOLDER, "latest")).toThrow();
+  });
+
+  test("the unstamped source keeps the placeholder, so only a build produces a minimum", () => {
+    expect(readFileSync(join(skillDir, "SKILL.md"), "utf8")).toContain(MIN_CLI_VERSION_PLACEHOLDER);
   });
 });

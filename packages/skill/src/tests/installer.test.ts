@@ -328,6 +328,43 @@ describe('install', () => {
     expect(readFileSync(join(config.installDir, 'SKILL.md'), 'utf8')).toBe(expected);
   });
 
+  describe('minimum CLI version placeholder', () => {
+    const PLACEHOLDER = '{{MIN_CLI_VERSION}}';
+    const UNSTAMPED = `Needs version **${PLACEHOLDER} or newer**.\n`;
+    const checkout = (withCargo: boolean): string => {
+      const repo = join(TMP, 'repo');
+      const pkg = join(repo, 'packages', 'skill');
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, 'SKILL.md'), UNSTAMPED, 'utf8');
+      if (withCargo) {
+        writeFileSync(join(repo, 'Cargo.toml'), '[workspace]\nmembers = []\n\n[workspace.package]\nversion = "1.2.3"\n\n[workspace.dependencies]\n', 'utf8');
+      }
+      return pkg;
+    };
+
+    it('never writes the placeholder: a source checkout is stamped with its workspace version', () => {
+      const pkg = checkout(true);
+      for (const config of AGENTS) mkdirSync(config.detectionDir, { recursive: true });
+      const results = install(undefined, pkg);
+      expect(results.length).toBeGreaterThan(0);
+      for (const result of results) {
+        const config = AGENTS.find(a => a.name === result.agent)!;
+        const text = readFileSync(join(config.installDir, 'SKILL.md'), 'utf8');
+        expect(text).not.toContain(PLACEHOLDER);
+        expect(text).toContain('**1.2.3 or newer**');
+      }
+    });
+
+    it('installs nothing when the placeholder cannot be resolved', () => {
+      const pkg = checkout(false);
+      const config = AGENTS.find(a => a.name === 'claude-code')!;
+      mkdirSync(config.detectionDir, { recursive: true });
+      expect(() => install(['claude-code'], pkg)).toThrow(/minimum CLI version/);
+      const installed = join(config.installDir, 'SKILL.md');
+      expect(!existsSync(installed) || !readFileSync(installed, 'utf8').includes(PLACEHOLDER)).toBe(true);
+    });
+  });
+
   // A skill folder with no frontmatter is not a valid skill under the Agent
   // Skills standard — `name` + `description` are the entire discovery surface.
   // Three of the four targets used to install without it, so the skill could

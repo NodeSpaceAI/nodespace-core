@@ -924,8 +924,13 @@ jobs:
         shell: bash
         run: |
           bun run --cwd packages/skill build
+          # SKILL.md is stamped with the minimum CLI version on the way in,
+          # so the tarball never carries the unstamped placeholder.
+          stage="$(mktemp -d)"
+          cp -R packages/skill/dist packages/skill/plugins packages/skill/references packages/skill/package.json "$stage/"
+          bun run scripts/stamp-skill-md.ts "$stage/SKILL.md"
           tar -czf "nodespace-skill-installer-resources-${{ matrix.target }}.tar.gz" \
-            -C packages/skill dist plugins SKILL.md references package.json
+            -C "$stage" dist plugins SKILL.md references package.json
 
       - name: Upload binaries to release
         if: steps.filter.outputs.skip != 'true' && github.event_name == 'release'

@@ -8,6 +8,7 @@ pub mod journal;
 pub mod output;
 pub mod paths;
 pub mod terminal;
+pub mod version_skew;
 
 pub use output::{exit_if_broken_pipe, install_broken_pipe_handler, BROKEN_PIPE_EXIT_CODE};
 
@@ -708,10 +709,19 @@ pub async fn resolve_routing(
 /// rewritten to the shared refusal text by [`render_refusal`]. `main` prints
 /// the error and exits non-zero either way.
 pub async fn run(cli: Cli) -> Result<()> {
-    dispatch(cli)
-        .await
-        .map_err(render_refusal)
-        .map_err(render_status)
+    let socket = cli.socket.clone();
+    match dispatch(cli).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            #[cfg(unix)]
+            let sock = resolve_socket_path(socket.as_deref());
+            #[cfg(windows)]
+            let sock = std::path::PathBuf::from(resolve_pipe_name(socket.as_deref()));
+            // A failure the daemon reported may be a CLI and daemon from
+            // different releases; only such a failure pays for the lookup.
+            Err(version_skew::render_failure(error, &sock, version_skew::CLI_VERSION).await)
+        }
+    }
 }
 
 /// Replace a gRPC status in an error's chain with [`status_text`], keeping

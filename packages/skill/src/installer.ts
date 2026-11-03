@@ -16,6 +16,7 @@ import { join, dirname, delimiter, relative, resolve, isAbsolute, sep } from 'no
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { AGENTS, SHARED_PLUGIN_DIR } from './agents.js';
+import { stampForInstall } from './min-cli-version.js';
 import { hasBlock, removeBlock, upsertBlock } from './instructions-block.js';
 import type {
   AgentConfig,
@@ -265,11 +266,13 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
     // SKILL.md gets the agent's frontmatter prepended — a skill is discovered
     // by its YAML `name` + `description` under the Agent Skills standard;
     // everything else is copied verbatim.
-    const skill = syncFiles(root, present, previous?.files ?? PRE_RECORD_FILES, (rel, content) =>
-      config.skillFrontmatter && rel === SKILL_FILE
-        ? Buffer.from(config.skillFrontmatter + '\n' + content.toString('utf8'), 'utf8')
-        : content,
-    );
+    // The minimum CLI version is stamped on the way in, so a source checkout's
+    // unstamped SKILL.md never reaches an agent with the placeholder in it.
+    const skill = syncFiles(root, present, previous?.files ?? PRE_RECORD_FILES, (rel, content) => {
+      if (rel !== SKILL_FILE) return content;
+      const body = stampForInstall(content.toString('utf8'), packageRoot);
+      return Buffer.from(config.skillFrontmatter ? config.skillFrontmatter + '\n' + body : body, 'utf8');
+    });
     // The plugin of a harness that loads it from a folder of its own. That
     // folder may be one the user keeps plugins of their own in, so a file
     // already there that no install of ours recorded is not ours to replace.

@@ -1228,6 +1228,59 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
     let _ = shutdown.send(());
 }
 
+/// The lookup against a live daemon: a CLI on another version gets the advice
+/// for a status that may come from skew, with the original error first, and
+/// nothing for other statuses, matching versions, or an unreachable daemon.
+#[tokio::test]
+async fn failed_command_against_a_mismatched_daemon_gets_update_advice() {
+    use nodespace_cli::version_skew::{render_failure, CLI_VERSION};
+    let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
+    let status = |code| anyhow::Error::new(tonic::Status::new(code, "the real error"));
+
+    let noted = render_failure(status(Code::Unimplemented), &sock, "0.0.1").await;
+    let text = format!("{noted:?}");
+    assert!(
+        text.contains("0.0.1") && text.contains(CLI_VERSION),
+        "{text}"
+    );
+    assert!(text.contains("update NodeSpace"), "{text}");
+    assert!(
+        text.find("the real error").unwrap() < text.find("update NodeSpace").unwrap(),
+        "{text}"
+    );
+
+    // A required-extensions refusal is a FailedPrecondition: it still renders
+    // the shared refusal text with its download line, and carries the advice.
+    let unsupported = vec!["nodespace-pro".to_string()];
+    let refused = render_failure(
+        anyhow::Error::new(nodespace_proto::requires_extension::status(&unsupported)),
+        &sock,
+        "0.0.1",
+    )
+    .await;
+    let text = format!("{refused:?}");
+    assert!(
+        text.contains(&nodespace_cli::refusal_text(&unsupported)),
+        "{text}"
+    );
+    assert!(text.contains("update NodeSpace"), "{text}");
+    assert!(!text.contains("FailedPrecondition"), "{text}");
+
+    let not_found = render_failure(status(Code::NotFound), &sock, "0.0.1").await;
+    assert!(!format!("{not_found:?}").contains("update NodeSpace"));
+
+    let plain = render_failure(anyhow::anyhow!("bad argument"), &sock, "0.0.1").await;
+    assert_eq!(format!("{plain:?}"), "bad argument");
+
+    let matching = render_failure(status(Code::Unimplemented), &sock, CLI_VERSION).await;
+    assert!(!format!("{matching:?}").contains("update NodeSpace"));
+
+    let gone = tempfile::TempDir::new().unwrap().path().join("none.sock");
+    let unreachable = render_failure(status(Code::Unimplemented), &gone, "0.0.1").await;
+    assert!(!format!("{unreachable:?}").contains("update NodeSpace"));
+    let _ = shutdown.send(());
+}
+
 #[tokio::test]
 async fn diagnostics_collect_reports_counts_and_recency() {
     let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
@@ -1250,6 +1303,17 @@ async fn diagnostics_collect_reports_counts_and_recency() {
     assert!(
         baseline.total_node_count.is_some(),
         "a successful query must report a count, not unknown"
+    );
+    // The in-process daemon is this workspace's build, so the versions match:
+    // the report names the daemon's version and raises no skew warning.
+    assert_eq!(
+        baseline.daemon_version.as_deref(),
+        Some(nodespace_cli::version_skew::CLI_VERSION)
+    );
+    assert!(
+        baseline.warnings.is_empty(),
+        "matching versions must not warn: {:?}",
+        baseline.warnings
     );
     // The registry has exactly the seeded default, and it is the target when no
     // database is selected.

@@ -106,6 +106,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { arch, platform } from 'node:os';
+import { stampMinCliVersion, workspaceVersion } from '../packages/skill/src/min-cli-version';
 
 const WORKSPACE_ROOT = join(import.meta.dir, '..');
 const SKILL_DIR = join(WORKSPACE_ROOT, 'packages', 'skill');
@@ -548,14 +549,20 @@ export function describeSkillExtensions(extensions: SkillExtensions): string {
 /**
  * The files to stage for one of `STAGED_ENTRIES`: core's own from `skillDir`,
  * and, when `extensions` is given, what it adds to `references` and `SKILL.md`.
- * Every other entry stages as core's alone.
+ * Every other entry stages as core's alone. With `minCliVersion`, the staged
+ * `SKILL.md` has that version stamped in as the CLI minimum it asks for.
  */
 export function stagedSources(
   entry: string,
   skillDir: string,
   extensions?: SkillExtensions,
+  minCliVersion?: string,
 ): Map<string, StagedSource> {
   const sources = treeSources(join(skillDir, entry));
+  if (entry === 'SKILL.md' && minCliVersion !== undefined) {
+    const text = readFileSync(join(skillDir, entry), 'utf8');
+    sources.set('', { bytes: Buffer.from(stampMinCliVersion(text, minCliVersion)) });
+  }
   if (!extensions) return sources;
 
   if (entry === 'references') {
@@ -564,8 +571,12 @@ export function stagedSources(
       sources.set(name, { from });
     }
   } else if (entry === 'SKILL.md' && extensions.fragment !== undefined) {
+    const base = sources.get('');
     sources.set('', {
-      bytes: Buffer.concat([readFileSync(join(skillDir, entry)), Buffer.from(`\n${extensions.fragment}`)]),
+      bytes: Buffer.concat([
+        base && 'bytes' in base ? base.bytes : readFileSync(join(skillDir, entry)),
+        Buffer.from(`\n${extensions.fragment}`),
+      ]),
     });
   }
   return sources;
@@ -581,6 +592,7 @@ export function stageSkillResources(
   skillDir: string,
   resourceDir: string,
   extensions?: SkillExtensions,
+  minCliVersion?: string,
 ): number {
   mkdirSync(resourceDir, { recursive: true });
 
@@ -595,7 +607,7 @@ export function stageSkillResources(
   let stagedChanges = 0;
   for (const entry of STAGED_ENTRIES) {
     stagedChanges += syncFilesByContent(
-      stagedSources(entry, skillDir, extensions),
+      stagedSources(entry, skillDir, extensions, minCliVersion),
       join(resourceDir, entry),
     );
   }
@@ -619,7 +631,12 @@ async function main(): Promise<void> {
   }
 
   console.log(`Staging skill resources -> ${RESOURCE_DIR}`);
-  const stagedChanges = stageSkillResources(SKILL_DIR, RESOURCE_DIR, extensions);
+  const stagedChanges = stageSkillResources(
+    SKILL_DIR,
+    RESOURCE_DIR,
+    extensions,
+    workspaceVersion(WORKSPACE_ROOT),
+  );
   console.log(
     stagedChanges === 0
       ? '  Staged resources already current — nothing rewritten.'

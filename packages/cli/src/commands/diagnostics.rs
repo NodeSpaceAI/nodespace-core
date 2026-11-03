@@ -10,8 +10,8 @@
 use anyhow::Result;
 use clap::Args;
 use nodespace_daemon::nodespace::{
-    Empty, GetAllSchemasRequest, GetDaemonMemoryRequest, ListDatabasesRequest, NodeSortOrder,
-    QueryNodesSimpleRequest,
+    Empty, GetAllSchemasRequest, GetDaemonMemoryRequest, GetDaemonVersionRequest,
+    ListDatabasesRequest, NodeSortOrder, QueryNodesSimpleRequest,
 };
 use nodespace_daemon::DatabaseServiceClient;
 use serde_json::json;
@@ -50,6 +50,8 @@ pub struct DatabaseSummary {
 pub struct DiagnosticsReport {
     /// Every database registered with the daemon.
     pub databases: Vec<DatabaseSummary>,
+    /// The running daemon's version, `None` when it could not be read.
+    pub daemon_version: Option<String>,
     /// Id of the database the counts below were computed against.
     pub targeted_database_id: String,
     /// On-disk path of the targeted database.
@@ -142,7 +144,24 @@ pub async fn collect(
     // count-only RPCs (exact regardless of database size) and
     // recent_node_ids from a small server-ordered page, so there is no
     // truncation case left to warn about. See the `warnings` field doc.
-    let warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    // A CLI and daemon from different releases qualify every figure below, so
+    // say so in the report. Neither a mismatch nor a daemon too old to report
+    // its version fails the report: both are warnings.
+    let (daemon_version, version_warning) = match node_client
+        .get_daemon_version(GetDaemonVersionRequest {})
+        .await
+    {
+        Ok(response) => crate::version_skew::diagnostics_version(
+            crate::version_skew::CLI_VERSION,
+            Ok(response.into_inner().version),
+        ),
+        Err(status) => {
+            crate::version_skew::diagnostics_version(crate::version_skew::CLI_VERSION, Err(&status))
+        }
+    };
+    warnings.extend(version_warning);
 
     // Enumerate the registry.
     let (databases, default_id) = match db_client.list(ListDatabasesRequest {}).await {
@@ -308,6 +327,7 @@ pub async fn collect(
     };
 
     Ok(DiagnosticsReport {
+        daemon_version,
         databases,
         targeted_database_id,
         targeted_database_path,
@@ -471,6 +491,11 @@ fn print_human(r: &DiagnosticsReport) {
     // Unlike the database file (which can be legitimately absent, hence "n/a"),
     // a live daemon always has an RSS — a missing figure here is only ever a
     // failure, so it gets the louder UNKNOWN treatment.
+    println!("CLI version:      {}", crate::version_skew::CLI_VERSION);
+    println!(
+        "Daemon version:   {}",
+        r.daemon_version.as_deref().unwrap_or("unknown")
+    );
     match r.daemon_rss_bytes {
         Some(bytes) => println!("Daemon memory:     {}", format_size(bytes)),
         None => println!("Daemon memory:     {UNKNOWN}"),
@@ -510,6 +535,8 @@ fn print_json(r: &DiagnosticsReport) -> Result<()> {
             "unsupported_extensions": d.unsupported_extensions,
             "refusal": d.refusal,
         })).collect::<Vec<_>>(),
+        "cli_version": crate::version_skew::CLI_VERSION,
+        "daemon_version": r.daemon_version,
         "targeted_database_id": r.targeted_database_id,
         "targeted_database_path": r.targeted_database_path,
         "database_size_bytes": r.database_size_bytes,
