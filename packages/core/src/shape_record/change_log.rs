@@ -136,7 +136,7 @@ pub fn area_of_path(path: &str) -> Option<Area> {
         // A core schema's context paths are seeded content: the one part of
         // a core schema that ships with a value a user may change.
         ["schemas", _, "contextPaths", ..] => Some(Area::SeededContent),
-        ["schemas", ..] => Some(Area::CoreSchema),
+        ["schemas" | "registry", ..] => Some(Area::CoreSchema),
         _ => None,
     }
 }
@@ -239,7 +239,7 @@ fn reports_at(prefix: &[String]) -> usize {
                 3
             }
         }
-        Some("seeded") => 3,
+        Some("seeded" | "registry") => 3,
         Some(_) => 1,
         None => usize::MAX,
     }
@@ -280,11 +280,24 @@ fn walk(prefix: &mut Vec<String>, old: Option<&Value>, new: Option<&Value>, out:
     out.push(prefix.join("."));
 }
 
+/// The depth at which a difference under `path` is reported, whatever the
+/// rest of the path is.
+fn required_depth(path: &str) -> usize {
+    let parts: Vec<String> = path.split('.').take(3).map(str::to_string).collect();
+    reports_at(&parts)
+}
+
 /// Whether an entry that names `cover` accounts for a difference at `path`.
+///
+/// A cover names a difference when it is that path, or lies inside it. A cover
+/// that contains the path accounts for it only when the cover is as deep as
+/// the unit differences are reported at: `schemas` or `schemas.task` would
+/// otherwise clear any change under it without a person looking at it.
 fn names(cover: &str, path: &str) -> bool {
     cover == path
-        || path.starts_with(&format!("{cover}."))
         || cover.starts_with(&format!("{path}."))
+        || (path.starts_with(&format!("{cover}."))
+            && cover.split('.').count() >= required_depth(cover))
 }
 
 /// The differences no entry accounts for, and the entries naming a path that
@@ -557,7 +570,11 @@ mod tests {
             "schemas.task.fields.status".to_string(),
             "tables.node".to_string(),
         ];
-        let covering = entry(Area::CoreSchema, Class::Refuse, &["schemas.task.fields"]);
+        let covering = entry(
+            Area::CoreSchema,
+            Class::Refuse,
+            &["schemas.task.fields.status"],
+        );
         let result = coverage(&changed, &[&covering]);
         assert_eq!(result.uncovered, ["tables.node"]);
         assert!(result.stale.is_empty());
@@ -567,6 +584,58 @@ mod tests {
         assert_eq!(
             result.stale,
             [("e1".to_string(), "tables.other".to_string())]
+        );
+    }
+
+    /// A cover shallower than the unit a difference is reported at names too
+    /// much: it would let any change under it through without an entry.
+    #[test]
+    fn a_shallow_cover_does_not_cover_a_deeper_change() {
+        let changed = vec![
+            "schemas.task.contextPaths".to_string(),
+            "tables.node".to_string(),
+            "seeded.s1.configVersion".to_string(),
+            "schemas.task.fields.status".to_string(),
+        ];
+        for shallow in [
+            "schemas",
+            "tables",
+            "seeded",
+            "schemas.task",
+            "schemas.task.fields",
+            "seeded.s1",
+        ] {
+            let e = entry(Area::CoreSchema, Class::Refuse, &[shallow]);
+            let result = coverage(&changed, &[&e]);
+            assert_eq!(
+                result.uncovered.len(),
+                changed.len(),
+                "cover '{shallow}' let a change through"
+            );
+        }
+    }
+
+    /// A whole table, type or seed that appears is reported at its own
+    /// path, and an entry names it exactly.
+    #[test]
+    fn an_added_whole_object_is_covered_by_its_exact_path() {
+        let changed = vec![
+            "schemas.newtype".to_string(),
+            "registry.newtype".to_string(),
+        ];
+        let e = entry(
+            Area::CoreSchema,
+            Class::Additive,
+            &["schemas.newtype", "registry.newtype"],
+        );
+        assert!(coverage(&changed, &[&e]).uncovered.is_empty());
+    }
+
+    #[test]
+    fn registry_changes_are_core_schema_changes() {
+        assert_eq!(
+            area_of_path("registry.text.participation"),
+            Some(Area::CoreSchema)
         );
     }
 }
