@@ -23,7 +23,9 @@ export interface GateScope {
   frontend: boolean;
   /**
    * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests, the
-   * generated-TypeScript drift check and the node-types.md check.
+   * generated-TypeScript drift check, the node-types.md check and the
+   * built-in shape record check (its snapshot, change log and inputs all live
+   * under packages/core/).
    */
   rust: boolean;
   /** The skill package's tests. */

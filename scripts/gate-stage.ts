@@ -102,6 +102,17 @@ export const TIERS = {
     command: "bun run node-types:check",
     timeoutMs: 20 * MINUTE,
   },
+  // Regenerates the built-in shape snapshot and fails when the committed one
+  // differs, or when a difference between the last release's snapshot and the
+  // current one has no change-log entry (ADR-104). Part of the Rust tier: it
+  // runs a nodespace-core example. Its inputs are all under packages/core/, so
+  // any change that can alter the snapshot reaches the tier through the
+  // crate directory.
+  shapeCheck: {
+    label: "shape:check (built-in shape snapshot and change log)",
+    command: "bun run shape:check",
+    timeoutMs: 20 * MINUTE,
+  },
   // The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
   // can't model. About five seconds. The install is a no-op once Chromium is
   // present and fetches it once on a fresh machine.

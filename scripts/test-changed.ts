@@ -85,6 +85,7 @@ if (scope.rust) {
     process.exit(GATE_INFRA_EXIT);
   }
   await run(TIERS.typesCheck);
+  await run({ ...TIERS.shapeCheck, timeoutMs: 60 * MINUTE });
   // First to compile nodespace-core in a fresh worktree, so it gets the cold
   // build's time, like the Rust tier below.
   const nodeTypesSkip = await stageSkipReason();

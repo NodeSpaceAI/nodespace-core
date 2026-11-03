@@ -320,6 +320,14 @@ pub(crate) struct ReadConn {
 }
 
 impl ReadConn {
+    /// The checked-out connection, for a caller that runs several reads on it
+    /// and drains each cursor before the next.
+    pub(crate) fn connection(&self) -> &libsql::Connection {
+        self.conn
+            .as_ref()
+            .expect("connection is taken only in Drop")
+    }
+
     /// Run a query, consuming the checkout: the resulting [`ReadRows`] owns this
     /// connection and only releases it once the cursor is dropped.
     ///

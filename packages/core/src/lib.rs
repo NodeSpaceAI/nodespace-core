@@ -33,6 +33,7 @@ pub mod ops;
 pub mod playbook;
 pub mod schema;
 pub mod services;
+pub mod shape_record;
 pub mod utils;
 
 // Re-exports

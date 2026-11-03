@@ -1050,6 +1050,51 @@ async fn expected_shape() -> Result<&'static ExpectedShape> {
         .await
 }
 
+/// The tables a database this build creates holds, by name, each with its
+/// columns in declaration order. A virtual table (FTS5, vec0) has no columns
+/// listed and is flagged as virtual; the shadow tables those keep their data
+/// in are not listed. Read from the same throwaway database the shape check
+/// compares against, so it can never drift from the DDL.
+pub(crate) async fn built_in_tables() -> Result<Vec<(String, Vec<String>, bool)>> {
+    let expected = expected_shape().await?;
+    let mut tables: Vec<(String, Vec<String>, bool)> = expected
+        .tables
+        .iter()
+        .map(|t| (t.name.clone(), t.columns.clone(), false))
+        .chain(
+            expected
+                .virtual_tables
+                .iter()
+                .map(|name| (name.clone(), Vec::new(), true)),
+        )
+        .collect();
+    tables.sort();
+    Ok(tables)
+}
+
+/// The tables the database on `conn` holds, in the form of
+/// [`built_in_tables`]: the shadow tables of its virtual tables are left out.
+/// Reads only.
+pub(crate) async fn tables_of(
+    conn: &libsql::Connection,
+) -> Result<Vec<(String, Vec<String>, bool)>> {
+    let expected = expected_shape().await?;
+    let found = read_schema(conn).await?;
+    let mut tables = Vec::new();
+    for name in &found.tables {
+        if !expected.table_names.contains(name) && is_shadow_table(name, &found.virtual_tables) {
+            continue;
+        }
+        if found.virtual_tables.contains(name) {
+            tables.push((name.clone(), Vec::new(), true));
+        } else {
+            tables.push((name.clone(), table_columns(conn, name).await?, false));
+        }
+    }
+    tables.sort();
+    Ok(tables)
+}
+
 /// The schema objects on a connection, other than SQLite's own internal ones.
 struct SchemaObjects {
     /// Whether there is any object at all: a table, index, view or trigger.
