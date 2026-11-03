@@ -2216,7 +2216,7 @@ fn launch_agents_dir(home: &Path) -> PathBuf {
 
 /// The home directory the account database names for the current user, which is
 /// the home a launchd job starts with whatever `HOME` the launching process had.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn account_home_dir() -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     // SAFETY: `getpwuid_r` fills the caller's buffer and `passwd` struct; the
@@ -2249,7 +2249,7 @@ fn account_home_dir() -> Option<PathBuf> {
 /// `~/.nodespace` while the app, resolving the scratch home, looked in another
 /// registry. Each is written only when it differs from what the job would get
 /// anyway, so an ordinary install's registration is unchanged.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn home_redirect_env(
     home: &Path,
     account_home: Option<&Path>,
@@ -2629,6 +2629,8 @@ fn systemd_escape_word(s: &str) -> String {
 /// double-quoted word. `Environment=` values are single-quoted words. The
 /// `append:` log paths are the remainder of the line (spaces are fine) but
 /// still go through specifier expansion, so only `%` is escaped there.
+/// `redirect_env` holds the `HOME`/`NODESPACE_HOME` assignments that keep the
+/// service in the home the app runs in; each becomes an `Environment=` line.
 #[cfg(any(target_os = "linux", test))]
 fn systemd_unit_text(
     bin: &str,
@@ -2636,10 +2638,15 @@ fn systemd_unit_text(
     ui_binary: &str,
     log_out: &str,
     log_err: &str,
+    redirect_env: &[(&'static str, String)],
 ) -> String {
     let dq_escape = |s: &str| systemd_escape_word(s).replace('"', "\\\"");
     let sq_escape = |s: &str| systemd_escape_word(s).replace('\'', r"'\''");
     let pct = |s: &str| s.replace('%', "%%");
+    let redirect_lines: String = redirect_env
+        .iter()
+        .map(|(key, value)| format!("Environment={key}='{}'\n", sq_escape(value)))
+        .collect();
     format!(
         "[Unit]\n\
          Description=NodeSpace daemon\n\
@@ -2650,6 +2657,7 @@ fn systemd_unit_text(
          ExecStart=\"{bin}\" {launcher_args}\n\
          Environment=NODESPACED_SOCKET='{socket}'\n\
          Environment=NODESPACE_UI_BINARY='{ui_binary}'\n\
+         {redirect_lines}\
          StandardOutput=append:{log_out}\n\
          StandardError=append:{log_err}\n\
          Restart=on-failure\n\
@@ -2660,6 +2668,7 @@ fn systemd_unit_text(
         launcher_args = nodespace_proto::socket::LAUNCHER_ARGS.join(" "),
         socket = sq_escape(socket),
         ui_binary = sq_escape(ui_binary),
+        redirect_lines = redirect_lines,
         log_out = pct(log_out),
         log_err = pct(log_err),
     )
@@ -2682,7 +2691,19 @@ fn write_systemd_service(home: &Path, service_path: &Path, daemon_bin: &Path) ->
 
     let ui_binary = current_exe_canonical()?.to_string_lossy().into_owned();
 
-    let unit = systemd_unit_text(&bin_str, &socket_path, &ui_binary, &log_out, &log_err);
+    let redirect_env = home_redirect_env(
+        home,
+        account_home_dir().as_deref(),
+        std::env::var_os("NODESPACE_HOME"),
+    );
+    let unit = systemd_unit_text(
+        &bin_str,
+        &socket_path,
+        &ui_binary,
+        &log_out,
+        &log_err,
+        &redirect_env,
+    );
 
     std::fs::write(service_path, unit)
         .with_context(|| format!("Cannot write service file to {}", service_path.display()))
@@ -3857,6 +3878,50 @@ mod macos_plist_keepalive_tests {
             home.to_string_lossy().as_ref()
         );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Paths with spaces and XML metacharacters reach the plist escaped, and
+    /// parse back to the exact original values, including the redirected homes.
+    #[test]
+    fn plist_escapes_spaces_and_xml_metacharacters_in_paths_and_homes() {
+        let base = scratch_dir("metachars");
+        let home = base.join("Mary Ann & <Co> \"q\"");
+        let plist_path = home.join("Library/LaunchAgents/app.nodespace.daemon.plist");
+        let daemon_bin = home.join("bin dir/node&space");
+        let custom = home.join("state <dir>");
+        let redirect = home_redirect_env(
+            &home,
+            Some(Path::new("/Users/someone")),
+            Some(custom.clone().into_os_string()),
+        );
+
+        write_plist(
+            &home,
+            &plist_path,
+            &daemon_bin,
+            &DaemonProfile::community(),
+            &redirect,
+        )
+        .expect("write_plist should succeed");
+
+        let raw = std::fs::read_to_string(&plist_path).unwrap();
+        assert!(
+            !raw.contains("Co> "),
+            "an unescaped metacharacter leaked: {raw}"
+        );
+        let plist = parsed_plist(&plist_path);
+        let env = &plist["EnvironmentVariables"];
+        assert_eq!(env["HOME"], home.to_string_lossy().as_ref());
+        assert_eq!(env["NODESPACE_HOME"], custom.to_string_lossy().as_ref());
+        assert_eq!(
+            plist["ProgramArguments"][0],
+            daemon_bin.to_string_lossy().as_ref()
+        );
+        assert!(plist["StandardOutPath"]
+            .as_str()
+            .unwrap()
+            .starts_with(home.to_string_lossy().as_ref()));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A profile with no extra environment must leave the daemon's environment
@@ -6042,6 +6107,7 @@ mod systemd_enable_tests {
             "/opt/ui\\x/app",
             "/home/Mary Ann/100%/log",
             "/home/Mary Ann/100%/err",
+            &[],
         );
         assert!(unit.contains("ExecStart=\"/home/Mary Ann/100%%/.nodespace/bin/nodespaced\" "));
         assert!(unit.contains("NODESPACED_SOCKET='/home/Mary Ann/it'\\''s/sock'"));
@@ -6051,8 +6117,22 @@ mod systemd_enable_tests {
     }
 
     #[test]
+    fn unit_carries_the_home_redirect_variables_quoted() {
+        let redirect = [
+            ("HOME", "/tmp/Mary Ann/nsh".to_string()),
+            ("NODESPACE_HOME", "/tmp/it's 100%/.nodespace".to_string()),
+        ];
+        let unit = systemd_unit_text("/b", "/s", "/u", "/o", "/e", &redirect);
+        assert!(unit.contains("Environment=HOME='/tmp/Mary Ann/nsh'\n"));
+        assert!(unit.contains("Environment=NODESPACE_HOME='/tmp/it'\\''s 100%%/.nodespace'\n"));
+        let plain = systemd_unit_text("/b", "/s", "/u", "/o", "/e", &[]);
+        assert!(!plain.contains("Environment=HOME="));
+        assert!(!plain.contains("Environment=NODESPACE_HOME="));
+    }
+
+    #[test]
     fn unit_escapes_quotes_in_the_executable() {
-        let unit = systemd_unit_text("/a\"b/nodespaced", "/s", "/u", "/o", "/e");
+        let unit = systemd_unit_text("/a\"b/nodespaced", "/s", "/u", "/o", "/e", &[]);
         assert!(unit.contains("ExecStart=\"/a\\\"b/nodespaced\" "));
     }
 
