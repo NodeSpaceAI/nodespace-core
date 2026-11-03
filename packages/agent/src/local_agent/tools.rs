@@ -711,15 +711,9 @@ fn unknown_top_level_keys(args: &Value, known: &[&str]) -> serde_json::Map<Strin
 
 /// Truncate a string to `max_chars`, appending `[truncated]` if truncated.
 fn truncate(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        // Find a safe char boundary
-        let mut end = max_chars;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}[truncated]", &s[..end])
+    match s.char_indices().nth(max_chars) {
+        None => s.to_string(),
+        Some((end, _)) => format!("{}[truncated]", &s[..end]),
     }
 }
 
@@ -2042,14 +2036,15 @@ const NODE_ID_ALIAS: &str = "node_id";
 /// or the call carries no usable id.
 ///
 /// Read the way the executor reads it, so the node checked is the node
-/// changed: under the parameter's alias as well as its name, and without the
-/// `nodespace://` prefix.
-pub(crate) fn held_node_id<'a>(tool_name: &str, args: &'a Value) -> Option<&'a str> {
+/// changed: under the parameter's alias as well as its name, and through
+/// [`node_id_arg`] (trimmed, without the `nodespace://` prefix or prose
+/// around a single UUID).
+pub(crate) fn held_node_id(tool_name: &str, args: &Value) -> Option<String> {
     let parameter = held_node_id_parameter_tool(tool_name)?;
     args.get(parameter)
         .or_else(|| args.get(NODE_ID_ALIAS))
         .and_then(|id| id.as_str())
-        .map(strip_node_uri)
+        .map(node_id_arg)
         .filter(|id| !id.trim().is_empty())
 }
 
@@ -7683,7 +7678,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         let Some(ns) = self.node_service.as_ref() else {
             return Ok(None);
         };
-        ns.get_node(strip_node_uri(id))
+        ns.get_node(&node_id_arg(id))
             .await
             .map(|node| node.map(|node| node.node_type))
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
@@ -8237,10 +8232,33 @@ mod tests {
                 serde_json::from_value(args.clone()).expect("the executor accepts this form");
             assert_eq!(
                 held_node_id("update_node", &args),
-                Some(strip_node_uri(&executor_reads.id)),
+                Some(node_id_arg(&executor_reads.id)),
                 "{args}"
             );
-            assert_eq!(held_node_id("update_node", &args), Some("n-1"), "{args}");
+            assert_eq!(
+                held_node_id("update_node", &args).as_deref(),
+                Some("n-1"),
+                "{args}"
+            );
+        }
+    }
+
+    /// A padded or prose-decorated id resolves to the same node the executor
+    /// changes, so the hold cannot be skipped by a lookup that misses it.
+    #[test]
+    fn held_node_id_reads_padded_and_prose_ids_as_the_executor_does() {
+        let uuid = "409f9787-1c6e-4f0a-9d63-2b7f1d0a5c11";
+        for written in [
+            format!(" {uuid} "),
+            format!("Plan the offsite task ID ({uuid})"),
+            format!("nodespace://{uuid}"),
+        ] {
+            let args = json!({"id": written, "content": "x"});
+            assert_eq!(
+                held_node_id("update_node", &args).as_deref(),
+                Some(uuid),
+                "{written}"
+            );
         }
     }
 
@@ -8573,6 +8591,14 @@ mod tests {
         let result = truncate(&s, BODY_TRUNCATE_SUMMARY);
         assert!(result.ends_with("[truncated]"));
         assert!(result.len() <= BODY_TRUNCATE_SUMMARY + "[truncated]".len());
+    }
+
+    #[test]
+    fn truncate_counts_characters_not_bytes() {
+        let cjk = "漢".repeat(10);
+        assert_eq!(truncate(&cjk, 10), cjk);
+        assert_eq!(truncate(&cjk, 4), format!("{}[truncated]", "漢".repeat(4)));
+        assert_eq!(truncate("abc", 0), "[truncated]");
     }
 
     #[test]

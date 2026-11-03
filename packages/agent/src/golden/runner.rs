@@ -86,6 +86,9 @@ pub struct TurnOutput {
     pub text: String,
     /// Tool calls in emission order.
     pub calls: Vec<ObservedCall>,
+    /// The first error the engine reported while generating. A turn with one
+    /// was cut short, so its text and calls are partial.
+    pub error: Option<String>,
 }
 
 impl TurnOutput {
@@ -95,6 +98,16 @@ impl TurnOutput {
     /// list, because it is a distinct thing to see: it points at the template
     /// or the parser, where a wrong tool name points at the prompt.
     pub fn summary(&self) -> String {
+        match &self.error {
+            Some(error) => format!(
+                "<generation error: {error}> partial: {}",
+                self.body_summary()
+            ),
+            None => self.body_summary(),
+        }
+    }
+
+    fn body_summary(&self) -> String {
         if self.calls.is_empty() {
             let text = self.text.trim();
             if text.is_empty() {
@@ -164,6 +177,15 @@ async fn run_rep(engine: &LlamaChatInferenceEngine, case: &GoldenCase, rep: u32)
         // does the comparing — that is the whole loop.
         if !turn.expect.is_empty() {
             println!("    (tuned to produce: {})", turn.expect);
+        }
+
+        // A cut-short turn is not carried into later turns as the assistant's
+        // real reply: they would be judged on output the model never finished.
+        if output.error.is_some() {
+            println!(
+                "    (rep {rep} stopped: the turn above did not finish, so later turns are skipped)"
+            );
+            break;
         }
 
         carried.push(ChatMessage::text(Role::User, turn.user.clone()));
@@ -251,8 +273,9 @@ async fn generate(
         // Surfaced as text rather than a panic so one bad rep does not discard
         // the reps that already printed.
         return TurnOutput {
-            text: format!("<inference error: {e}>"),
+            text: String::new(),
             calls: Vec::new(),
+            error: Some(e.to_string()),
         };
     }
 
@@ -273,6 +296,8 @@ fn parse_output(chunks: &[StreamingChunk]) -> TurnOutput {
     let mut text = String::new();
     // A Vec, not a map, so emission order survives.
     let mut pending: Vec<(String, String, String)> = Vec::new();
+    // The first error only, as the production loop keeps.
+    let mut error: Option<String> = None;
 
     for chunk in chunks {
         match chunk {
@@ -288,9 +313,10 @@ fn parse_output(chunks: &[StreamingChunk]) -> TurnOutput {
             // Reasoning is dropped rather than folded into `text`: it is the
             // model's scratchpad, not its reply, and mixing them would make
             // the printed output misleading.
-            StreamingChunk::Reasoning { .. }
-            | StreamingChunk::Done { .. }
-            | StreamingChunk::Error { .. } => {}
+            StreamingChunk::Error { message } => {
+                error.get_or_insert_with(|| message.clone());
+            }
+            StreamingChunk::Reasoning { .. } | StreamingChunk::Done { .. } => {}
         }
     }
 
@@ -308,7 +334,7 @@ fn parse_output(chunks: &[StreamingChunk]) -> TurnOutput {
         })
         .collect();
 
-    TurnOutput { text, calls }
+    TurnOutput { text, calls, error }
 }
 
 #[cfg(test)]
@@ -405,15 +431,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_output_surfaces_the_first_engine_error() {
+        let chunks = vec![
+            StreamingChunk::Token {
+                text: "partial".into(),
+            },
+            StreamingChunk::Error {
+                message: "Context window full".into(),
+            },
+            StreamingChunk::Error {
+                message: "later".into(),
+            },
+        ];
+        let output = parse_output(&chunks);
+        assert_eq!(output.error.as_deref(), Some("Context window full"));
+        let summary = output.summary();
+        assert!(summary.contains("Context window full"), "{summary}");
+        assert!(summary.contains("partial"), "{summary}");
+        assert!(parse_output(&[]).error.is_none());
+    }
+
+    #[test]
     fn summary_distinguishes_no_tool_call_from_a_call() {
         let none = TurnOutput {
             text: "Could you give me the node id?".into(),
             calls: Vec::new(),
+            error: None,
         };
         assert!(none.summary().starts_with("no tool call parsed"));
         assert!(none.summary().contains("node id"));
 
         let called = TurnOutput {
+            error: None,
             text: String::new(),
             calls: vec![ObservedCall {
                 name: "resolve_query".into(),
@@ -470,6 +519,7 @@ mod tests {
     #[test]
     fn a_replayed_tool_result_pairs_with_its_originating_call() {
         let output = TurnOutput {
+            error: None,
             text: String::new(),
             calls: vec![
                 ObservedCall {
