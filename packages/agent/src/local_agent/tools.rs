@@ -662,7 +662,7 @@ fn render_resolve_query_field_line(
 /// construction (see the decomposition prompt).
 ///
 /// This remains as defense in depth alongside the prompt-level JSON-encoding
-/// hint (`render_resolve_query_field_line`) added in #1915: the hint reduces
+/// hint (`render_resolve_query_field_line`): the hint reduces
 /// how often the model emits the wrong JSON type, but does not guarantee it
 /// — a live model can still drift, and this coercion is what catches it
 /// when it does.
@@ -1316,13 +1316,13 @@ fn def_search_nodes() -> ToolDefinition {
                             // shapes the description ever asked for.
                             //
                             // Measured honestly: this alone did NOT stop the
-                            // #1943 splice (3 of 3 reps produced byte-identical
+                            // delimiter-splice malformation (3 of 3 reps produced byte-identical
                             // output before and after), so the malformation is
                             // not the untyped leaf. Kept because a schema that
                             // states its accepted types is correct on its own
                             // terms, not as a claimed fix.
                             //
-                            // #2182 is the counter-example, and it cuts the
+                            // The scalar-`in` case is the counter-example, and it cuts the
                             // other way: for the `in` operator this union IS
                             // what produces the right shape. Two arms differing
                             // only in this declaration
@@ -9912,7 +9912,7 @@ mod tests {
             );
         }
 
-        /// #1915: the decomposition prompt states the expected JSON encoding
+        /// The decomposition prompt states the expected JSON encoding
         /// alongside each field's declared type, so the model is told *how*
         /// to encode a value it maps onto a field — not just what type the
         /// field is. This is the "cheaper to try first" fix: state the
@@ -9979,7 +9979,7 @@ mod tests {
             assert!(
                 prompt.contains("vendor_code: text (JSON string, even if the value looks numeric)"),
                 "a text field must tell the model to keep numeric-looking values as \
-                 JSON strings — the reverse-direction drift #1915 calls out; got:\n{prompt}"
+                 JSON strings — the reverse-direction drift this guards against; got:\n{prompt}"
             );
             assert!(
                 prompt.contains(
@@ -10611,7 +10611,7 @@ mod tests {
                 );
             }
 
-            // Reverse-direction drift (#1915's own motivating scenario): a
+            // Reverse-direction drift (the motivating scenario for the prompt hint): a
             // numeric-looking value identifies a `text` field. Nothing in
             // `coerce_filter_value_to_field_type` covers this direction — it
             // only coerces string-encoded numbers/booleans *into* number/

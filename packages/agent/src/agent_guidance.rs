@@ -739,7 +739,7 @@ mod tests {
     /// generic fallback. It is not built-in and is declared on no seeded
     /// schema, so a model following either instruction had its write rejected —
     /// found when the agent matrix's relationship scenario turned out to be
-    /// unwinnable by construction (#1977, #2234).
+    /// unwinnable by construction.
     ///
     /// Keyed off `BUILTIN_RELATIONSHIP_NAMES` rather than a hardcoded list, so
     /// changing the universal set updates what this test permits — the point is

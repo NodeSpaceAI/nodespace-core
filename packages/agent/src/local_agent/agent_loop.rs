@@ -595,7 +595,7 @@ fn repair_over_quoted_keys(args: &mut serde_json::Value) {
 /// Strip Gemma 4's leaked quote-token text (`<|"|>`) from a tool call's JSON
 /// keys, e.g. the key `<|"|>type<|"|>` where `type` was meant.
 ///
-/// #1926: grammar-constrained decoding was observed emitting this literal
+/// Grammar-constrained decoding was observed emitting this literal
 /// token text in place of nothing (the surrounding real `"` characters the
 /// model also wrote are the actual delimiters) around a key inside
 /// `create_schema`'s `fields` array — `{"<|"|>type<|"|>":"number",...}` parses
@@ -772,7 +772,7 @@ fn unusable_arguments_message(tool: &str, definition: Option<&ToolDefinition>) -
 /// Recover the intended value from a string that swallowed the JSON delimiters
 /// following it, e.g. the value `task","value":` where `task` was meant.
 ///
-/// #1943: observed inside `search_nodes`' `filters` array — the model emitted
+/// Observed inside `search_nodes`' `filters` array — the model emitted
 /// `"type":"task\",\"value\":` , writing `"`, `,` and `:` as *content* where
 /// they were meant as structure. The result is still valid JSON, so no parse
 /// guard fires; the filter simply loses its `value` and is rejected for an
@@ -851,7 +851,7 @@ fn strip_spliced_delimiter_tail(s: &str) -> Option<String> {
 /// string instead — e.g. `{"operator":"in","property":"stage","value":"cut,soak"}`
 /// where `["cut","soak"]` was meant.
 ///
-/// #2182. Be precise about what this is and is not, because the issue that
+/// Be precise about what this is and is not, because the report that
 /// prompted it overstated both the symptom and the cause, and the measurements
 /// are the reason to keep this narrow rather than grow it.
 ///
@@ -4919,12 +4919,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // `clarify: None` here is a scope decision, not an oversight: a
                 // zero-tool-call reply that merely *phrases itself* as a
                 // question (the observed failure on agent-matrix scenarios
-                // 6/8c, tracked as a model-capability gap in #1922/#1927) is
+                // 6/8c, tracked as a model-capability gap) is
                 // deliberately NOT treated as a clarification. Detecting "this
                 // prose reads like a question" would mean parsing free text
                 // for intent — exactly the unstructured, unreliable channel
                 // ADR-038 built `route_clarify` to avoid. Widening this is a
-                // model-behavior question for #1922/#1927 to own, not a
+                // model-behavior question for that gap to own, not a
                 // rendering gap for this turn's response to paper over. The
                 // clarification contract still counts it: a turn that made no
                 // write is recorded as `Replied` (`AgentTurnResult::outcome`),
@@ -7434,7 +7434,7 @@ mod tests {
         assert_eq!(result.response, "Hello! How can I help?");
         assert!(result.tool_calls_made.is_empty());
         assert!(result.usage.prompt_tokens > 0);
-        // #1930: an ordinary reply — even one phrased conversationally — is
+        // An ordinary reply — even one phrased conversationally — is
         // not a `route_clarify` turn and must carry no structured prompt.
         assert!(result.clarify.is_none());
 
@@ -8433,7 +8433,7 @@ mod tests {
                     },
                 ],
             ],
-            // Matches #2172's granted n_ctx: the window-budget gate (gate 1)
+            // Matches the granted n_ctx: the window-budget gate (gate 1)
             // has ample room (~30K tokens) at this history size.
             32_768,
         ));
@@ -9807,7 +9807,7 @@ mod tests {
         assert!(contains_action_claim("The node has been created."));
     }
 
-    /// Regression for #1865: the "I have created" phrasing (as opposed to
+    /// Regression: the "I have created" phrasing (as opposed to
     /// "I created" / "I've created") reached the user unguarded — observed
     /// verbatim in a fabricated venue-creation claim with zero tool calls.
     #[test]
@@ -11103,7 +11103,7 @@ mod tests {
         );
     }
 
-    /// The exact shape observed in #2281: two `create_node` calls actually ran
+    /// The exact shape observed in practice: two `create_node` calls actually ran
     /// and returned a real id, but the model's text names a different,
     /// invented `nodespace://` id (not a UUID — contains g/w/x/y/z, ends in a
     /// placeholder literal). This must never reach the user; it must not be
@@ -11561,7 +11561,7 @@ mod tests {
 
     #[tokio::test]
     async fn noop_guard_converts_a_claim_backed_only_by_an_empty_write() {
-        // The #1937 shape: update_node ran, succeeded, persisted nothing, and
+        // The silent-no-op shape: update_node ran, succeeded, persisted nothing, and
         // the model reported the write as done.
         let response = run_guard_turn(
             "update_node",
@@ -12550,7 +12550,7 @@ mod tests {
         );
     }
 
-    /// #1943, the propagation half: the assistant turn persisted into history
+    /// The propagation half: the assistant turn persisted into history
     /// must carry the *repaired* arguments, not the malformed ones the model
     /// emitted.
     ///
@@ -16026,7 +16026,7 @@ mod tests {
         assert_eq!(canonical_args(malformed), canonical_args(clean));
     }
 
-    /// #1943: the verbatim payload from the issue's 3-of-3 reproduction, run
+    /// The verbatim payload from the 3-of-3 reproduction, run
     /// through the one entry point the loop actually calls. Both malformations
     /// are present at once — over-quoted keys at two nesting levels, and a
     /// `type` value that swallowed the `value` key's delimiters.
@@ -16117,7 +16117,7 @@ mod tests {
         );
     }
 
-    /// #2182: verbatim shape from the golden-runner trace behind the issue —
+    /// Verbatim shape from the golden-runner trace behind the report —
     /// `in` given a comma-joined string where the array it requires was meant.
     /// Reaches the tool as `["cut","soak"]` through the same entry point
     /// production uses, not just through the repair called directly.
@@ -16294,7 +16294,7 @@ mod tests {
         assert_eq!(args, broken);
     }
 
-    /// #1926: verbatim shape from the daemon.log trace behind the issue — a
+    /// Verbatim shape from the daemon.log trace behind the report — a
     /// leaked Gemma quote token corrupting `create_schema`'s `fields[0].type`
     /// key.
     #[test]
@@ -16890,7 +16890,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_multi_issues_one_retrieval_per_query_and_merges_deduped_candidates() {
-        // #1909: route_multi re-enters retrieval once per intent rather than
+        // route_multi re-enters retrieval once per intent rather than
         // compressing several intents into Stage 1's single query. This pins
         // the fan-out (one retrieve_skills call per element of `queries`, in
         // order) and the merge behavior downstream (agent_loop.rs's
@@ -18449,7 +18449,7 @@ mod tests {
         // session's routing is disabled, so `candidate_block` (the EXISTING
         // SCHEMAS block resolve_query's required node_type parameter
         // depends on) is forced to `None` regardless. Offering resolve_query
-        // here reproduces #1840's defect through a second door.
+        // here reproduces the missing-node_type defect through a second door.
         let engine = RecordingEngine::new(routed_engine(
             "find notes",
             "search_nodes",
@@ -19643,7 +19643,7 @@ mod tests {
             "a clarification must not trigger retrieval"
         );
 
-        // #1930: the structured question/options must reach the caller
+        // The structured question/options must reach the caller
         // unflattened too, not just baked into `response`'s markdown prose —
         // that structure is what lets the frontend render clickable options
         // instead of parsing bullets back out of text.
@@ -21882,7 +21882,7 @@ mod tests {
 
     #[tokio::test]
     async fn stage1_query_labels_prior_context_separately_from_the_current_request() {
-        // #1909: an unlabeled blend of prior turns + current message read to
+        // An unlabeled blend of prior turns + current message read to
         // the model like several things to do, and route_multi fired on
         // genuinely single-intent turns as a result. The current request
         // must be clearly demarcated from the turns ahead of it so the model

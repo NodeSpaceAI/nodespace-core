@@ -4,7 +4,7 @@
 //! `mod update_node_noop_gate`) prove the gate behaves correctly *given* a
 //! content-only call. They cannot show what this issue actually turned on: that
 //! the locked model, sampling freely, produces such a call in the first place,
-//! and what the loop does when it happens. #1931's guidance was verified 3/3 in
+//! and what the loop does when it happens. The earlier guidance fix was verified 3/3 in
 //! isolation and still failed live — so a fix on this surface is not established
 //! by unit tests alone.
 //!
@@ -228,7 +228,7 @@ async fn state_change_either_persists_or_is_rejected_never_silently_succeeds() {
                 assert!(
                     has_new_property,
                     "rep {rep}: update_node reported success but the store holds no new \
-                     property — this is exactly the silent-data-loss shape #1937 reported. \
+                     property — this is exactly the silent-data-loss shape this gate exists to catch. \
                      result={} stored_properties={}",
                     result.result, props
                 );

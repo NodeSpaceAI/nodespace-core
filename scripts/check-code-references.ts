@@ -3,14 +3,9 @@
 // numbers or nodespace-docs/ paths in code comments ("describe the
 // behavior/constraint directly, and reference decisions by ADR").
 //
-// Doc-path references are fully paid down (baseline 0). Issue-number
-// references are not: the patterns once missed the most common shape, a
-// bare `#NNNN` in prose ("see #990", "the #2242 audit"), so the backlog of
-// those went uncounted while the baseline read 0. The issue-number baseline
-// is the real remaining count (all in packages/agent, pending its owner's
-// sign-off; every other package is at 0); paying it down means inlining each
-// constraint-bearing comment's constraint before dropping the reference, and
-// deleting provenance-only citations outright.
+// Both baselines are at 0: doc-path references and bare issue-number
+// references (including the `#NNNN`-in-prose shape) are fully paid down. A
+// new reference fails this check; inline the constraint or cite an ADR.
 //
 // Lower BASELINES whenever a change pays down part of the backlog. Never
 // raise a baseline to accommodate a new reference — inline the constraint or
@@ -98,7 +93,7 @@ const DOC_PATH_PATTERN = /nodespace-docs\/|\bdocs\/(?:architecture|components|de
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
-  issueNumberReferences: 70,
+  issueNumberReferences: 0,
   docPathReferences: 0,
 };
 

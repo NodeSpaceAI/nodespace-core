@@ -23,7 +23,7 @@
 //!   and run in the normal suite, so a regression in what the model is shown is
 //!   caught by `test:all` rather than only by an ignored live run.
 //! - The `#[ignore]`d live test proves the locked model actually *uses* it.
-//!   That distinction is load-bearing on this stack: #1931's guidance verified
+//!   That distinction is load-bearing on this stack: an earlier guidance fix verified
 //!   3/3 in isolation and still failed live, so a contract test alone does not
 //!   establish a fix on this surface.
 //!
@@ -176,7 +176,7 @@ async fn deterministic_get_node_surfaces_unset_core_schema_fields() {
 }
 
 /// The name taken from `available_properties` must be directly usable as an
-/// `update_node` key. This is the #1937 read/write-shape concern asserted
+/// `update_node` key. This is the read/write-shape concern asserted
 /// rather than assumed: reads flatten the stored `{"task":{...}}` namespace and
 /// writes re-namespace flat keys, so the flat name must round-trip.
 #[tokio::test(flavor = "multi_thread")]
@@ -204,7 +204,7 @@ async fn deterministic_unset_field_name_round_trips_through_update_node() {
         .expect("update_node must accept a schema-defined field name");
     assert!(!outcome.is_error, "update failed: {:?}", outcome);
 
-    // Assert on the STORE, not the tool's own report — the entire #1937 defect
+    // Assert on the STORE, not the tool's own report — the entire original defect
     // was a success result over an unchanged store.
     let after = executor
         .execute("get_node", json!({ "id": node_id }))
@@ -834,7 +834,7 @@ async fn live_model_recovers_from_a_bad_enum_value_without_asking() {
         "no rep went back to the graph after the bad filter, so none could have found the \
          open task that exists — filterable_properties is not informing the retry"
     );
-    // #1943 asked for this to assert the retry EXECUTES. Measured on the locked
+    // The ideal is for this to assert the retry EXECUTES. Measured on the locked
     // model, it cannot, and the reason is not repairable downstream: the model
     // emits `"type": "task\",\"value\":"`, writing the delimiters that should
     // have introduced `value` as string content instead. The comparison value

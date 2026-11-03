@@ -269,7 +269,7 @@ pub const NO_NAME_TITLE_FIELD: SchemaRule = SchemaRule {
 };
 
 /// Measured on its own (isolated daemon, live model) to have ZERO effect on
-/// the #1846 contamination this rule targets — the rule was confirmed present
+/// the schema-field contamination this rule targets — the rule was confirmed present
 /// in the seeded prompt, yet the model still copied an unrelated schema's
 /// fields verbatim. The actual fix is `EXISTING_SCHEMAS_HEADER`'s inline
 /// anti-copy clause (`context_ops.rs`), which measured a real reduction (4/5
