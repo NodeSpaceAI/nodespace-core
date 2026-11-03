@@ -41,6 +41,7 @@ export type { FilterOperator } from './filter-operator';
 export type { FilterType } from './filter-type';
 export type { GraphEventType } from './graph-event-type';
 export type { IncompatibleDatabase } from './incompatible-database';
+export type { IncompatibleDatabaseKind } from './incompatible-database-kind';
 export type { InlineSelector } from './inline-selector';
 export type { IssueNode } from './issue-node';
 export type { IssueNodeUpdate } from './issue-node-update';

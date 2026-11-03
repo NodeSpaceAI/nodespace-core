@@ -318,6 +318,7 @@ describe('daemon-status service', () => {
   it('getIncompatibleDatabase returns the record, and null outside Tauri', async () => {
     const { getIncompatibleDatabase } = await import('$lib/services/daemon-status');
     const record = {
+      kind: 'schema',
       databasePath: '/x/nodespace.db',
       detail: 'relationship: missing reverse_relationship_type',
       detectedAt: '2026-09-28T10:00:00Z'

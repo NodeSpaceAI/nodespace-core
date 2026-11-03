@@ -541,6 +541,15 @@ fn not_running_message(
         }
     };
     match marker {
+        Some(m) if m.kind == nodespace_types::IncompatibleDatabaseKind::Registry => format!(
+            "Could not connect to nodespaced at {}.\n\
+             The daemon stopped because its database registry at {} cannot be used: {}\n\
+             Restore the file from a backup, or delete it to start fresh (the database files \
+             are untouched), then {start}.",
+            sock.display(),
+            m.database_path,
+            m.detail
+        ),
         Some(m) => format!(
             "Could not connect to nodespaced at {}.\n\
              The daemon refused the database at {} because another version of NodeSpace \
@@ -1118,6 +1127,7 @@ mod connect_failure_tests {
 
     fn marker() -> nodespace_types::IncompatibleDatabase {
         nodespace_types::IncompatibleDatabase {
+            kind: nodespace_types::IncompatibleDatabaseKind::Schema,
             database_path: "/h/.nodespace/database/nodespace.db".into(),
             detail: "relationship: missing column".into(),
             detected_at: "2026-10-19T10:00:00Z".into(),
@@ -1167,6 +1177,21 @@ mod connect_failure_tests {
         assert!(msg.contains("relationship: missing column"), "{msg}");
         assert!(msg.contains("-wal") && msg.contains("-shm"), "{msg}");
         assert!(msg.contains(".incompatible-"), "{msg}");
+    }
+
+    #[test]
+    fn message_for_an_unusable_registry_does_not_offer_to_move_a_database_aside() {
+        let m = nodespace_types::IncompatibleDatabase {
+            kind: nodespace_types::IncompatibleDatabaseKind::Registry,
+            database_path: "/h/.nodespace/databases.toml".into(),
+            detail: "the file is empty".into(),
+            detected_at: "2026-11-03T10:00:00Z".into(),
+        };
+        let msg = not_running_message(std::path::Path::new("/s.sock"), Some(&m), None);
+        assert!(msg.contains("/h/.nodespace/databases.toml"), "{msg}");
+        assert!(msg.contains("the file is empty"), "{msg}");
+        assert!(msg.contains("delete it"), "{msg}");
+        assert!(!msg.contains(".incompatible-"), "{msg}");
     }
 
     #[test]

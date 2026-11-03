@@ -8,6 +8,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Why the daemon stopped without opening its database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub enum IncompatibleDatabaseKind {
+    /// The database file's tables do not match this version's schema. Moving
+    /// the file aside and starting fresh is the way forward.
+    Schema,
+    /// The database registry (`databases.toml`) is empty or unparseable.
+    /// `database_path` names the registry file; the database files are
+    /// untouched and the registry must be restored or deleted by hand.
+    Registry,
+}
+
 /// The daemon's default database was created by a different version of
 /// NodeSpace and does not match this version's schema. NodeSpace does
 /// not migrate databases, so the only way forward is to move the file aside
@@ -16,7 +30,11 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IncompatibleDatabase {
-    /// Absolute path of the database file the daemon refused to open.
+    /// What kind of refusal this is; decides what the user is told and offered.
+    pub kind: IncompatibleDatabaseKind,
+    /// Absolute path of the file the daemon refused: the database for
+    /// [`IncompatibleDatabaseKind::Schema`], the registry for
+    /// [`IncompatibleDatabaseKind::Registry`].
     pub database_path: String,
     /// Which tables or core types differ and how, for logs and support. Not
     /// meant to be shown to a user as the headline.
@@ -32,6 +50,7 @@ mod tests {
     #[test]
     fn round_trips_through_camel_case_json() {
         let record = IncompatibleDatabase {
+            kind: IncompatibleDatabaseKind::Registry,
             database_path: "/home/u/.nodespace/database/nodespace.db".to_string(),
             detail: "relationship: missing reverse_relationship_type".to_string(),
             detected_at: "2026-09-28T10:00:00Z".to_string(),
@@ -42,6 +61,7 @@ mod tests {
             "/home/u/.nodespace/database/nodespace.db"
         );
         assert_eq!(json["detectedAt"], "2026-09-28T10:00:00Z");
+        assert_eq!(json["kind"], "registry");
         let back: IncompatibleDatabase = serde_json::from_value(json).unwrap();
         assert_eq!(back, record);
     }
