@@ -88,6 +88,14 @@ fn refuse_self_merge(survivor_id: &str, loser_id: &str) -> Result<(), NodeServic
     Ok(())
 }
 
+/// Colliding values (or names) read per query by the reconciliation scan.
+const SCAN_CHUNK: u32 = 200;
+/// Members of one colliding group the scan examines; a larger group is
+/// journaled for its first members and the rest are found as those are resolved.
+const SCAN_GROUP_MEMBERS: u32 = 20;
+/// Records one scan writes before stopping; a later sweep continues.
+const SCAN_MAX_JOURNALED: u32 = 500;
+
 impl NodeService {
     /// List conflict records, optionally filtered by status/kind.
     pub async fn list_conflicts(
@@ -416,18 +424,18 @@ impl NodeService {
 
     /// Reconciliation sweep (conflict-journal-and-resolution.md §5.4): close
     /// every OPEN conflict record whose participant(s) are gone (hard-deleted)
-    /// or no longer collide (renamed, merged elsewhere). Not required for S1-S3
-    /// correctness — a stale open record for a departed node is a stale row,
-    /// not a wrong one — but required before the Conflicts view is fully
-    /// trustworthy, and the backstop for the accepted TOCTOU gap in the
-    /// pre-write-check/post-write-mark detection pattern (§4): a full re-scan
-    /// re-runs each kind's predicate and closes anything the inline check
-    /// alone would have missed.
+    /// or no longer collide (renamed, merged elsewhere), then journal any
+    /// collision the inline detection missed
+    /// ([`Self::journal_missed_collisions`]). That second pass is the backstop
+    /// for the accepted TOCTOU gap in the pre-write-check/post-write-mark
+    /// pattern (§4), and for writes that run no inline check at all (an
+    /// unarchive, an inline detection whose journal write failed).
     ///
     /// Best-effort per record: one record's re-check failing (e.g. a
     /// transient store error) is logged and skipped, not propagated — a sweep
     /// is a background maintenance pass, not a user-facing operation whose
-    /// failure should abort the rest of the pass.
+    /// failure should abort the rest of the pass. A failed scan is likewise
+    /// logged and does not hide the closes that already happened.
     ///
     /// Returns the number of records closed.
     pub async fn reconcile_conflicts(&self) -> Result<u32, NodeServiceError> {
@@ -451,7 +459,272 @@ impl NodeService {
                 }
             }
         }
+
+        match self.journal_missed_collisions().await {
+            Ok(journaled) if journaled > 0 => {
+                tracing::debug!(
+                    journaled,
+                    "reconciliation sweep journaled missed collisions"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "reconciliation sweep: collision scan failed");
+            }
+        }
         Ok(closed)
+    }
+
+    /// Re-run each conflict kind's detection predicate over every participating
+    /// node and journal the collisions that have no record yet.
+    ///
+    /// * `UniqueFieldCollision`: for every participating node type, each
+    ///   `unique` / `unique_case_insensitive` string field (resolved through the
+    ///   `extends` chain, as inline detection does) is grouped by value.
+    /// * `CollectionNameCollision`: participating collections are grouped by
+    ///   their case-folded title.
+    ///
+    /// Only participating nodes are considered, so an archived node never
+    /// collides, exactly as in inline detection. A group of colliding nodes is
+    /// journaled as pairs of its lowest id with each other member, under the
+    /// same deterministic ids inline detection derives, so a record that already
+    /// exists in ANY status (open, dismissed, resolved) is left alone and a
+    /// second run journals nothing new.
+    ///
+    /// Bounded: groups are found in keyset-paged chunks of [`SCAN_CHUNK`] by
+    /// read queries (no write lock is held between them; each journal write is
+    /// its own short transaction), at most [`SCAN_GROUP_MEMBERS`] members of a
+    /// group are examined, and at most [`SCAN_MAX_JOURNALED`] records are written
+    /// per call, the rest being found by a later sweep.
+    ///
+    /// Returns the number of records journaled.
+    pub async fn journal_missed_collisions(&self) -> Result<u32, NodeServiceError> {
+        let mut journaled = 0u32;
+        self.scan_collection_name_collisions(&mut journaled).await?;
+        self.scan_unique_field_collisions(&mut journaled).await?;
+        Ok(journaled)
+    }
+
+    /// Journal the pairs (lowest id, each other id) of one colliding group that
+    /// have no record yet. `ids` are in ascending order.
+    async fn journal_group(
+        &self,
+        kind: ConflictKind,
+        ids: &[String],
+        discriminator: &str,
+        detail: &serde_json::Value,
+        journaled: &mut u32,
+    ) -> Result<(), NodeServiceError> {
+        let Some((anchor, others)) = ids.split_first() else {
+            return Ok(());
+        };
+        for other in others {
+            if *journaled >= SCAN_MAX_JOURNALED {
+                return Ok(());
+            }
+            let node_ids = vec![anchor.clone(), other.clone()];
+            let id = deterministic_conflict_id(kind, &node_ids, discriminator);
+            if self
+                .store
+                .get_conflict(&id)
+                .await
+                .map_err(NodeServiceError::from_store)?
+                .is_some()
+            {
+                continue;
+            }
+            self.store
+                .record_conflict(
+                    &id,
+                    kind,
+                    &node_ids,
+                    detail.clone(),
+                    self.client_id.as_deref(),
+                )
+                .await
+                .map_err(NodeServiceError::from_store)?;
+            *journaled += 1;
+        }
+        Ok(())
+    }
+
+    async fn scan_collection_name_collisions(
+        &self,
+        journaled: &mut u32,
+    ) -> Result<(), NodeServiceError> {
+        let mut after: Option<String> = None;
+        loop {
+            let titles = self
+                .store
+                .duplicated_collection_titles(after.as_deref(), SCAN_CHUNK)
+                .await
+                .map_err(NodeServiceError::from_store)?;
+            let Some(last) = titles.last().cloned() else {
+                return Ok(());
+            };
+            for title in &titles {
+                if *journaled >= SCAN_MAX_JOURNALED {
+                    return Ok(());
+                }
+                let ids = self
+                    .store
+                    .collection_ids_with_title(title, SCAN_GROUP_MEMBERS)
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
+                // Named as detection and the still-holds re-check name them: by
+                // the node's own content, ASCII-folded.
+                let mut name: Option<String> = None;
+                let mut same_name = Vec::with_capacity(ids.len());
+                for id in ids {
+                    let Some(node) = self.get_node(&id).await? else {
+                        continue;
+                    };
+                    let node_name = crate::services::collection_service::normalize_collection_name(
+                        &node.content,
+                    );
+                    match &name {
+                        Some(first) if *first != node_name => continue,
+                        Some(_) => {}
+                        None => name = Some(node_name),
+                    }
+                    same_name.push(id);
+                }
+                let Some(name) = name else { continue };
+                let detail = serde_json::json!({ "name": name });
+                self.journal_group(
+                    ConflictKind::CollectionNameCollision,
+                    &same_name,
+                    &name,
+                    &detail,
+                    journaled,
+                )
+                .await?;
+            }
+            if titles.len() < SCAN_CHUNK as usize {
+                return Ok(());
+            }
+            after = Some(last);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn scan_unique_field_collisions(
+        &self,
+        journaled: &mut u32,
+    ) -> Result<(), NodeServiceError> {
+        let node_types = self
+            .store
+            .participating_node_types()
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        for node_type in node_types {
+            if *journaled >= SCAN_MAX_JOURNALED {
+                return Ok(());
+            }
+            // One type's unreadable schema or failed query must not hide the rest.
+            if let Err(e) = self.scan_unique_fields_of_type(&node_type, journaled).await {
+                tracing::warn!(
+                    node_type = %node_type,
+                    error = %e,
+                    "reconciliation sweep: unique-field scan failed for a node type, skipping"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn scan_unique_fields_of_type(
+        &self,
+        node_type: &str,
+        journaled: &mut u32,
+    ) -> Result<(), NodeServiceError> {
+        let (fields, owners, _chain) = self.resolve_field_owners(node_type).await?;
+        for field in fields
+            .iter()
+            .filter(|f| f.unique.unwrap_or(false) || f.unique_case_insensitive.unwrap_or(false))
+        {
+            let bucket = owners
+                .get(&field.name)
+                .map(String::as_str)
+                .unwrap_or(node_type);
+            let case_insensitive = field.unique_case_insensitive.unwrap_or(false);
+            let discriminator = format!("{node_type}.{}", field.name);
+
+            let mut after: Option<String> = None;
+            loop {
+                let values = self
+                    .store
+                    .unique_value_duplicates(
+                        node_type,
+                        bucket,
+                        &field.name,
+                        case_insensitive,
+                        after.as_deref(),
+                        SCAN_CHUNK,
+                    )
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
+                let Some(last) = values.last().cloned() else {
+                    break;
+                };
+                for value in &values {
+                    if *journaled >= SCAN_MAX_JOURNALED {
+                        return Ok(());
+                    }
+                    // Detection skips empty / whitespace-only values.
+                    if value.trim().is_empty() {
+                        continue;
+                    }
+                    let ids = self
+                        .store
+                        .ids_with_unique_value(
+                            node_type,
+                            bucket,
+                            &field.name,
+                            case_insensitive,
+                            value,
+                            SCAN_GROUP_MEMBERS,
+                        )
+                        .await
+                        .map_err(NodeServiceError::from_store)?;
+                    // Report the value as the anchor holds it, as detection does.
+                    let shown = match ids.first() {
+                        Some(anchor) => self
+                            .get_node(anchor)
+                            .await?
+                            .and_then(|n| {
+                                n.properties
+                                    .get(bucket)
+                                    .and_then(|p| p.get(&field.name))
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or_else(|| value.clone()),
+                        None => continue,
+                    };
+                    let detail = serde_json::json!({
+                        "node_type": node_type,
+                        "field": field.name,
+                        "value": shown,
+                        "case_insensitive": case_insensitive,
+                    });
+                    self.journal_group(
+                        ConflictKind::UniqueFieldCollision,
+                        &ids,
+                        &discriminator,
+                        &detail,
+                        journaled,
+                    )
+                    .await?;
+                }
+                if values.len() < SCAN_CHUNK as usize {
+                    break;
+                }
+                after = Some(last);
+                tokio::task::yield_now().await;
+            }
+        }
+        Ok(())
     }
 
     /// Re-check one open record; close it (resolved, no user action) if a

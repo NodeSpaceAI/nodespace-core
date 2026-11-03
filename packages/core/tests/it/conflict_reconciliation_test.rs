@@ -581,3 +581,136 @@ async fn sweep_closes_a_collection_name_collision_once_either_participant_leaves
     }
     Ok(())
 }
+
+async fn set_lifecycle(svc: &NodeService, id: &str, status: &str) -> Result<()> {
+    let version = svc.get_node(id).await?.unwrap().version;
+    svc.update_node(
+        id,
+        version,
+        NodeUpdate::new().with_lifecycle_status(status.to_string()),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn all_records(
+    svc: &NodeService,
+) -> Result<Vec<nodespace_core::models::conflict::ConflictRecord>> {
+    Ok(svc.list_conflicts(None, None, None).await?)
+}
+
+/// Unarchiving runs no inline check, so a collection restored under a name
+/// another active collection now holds is missed by detection; the sweep
+/// finds and journals it, and a second sweep adds nothing.
+#[tokio::test]
+async fn sweep_journals_a_collection_name_collision_detection_missed() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let first = svc
+        .create_node(Node::new(
+            "collection".to_string(),
+            "Inbox".to_string(),
+            json!({}),
+        ))
+        .await?;
+    set_lifecycle(&svc, &first, "archived").await?;
+    let second = svc
+        .create_node(Node::new(
+            "collection".to_string(),
+            "inbox".to_string(),
+            json!({}),
+        ))
+        .await?;
+    set_lifecycle(&svc, &first, "active").await?;
+    assert!(
+        all_records(&svc).await?.is_empty(),
+        "the unarchive ran no inline check, so nothing is journaled yet"
+    );
+
+    svc.reconcile_conflicts().await?;
+    let records = all_records(&svc).await?;
+    assert_eq!(records.len(), 1, "the sweep journals the missed collision");
+    assert_eq!(records[0].status, ConflictStatus::Open);
+    let mut expected = vec![first.clone(), second.clone()];
+    expected.sort();
+    let mut got = records[0].node_ids.clone();
+    got.sort();
+    assert_eq!(got, expected);
+
+    svc.reconcile_conflicts().await?;
+    let again = all_records(&svc).await?;
+    assert_eq!(again.len(), 1, "a second sweep journals nothing new");
+    assert_eq!(again[0].occurrences, records[0].occurrences);
+    Ok(())
+}
+
+/// The same miss for a unique field: a restored person whose email is now held
+/// by another active person.
+#[tokio::test]
+async fn sweep_journals_a_unique_field_collision_detection_missed() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let person = |name: &str| {
+        Node::new(
+            "person".to_string(),
+            String::new(),
+            json!({ "person": { "first_name": name, "email": "dana@example.com" } }),
+        )
+    };
+    let first = svc.create_node(person("Dana")).await?;
+    set_lifecycle(&svc, &first, "archived").await?;
+    let second = svc.create_node(person("Dana B")).await?;
+    set_lifecycle(&svc, &first, "active").await?;
+    assert!(all_records(&svc).await?.is_empty());
+
+    svc.reconcile_conflicts().await?;
+    let records = all_records(&svc).await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].status, ConflictStatus::Open);
+    assert_eq!(records[0].detail["field"], "email");
+    assert!(records[0].node_ids.contains(&first) && records[0].node_ids.contains(&second));
+
+    svc.reconcile_conflicts().await?;
+    assert_eq!(all_records(&svc).await?.len(), 1);
+    Ok(())
+}
+
+/// The scan considers participating nodes only and never reopens a dismissed
+/// record.
+#[tokio::test]
+async fn sweep_scan_ignores_archived_nodes_and_keeps_a_dismissal() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+    let a = svc
+        .create_node(Node::new(
+            "collection".to_string(),
+            "Ideas".to_string(),
+            json!({}),
+        ))
+        .await?;
+    set_lifecycle(&svc, &a, "archived").await?;
+    svc.create_node(Node::new(
+        "collection".to_string(),
+        "Ideas".to_string(),
+        json!({}),
+    ))
+    .await?;
+    svc.reconcile_conflicts().await?;
+    assert!(
+        all_records(&svc).await?.is_empty(),
+        "an archived collection does not collide"
+    );
+
+    // Restore, sweep, dismiss; a later sweep must not raise it again.
+    set_lifecycle(&svc, &a, "active").await?;
+    svc.reconcile_conflicts().await?;
+    let records = all_records(&svc).await?;
+    assert_eq!(records.len(), 1);
+    svc.resolve_conflict(
+        &records[0].id,
+        nodespace_core::models::conflict::Resolution::Dismiss,
+    )
+    .await?;
+    svc.reconcile_conflicts().await?;
+    let after = all_records(&svc).await?;
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].status, ConflictStatus::Dismissed);
+    Ok(())
+}

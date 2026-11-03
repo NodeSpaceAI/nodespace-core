@@ -1,6 +1,7 @@
 //! Conflict-journal reconciliation sweep (ADR-068, conflict-journal-and-
 //! resolution.md §5.4): a periodic background pass that closes open
-//! conflict records whose participants are gone or no longer collide.
+//! conflict records whose participants are gone or no longer collide, and
+//! journals collisions that inline detection missed.
 //!
 //! Not required for S1-S3 correctness — a stale open record for a departed
 //! node is a stale row, not a wrong one — but required before the Conflicts

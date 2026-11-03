@@ -529,10 +529,7 @@ impl<'a> CollectionService<'a> {
     /// the explicit lookup first. When the create loses a race to a concurrent
     /// create of the same name, the winner is found by name; a renamed, archived or
     /// differently typed holder still surfaces the refusal.
-    async fn get_or_create_collection(
-        &self,
-        name: &str,
-    ) -> Result<(Node, bool), NodeServiceError> {
+    async fn get_or_create_collection(&self, name: &str) -> Result<(Node, bool), NodeServiceError> {
         let lookup_name = name.trim();
         if let Some(existing) = self
             .store
