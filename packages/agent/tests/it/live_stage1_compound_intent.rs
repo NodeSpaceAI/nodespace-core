@@ -1,4 +1,4 @@
-//! Live check for #1909: does Stage 1 (ADR-038) have a correct move for a
+//! Live check: does Stage 1 (ADR-038) have a correct move for a
 //! compound, unambiguous request — one message carrying two or more distinct
 //! intents, none of which is unclear on its own?
 //!
@@ -8,13 +8,13 @@
 //! this expense and remind me to follow up Friday" — nothing is ambiguous
 //! about either half, there are just two of them. This is a structural gap
 //! identified by reading the code, not yet a measured defect; this test is
-//! the live measurement #1909 asks for before proposing a fix.
+//! the live measurement needed before proposing a fix.
 //!
 //! Fires production's exact Stage-1 request — `stage1_system_prompt`,
 //! `stage1_tool_definitions()`, temperature 0.1, `STAGE1_MAX_TOKENS` — against
 //! the **locked native model, loaded in-process** (ADR-056: Gemma 4 E4B via
 //! llama.cpp), for a wider set of compound-but-unambiguous prompts than the
-//! first pass (#1909's PR #1916 shipped 5; this widens to cover varied
+//! first pass (which shipped 5 prompts; this widens to cover varied
 //! phrasing, 3-intent requests, and mutating/read-only combinations, per the
 //! issue's own follow-up criterion — n=5 confirmed the structural gap exists
 //! but could not size how often the model degrades a merged query). Records
@@ -36,8 +36,8 @@
 //! cargo test -p nodespace-agent --test it live_stage1_compound_intent:: -- --ignored --nocapture
 //! ```
 //!
-//! **A single run is still not decision-grade** (see #1862's standing lesson
-//! on single-run matrix numbers). This test reports a rate for one run; if
+//! **A single run is still not decision-grade** (the standing lesson on
+//! single-run matrix numbers). This test reports a rate for one run; if
 //! the rate matters for `route_multi`'s design, repeat the run and compare
 //! before treating any single number as ground truth.
 
@@ -112,8 +112,7 @@ struct CompoundPrompt {
 }
 
 /// Compound, unambiguous prompts: two or more distinct operations, no
-/// ambiguity about any of them. Widened past the original 5 (#1909's PR
-/// #1916) to cover varied phrasing, 3-intent requests, and mutating/
+/// ambiguity about any of them. Widened past the original 5 to cover varied phrasing, 3-intent requests, and mutating/
 /// read-only combinations, so a degradation rate has more than one data
 /// point per shape to rest on.
 const COMPOUND_PROMPTS: &[CompoundPrompt] = &[
@@ -487,7 +486,7 @@ async fn stage1_on_compound_unambiguous_requests() {
          route_multi, lossy: {multi_and_lossy}/{total}\n\
          other (no call / unparseable / multiple calls / error): {other_outcomes}/{total}\n\
          \n\
-         Single-run rate. Per #1862's standing lesson, treat this as directional, not decision-grade,\n\
+         Single-run rate. Per the standing lesson on single-run matrix numbers, treat this as directional, not decision-grade,\n\
          without at least one repeated run to compare against.\n"
     );
     println!("{summary}");

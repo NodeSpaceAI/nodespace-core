@@ -3,13 +3,13 @@
 //! `skill_pipeline.rs`, no `agent_guidance.rs` constants). Every string below
 //! is authored fresh in this file.
 //!
-//! Methodology per the standing instruction on #1917: assemble a sequence of
+//! Methodology per the standing instruction: assemble a sequence of
 //! literal prompt strings, validate directly against llama.cpp with zero
 //! NodeSpace plumbing involved, until a version is found that reliably gets
 //! the correct tool call. THAT becomes the target the real assembly pipeline
 //! is engineered toward — not the other way around.
 //!
-//! Prior finding this experiment is built on (#1922, subagent investigation):
+//! Prior finding this experiment is built on (subagent investigation):
 //! the model resolves "the 2400 one" -> resolve_query correctly with NO prior
 //! history, 3/3. It refuses and asks for a literal node id the moment ANY
 //! prior turn is present, 3/3, across 5 independent 3-rep trials on 4
@@ -148,7 +148,7 @@ async fn run_turn(
 }
 
 /// Baseline control: zero history, minimal hand-authored prompt. Expected
-/// (per #1922's finding) to call resolve_query correctly -- confirms this
+/// (per the prior finding) to call resolve_query correctly -- confirms this
 /// harness's minimal tools/prompt reproduce the known-good case before
 /// testing the compact-history variant below.
 #[tokio::test]
@@ -175,7 +175,7 @@ async fn golden_zero_history_control() {
         result.as_ref().map(|(n, _)| n.as_str()),
         Some("resolve_query"),
         "zero-history control must call resolve_query — if this fails, the harness itself \
-         (not scenario 6) has a problem, since #1922 already confirmed this case works"
+         (not scenario 6) has a problem, since a prior investigation already confirmed this case works"
     );
 }
 
@@ -222,7 +222,7 @@ async fn golden_compact_history_variant() {
 
 /// Calibration point on the size/dilution curve between the ~150-token
 /// compact golden prompt (passes 3/3) and the real ~7,500-8,500-token full
-/// reconstruction (fails 3/3 -- see #1922). Targets roughly the same order of
+/// reconstruction (fails 3/3 -- see the prior investigation). Targets roughly the same order of
 /// magnitude as ADR-064's own measured resident-prompt ablation (10,493 chars
 /// / ~2,600 tokens scored 50% vs a 445-char/~110-token arm at 73%), to check
 /// whether scenario 6's degradation follows the same curve shape or breaks at

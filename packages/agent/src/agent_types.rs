@@ -386,7 +386,7 @@ pub struct AgentTurnResult {
     /// `response` flattens into text, so the frontend can render them
     /// distinctly. `None` for every other turn, including ordinary
     /// zero-tool-call replies that merely phrase themselves as a question
-    /// (see #1930's scope note on `agent_loop::run_turn`).
+    /// (see the scope note on `agent_loop::run_turn`).
     #[serde(default)]
     pub clarify: Option<ClarifyPrompt>,
 }

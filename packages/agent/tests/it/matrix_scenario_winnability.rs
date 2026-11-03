@@ -415,7 +415,7 @@ async fn scenario_11d_one_traversal_enumerates_every_inbound_link() {
 /// replace the decomposition coverage scenario 6 gave up — the estimates are
 /// all inline in the rendered history, so the ranking can be done in-context
 /// and a read is not forced. See the group header in
-/// scripts/eval/fixtures/agent-matrix.ts, and #2248 for the gap that remains.
+/// scripts/eval/fixtures/agent-matrix.ts for the gap that remains.
 ///
 /// A read is one legitimate route to that ranking, though, and it is the route
 /// that could quietly make the scenario unwinnable. If `search_nodes` returned only
@@ -765,7 +765,7 @@ async fn a_keyword_means_the_same_sorted_or_not_under_a_title_template() {
 /// Scenario 13's ideal lookup-then-write is accepted, and the lookup actually
 /// discriminates on the seeded property.
 ///
-/// 13 is the scenario #2248 asked for: its referent ("the incident Rowan was on
+/// 13 is the scenario that closes that gap: its referent ("the incident Rowan was on
 /// call for") is seeded out of band, so nothing about it reaches the rendered
 /// prompt and the model MUST read before it can write. The daemon test
 /// `scenario_13_seeded_referent_is_absent_from_history` proves the absence

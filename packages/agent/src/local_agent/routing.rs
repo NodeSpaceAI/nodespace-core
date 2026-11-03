@@ -3168,7 +3168,7 @@ mod tests {
 
     #[test]
     fn a_destructive_skill_that_only_places_cannot_put_delete_node_in_reach() {
-        // The #2240 regression. `Node Deletion` was retrieved as a candidate on
+        // The regression this pins: `Node Deletion` was retrieved as a candidate on
         // turns that recorded a decision, marked a status, and set a due date.
         // Because the surface was the union across every eligible candidate, it
         // contributed `delete_node` merely by placing — while the tool the turn
@@ -4298,7 +4298,7 @@ mod tests {
 
     #[test]
     fn a_graph_editing_candidate_below_its_mutating_bar_fails_open_without_resolve_query() {
-        // The regression case #1840 calls out explicitly: a Graph Editing
+        // The regression case to pin explicitly: a Graph Editing
         // candidate scoring in [READ_SKILL_SCORE_BAR, MUTATING_SKILL_SCORE_BAR)
         // — below the bar its own blast radius requires, but above the
         // read-only bar. It must not clear the gate, and the fail-open
@@ -4563,7 +4563,7 @@ mod tests {
 
     /// This site's heading must be the exact shared constant, not an
     /// independently-worded copy — see EXISTING_SCHEMAS_HEADER's doc
-    /// comment (#1846: two independently-maintained copies of this heading,
+    /// comment (two independently-maintained copies of this heading,
     /// one carrying an anti-copy clause and the other not, let contamination
     /// persist after the first was fixed).
     #[test]
@@ -4596,7 +4596,7 @@ mod tests {
     /// from the workspace-context path, which `agent_loop` concatenates into
     /// the same prompt under the same heading.
     ///
-    /// Measured 2026-07-31 for the duplication question in #1848: **4 copies
+    /// Measured 2026-07-31 for the duplication question: **4 copies
     /// per prompt** (3 routing + 1 workspace context), costing ~141 redundant
     /// tokens on a 2-schema workspace and scaling with schema count. The copies
     /// are identical rather than differently scoped, because the built-in

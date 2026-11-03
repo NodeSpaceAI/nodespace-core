@@ -71,7 +71,7 @@ pub struct ObservedCall {
     /// The arguments as the model emitted them, before repair, when repair
     /// changed something — `None` when the emission was already clean.
     ///
-    /// #2182: without this the two are indistinguishable in the output, and a
+    /// Without this the two are indistinguishable in the output, and a
     /// case where the model still emits a malformation that production quietly
     /// repairs reads as a clean pass. That is the difference between "the
     /// prompt fixed it" and "the repair fixed it", which is exactly what an
@@ -473,7 +473,7 @@ mod tests {
         assert_eq!(called.summary(), r#"resolve_query({"request":"x"})"#);
     }
 
-    /// #2182: a repaired call must not read as a clean one. The summary is the
+    /// A repaired call must not read as a clean one. The summary is the
     /// only thing the human judging an arm sees, so when repair moved something
     /// the emission has to appear beside the result — otherwise "the prompt
     /// produced correct arguments" and "the prompt produced a malformation

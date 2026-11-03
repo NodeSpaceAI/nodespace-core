@@ -1,4 +1,4 @@
-//! Measurement harness for the question #2185 asks first: does
+//! Measurement harness for the first question to ask: does
 //! `resolve_query`'s internal decomposition sub-call actually emit malformed
 //! filter shapes?
 //!
@@ -9,7 +9,7 @@
 //! *nested* inference call and deserializes its output locally, so none of
 //! them cover it. Whether that gap matters is an empirical question about what
 //! this particular prompt, on this particular model, actually produces — and
-//! #2182's lesson was precisely that the assumed malformation and the measured
+//! the earlier scalar-`in` finding's lesson was precisely that the assumed malformation and the measured
 //! one differed. So this measures before anything is repaired.
 //!
 //! What it does NOT do: assert a pass/fail bar on model behavior. It drives
@@ -146,7 +146,7 @@ fn corpus() -> Vec<Case> {
             requests: vec![
                 // Multi-value pull: two enum members named in one breath. This
                 // is the phrasing most likely to reach for `in`, which the
-                // decomposition prompt never instructs — #2185's stated bound.
+                // decomposition prompt never instructs, the bound this harness tests.
                 "Which gear is either checked out or in repair?",
                 "Show me the items that are checked out, in repair, or retired",
                 // Identifier-vs-update-target, the shape the prompt warns about.
@@ -206,7 +206,7 @@ fn corpus() -> Vec<Case> {
 struct Tally {
     /// Filters that deserialized into `AgentFilterItem` cleanly.
     well_formed: usize,
-    /// `deny_unknown_fields` rejects — the silent-narrowing hazard #2185 flags.
+    /// `deny_unknown_fields` rejects — the silent-narrowing hazard.
     /// These are dropped by production today.
     dropped_unknown_field: usize,
     /// A key wrapped in its own literal quote marks (`"\"property\""`).
@@ -215,10 +215,10 @@ struct Tally {
     /// A key carrying a leaked chat-template special token.
     /// `repair_leaked_special_token_keys` covers this at the tool-call boundary.
     leaked_token_key: usize,
-    /// `operator: "in"` with a scalar (non-array) value — #2182's shape, which
+    /// `operator: "in"` with a scalar (non-array) value — the shape seen in the golden-runner trace, which
     /// `repair_scalar_in_operator_values` covers at the tool-call boundary.
     scalar_in_value: usize,
-    /// `operator: "in"` at all. Tracked separately because #2185's stated bound
+    /// `operator: "in"` at all. Tracked separately because the bound under test
     /// is that the decomposition prompt never instructs `in`; a nonzero count
     /// here refutes that bound regardless of the value's shape.
     used_in_operator: usize,
@@ -488,7 +488,7 @@ async fn measure_decomposition_filter_shapes() {
     println!("\nresolved: {resolved_count}/{} requests", outcomes.len());
 
     // Guard the harness, not the model. A run that captured nothing has not
-    // answered #2185's question — and would otherwise print an all-zero tally
+    // answered the harness's question — and would otherwise print an all-zero tally
     // that reads exactly like "no malformations found".
     assert!(
         seen_responses > 0,

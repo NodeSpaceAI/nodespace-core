@@ -1,6 +1,6 @@
 //! Golden-prompt SEQUENCE for agent-matrix scenario 6, built turn by turn.
 //!
-//! Per the corrected methodology (course-corrected mid-session on #1917):
+//! Per the corrected methodology (course-corrected mid-session):
 //! `golden_scenario6_handauthored.rs` validated only the FINAL turn in
 //! isolation, then plumbing work was started against that single data point.
 //! That was premature — one confirmed turn is not a validated golden SET.
