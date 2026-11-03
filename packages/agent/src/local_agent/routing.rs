@@ -561,6 +561,24 @@ pub fn lookup_without_stage1(
     }
 }
 
+/// The decision for a question typed in a chat that pins a skill: a lookup of
+/// the message, or `None` when it is not a question or names a change.
+///
+/// The chat was opened to ask about a node and to change it, and asking comes
+/// first (ADR-100). A question there is about that node, so it is read as the
+/// options the chat offered are: a lookup, which runs the turn with the pinned
+/// skill's read tools and none of its write tools ([`read_only_candidates`]).
+/// Left to Stage 1 or to retrieval, "Does this type extend another type?" was
+/// ranked behind five skills about other things and offered their write
+/// tools. A message that names a change is left to the ordinary route.
+pub fn decision_for_a_question_in_a_pinned_chat(message: &str) -> Option<RouteDecision> {
+    let message = message.trim();
+    if !is_lookup_shaped(message) || asks_for_a_change(message) {
+        return None;
+    }
+    Some(RouteDecision::Lookup(message.to_string()))
+}
+
 /// Whether `message` is one of `options`, as the user would pick or retype
 /// it: compared without case, surrounding whitespace or closing punctuation.
 pub fn is_offered_option(message: &str, options: &[String]) -> bool {
@@ -4887,6 +4905,61 @@ mod tests {
                 "{change}"
             );
         }
+    }
+
+    /// A question typed in a pinned chat is a lookup of the message; a message
+    /// that names a change, or is not a question, is left to the ordinary route.
+    #[test]
+    fn a_question_in_a_pinned_chat_is_a_lookup() {
+        for question in [
+            "Does this type extend another type?",
+            "Explain this type",
+            "what does this field mean",
+        ] {
+            assert_eq!(
+                decision_for_a_question_in_a_pinned_chat(question),
+                Some(RouteDecision::Lookup(question.to_string())),
+                "{question}"
+            );
+        }
+        for other in [
+            "Add a field called owner",
+            "Can you remove the due date field?",
+            "Show me the type, then rename a field",
+            "owner should be a person",
+        ] {
+            assert_eq!(
+                decision_for_a_question_in_a_pinned_chat(other),
+                None,
+                "{other}"
+            );
+        }
+    }
+
+    /// The lookup a pinned question makes offers the pinned skill's read tools
+    /// and none of its write tools, and the skill leads the other candidates.
+    #[test]
+    fn a_pinned_question_leads_with_the_pinned_skill_and_reads_only() {
+        let mut type_skill =
+            candidate("type", 0.60, &["get_node", "update_schema", "search_nodes"]);
+        type_skill.pinned = true;
+        let others = [
+            candidate("relationships", 0.91, &["create_relationship", "get_node"]),
+            candidate("organization", 0.88, &["update_node"]),
+        ];
+        let mut all = others.to_vec();
+        all.push(type_skill);
+        let led = led_by_pinned_skills(all);
+        assert_eq!(led[0].name, "type");
+        let kept = read_only_candidates(led, false);
+        let tools: Vec<&str> = kept
+            .iter()
+            .flat_map(|c| c.tools.iter().map(String::as_str))
+            .collect();
+        assert!(tools.contains(&"get_node"));
+        assert!(!tools.contains(&"update_schema"));
+        assert!(!tools.contains(&"update_node"));
+        assert!(!tools.contains(&"create_relationship"));
     }
 
     /// A picked option is led by the pinned skill, whatever retrieval made of

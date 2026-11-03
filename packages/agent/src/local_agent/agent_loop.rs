@@ -6129,6 +6129,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             && routing::is_offered_option(message_alone, &session.offered_options))
         .then(|| routing::decision_for_an_offered_option(message_alone));
         let picked_an_option = picked_option.is_some();
+        // A question typed in such a chat is about the pinned node, whether or
+        // not it is one of the offered options: it is a lookup led by the
+        // pinned skill, and is not put to Stage 1.
+        let asked_about_the_pin = pinned_chat
+            .then(|| routing::decision_for_a_question_in_a_pinned_chat(message_alone))
+            .flatten();
+        let pinned_question = asked_about_the_pin.is_some();
+        let picked_option = picked_option.or(asked_about_the_pin);
         // A message whose decision is already settled is not put to Stage 1 at
         // all: the generation is the first of the turn's sequential requests,
         // and its answer would be overridden. See `routing::lookup_without_stage1`.
@@ -6425,7 +6433,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             routing::with_pinned_skills(selected, &session.pinned_skills, &retrieved_scores);
         // An option the chat offered belongs to the skill the chat pins,
         // whichever skill its few words retrieved first.
-        let merged = if picked_an_option {
+        let merged = if picked_an_option || pinned_question {
             routing::led_by_pinned_skills(merged)
         } else {
             merged
