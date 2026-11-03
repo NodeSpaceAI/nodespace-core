@@ -1,0 +1,1791 @@
+{
+  "formatVersion": 1,
+  "hash": "21ec6981916634a39cc740d13a0c1205f6a054981d6acaa8c12b5e6dc5ad247d",
+  "schemas": {
+    "agent-guidance": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Agent Guidance",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "ai-chat": {
+      "abstract": true,
+      "contextPaths": [],
+      "fields": {
+        "agent": {
+          "description": "Who runs the conversation: nodespace, or a terminal harness (claude-code, codex, ...)",
+          "friendlyName": "Agent",
+          "indexed": true,
+          "name": "agent",
+          "protection": "core",
+          "required": true,
+          "type": "text"
+        },
+        "last_active": {
+          "description": "Timestamp of last activity",
+          "friendlyName": "Last active",
+          "indexed": true,
+          "name": "last_active",
+          "protection": "system",
+          "required": false,
+          "type": "datetime"
+        },
+        "model": {
+          "description": "Model identifier used for this conversation, when known",
+          "friendlyName": "Model",
+          "indexed": true,
+          "name": "model",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "summary": {
+          "description": "Prose summary of the conversation",
+          "friendlyName": "Summary",
+          "indexed": false,
+          "name": "summary",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "AI Chat",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "ai-chat-message": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {
+        "options": {
+          "description": "The choices offered with a clarifying question; the question is the content",
+          "friendlyName": "Options",
+          "indexed": false,
+          "itemType": "text",
+          "name": "options",
+          "protection": "system",
+          "required": false,
+          "type": "array"
+        },
+        "outcome": {
+          "coreValues": [
+            {
+              "label": "Acted",
+              "value": "acted"
+            },
+            {
+              "label": "Clarified",
+              "value": "clarified"
+            },
+            {
+              "label": "Replied",
+              "value": "replied"
+            }
+          ],
+          "description": "How the turn that produced an assistant message ended",
+          "extensible": false,
+          "friendlyName": "Outcome",
+          "indexed": false,
+          "name": "outcome",
+          "protection": "system",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "reasoning": {
+          "description": "The model's chain-of-thought toward an assistant message",
+          "friendlyName": "Reasoning",
+          "indexed": false,
+          "name": "reasoning",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "role": {
+          "coreValues": [
+            {
+              "label": "User",
+              "value": "user"
+            },
+            {
+              "label": "Assistant",
+              "value": "assistant"
+            },
+            {
+              "label": "System",
+              "value": "system"
+            }
+          ],
+          "default": "user",
+          "description": "Who sent the message",
+          "extensible": false,
+          "friendlyName": "Role",
+          "indexed": true,
+          "name": "role",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        },
+        "timestamp": {
+          "description": "When the message was sent",
+          "friendlyName": "Timestamp",
+          "indexed": false,
+          "name": "timestamp",
+          "protection": "system",
+          "required": false,
+          "type": "datetime"
+        }
+      },
+      "isCore": true,
+      "name": "AI Chat Message",
+      "parent": {
+        "rule": "must_have_parent_of",
+        "types": [
+          "ai-chat-native"
+        ]
+      },
+      "relationships": {
+        "pending_delete->/out": {
+          "cardinality": "many",
+          "description": "Nodes the message asked to delete, held until the user answers",
+          "direction": "out",
+          "edgeFields": [
+            {
+              "description": "The node's version when the delete was proposed",
+              "name": "version",
+              "required": true,
+              "type": "number"
+            },
+            {
+              "description": "How many nodes beneath it the delete was shown to remove",
+              "name": "descendant_count",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "pending_delete",
+          "reverseCardinality": "many",
+          "reverseName": "pending_delete_of"
+        },
+        "resolved->/out": {
+          "cardinality": "many",
+          "description": "Nodes the message's turn looked up",
+          "direction": "out",
+          "edgeFields": [
+            {
+              "description": "The read tool that surfaced the node",
+              "name": "tool",
+              "required": true,
+              "type": "text"
+            }
+          ],
+          "name": "resolved",
+          "reverseCardinality": "many",
+          "reverseName": "resolved_by"
+        },
+        "wrote->/out": {
+          "cardinality": "many",
+          "description": "Nodes the message's turn wrote",
+          "direction": "out",
+          "edgeFields": [
+            {
+              "description": "Each write the message made to the node, in call order: its tool, summary, canonical_args and the edges it replaced",
+              "name": "writes",
+              "required": true,
+              "type": "array"
+            }
+          ],
+          "name": "wrote",
+          "reverseCardinality": "many",
+          "reverseName": "written_by"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "ai-chat-native": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "ai-chat",
+      "fields": {
+        "context_tokens": {
+          "default": 0,
+          "description": "Approximate token count of conversation context",
+          "friendlyName": "Context tokens",
+          "indexed": false,
+          "name": "context_tokens",
+          "protection": "system",
+          "required": false,
+          "type": "number"
+        },
+        "provider": {
+          "coreValues": [
+            {
+              "label": "Native (Local)",
+              "value": "native"
+            },
+            {
+              "label": "OpenAI-compatible",
+              "value": "openai-compat"
+            }
+          ],
+          "default": "native",
+          "description": "Where this conversation's inference runs",
+          "extensible": false,
+          "friendlyName": "Provider",
+          "indexed": true,
+          "name": "provider",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        },
+        "turn_status": {
+          "coreValues": [
+            {
+              "label": "Idle",
+              "value": "idle"
+            },
+            {
+              "label": "Processing",
+              "value": "processing"
+            }
+          ],
+          "default": "idle",
+          "description": "Inference turn state, daemon-owned",
+          "extensible": false,
+          "friendlyName": "Turn status",
+          "indexed": true,
+          "name": "turn_status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "AI Chat (Native)",
+      "relationships": {
+        "pins->/out": {
+          "cardinality": "many",
+          "description": "Nodes this chat is bound to: a pinned skill is always offered, and any other pinned node is always in view",
+          "direction": "out",
+          "name": "pins",
+          "reverseCardinality": "many",
+          "reverseName": "pinned_in"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "ai-chat-pty": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "ai-chat",
+      "fields": {
+        "exit_code": {
+          "description": "Exit code of the terminal session's process, once it has ended",
+          "friendlyName": "Exit code",
+          "indexed": false,
+          "name": "exit_code",
+          "protection": "system",
+          "required": false,
+          "type": "number"
+        },
+        "session_id": {
+          "description": "The agent's own id for the conversation, which its resume flag takes: names state on this machine, so it stays here",
+          "friendlyName": "Session id",
+          "indexed": false,
+          "localOnly": true,
+          "name": "session_id",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "session_status": {
+          "coreValues": [
+            {
+              "label": "Active",
+              "value": "active"
+            },
+            {
+              "label": "Ended",
+              "value": "ended"
+            }
+          ],
+          "default": "active",
+          "description": "Whether the terminal session is running",
+          "extensible": false,
+          "friendlyName": "Session status",
+          "indexed": true,
+          "name": "session_status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        },
+        "transcript": {
+          "description": "Raw terminal scrollback: may hold secrets, tokens and absolute paths, so it stays on this machine",
+          "friendlyName": "Transcript",
+          "indexed": false,
+          "localOnly": true,
+          "name": "transcript",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "AI Chat (Terminal)",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "checkbox": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Checkbox",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "code-block": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Code Block",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "collection": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "description": {
+          "description": "What the collection is for",
+          "friendlyName": "Description",
+          "indexed": false,
+          "name": "description",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Collection",
+      "parent": {
+        "rule": "must_be_root"
+      },
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "database-settings": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {
+        "capture_content": {
+          "coreValues": [
+            {
+              "label": "Metadata only",
+              "value": "metadata_only"
+            },
+            {
+              "label": "Summary",
+              "value": "summary"
+            },
+            {
+              "label": "Full transcript",
+              "value": "full"
+            }
+          ],
+          "default": "metadata_only",
+          "description": "How much of a captured session is saved.",
+          "friendlyName": "Capture content",
+          "indexed": false,
+          "name": "capture_content",
+          "protection": "core",
+          "required": false,
+          "type": "enum"
+        },
+        "capture_enabled": {
+          "default": false,
+          "description": "Whether a finished terminal session is saved to its chat node.",
+          "friendlyName": "Capture sessions",
+          "indexed": false,
+          "name": "capture_enabled",
+          "protection": "core",
+          "required": false,
+          "type": "boolean"
+        },
+        "providers": {
+          "default": [],
+          "description": "The OpenAI-compatible providers this database has configured.",
+          "friendlyName": "Providers",
+          "indexed": false,
+          "itemFields": [
+            {
+              "description": "A UUID. Chats refer to the provider as `openai-compat:<id>`.",
+              "friendlyName": "Id",
+              "indexed": false,
+              "name": "id",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "description": "Display name in the model selector.",
+              "friendlyName": "Name",
+              "indexed": false,
+              "name": "name",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "description": "Requests go to `<base_url>/chat/completions`.",
+              "friendlyName": "Base URL",
+              "indexed": false,
+              "name": "base_url",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "description": "Sent as a bearer token. Empty when the endpoint needs none.",
+              "friendlyName": "API key",
+              "indexed": false,
+              "name": "api_key",
+              "protection": "core",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "description": "The `model` field sent to the endpoint.",
+              "friendlyName": "Model",
+              "indexed": false,
+              "name": "model",
+              "protection": "core",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "description": "The routing probe's verdict per served model. Dropped when the endpoint or model changes.",
+              "friendlyName": "Routing verdicts",
+              "indexed": false,
+              "name": "routing_ok",
+              "protection": "core",
+              "required": false,
+              "type": "object"
+            }
+          ],
+          "itemType": "object",
+          "name": "providers",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "required_extensions": {
+          "default": [],
+          "description": "Ids of the extensions a reader needs in order to read this database correctly. Empty by default. Core assigns no meaning to any entry; it refuses to open a database that lists an extension it does not support.",
+          "friendlyName": "Required extensions",
+          "indexed": false,
+          "itemType": "text",
+          "name": "required_extensions",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        }
+      },
+      "isCore": true,
+      "name": "Database Settings",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "date": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Date",
+      "parent": {
+        "rule": "must_be_root"
+      },
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "decision": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "decision_status": {
+          "coreValues": [
+            {
+              "label": "Proposed",
+              "value": "proposed"
+            },
+            {
+              "label": "Accepted",
+              "value": "accepted"
+            },
+            {
+              "label": "Superseded",
+              "value": "superseded"
+            }
+          ],
+          "default": "proposed",
+          "description": "proposed while under discussion; accepted once agreed; superseded once a newer decision replaces it, which locks it.",
+          "extensible": false,
+          "friendlyName": "Decision status",
+          "indexed": true,
+          "name": "decision_status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "Decision",
+      "relationships": {
+        "supersedes->decision/out": {
+          "cardinality": "many",
+          "description": "The decisions this one replaces",
+          "direction": "out",
+          "name": "supersedes",
+          "reverseCardinality": "many",
+          "reverseName": "superseded_by",
+          "targetType": "decision"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "header": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Header",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "horizontal-line": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Horizontal Line",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "issue": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "task",
+      "fields": {
+        "commits": {
+          "description": "The commits that deliver the issue, each a title and URL. Written as the whole list.",
+          "friendlyName": "Commits",
+          "indexed": false,
+          "itemType": "link",
+          "name": "commits",
+          "protection": "user",
+          "required": false,
+          "type": "array"
+        },
+        "pull_request": {
+          "description": "The pull request that delivers the issue: its title and URL.",
+          "friendlyName": "Pull request",
+          "indexed": false,
+          "name": "pull_request",
+          "protection": "user",
+          "required": false,
+          "type": "link"
+        },
+        "status": {
+          "coreValues": [
+            {
+              "label": "Changes Requested",
+              "mapsTo": "in_progress",
+              "value": "changes_requested"
+            },
+            {
+              "label": "Ready to Merge",
+              "mapsTo": "in_review",
+              "value": "ready_to_merge"
+            }
+          ],
+          "default": "open",
+          "description": "Current workflow state of the issue. A task's statuses (open, in_progress, in_review, done, cancelled) and two of its own: changes_requested (reviewed, with findings to fix; reads as in_progress on a task) and ready_to_merge (passed review, waiting to land; reads as in_review on a task). The flow is open, in_progress, in_review, back to changes_requested or on to ready_to_merge, then done, which means the change landed.",
+          "extensible": true,
+          "friendlyName": "Status",
+          "indexed": true,
+          "name": "status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "Issue",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "ordered-list": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Ordered List",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "person": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "email": {
+          "description": "Email address (optional)",
+          "friendlyName": "Email",
+          "indexed": true,
+          "name": "email",
+          "protection": "core",
+          "required": false,
+          "type": "text",
+          "unique": true,
+          "uniqueCaseInsensitive": true
+        },
+        "first_name": {
+          "description": "First name; optional — a person may exist before a name is set",
+          "friendlyName": "First name",
+          "indexed": true,
+          "name": "first_name",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "last_name": {
+          "description": "Last name; optional — a person may exist before a name is set",
+          "friendlyName": "Last name",
+          "indexed": true,
+          "name": "last_name",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Person",
+      "relationships": {
+        "reported_tasks->task/out": {
+          "cardinality": "many",
+          "description": "Tasks originally reported/created by this person",
+          "direction": "out",
+          "name": "reported_tasks",
+          "reverseCardinality": "one",
+          "reverseName": "creator",
+          "targetType": "task"
+        },
+        "tasks->task/out": {
+          "cardinality": "many",
+          "description": "Tasks assigned to this person",
+          "direction": "out",
+          "name": "tasks",
+          "reverseCardinality": "one",
+          "reverseName": "assignee",
+          "targetType": "task"
+        }
+      },
+      "schemaVersion": 1,
+      "titleTemplate": "{first_name} {last_name}"
+    },
+    "plan": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "approach": {
+          "description": "Major components, dependencies and sequencing, tied to the spec's success criteria by name.",
+          "friendlyName": "Approach",
+          "indexed": false,
+          "name": "approach",
+          "protection": "user",
+          "required": false,
+          "type": "text"
+        },
+        "plan_status": {
+          "coreValues": [
+            {
+              "label": "Draft",
+              "value": "draft"
+            },
+            {
+              "label": "Approved",
+              "value": "approved"
+            },
+            {
+              "label": "Superseded",
+              "value": "superseded"
+            }
+          ],
+          "default": "draft",
+          "description": "draft while being written; approved once the requester has confirmed it, which requires its spec to be approved and is what lets its tasks start; superseded once a newer plan replaces it, which locks its fields.",
+          "extensible": false,
+          "friendlyName": "Plan status",
+          "indexed": true,
+          "name": "plan_status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        },
+        "risks": {
+          "description": "What could go wrong with this particular approach.",
+          "friendlyName": "Risks",
+          "indexed": false,
+          "name": "risks",
+          "protection": "user",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Plan",
+      "relationships": {
+        "spec->spec/out": {
+          "cardinality": "one",
+          "description": "The spec this plan implements. One per plan; a spec accumulates plans as they are revised and superseded.",
+          "direction": "out",
+          "name": "spec",
+          "reverseCardinality": "many",
+          "reverseName": "plans",
+          "targetType": "spec"
+        },
+        "tasks->task/out": {
+          "cardinality": "many",
+          "description": "Tasks that carry out this plan. A task belongs to one plan.",
+          "direction": "out",
+          "name": "tasks",
+          "reverseCardinality": "one",
+          "reverseName": "plan",
+          "targetType": "task"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "play": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "description": {
+          "description": "What this play automates, in one line",
+          "friendlyName": "Description",
+          "indexed": true,
+          "name": "description",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "enabled": {
+          "default": true,
+          "description": "The user's on/off switch. The engine never changes it",
+          "friendlyName": "Enabled",
+          "indexed": false,
+          "name": "enabled",
+          "protection": "core",
+          "required": false,
+          "type": "boolean"
+        },
+        "rules": {
+          "default": [],
+          "description": "Rule definitions: each a trigger, conditions and actions",
+          "friendlyName": "Rules",
+          "indexed": false,
+          "itemType": "object",
+          "name": "rules",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "suspended_at": {
+          "description": "When the engine suspended the play on this device",
+          "friendlyName": "Suspended at",
+          "indexed": false,
+          "localOnly": true,
+          "name": "suspended_at",
+          "protection": "system",
+          "required": false,
+          "type": "datetime"
+        },
+        "suspended_message": {
+          "description": "The diagnostic the suspension was logged with",
+          "friendlyName": "Suspended message",
+          "indexed": false,
+          "localOnly": true,
+          "name": "suspended_message",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "suspended_reason": {
+          "coreValues": [
+            {
+              "label": "Validation failed",
+              "value": "validation_failed"
+            },
+            {
+              "label": "Action failed",
+              "value": "action_failed"
+            },
+            {
+              "label": "Cycle limit",
+              "value": "cycle_limit"
+            },
+            {
+              "label": "Schema drift",
+              "value": "schema_drift"
+            }
+          ],
+          "description": "Why the engine took the play out of service on this device",
+          "extensible": false,
+          "friendlyName": "Suspended reason",
+          "indexed": false,
+          "localOnly": true,
+          "name": "suspended_reason",
+          "protection": "system",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "Play",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "project": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "end_date": {
+          "description": "Date the project is intended to finish (or did finish). Paired with start_date to compute the project's planned or actual timeline; a project past its end_date while status is still active or planning reads as behind schedule.",
+          "friendlyName": "End date",
+          "indexed": false,
+          "name": "end_date",
+          "protection": "user",
+          "required": false,
+          "type": "date"
+        },
+        "priority": {
+          "coreValues": [
+            {
+              "label": "Highest",
+              "value": "highest"
+            },
+            {
+              "label": "High",
+              "value": "high"
+            },
+            {
+              "label": "Medium",
+              "value": "medium"
+            },
+            {
+              "label": "Low",
+              "value": "low"
+            },
+            {
+              "label": "Lowest",
+              "value": "lowest"
+            }
+          ],
+          "description": "Relative importance for triage across projects (highest, high, medium, low, lowest) — the same scale as task priority. Sorting follows that order rather than the alphabetical order of the values; user-defined values sort after all of them. Absent means no priority has been assigned.",
+          "extensible": true,
+          "friendlyName": "Priority",
+          "indexed": true,
+          "name": "priority",
+          "protection": "user",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "start_date": {
+          "description": "Date work on the project is intended to begin (or began). Used with end_date to compute the project's planned or actual timeline.",
+          "friendlyName": "Start date",
+          "indexed": false,
+          "name": "start_date",
+          "protection": "user",
+          "required": false,
+          "type": "date"
+        },
+        "status": {
+          "coreValues": [
+            {
+              "label": "Planning",
+              "value": "planning"
+            },
+            {
+              "label": "Active",
+              "value": "active"
+            },
+            {
+              "label": "Completed",
+              "value": "completed"
+            },
+            {
+              "label": "Cancelled",
+              "value": "cancelled"
+            }
+          ],
+          "default": "planning",
+          "description": "Current stage of the project: planning (not yet started), active (underway), completed (finished successfully), or cancelled (abandoned). Distinct from an individual task's status.",
+          "extensible": true,
+          "friendlyName": "Status",
+          "indexed": true,
+          "name": "status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "Project",
+      "relationships": {
+        "tasks->task/out": {
+          "cardinality": "many",
+          "description": "Tasks belonging to this project",
+          "direction": "out",
+          "name": "tasks",
+          "reverseCardinality": "one",
+          "reverseName": "project",
+          "targetType": "task"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "query": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {
+        "execution_count": {
+          "default": 0,
+          "description": "Number of times query has been executed",
+          "friendlyName": "Execution count",
+          "indexed": false,
+          "name": "execution_count",
+          "protection": "system",
+          "required": false,
+          "type": "number"
+        },
+        "filters": {
+          "default": [],
+          "description": "Filter conditions array",
+          "friendlyName": "Filters",
+          "indexed": false,
+          "itemType": "object",
+          "name": "filters",
+          "protection": "core",
+          "required": true,
+          "type": "array"
+        },
+        "generated_by": {
+          "coreValues": [
+            {
+              "label": "AI Generated",
+              "value": "ai"
+            },
+            {
+              "label": "User Created",
+              "value": "user"
+            }
+          ],
+          "default": "user",
+          "description": "Who created the query",
+          "extensible": false,
+          "friendlyName": "Generated by",
+          "indexed": true,
+          "name": "generated_by",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        },
+        "generator_context": {
+          "description": "Parent chat ID for AI-generated queries",
+          "friendlyName": "Generator context",
+          "indexed": true,
+          "name": "generator_context",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "last_executed": {
+          "description": "Timestamp of last execution",
+          "friendlyName": "Last executed",
+          "indexed": false,
+          "name": "last_executed",
+          "protection": "system",
+          "required": false,
+          "type": "datetime"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Result limit",
+          "friendlyName": "Result limit",
+          "indexed": false,
+          "name": "limit",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        },
+        "sorting": {
+          "description": "Sorting configuration array",
+          "friendlyName": "Sorting",
+          "indexed": false,
+          "itemType": "object",
+          "name": "sorting",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "target_type": {
+          "default": "*",
+          "description": "Target node type to query (* for all)",
+          "friendlyName": "Target type",
+          "indexed": true,
+          "name": "target_type",
+          "protection": "core",
+          "required": true,
+          "type": "text"
+        },
+        "view_config": {
+          "description": "How the query renders: lastView (list, table or kanban) and kanban.groupBy",
+          "friendlyName": "View configuration",
+          "indexed": false,
+          "name": "view_config",
+          "protection": "core",
+          "required": false,
+          "type": "object"
+        }
+      },
+      "isCore": true,
+      "name": "Query",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "quote-block": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Quote Block",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "skill": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "max_iterations": {
+          "default": 2,
+          "description": "Maximum ReAct loop iterations for this skill",
+          "friendlyName": "Max iterations",
+          "indexed": false,
+          "name": "max_iterations",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        },
+        "not_for": {
+          "description": "Requests that sound similar but belong to another skill.",
+          "friendlyName": "What it's NOT for",
+          "indexed": false,
+          "name": "not_for",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "role": {
+          "coreValues": [
+            {
+              "label": "Tool",
+              "value": "tool"
+            },
+            {
+              "label": "Procedure",
+              "value": "procedure"
+            }
+          ],
+          "default": "tool",
+          "description": "tool: a capability the agent finds for a request. procedure: a way of working a record through its stages, handed over with the records it governs; skill search ranks it in its own lane and never lets it lead a request ahead of a tool skill.",
+          "extensible": false,
+          "friendlyName": "Role",
+          "indexed": true,
+          "name": "role",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        },
+        "tool_whitelist": {
+          "default": [],
+          "description": "Tools available when this skill is active",
+          "friendlyName": "Tool whitelist",
+          "indexed": false,
+          "itemType": "text",
+          "name": "tool_whitelist",
+          "protection": "core",
+          "required": true,
+          "type": "array"
+        },
+        "use_for": {
+          "description": "The requests this skill should handle, worded the way someone would ask. Short and specific.",
+          "friendlyName": "What it's for",
+          "indexed": true,
+          "name": "use_for",
+          "protection": "core",
+          "required": true,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Skill",
+      "relationships": {
+        "applies_to->schema/out": {
+          "cardinality": "many",
+          "description": "Schemas this skill is about; a matched skill carries their definitions",
+          "direction": "out",
+          "name": "applies_to",
+          "reverseCardinality": "many",
+          "reverseName": "skills",
+          "targetType": "schema"
+        },
+        "attached_to->/out": {
+          "cardinality": "many",
+          "description": "Nodes this skill is handed over with; reading one returns the skill",
+          "direction": "out",
+          "name": "attached_to",
+          "reverseCardinality": "many",
+          "reverseName": "attached_skills"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "software-project": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "project",
+      "fields": {
+        "checkout_path": {
+          "description": "The folder on this machine that holds the project's checkout. An agent session launched for the project runs there. It is set on each machine and stays on it.",
+          "friendlyName": "Checkout folder",
+          "indexed": false,
+          "localOnly": true,
+          "name": "checkout_path",
+          "protection": "user",
+          "required": false,
+          "type": "text"
+        },
+        "repository": {
+          "description": "The project's source repository: its title and URL. A checkout of that repository belongs to this project.",
+          "friendlyName": "Repository",
+          "indexed": false,
+          "name": "repository",
+          "protection": "user",
+          "required": false,
+          "type": "link"
+        }
+      },
+      "isCore": true,
+      "name": "Software Project",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "spec": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {
+        "boundaries": {
+          "description": "What may always be done without asking, what needs sign-off first, and what must never be done.",
+          "friendlyName": "Boundaries",
+          "indexed": false,
+          "name": "boundaries",
+          "protection": "user",
+          "required": false,
+          "type": "text"
+        },
+        "objective": {
+          "description": "What is being built, why, and for whom, in the requester's own terms, not a restatement of the title.",
+          "friendlyName": "Objective",
+          "indexed": false,
+          "name": "objective",
+          "protection": "user",
+          "required": false,
+          "type": "text"
+        },
+        "spec_status": {
+          "coreValues": [
+            {
+              "label": "Draft",
+              "value": "draft"
+            },
+            {
+              "label": "Approved",
+              "value": "approved"
+            },
+            {
+              "label": "Superseded",
+              "value": "superseded"
+            }
+          ],
+          "default": "draft",
+          "description": "draft while being written; approved once the requester has confirmed it, which needs at least one checkbox child as a success criterion and is what lets a plan against it be approved; superseded once a newer spec replaces it, which locks its fields.",
+          "extensible": false,
+          "friendlyName": "Spec status",
+          "indexed": true,
+          "name": "spec_status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "Spec",
+      "relationships": {
+        "decisions->decision/out": {
+          "cardinality": "many",
+          "description": "Decisions that govern the work under this spec",
+          "direction": "out",
+          "name": "decisions",
+          "reverseCardinality": "many",
+          "reverseName": "specs",
+          "targetType": "decision"
+        },
+        "tasks->task/out": {
+          "cardinality": "many",
+          "description": "Tasks this spec governs, linked directly so a task's spec is one hop away. A task may serve more than one spec.",
+          "direction": "out",
+          "name": "tasks",
+          "reverseCardinality": "many",
+          "reverseName": "spec",
+          "targetType": "task"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "table": {
+      "abstract": false,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Table",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "task": {
+      "abstract": false,
+      "contextPaths": [
+        [
+          "spec"
+        ],
+        [
+          "plan"
+        ],
+        [
+          "decisions"
+        ],
+        [
+          "spec",
+          "decisions"
+        ],
+        [
+          "project"
+        ]
+      ],
+      "fields": {
+        "completed_at": {
+          "description": "Date the task was finished. Set when status moves to done; used for completion-rate and cycle-time reporting alongside started_at. Absent while the task is open, in progress, or cancelled without a recorded finish date.",
+          "friendlyName": "Completed at",
+          "indexed": false,
+          "name": "completed_at",
+          "protection": "user",
+          "required": false,
+          "type": "date"
+        },
+        "due_date": {
+          "description": "Date by which the task should be completed. Used for deadline reminders and overdue detection (a task is overdue when due_date is in the past and status is not done or cancelled). Absent means no deadline.",
+          "friendlyName": "Due date",
+          "indexed": true,
+          "name": "due_date",
+          "protection": "user",
+          "required": false,
+          "type": "date"
+        },
+        "priority": {
+          "coreValues": [
+            {
+              "label": "Highest",
+              "value": "highest"
+            },
+            {
+              "label": "High",
+              "value": "high"
+            },
+            {
+              "label": "Medium",
+              "value": "medium"
+            },
+            {
+              "label": "Low",
+              "value": "low"
+            },
+            {
+              "label": "Lowest",
+              "value": "lowest"
+            }
+          ],
+          "description": "Relative urgency for triage and sorting (highest, high, medium, low, lowest), independent of status. Sorting follows that urgency order rather than the alphabetical order of the values; user-defined values sort after all of them. Not a deadline — use due_date for that. Absent means no priority has been assigned.",
+          "extensible": true,
+          "friendlyName": "Priority",
+          "indexed": true,
+          "name": "priority",
+          "protection": "user",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "started_at": {
+          "description": "Date work on the task actually began, distinct from due_date (the deadline) and created_at (when the task record was made). Set once, when status first moves to in_progress or in_review; not required.",
+          "friendlyName": "Started at",
+          "indexed": false,
+          "name": "started_at",
+          "protection": "user",
+          "required": false,
+          "type": "date"
+        },
+        "status": {
+          "coreValues": [
+            {
+              "label": "Open",
+              "value": "open"
+            },
+            {
+              "label": "In Progress",
+              "value": "in_progress"
+            },
+            {
+              "label": "In Review",
+              "value": "in_review"
+            },
+            {
+              "label": "Done",
+              "value": "done"
+            },
+            {
+              "label": "Cancelled",
+              "value": "cancelled"
+            }
+          ],
+          "default": "open",
+          "description": "Current workflow state of the task: open (not started), in_progress (actively being worked), in_review (the work is finished and waiting on review, typically an open pull request), done (completed), or cancelled (abandoned, not completed). Drives board columns and completion rollups — a task counts toward \"done\" totals only when this equals done.",
+          "extensible": true,
+          "friendlyName": "Status",
+          "indexed": true,
+          "name": "status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "Task",
+      "relationships": {
+        "blocks->task/out": {
+          "cardinality": "many",
+          "description": "Tasks that cannot start/complete until this task is done",
+          "direction": "out",
+          "name": "blocks",
+          "reverseCardinality": "many",
+          "reverseName": "blocked_by",
+          "targetType": "task"
+        },
+        "decisions->decision/out": {
+          "cardinality": "many",
+          "description": "Decisions that govern how this task is done",
+          "direction": "out",
+          "name": "decisions",
+          "reverseCardinality": "many",
+          "reverseName": "tasks",
+          "targetType": "decision"
+        },
+        "duplicates->task/out": {
+          "cardinality": "many",
+          "description": "The task(s) this task duplicates",
+          "direction": "out",
+          "name": "duplicates",
+          "reverseCardinality": "many",
+          "reverseName": "duplicated_by",
+          "targetType": "task"
+        },
+        "relates_to->task/out": {
+          "cardinality": "many",
+          "description": "Tasks this task is related to, with no directional dependency",
+          "direction": "out",
+          "name": "relates_to",
+          "reverseCardinality": "many",
+          "reverseName": "related_from",
+          "targetType": "task"
+        }
+      },
+      "schemaVersion": 1
+    },
+    "text": {
+      "abstract": false,
+      "contextPaths": [],
+      "fields": {},
+      "isCore": true,
+      "name": "Text",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "tool": {
+      "abstract": true,
+      "children": {
+        "rule": "none"
+      },
+      "contextPaths": [],
+      "fields": {
+        "description": {
+          "description": "What the tool does; embedded with its name for discovery",
+          "friendlyName": "Description",
+          "indexed": false,
+          "name": "description",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether the tool may be offered to the model; a native tool always is",
+          "friendlyName": "Enabled",
+          "indexed": false,
+          "name": "enabled",
+          "protection": "core",
+          "required": false,
+          "type": "boolean"
+        },
+        "parameter_schema": {
+          "description": "JSON Schema for the parameters the tool takes",
+          "friendlyName": "Parameter schema",
+          "indexed": false,
+          "name": "parameter_schema",
+          "protection": "core",
+          "required": false,
+          "type": "object"
+        }
+      },
+      "isCore": true,
+      "name": "Tool",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "tool-native": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "tool",
+      "fields": {
+        "cli_command": {
+          "description": "The `nodespace` command and subcommand that does what the tool does; unset when there is none",
+          "friendlyName": "CLI command",
+          "indexed": false,
+          "name": "cli_command",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "handler": {
+          "description": "Stable key resolving to the handler that runs the tool",
+          "friendlyName": "Handler",
+          "indexed": true,
+          "name": "handler",
+          "protection": "core",
+          "required": true,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Tool (Native)",
+      "relationships": {},
+      "schemaVersion": 1
+    }
+  },
+  "seeded": {
+    "138b68c6-9a67-4fed-8fa5-993953158f59": {
+      "configVersion": "2d65c1ea7fd2d770af0a9cf473ebcf6de055c862670224ac103be7bf0cccfe2b",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Ready tasks",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "3b9c304f-f480-4f1d-8653-5876bb005f7c": {
+      "configVersion": "88a13762df5b76fb668d3b21ae59f568b0bae764e45e4670366b9d27b5fd6c8e",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Specs by status",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "3d139d11-c3b7-42d5-b638-f2a2b41e1674": {
+      "configVersion": "2ac912095310a2a2706f5231d12f4361436cc8161246065a8cf46d067eeec6c3",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require success criteria before approving a spec",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "3eff80e8-9672-4896-ac0b-76a169062511": {
+      "configVersion": "09c0b7f3f60a677d3c63a18ecafa698f66782a3a7c3cb1395e5c008009bf4897",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Awaiting review",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "54159daf-f37d-47f9-a337-bf644d1f0db2": {
+      "configVersion": "2cf9184b2dd5af890943092b538d1a1eb3d8eec6a8036feed4865632f57b8cec",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Lock superseded specs, plans and decisions",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "5dc9b580-8840-4d02-b89d-9aa16ac552fd": {
+      "configVersion": "dd6f088d62ff8e273e6cc5c7c272f1659150213aa9d794767a40d2fae3b8d72a",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Complete a parent task when all its sub-tasks are done",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "62d6346f-0d71-4f36-bab3-94c2f98ed8ba": {
+      "configVersion": "4bcd343389b047bf6b5fcef6e7ed6284f5e9922f13ea452bfcf25183a271dbf9",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Waiting on you",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "6a1f0c52-8b47-4d3e-9a15-c2e07d4b8f13": {
+      "configVersion": "df0613d558aa697f9fe366b4eb922d5d72d5aa5f53d150cec5226ee3fe7d7095",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Changes requested",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "70cfa06c-883d-4a9b-be3f-069d7a1df8f3": {
+      "configVersion": "4c8a6e255f9239a6397cc5b4e44133a6d58bb63eec5dda039084badfdbdf50a7",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require an approved plan and its spec before advancing a planned task",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "9390871a-fcf9-49d6-82ac-947696933cb3": {
+      "configVersion": "47d97e4448b1d2773f2310e57abe8bec3df9d21f009e4ec080c12ae6b631099b",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require an approved spec before approving a plan",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "95796b4d-f078-44f8-807b-8a2e92167a2d": {
+      "configVersion": "c720a5dc99b65421ac00117036cbaf5a70c0de67450e54568d6815a4cdc6bb87",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require a completed checklist before finishing a task",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "ae79002e-913c-448d-8cc1-95912f2ab2f8": {
+      "configVersion": "3edbb3739a2824b189109a24932caf51ea6a17f57695c60e45608a2bd02e9134",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Plans by status",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "b2f6a0d4-7c19-4e8a-95d3-1a4c8e6f7b20": {
+      "configVersion": "99a433d0553234ae7c7bd3a4a8d01de27076d20f4ef20e66114c3da7d01cd021",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require every finding to be decided and fixed before an issue moves on",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "bb611c45-2b82-47dd-ad53-560ec9b5447f": {
+      "configVersion": "c4a629fa340ae6918f5bd0ecd05102ece4de1af7776682df0bc5a1ffea28b049",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Needs shaping",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4": {
+      "configVersion": "28acb66b8531bae24eecb2b60a486c49164e47485a6f67ff0643da46602734f7",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require a task's spec to be approved before starting it",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "d0200c59-7df9-4bc0-bc78-b06d205b085c": {
+      "configVersion": "ebde7968eda14f38617d892871f40c15c1711fd2145a5ec1dad645f0d627a95a",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Decisions by status",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "d1e5c9a8-d19c-401b-9277-40fd873fb205": {
+      "configVersion": "9a594783e532f4210dea7e2fa26af8d49dc8faef98d6c957a4a22c5796c70f2f",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "In progress",
+      "nodeType": "query",
+      "tier": "system"
+    },
+    "d9ea23d8-9e20-4cfa-9abe-6c86f2164765": {
+      "configVersion": "4a746f245abc665bfc0040c41be6d6edf715462b3ca361462c39f9e3941725df",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Block starting a task that is blocked",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "e47b9d20-35a6-4c81-b0f2-91d8a65c3e74": {
+      "configVersion": "999e3d02d0fb0c71348839f413ffedebf03de2700f8c4cf044d55ce5428d28b7",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Ready to merge",
+      "nodeType": "query",
+      "tier": "system"
+    }
+  },
+  "tables": {
+    "conflict": {
+      "columns": [
+        "id",
+        "kind",
+        "node_ids",
+        "detail",
+        "status",
+        "detected_at",
+        "detected_by",
+        "occurrences",
+        "last_seen_at",
+        "resolved_at",
+        "resolution"
+      ],
+      "virtual": false
+    },
+    "conflict_participant": {
+      "columns": [
+        "conflict_id",
+        "node_id"
+      ],
+      "virtual": false
+    },
+    "embedding": {
+      "columns": [
+        "id",
+        "node_id",
+        "vector",
+        "dimension",
+        "model_name",
+        "chunk_index",
+        "chunk_start",
+        "chunk_end",
+        "total_chunks",
+        "content_hash",
+        "token_count",
+        "stale",
+        "error_count",
+        "last_error",
+        "created_at",
+        "modified_at"
+      ],
+      "virtual": false
+    },
+    "node": {
+      "columns": [
+        "id",
+        "node_type",
+        "content",
+        "properties",
+        "title",
+        "lifecycle_status",
+        "version",
+        "created_at",
+        "modified_at"
+      ],
+      "virtual": false
+    },
+    "node_title_fts": {
+      "columns": [],
+      "virtual": true
+    },
+    "pending_seed_update": {
+      "columns": [
+        "node_id",
+        "aspect",
+        "shipped_version",
+        "recorded_at"
+      ],
+      "virtual": false
+    },
+    "relationship": {
+      "columns": [
+        "id",
+        "in_node",
+        "out_node",
+        "relationship_type",
+        "reverse_relationship_type",
+        "properties",
+        "version",
+        "created_at",
+        "modified_at"
+      ],
+      "virtual": false
+    },
+    "structural_rule": {
+      "columns": [
+        "node_type",
+        "rule",
+        "target"
+      ],
+      "virtual": false
+    },
+    "type_ancestry": {
+      "columns": [
+        "node_type",
+        "ancestor",
+        "depth"
+      ],
+      "virtual": false
+    },
+    "vec_embeddings": {
+      "columns": [],
+      "virtual": true
+    }
+  }
+}
