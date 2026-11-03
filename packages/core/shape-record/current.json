@@ -1,6 +1,751 @@
 {
   "formatVersion": 1,
   "hash": "21ec6981916634a39cc740d13a0c1205f6a054981d6acaa8c12b5e6dc5ad247d",
+  "registry": {
+    "agent-guidance": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "agent-guidance"
+      ],
+      "category": "primitive",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "ai-chat": {
+      "abstract": true,
+      "alwaysTitled": false,
+      "ancestry": [
+        "ai-chat"
+      ],
+      "category": "flat",
+      "contentRole": "title",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": false
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": false
+        }
+      }
+    },
+    "ai-chat-message": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "ai-chat-message"
+      ],
+      "category": "flat",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": true,
+        "mentionable": false
+      },
+      "structure": {
+        "children": "none",
+        "parent": {
+          "mustHaveParentOf": [
+            "ai-chat-native"
+          ]
+        }
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": false
+        }
+      }
+    },
+    "ai-chat-native": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "ai-chat-native",
+        "ai-chat"
+      ],
+      "category": "flat",
+      "contentRole": "title",
+      "derived": [],
+      "parent": "ai-chat",
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": false
+        }
+      }
+    },
+    "ai-chat-pty": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "ai-chat-pty",
+        "ai-chat"
+      ],
+      "category": "flat",
+      "contentRole": "title",
+      "derived": [],
+      "parent": "ai-chat",
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": false
+        }
+      }
+    },
+    "checkbox": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "checkbox"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [
+        "checked"
+      ],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "code-block": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "code-block"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "collection": {
+      "abstract": false,
+      "alwaysTitled": true,
+      "ancestry": [
+        "collection"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": false
+      },
+      "structure": {
+        "children": "any",
+        "parent": "must_be_root"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "database-settings": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "database-settings"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "date": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "date"
+      ],
+      "category": "primitive",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "must_be_root"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "decision": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "decision"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "header": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "header"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "horizontal-line": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "horizontal-line"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "issue": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "issue",
+        "task"
+      ],
+      "category": "flat",
+      "contentRole": "description_line",
+      "derived": [],
+      "parent": "task",
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "ordered-list": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "ordered-list"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "person": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "person"
+      ],
+      "category": "flat",
+      "contentRole": "ignored",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": "{first_name} {last_name}",
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "plan": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "plan"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "play": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "play"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "project": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "project"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "query": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "query"
+      ],
+      "category": "structured",
+      "contentRole": "description_line",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "quote-block": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "quote-block"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "schema": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "schema"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": false
+      },
+      "structure": {
+        "children": "any",
+        "parent": "must_be_root"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": false
+        }
+      }
+    },
+    "skill": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "skill"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "software-project": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "software-project",
+        "project"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": "project",
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "spec": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "spec"
+      ],
+      "category": "flat",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "table": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "table"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "task": {
+      "abstract": false,
+      "alwaysTitled": true,
+      "ancestry": [
+        "task"
+      ],
+      "category": "flat",
+      "contentRole": "description_line",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": true
+        }
+      }
+    },
+    "text": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "text"
+      ],
+      "category": "primitive",
+      "contentRole": "body",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "envelope"
+    },
+    "tool": {
+      "abstract": true,
+      "alwaysTitled": false,
+      "ancestry": [
+        "tool"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": null,
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "none",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "generic"
+    },
+    "tool-native": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "tool-native",
+        "tool"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": "tool",
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "generic"
+    }
+  },
   "schemas": {
     "agent-guidance": {
       "abstract": false,

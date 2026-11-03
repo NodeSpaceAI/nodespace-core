@@ -12,6 +12,9 @@
 //!   "tables":  { name: { "columns": [...], "virtual": bool } },
 //!   "schemas": { type id: { name, fields{}, relationships{}, extends,
 //!                           children, parent, contextPaths, ... } },
+//!   "registry": { type id: { parent, abstract, category, contentRole,
+//!                            participation, wire, derived, alwaysTitled,
+//!                            titleTemplate, structure, ancestry[] } },
 //!   "seeded":  { seed id: { key, nodeType, tier, configVersion,
 //!                           guidanceVersion } }
 //! }
@@ -25,9 +28,21 @@
 //! (`custom:`), values added to an extensible enum (`userValues`, and an
 //! inherited enum a type redeclares to hold only added values), fields whose
 //! protection is `user` (a user may remove or rename them), and context
-//! paths. Seeded content is not in the hash, because users edit it. The
-//! snapshot document still lists all of it: a change to any of it is a change
-//! to record.
+//! paths. Seeded content is not in the hash, because users edit it, and the
+//! registry is not either: it is code, not something a database stores, so it
+//! cannot identify what a database holds. The snapshot document still lists
+//! all of it: a change to any of it is a change to record.
+//!
+//! # Known gaps
+//!
+//! - The seeded `Links` aspect (a skill's `attached_to` links) is not
+//!   recorded. Links are seeded by the agent crate, as are skills, tool
+//!   descriptions and agent guidance; none of those seeds is listed.
+//! - Table coverage is names and columns only. Indexes, views, triggers,
+//!   column types and constraints are not listed, so a change confined to one
+//!   of them leaves the snapshot as it was. When the DDL gains views (the
+//!   resolved structural-rule views, for one), each view's definition needs a
+//!   line here.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +52,7 @@ use sha2::{Digest, Sha256};
 
 use crate::markdown::{prepare_nodes_from_template, NodeTemplate};
 use crate::models::SchemaNode;
+use nodespace_types::{ChildrenRule, CoreNodeType, ParentRule, WireShape};
 
 /// The layout of the snapshot document.
 pub const FORMAT_VERSION: u32 = 1;
@@ -233,6 +249,56 @@ pub fn schemas_view(schemas: &[SchemaNode]) -> Value {
     )
 }
 
+fn type_ids(types: &[CoreNodeType]) -> Value {
+    json!(types.iter().map(|t| t.as_str()).collect::<Vec<_>>())
+}
+
+/// The type registry as the snapshot lists it, by type id: what the registry
+/// declares for each core type (the `schema` meta-type included), and the
+/// `extends` chain the ancestry and structural-rule rows are derived from.
+pub fn registry_view() -> Value {
+    let mut types = Map::new();
+    for core in CoreNodeType::ALL {
+        let info = core.info();
+        let children = match info.structure.children {
+            ChildrenRule::Any => json!("any"),
+            ChildrenRule::None => json!("none"),
+            ChildrenRule::AnyExcept(except) => json!({ "anyExcept": type_ids(except) }),
+        };
+        let parent = match info.structure.parent {
+            ParentRule::Any => json!("any"),
+            ParentRule::MustBeRoot => json!("must_be_root"),
+            ParentRule::MustHaveParentOf(of) => json!({ "mustHaveParentOf": type_ids(of) }),
+        };
+        let wire = match info.wire {
+            WireShape::Envelope => json!("envelope"),
+            WireShape::Generic => json!("generic"),
+            WireShape::Typed { update } => json!({ "typed": { "update": update } }),
+        };
+        types.insert(
+            info.id.to_string(),
+            json!({
+                "parent": info.parent.map(|p| p.as_str()),
+                "abstract": info.is_abstract,
+                "category": serde_json::to_value(info.category).expect("a category serializes"),
+                "contentRole": serde_json::to_value(info.content_role).expect("a role serializes"),
+                "participation": {
+                    "embedded": info.participation.embedded,
+                    "mentionable": info.participation.mentionable,
+                    "excludedFromDefaultQueries": info.participation.excluded_from_default_queries,
+                },
+                "wire": wire,
+                "derived": info.derived.iter().map(|d| d.name()).collect::<Vec<_>>(),
+                "alwaysTitled": info.always_titled,
+                "titleTemplate": info.title_template,
+                "structure": { "children": children, "parent": parent },
+                "ancestry": core.chain().into_iter().map(|t| t.as_str()).collect::<Vec<_>>(),
+            }),
+        );
+    }
+    Value::Object(types)
+}
+
 /// The shipped seeds as the snapshot lists them, by seed id: what identifies
 /// each and the two versions reconciliation compares.
 pub fn seeded_view(templates: &[NodeTemplate]) -> Result<Value> {
@@ -259,8 +325,14 @@ pub fn seeded_view(templates: &[NodeTemplate]) -> Result<Value> {
     Ok(Value::Object(seeded))
 }
 
-/// A field that a user may have produced or removed: left out of the hash.
-fn is_user_territory(field: &Value) -> bool {
+/// Whether `field` is one a user may have produced or removed on this type:
+/// left out of the hash.
+///
+/// The last case is what the core-type shape check reads as a user's
+/// extension of an inherited enum: the field is declared again on the type
+/// with the inherited field's type and no core values, and the type inherits
+/// an extensible enum of that name.
+fn is_user_territory(field: &Value, inherited: &[&Value]) -> bool {
     let name = field.get("name").and_then(Value::as_str).unwrap_or("");
     if name.contains(':') {
         return true;
@@ -268,15 +340,18 @@ fn is_user_territory(field: &Value) -> bool {
     if field.get("protection").and_then(Value::as_str) == Some("user") {
         return true;
     }
-    // An inherited extensible enum a type declares again, holding only the
-    // values a user added.
     let holds_core_values = field
         .get("coreValues")
         .and_then(Value::as_array)
         .is_some_and(|values| !values.is_empty());
-    field.get("type").and_then(Value::as_str) == Some("enum")
-        && field.get("extensible").and_then(Value::as_bool) == Some(true)
-        && !holds_core_values
+    !holds_core_values
+        && field.get("type").and_then(Value::as_str) == Some("enum")
+        && inherited.iter().any(|from| {
+            from.get("name").and_then(Value::as_str) == Some(name)
+                && from.get("type").and_then(Value::as_str) == Some("enum")
+                && from.get("extensible").and_then(Value::as_bool) == Some(true)
+                && from.get("itemType") == field.get("itemType")
+        })
 }
 
 fn strip_user_values(value: &mut Value) {
@@ -290,15 +365,16 @@ fn strip_user_values(value: &mut Value) {
     }
 }
 
-/// A schema view with what a user may change taken out.
-pub fn hashed_schema_view(view: &Value) -> Value {
+/// A schema view with what a user may change taken out. `inherited` is the
+/// fields the schema inherits through `extends`.
+fn hashed_schema_view(view: &Value, inherited: &[&Value]) -> Value {
     let mut view = view.clone();
     let Some(object) = view.as_object_mut() else {
         return view;
     };
     object.remove("contextPaths");
     if let Some(fields) = object.get_mut("fields").and_then(Value::as_object_mut) {
-        fields.retain(|_, field| !is_user_territory(field));
+        fields.retain(|_, field| !is_user_territory(field, inherited));
         fields.values_mut().for_each(strip_user_values);
     }
     if let Some(rels) = object
@@ -314,6 +390,28 @@ pub fn hashed_schema_view(view: &Value) -> Value {
     view
 }
 
+/// The fields `view` inherits through its `extends` chain, as `schemas` lists
+/// its ancestors.
+fn inherited_fields<'a>(schemas: &'a Value, view: &Value) -> Vec<&'a Value> {
+    let mut fields = Vec::new();
+    let mut parent = view.get("extends").and_then(Value::as_str);
+    // A chain is short; the bound only guards a cycle in a document.
+    for _ in 0..64 {
+        let Some(ancestor) = parent.and_then(|id| schemas.get(id)) else {
+            break;
+        };
+        fields.extend(
+            ancestor
+                .get("fields")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|f| f.values()),
+        );
+        parent = ancestor.get("extends").and_then(Value::as_str);
+    }
+    fields
+}
+
 /// The canonical hash of a shape: the tables and the schemas, with what a user
 /// may change taken out. `schemas` is a [`schemas_view`].
 pub fn shape_hash(tables: &Value, schemas: &Value) -> String {
@@ -321,14 +419,24 @@ pub fn shape_hash(tables: &Value, schemas: &Value) -> String {
         .as_object()
         .into_iter()
         .flatten()
-        .map(|(id, view)| (id.clone(), hashed_schema_view(view)))
+        .map(|(id, view)| {
+            (
+                id.clone(),
+                hashed_schema_view(view, &inherited_fields(schemas, view)),
+            )
+        })
         .collect();
     let whole = json!({ "tables": tables, "schemas": Value::Object(hashed_schemas) });
     format!("{:x}", Sha256::digest(canonical_compact(&whole).as_bytes()))
 }
 
 /// Puts the pieces together: the snapshot document, hash included.
-pub fn assemble(tables: &[TableRow], schemas: &[SchemaNode], seeded: Value) -> Value {
+pub fn assemble(
+    tables: &[TableRow],
+    schemas: &[SchemaNode],
+    registry: Value,
+    seeded: Value,
+) -> Value {
     let tables = tables_view(tables);
     let schemas = schemas_view(schemas);
     json!({
@@ -336,6 +444,7 @@ pub fn assemble(tables: &[TableRow], schemas: &[SchemaNode], seeded: Value) -> V
         "hash": shape_hash(&tables, &schemas),
         "tables": tables,
         "schemas": schemas,
+        "registry": registry,
         "seeded": seeded,
     })
 }
@@ -358,6 +467,7 @@ pub async fn generate() -> Result<String> {
     let snapshot = assemble(
         &tables,
         &crate::models::core_schemas::get_core_schemas(),
+        registry_view(),
         seeded,
     );
     Ok(canonical_pretty(&snapshot))
@@ -488,7 +598,7 @@ mod tests {
             .into_iter()
             .find(|s| s.envelope.id == "issue")
             .unwrap();
-        let before = hash_of(std::slice::from_ref(&issue));
+        let before = hash_of(&[task(), issue.clone()]);
         let mut extended = issue.clone();
         let mut priority = task()
             .fields
@@ -504,7 +614,7 @@ mod tests {
         )]);
         extended.fields.retain(|f| f.name != "priority");
         extended.fields.push(priority);
-        assert_eq!(hash_of(&[extended]), before);
+        assert_eq!(hash_of(&[task(), extended]), before);
     }
 
     #[test]
@@ -513,6 +623,7 @@ mod tests {
         let snapshot = assemble(
             &[("node".to_string(), vec!["id".to_string()], false)],
             &[task()],
+            json!({}),
             json!({}),
         );
         assert_eq!(
@@ -531,5 +642,59 @@ mod tests {
             assert!(entry["configVersion"].is_string(), "{id}");
             assert!(entry["guidanceVersion"].is_string(), "{id}");
         }
+    }
+
+    /// A field declared as an extensible enum with no core values is left out
+    /// of the hash only where it extends an enum the type inherits, as the
+    /// core-type shape check reads it. A type that inherits no such field
+    /// does not get to shed one.
+    #[test]
+    fn an_extensible_enum_without_core_values_is_left_out_only_when_inherited() {
+        let decision = get_core_schemas()
+            .into_iter()
+            .find(|s| s.envelope.id == "decision")
+            .unwrap();
+        let before = hash_of(std::slice::from_ref(&decision));
+        let mut stray = decision.clone();
+        let mut field = task()
+            .fields
+            .into_iter()
+            .find(|f| f.name == "priority")
+            .unwrap();
+        field.name = "urgency".to_string();
+        field.core_values = None;
+        field.protection = crate::models::SchemaProtectionLevel::Core;
+        field.extensible = Some(true);
+        stray.fields.push(field);
+        assert_ne!(hash_of(&[stray]), before);
+    }
+
+    /// The registry section lists every core type, the `schema` meta-type
+    /// among them, with what the registry records for it.
+    #[test]
+    fn the_registry_view_lists_every_core_type() {
+        let registry = registry_view();
+        let types = registry.as_object().unwrap();
+        for core in nodespace_types::CoreNodeType::ALL {
+            assert!(types.contains_key(core.as_str()), "{}", core.as_str());
+        }
+        assert_eq!(types.len(), nodespace_types::CoreNodeType::ALL.len());
+        assert!(types.contains_key("schema"));
+        let checkbox = &registry["checkbox"];
+        assert_eq!(checkbox["derived"], json!(["checked"]));
+        assert_eq!(checkbox["contentRole"], "body");
+        assert_eq!(checkbox["participation"]["embedded"], true);
+        assert_eq!(
+            registry["ai-chat-message"]["participation"]["embedded"],
+            false
+        );
+        assert_eq!(registry["issue"]["parent"], "task");
+        assert_eq!(registry["issue"]["ancestry"], json!(["issue", "task"]));
+        assert_eq!(registry["tool"]["abstract"], true);
+        assert!(registry["text"]["wire"].is_string() || registry["text"]["wire"].is_object());
+        assert!(
+            registry["text"]["structure"]["children"].is_string()
+                || registry["text"]["structure"]["children"].is_object()
+        );
     }
 }
