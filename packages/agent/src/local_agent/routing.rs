@@ -4994,10 +4994,6 @@ mod tests {
             "Do it",
             "Do that now",
             "Do the change",
-            "What \u{1041}ed",
-            "What \u{1041}ing",
-            "What \u{1041}\u{1041}ing",
-            "Why \u{00e9}\u{00e9}ed",
             "How about renaming the status field?",
         ] {
             assert_eq!(
@@ -5006,6 +5002,25 @@ mod tests {
                 "{other}"
             );
         }
+    }
+
+    /// Inflection stemming cuts by characters: multibyte words, doubled or
+    /// not, never panic, and a change verb after them is still found.
+    #[test]
+    fn a_pinned_chat_question_with_multibyte_words_does_not_panic() {
+        for message in [
+            "What \u{1041}ed",
+            "What \u{1041}ing",
+            "What \u{1041}\u{1041}ing",
+            "Why \u{00e9}\u{00e9}ed",
+            "Which \u{1041}\u{1041}ed fields",
+        ] {
+            let _ = decision_for_a_question_in_a_pinned_chat(message);
+        }
+        assert_eq!(
+            decision_for_a_question_in_a_pinned_chat("What \u{1041}\u{1041}ing and dropping it?"),
+            None
+        );
     }
 
     /// The lookup a pinned question makes offers the pinned skill's read tools
