@@ -92,9 +92,11 @@ vi.mock('$lib/stores/conflicts.svelte', () => ({
 
 const clearAllTabs = vi.fn((..._a: unknown[]) => undefined);
 const addTab = vi.fn((..._a: unknown[]) => undefined);
+const suspendTabsForDatabaseSwitch = vi.fn((..._a: unknown[]) => undefined);
 const restorePersistedState = vi.fn((..._a: unknown[]) => Promise.resolve(false));
 vi.mock('$lib/stores/navigation.svelte', () => ({
   clearAllTabs: (...a: unknown[]) => clearAllTabs(...a),
+  suspendTabsForDatabaseSwitch: (...a: unknown[]) => suspendTabsForDatabaseSwitch(...a),
   restorePersistedState: (...a: unknown[]) => restorePersistedState(...a),
   addTab: (...a: unknown[]) => addTab(...a),
   DAILY_JOURNAL_TAB_ID: 'daily-journal',
