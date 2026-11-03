@@ -713,35 +713,15 @@ pub async fn run(cli: Cli) -> Result<()> {
     match dispatch(cli).await {
         Ok(()) => Ok(()),
         Err(error) => {
-            let error = note_version_skew(error, socket.as_deref()).await;
+            #[cfg(unix)]
+            let sock = resolve_socket_path(socket.as_deref());
+            #[cfg(windows)]
+            let sock = std::path::PathBuf::from(resolve_pipe_name(socket.as_deref()));
+            // A failure the daemon reported may be a CLI and daemon from
+            // different releases; only such a failure pays for the lookup.
+            let error = version_skew::note_for(error, &sock, version_skew::CLI_VERSION).await;
             Err(render_status(render_refusal(error)))
         }
-    }
-}
-
-/// Adds the "update NodeSpace" advice to a command that failed with a daemon
-/// status when the daemon is on a different release than this CLI.
-///
-/// Only a failure pays for the extra daemon call: a command that succeeded is
-/// never slowed down or failed over a version difference. A failure that is
-/// not a daemon status (a connection error, a bad argument) is left alone.
-pub async fn note_version_skew(error: anyhow::Error, socket: Option<&str>) -> anyhow::Error {
-    let is_status = error
-        .chain()
-        .any(|cause| cause.downcast_ref::<tonic::Status>().is_some());
-    if !is_status {
-        return error;
-    }
-    #[cfg(unix)]
-    let sock = resolve_socket_path(socket);
-    #[cfg(windows)]
-    let sock = std::path::PathBuf::from(resolve_pipe_name(socket));
-    let Some(daemon) = version_skew::daemon_version(&sock).await else {
-        return error;
-    };
-    match version_skew::skew_message(version_skew::CLI_VERSION, &daemon) {
-        Some(note) => error.context(note),
-        None => error,
     }
 }
 

@@ -1228,28 +1228,39 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
     let _ = shutdown.send(());
 }
 
-/// A failed command adds no advice when the daemon matches this CLI, and a
-/// daemon that cannot be reached adds none either.
+/// The lookup against a live daemon: a CLI on another version gets the advice
+/// for a status that may come from skew, with the original error first, and
+/// nothing for other statuses, matching versions, or an unreachable daemon.
 #[tokio::test]
-async fn failed_command_against_a_matching_daemon_gets_no_update_advice() {
+async fn failed_command_against_a_mismatched_daemon_gets_update_advice() {
+    use nodespace_cli::version_skew::{note_for, CLI_VERSION};
     let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
-    let version = nodespace_cli::version_skew::daemon_version(&sock).await;
-    assert_eq!(
-        version.as_deref(),
-        Some(nodespace_cli::version_skew::CLI_VERSION)
+    let status = |code| anyhow::Error::new(tonic::Status::new(code, "the real error"));
+
+    let noted = note_for(status(Code::Unimplemented), &sock, "0.0.1").await;
+    let text = format!("{noted:?}");
+    assert!(
+        text.contains("0.0.1") && text.contains(CLI_VERSION),
+        "{text}"
+    );
+    assert!(text.contains("update NodeSpace"), "{text}");
+    assert!(
+        text.find("the real error").unwrap() < text.find("update NodeSpace").unwrap(),
+        "{text}"
     );
 
-    let status = anyhow::Error::new(tonic::Status::not_found("no such node"));
-    let kept = nodespace_cli::note_version_skew(status, Some(sock.to_str().unwrap())).await;
-    assert!(
-        !format!("{kept:?}").contains("update NodeSpace"),
-        "matching versions must not add advice: {kept:?}"
-    );
+    let not_found = note_for(status(Code::NotFound), &sock, "0.0.1").await;
+    assert!(!format!("{not_found:?}").contains("update NodeSpace"));
+
+    let plain = note_for(anyhow::anyhow!("bad argument"), &sock, "0.0.1").await;
+    assert_eq!(format!("{plain:?}"), "bad argument");
+
+    let matching = note_for(status(Code::Unimplemented), &sock, CLI_VERSION).await;
+    assert!(!format!("{matching:?}").contains("update NodeSpace"));
 
     let gone = tempfile::TempDir::new().unwrap().path().join("none.sock");
-    let status = anyhow::Error::new(tonic::Status::not_found("no such node"));
-    let kept = nodespace_cli::note_version_skew(status, gone.to_str()).await;
-    assert!(!format!("{kept:?}").contains("update NodeSpace"));
+    let unreachable = note_for(status(Code::Unimplemented), &gone, "0.0.1").await;
+    assert!(!format!("{unreachable:?}").contains("update NodeSpace"));
     let _ = shutdown.send(());
 }
 

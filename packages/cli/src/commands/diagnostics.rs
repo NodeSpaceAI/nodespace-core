@@ -147,23 +147,21 @@ pub async fn collect(
     let mut warnings: Vec<String> = Vec::new();
 
     // A CLI and daemon from different releases qualify every figure below, so
-    // say so in the report; it is a warning, not a failure, because the
-    // report itself is still sound.
-    let daemon_version = match node_client
+    // say so in the report. Neither a mismatch nor a daemon too old to report
+    // its version fails the report: both are warnings.
+    let (daemon_version, version_warning) = match node_client
         .get_daemon_version(GetDaemonVersionRequest {})
         .await
     {
-        Ok(response) => Some(response.into_inner().version),
-        Err(e) => {
-            record_failure("GetDaemonVersion", e, &mut errors)?;
-            None
+        Ok(response) => crate::version_skew::diagnostics_version(
+            crate::version_skew::CLI_VERSION,
+            Ok(response.into_inner().version),
+        ),
+        Err(status) => {
+            crate::version_skew::diagnostics_version(crate::version_skew::CLI_VERSION, Err(&status))
         }
     };
-    if let Some(note) = daemon_version.as_deref().and_then(|daemon| {
-        crate::version_skew::skew_message(crate::version_skew::CLI_VERSION, daemon)
-    }) {
-        warnings.push(note);
-    }
+    warnings.extend(version_warning);
 
     // Enumerate the registry.
     let (databases, default_id) = match db_client.list(ListDatabasesRequest {}).await {

@@ -62,6 +62,50 @@ pub fn skew_message(cli: &str, daemon: &str) -> Option<String> {
     Some(format!("{head} {advice}"))
 }
 
+/// Status codes a version difference can plausibly produce: an RPC the other
+/// side lacks or changed, or a request it cannot decode. Everything else
+/// (not found, already exists, permission denied, ...) is the user's own
+/// error and never gets the update advice.
+pub fn may_come_from_skew(code: tonic::Code) -> bool {
+    use tonic::Code::{FailedPrecondition, Internal, InvalidArgument, Unimplemented, Unknown};
+    matches!(
+        code,
+        Unimplemented | InvalidArgument | Unknown | Internal | FailedPrecondition
+    )
+}
+
+/// The first gRPC status code in an error's chain.
+pub fn status_code(error: &anyhow::Error) -> Option<tonic::Code> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<tonic::Status>())
+        .map(tonic::Status::code)
+}
+
+/// What `diagnostics` shows for the daemon's version: the version when it
+/// answered, and a warning when it differs from `cli` or could not be read.
+/// A daemon too old to report its version is a reason to update, not a
+/// failure of the report.
+pub fn diagnostics_version(
+    cli: &str,
+    daemon: Result<String, &tonic::Status>,
+) -> (Option<String>, Option<String>) {
+    match daemon {
+        Ok(version) => {
+            let warning = skew_message(cli, &version);
+            (Some(version), warning)
+        }
+        Err(status) => (
+            None,
+            Some(format!(
+                "The daemon's version could not be read ({:?}); it may predate version reporting. \
+                 The nodespace CLI is version {cli}: update NodeSpace so both come from the same release.",
+                status.code()
+            )),
+        ),
+    }
+}
+
 /// Asks the daemon at `sock` for its version, `None` when it cannot answer
 /// promptly (down, busy, or too old to know the RPC).
 pub async fn daemon_version(sock: &std::path::Path) -> Option<String> {
@@ -78,6 +122,32 @@ pub async fn daemon_version(sock: &std::path::Path) -> Option<String> {
         .await
         .ok()
         .flatten()
+}
+
+/// Adds the update advice to `error` for a daemon on `daemon` while the CLI is
+/// `cli`: only for a status that may come from skew, and with the original
+/// error first so the real error stays the headline. Any other error, or a
+/// matching version, is returned untouched.
+pub fn annotate(error: anyhow::Error, cli: &str, daemon: &str) -> anyhow::Error {
+    if !status_code(&error).is_some_and(may_come_from_skew) {
+        return error;
+    }
+    match skew_message(cli, daemon) {
+        Some(note) => anyhow::anyhow!("{:?}\n\n{note}", crate::render_status(error)),
+        None => error,
+    }
+}
+
+/// [`annotate`] with the daemon's version fetched from `sock`. The lookup runs
+/// only for a status that may come from skew, so other failures pay nothing.
+pub async fn note_for(error: anyhow::Error, sock: &std::path::Path, cli: &str) -> anyhow::Error {
+    if !status_code(&error).is_some_and(may_come_from_skew) {
+        return error;
+    }
+    match daemon_version(sock).await {
+        Some(daemon) => annotate(error, cli, &daemon),
+        None => error,
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +186,83 @@ mod tests {
         let message = skew_message("0.3.10", "weird").expect("mismatch");
         assert!(message.contains("weird") && message.contains("0.3.10"));
         assert!(message.contains("Update NodeSpace"));
+    }
+
+    fn status_error(code: tonic::Code) -> anyhow::Error {
+        anyhow::Error::new(tonic::Status::new(code, "boom")).context("while doing it")
+    }
+
+    #[test]
+    fn mismatch_adds_advice_after_the_original_error() {
+        let error = annotate(status_error(tonic::Code::Unimplemented), "0.2.8", "0.3.10");
+        let text = format!("{error:?}");
+        assert!(text.contains("boom"), "{text}");
+        assert!(text.contains("0.2.8") && text.contains("0.3.10"), "{text}");
+        assert!(
+            text.find("boom").unwrap() < text.find("update NodeSpace").unwrap(),
+            "the original error must come first: {text}"
+        );
+    }
+
+    #[test]
+    fn matching_versions_leave_the_error_alone() {
+        let error = annotate(status_error(tonic::Code::Internal), "0.3.10", "0.3.10");
+        assert!(!format!("{error:?}").contains("update NodeSpace"));
+    }
+
+    #[test]
+    fn an_error_that_is_not_a_status_is_untouched() {
+        let error = annotate(anyhow::anyhow!("bad argument"), "0.2.8", "0.3.10");
+        assert_eq!(format!("{error:?}"), "bad argument");
+    }
+
+    #[test]
+    fn only_codes_that_can_come_from_skew_get_the_advice() {
+        use tonic::Code::*;
+        for code in [
+            Unimplemented,
+            InvalidArgument,
+            Unknown,
+            Internal,
+            FailedPrecondition,
+        ] {
+            let error = annotate(status_error(code), "0.2.8", "0.3.10");
+            assert!(
+                format!("{error:?}").contains("update NodeSpace"),
+                "{code:?}"
+            );
+        }
+        for code in [
+            NotFound,
+            AlreadyExists,
+            PermissionDenied,
+            Unauthenticated,
+            Unavailable,
+            Cancelled,
+        ] {
+            let error = annotate(status_error(code), "0.2.8", "0.3.10");
+            assert!(
+                !format!("{error:?}").contains("update NodeSpace"),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics_warns_on_mismatch_and_stays_quiet_on_match() {
+        let (version, warning) = diagnostics_version("0.3.10", Ok("0.3.9".into()));
+        assert_eq!(version.as_deref(), Some("0.3.9"));
+        assert!(warning.expect("mismatch warns").contains("0.3.9"));
+        assert_eq!(diagnostics_version("0.3.10", Ok("0.3.10".into())).1, None);
+    }
+
+    #[test]
+    fn diagnostics_treats_an_unreadable_version_as_a_warning() {
+        let status = tonic::Status::unimplemented("no such rpc");
+        let (version, warning) = diagnostics_version("0.3.10", Err(&status));
+        assert_eq!(version, None);
+        let warning = warning.expect("unknown version warns");
+        assert!(warning.contains("predate") && warning.contains("update NodeSpace"));
     }
 
     #[test]

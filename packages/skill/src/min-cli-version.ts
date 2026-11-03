@@ -51,3 +51,24 @@ export function stampMinCliVersion(skill: string, version: string): string {
   }
   return skill.split(MIN_CLI_VERSION_PLACEHOLDER).join(version.trim().replace(/^v/, ''));
 }
+
+/**
+ * `skill` ready to install from the package at `packageRoot`: a body that
+ * still holds the placeholder (a source checkout, whose SKILL.md is unstamped)
+ * gets the workspace version of the checkout the package sits in
+ * (`<root>/packages/skill`). A body with none (a staged or published copy) is
+ * returned as is. A placeholder that cannot be resolved throws, so the
+ * placeholder is never written out as if it were a version.
+ */
+export function stampForInstall(skill: string, packageRoot: string): string {
+  if (!skill.includes(MIN_CLI_VERSION_PLACEHOLDER)) return skill;
+  let version: string;
+  try {
+    version = workspaceVersion(join(packageRoot, '..', '..'));
+  } catch (err) {
+    throw new Error(
+      `SKILL.md at ${packageRoot} has no minimum CLI version stamped and none can be read from a workspace Cargo.toml: ${(err as Error).message}`,
+    );
+  }
+  return stampMinCliVersion(skill, version);
+}
