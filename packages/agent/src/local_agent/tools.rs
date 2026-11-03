@@ -711,15 +711,9 @@ fn unknown_top_level_keys(args: &Value, known: &[&str]) -> serde_json::Map<Strin
 
 /// Truncate a string to `max_chars`, appending `[truncated]` if truncated.
 fn truncate(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        // Find a safe char boundary
-        let mut end = max_chars;
-        while !s.is_char_boundary(end) && end > 0 {
-            end -= 1;
-        }
-        format!("{}[truncated]", &s[..end])
+    match s.char_indices().nth(max_chars) {
+        None => s.to_string(),
+        Some((end, _)) => format!("{}[truncated]", &s[..end]),
     }
 }
 
@@ -8597,6 +8591,14 @@ mod tests {
         let result = truncate(&s, BODY_TRUNCATE_SUMMARY);
         assert!(result.ends_with("[truncated]"));
         assert!(result.len() <= BODY_TRUNCATE_SUMMARY + "[truncated]".len());
+    }
+
+    #[test]
+    fn truncate_counts_characters_not_bytes() {
+        let cjk = "漢".repeat(10);
+        assert_eq!(truncate(&cjk, 10), cjk);
+        assert_eq!(truncate(&cjk, 4), format!("{}[truncated]", "漢".repeat(4)));
+        assert_eq!(truncate("abc", 0), "[truncated]");
     }
 
     #[test]
