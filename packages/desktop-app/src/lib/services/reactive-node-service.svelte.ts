@@ -601,7 +601,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     if (!currentNode || !previousNode) return;
 
-    const cleanedContent = stripFormattingSyntax(currentNode.content);
+    const mergedContent = currentNode.content;
+    const cleanedContent = stripFormattingSyntax(mergedContent);
     const combinedContent = previousNode.content + cleanedContent;
     const mergePosition = previousNode.content.length;
 
@@ -645,8 +646,30 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // still owns). With children, the delete therefore waits until every child move has been
     // confirmed; a failed move aborts the whole merge instead.
     const finishMerge = (): void => {
-      // Content update must persist before the delete
-      sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, [previousNodeId]);
+      // Text typed into the merged row while its children were moving is carried into the
+      // target before the row goes, so a merge never discards it.
+      const latest = sharedNodeStore.getNode(currentNodeId);
+      if (latest && latest.content !== mergedContent) {
+        const target = sharedNodeStore.getNode(previousNodeId);
+        if (target) {
+          // Only text inserted into the row is carried; what it already held is in the
+          // target. Deleting text from the row is not replayed on the target.
+          const typed = insertedText(mergedContent, latest.content);
+          if (typed !== '') {
+            sharedNodeStore.updateNode(
+              previousNodeId,
+              { content: target.content + typed },
+              contentUpdateSource,
+              { persist: 'immediate' }
+            );
+          }
+        }
+      }
+      // A merged row deleted remotely meanwhile is already gone
+      if (latest) {
+        // Content update must persist before the delete
+        sharedNodeStore.deleteNode(currentNodeId, viewerSource, false, [previousNodeId]);
+      }
       delete _uiState[currentNodeId];
 
       // CRITICAL: Must reassign (not mutate) for Svelte 5 reactivity
@@ -661,14 +684,20 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (promotions.length === 0) {
       finishMerge();
     } else {
-      // Known limitations while the moves are in flight: text typed into the target is not
-      // reverted by an abort (the content is then duplicated, never lost), and text typed
-      // into the merged row is discarded when the merge succeeds.
+      // Known limitation while the moves are in flight: text typed into the target is not
+      // reverted by an abort (the content is then duplicated, never lost).
       combiningNodeIds.add(currentNodeId);
       void trackMoveOperation(
         [currentNodeId, ...promotions.map((p) => p.childId)],
         async (ticket) => {
           const committed = new Set<string>();
+          const abandoned = new Set<string>();
+          // An abandoned child promoted to the root level must not linger in the view.
+          const discardAbandoned = (): void => {
+            if (abandoned.size === 0) return;
+            _rootNodeIds = _rootNodeIds.filter((id) => !abandoned.has(id));
+            for (const id of abandoned) delete _uiState[id];
+          };
           try {
             await waitForPendingMoveOperations();
             // Pending creates/edits of the children must reach the daemon before they move.
@@ -678,17 +707,33 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             let previousChildId: string | null = null;
             for (const promotion of promotions) {
               const fresh = sharedNodeStore.getNode(promotion.childId);
-              if (!fresh) throw new Error(`Child ${promotion.childId} no longer exists`);
+              if (!fresh) {
+                // Deleted remotely: the delete wins, so this child's move is abandoned.
+                // Merely evicted from the cache is not deleted: that aborts the merge.
+                if (!(await isConfirmedDeleted(promotion.childId))) {
+                  throw new Error(`Child ${promotion.childId} is no longer cached`);
+                }
+                abandoned.add(promotion.childId);
+                continue;
+              }
               // Keep the children's relative order: the first goes after the anchor, the rest
               // after the child before them.
               const position: InsertPosition =
                 previousChildId !== null && promotion.insertPosition.type === 'after'
                   ? { type: 'after', siblingId: previousChildId }
                   : promotion.insertPosition;
-              await persistMove(promotion.childId, fresh.version, promotion.newParentId, position);
+              try {
+                await persistMove(promotion.childId, fresh.version, promotion.newParentId, position);
+              } catch (moveError) {
+                // Deleted remotely while this move was in flight: abandon it, keep going.
+                if (!(await isConfirmedDeleted(promotion.childId))) throw moveError;
+                abandoned.add(promotion.childId);
+                continue;
+              }
               committed.add(promotion.childId);
               previousChildId = promotion.childId;
             }
+            discardAbandoned();
             finishMerge();
           } catch (error) {
             log.error('[combineNodes] Child promotion failed, aborting merge:', error);
@@ -696,8 +741,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             // the merged node. Nothing is deleted.
             rollbackChildPromotions(
               currentNodeId,
-              promotions.filter((p) => !committed.has(p.childId))
+              promotions.filter((p) => !committed.has(p.childId) && !abandoned.has(p.childId))
             );
+            discardAbandoned();
             const target = sharedNodeStore.getNode(previousNodeId);
             if (target && target.content === combinedContent) {
               sharedNodeStore.updateNode(
@@ -724,6 +770,24 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     focusManager.focusNodeAtPosition(previousNodeId, mergePosition, paneId);
     events.focusRequested(previousNodeId, mergePosition);
     if (promotions.length > 0) events.hierarchyChanged();
+  }
+
+  /**
+   * The text `after` inserted relative to `before`: what remains once their common prefix and
+   * suffix are removed. A pure deletion yields ''.
+   */
+  function insertedText(before: string, after: string): string {
+    let start = 0;
+    const max = Math.min(before.length, after.length);
+    while (start < max && before[start] === after[start]) start++;
+    let end = 0;
+    while (
+      end < max - start &&
+      before[before.length - 1 - end] === after[after.length - 1 - end]
+    ) {
+      end++;
+    }
+    return after.slice(start, after.length - end);
   }
 
   function stripFormattingSyntax(content: string): string {
@@ -879,6 +943,21 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
    * own relationship events are echo-suppressed — so without it the optimistic,
    * locally computed keys would never be replaced.
    */
+  /**
+   * Whether the daemon confirms `nodeId` no longer exists. A node missing from the store is
+   * not enough: the store also evicts settled nodes that are merely unreachable, so absence
+   * from the cache says nothing about the database. A failed lookup is not a confirmation.
+   */
+  async function isConfirmedDeleted(nodeId: string): Promise<boolean> {
+    if (sharedNodeStore.getNode(nodeId)) return false;
+    try {
+      const node = await backendAdapter.getNode(nodeId);
+      return node === null || node === undefined;
+    } catch {
+      return false;
+    }
+  }
+
   async function persistMove(
     nodeId: string,
     version: number,
@@ -1120,6 +1199,12 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Now safe to move the node (with OCC)
         await persistMove(nodeId, freshNode.version, targetParentId, null);
       } catch (error) {
+        // The node was deleted remotely while its move was in flight: the delete wins, so
+        // the rollback must not bring it back into the tree.
+        if (await isConfirmedDeleted(nodeId)) {
+          log.warn('[indentNode] Node deleted while its move was in flight; move abandoned:', nodeId);
+          return;
+        }
         // Check if error is ignorable (unit test environment or unpersisted nodes)
         const isIgnorableError =
           error instanceof Error &&
@@ -1306,6 +1391,18 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // Trailing siblings move under the node in one atomic RPC: all of them or none
         await persistChildTransfer(nodeId, siblingsBelow);
       } catch (error) {
+        // Deleted remotely while the move was in flight: the delete wins, so no rollback
+        // may bring the node back into the tree.
+        if (await isConfirmedDeleted(nodeId)) {
+          log.warn('[outdentNode] Node deleted while its move was in flight; move abandoned:', nodeId);
+          // The siblings never left the old parent in the daemon: return them there rather
+          // than leaving them under a node that is gone.
+          rollbackSiblingTransfer(nodeId, siblingsBelow, oldParentId);
+          _rootNodeIds = _rootNodeIds.filter((id) => id !== nodeId);
+          delete _uiState[nodeId];
+          events.hierarchyChanged();
+          return;
+        }
         // Check if error is ignorable
         const isIgnorableError =
           error instanceof Error &&

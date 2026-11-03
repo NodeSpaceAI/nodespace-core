@@ -1579,6 +1579,78 @@ describe('ReactiveNodeService - Indent/Outdent Node', () => {
     expect(events.hierarchyChanged).toHaveBeenCalled();
   });
 
+  it('indentNode does not resurrect a node deleted remotely while its move is in flight', async () => {
+    const { backendAdapter } = await import('$lib/services/backend-adapter');
+    let rejectMove: (reason: Error) => void = () => {};
+    let moveStarted = false;
+    vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+      moveStarted = true;
+      return new Promise((_resolve, reject) => {
+        rejectMove = reject;
+      });
+    });
+
+    await service.indentNode('sibling');
+    await vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 });
+    const hierarchyCalls = vi.mocked(events.hierarchyChanged).mock.calls.length;
+    _sharedNodeStore.deleteNode('sibling', { type: 'database', reason: 'domain-event' }, true);
+    rejectMove(new Error('Validation failed: Node cannot have children'));
+    await waitForPendingMoveOperations();
+
+    // No rollback ran: it would re-announce the hierarchy for a node that is gone
+    expect(vi.mocked(events.hierarchyChanged).mock.calls.length).toBe(hierarchyCalls);
+    expect(service.getUIState('sibling')?.depth).toBe(1);
+  });
+
+  it('outdentNode returns the siblings to their old parent when the node is deleted remotely mid-move', async () => {
+    const { backendAdapter } = await import('$lib/services/backend-adapter');
+    const { structureTree } = await import('$lib/stores/reactive-structure-tree.svelte');
+    const mk = (id: string): Node => ({
+      lifecycleStatus: 'active',
+      id,
+      nodeType: 'text',
+      content: id,
+      version: 1,
+      properties: {},
+      createdAt: new Date().toISOString(),
+      modifiedAt: new Date().toISOString()
+    });
+    const [oldParent, moving, below] = [mk('op'), mk('mv'), mk('below')];
+    service.initializeNodes([oldParent, moving, below]);
+    const spies = [
+      vi.spyOn(_sharedNodeStore, 'getParentsForNode').mockImplementation((id) =>
+        id === 'mv' ? [oldParent] : []
+      ),
+      vi.spyOn(_sharedNodeStore, 'getNodesForParent').mockImplementation((id) =>
+        id === 'op' ? [moving, below] : []
+      ),
+    ];
+    vi.mocked(structureTree.getParent).mockImplementation((id) => (id === 'below' ? 'mv' : null));
+    vi.mocked(structureTree.moveInMemoryRelationship).mockClear();
+    let rejectMove: (reason: Error) => void = () => {};
+    let moveStarted = false;
+    vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+      moveStarted = true;
+      return new Promise((_resolve, reject) => {
+        rejectMove = reject;
+      });
+    });
+
+    try {
+      await service.outdentNode('mv');
+      await vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 });
+      _sharedNodeStore.deleteNode('mv', { type: 'database', reason: 'domain-event' }, true);
+      rejectMove(new Error('Node not found'));
+      await waitForPendingMoveOperations();
+
+      // The trailing sibling is back under its old parent, not left under the deleted node
+      expect(structureTree.moveInMemoryRelationship).toHaveBeenCalledWith('mv', 'op', 'below');
+    } finally {
+      spies.forEach((spy) => spy.mockRestore());
+      vi.mocked(structureTree.getParent).mockImplementation(() => null);
+    }
+  });
+
   it('outdentNode returns false when node does not exist', async () => {
     const result = await service.outdentNode('non-existent');
     expect(result).toBe(false);
@@ -2131,6 +2203,137 @@ describe('ReactiveNodeService - CombineNodes with Children', () => {
       expect(childrenOf.get('holder')?.map((n) => n.id)).toEqual(['k1']);
       expect(childrenOf.get('current')?.map((n) => n.id)).toEqual(['k2', 'k3']);
       expect(service.findNode('target')?.content).toBe('Target');
+    });
+
+    /** Holds the first move open; returns the controls. */
+    async function holdMove() {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      let resolveMove: (value: MoveReply) => void = () => {};
+      let rejectMove: (reason: Error) => void = () => {};
+      let moveStarted = false;
+      vi.mocked(backendAdapter.moveNode).mockImplementationOnce(() => {
+        moveStarted = true;
+        return new Promise((resolve, reject) => {
+          resolveMove = resolve;
+          rejectMove = reject;
+        });
+      });
+      return {
+        resolveMove: (v: MoveReply) => resolveMove(v),
+        rejectMove: (e: Error) => rejectMove(e),
+        started: () => vi.waitFor(() => expect(moveStarted).toBe(true), { timeout: 3000 })
+      };
+    }
+
+    it('carries text typed into the merged row during the move into the target', async () => {
+      const { deleteSpy } = await setupMerge(['kid']);
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      service.updateNodeContent('current', 'Current and more');
+
+      held.resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      expect(service.findNode('target')?.content).toBe('TargetCurrent and more');
+    });
+
+    it('leaves the target as merged when nothing was typed into the merged row', async () => {
+      await setupMerge(['kid']);
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      held.resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(service.findNode('target')?.content).toBe('TargetCurrent');
+    });
+
+    it('abandons the move of a child deleted remotely and finishes the merge', async () => {
+      const { deleteSpy, childrenOf } = await setupMerge(['kid', 'other']);
+      conflictNotifications.dismissAll();
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      // Deleted by another client while its move is in flight
+      _sharedNodeStore.deleteNode('kid', { type: 'database', reason: 'domain-event' }, true);
+      held.rejectMove(new Error('Node not found'));
+      await waitForPendingMoveOperations();
+
+      // Delete wins: the child is not brought back, and the merge still completes
+      expect(childrenOf.get('current')?.map((n) => n.id)).not.toContain('kid');
+      expect(conflictNotifications.notifications.map((n) => n.conflictType)).not.toContain(
+        'child-transfer-failure'
+      );
+      expect(deleteSpy.mock.calls.map((c) => c[0])).toContain('current');
+      expect(service.findNode('target')?.content).toBe('TargetCurrent');
+    });
+
+    it('aborts the merge for a child that is only evicted from the cache', async () => {
+      const { backendAdapter } = await import('$lib/services/backend-adapter');
+      const { deleteSpy, childrenOf } = await setupMerge(['kid', 'other']);
+      conflictNotifications.dismissAll();
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      // Evicted from the cache: gone from the store, still in the database
+      _sharedNodeStore.deleteNode('other', { type: 'database', reason: 'eviction' }, true);
+      vi.mocked(backendAdapter.getNode).mockResolvedValueOnce(mkNode('other', 'other'));
+      held.resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(deleteSpy.mock.calls.map((c) => c[0])).not.toContain('current');
+      expect(service.findNode('current')).not.toBeNull();
+      expect(conflictNotifications.notifications.map((n) => n.conflictType)).toContain(
+        'child-transfer-failure'
+      );
+      expect(childrenOf.get('current')?.map((n) => n.id)).toContain('other');
+    });
+
+    it('drops a remotely deleted child promoted to the root level from the view', async () => {
+      await setupMerge(['kid', 'other'], false);
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      expect(service.rootNodeIds).toContain('kid');
+      _sharedNodeStore.deleteNode('kid', { type: 'database', reason: 'domain-event' }, true);
+      held.rejectMove(new Error('Node not found'));
+      await waitForPendingMoveOperations();
+
+      expect(service.rootNodeIds).not.toContain('kid');
+      expect(service.getUIState('kid')).toBeUndefined();
+    });
+
+    it('does not duplicate text when the merged row is edited without being extended', async () => {
+      await setupMerge(['kid']);
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      service.updateNodeContent('current', 'Curren');
+      held.resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(service.findNode('target')?.content).toBe('TargetCurrent');
+    });
+
+    it('carries only the inserted text when the merged row is edited in the middle', async () => {
+      await setupMerge(['kid']);
+      const held = await holdMove();
+
+      service.combineNodes('current', 'target');
+      await held.started();
+      service.updateNodeContent('current', 'Curxrent');
+      held.resolveMove(moveReply('kid'));
+      await waitForPendingMoveOperations();
+
+      expect(service.findNode('target')?.content).toBe('TargetCurrentx');
     });
   });
 
