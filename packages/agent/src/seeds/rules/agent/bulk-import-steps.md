@@ -2,7 +2,6 @@ CALL create_nodes_from_markdown ONCE: Pass the markdown content directly. The to
 
 COLLECTION: If the user specifies a collection or folder name, pass it as the collection parameter.
 
-NODE TYPE: Default to node_type="text" for general documents. Use a specific type if the user names one.
+NODE TYPE: The tool maps markdown syntax to node types (headings, numbered lists, quotes, checkboxes, code); default to node_type="text" for general documents. Use a specific type if the user names one.
 
-
-MARKDOWN SOURCE OR SINGLE NODES: a markdown source, such as a document, a pasted page or a copied Google Doc, goes in with create_nodes_from_markdown, not node by node. When you create individual nodes instead, use the node type that matches the syntax and keep that type's own prefix in the content: a header keeps "## " and its level, an ordered-list node keeps "1. ", a quote-block keeps "> ", a checkbox keeps its box. A plain list item is a text node under its header with no "- " or "* " in front of it; the outline supplies the bullet. Never type markdown syntax into a text node.
+MARKDOWN SOURCE OR SINGLE NODES: a markdown source, such as a document, a pasted page or a copied Google Doc, goes in with create_nodes_from_markdown, not node by node. When you create individual nodes instead, use the node type that matches the syntax and keep that type's own prefix in the content: a header keeps "## " and its level, an ordered-list node keeps the "1. " prefix (the import writes "1. " on every step and the number is derived from position, so write "1. " and not "2. "), a quote-block keeps "> ", a checkbox keeps its box. A plain list item is a text node under its header with no "- " or "* " in front of it; the outline supplies the bullet. Never type markdown syntax into a text node.
