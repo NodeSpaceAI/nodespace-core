@@ -9,10 +9,8 @@
  * - In-memory mode (default): Fast, no database, errors suppressed
  * - Database mode (TEST_USE_DATABASE=true): Full integration, errors logged
  *
- * Note: Browser mode detection is handled by the BackendAdapter pattern in
- * backend-adapter.ts which automatically selects the right transport:
+ * Note: the BackendAdapter in backend-adapter.ts selects the transport:
  * - Tauri IPC (desktop app)
- * - HTTP fetch (browser dev mode via dev-proxy)
  * - Mocks (test environment)
  *
  * @see src/tests/utils/should-use-database.ts for full test utilities

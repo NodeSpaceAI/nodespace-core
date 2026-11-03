@@ -191,7 +191,7 @@ describe('Database Store', () => {
     // left behind by one test silently steers the next one.
     localStorage.clear();
     // The store gates `load()` on the Tauri bridge; present it so these tests
-    // exercise the invoke path. The browser-mode describe removes it.
+    // exercise the invoke path.
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
     databaseStore.databases = [];
     databaseStore.activeDatabaseId = null;
@@ -518,23 +518,6 @@ describe('Database Store', () => {
       });
       await databaseStore.load();
       expect(databaseStore.error).toBe('Database registry is locked by another process');
-    });
-  });
-
-  describe('load in browser dev mode (no Tauri bridge)', () => {
-    beforeEach(() => {
-      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
-    });
-
-    it('presents a single implicit database without erroring or invoking', async () => {
-      await databaseStore.load();
-
-      // No registry query is attempted (the bridge, hence DatabaseService, is absent).
-      expect(mockInvoke).not.toHaveBeenCalledWith('list_databases');
-      expect(databaseStore.error).toBeNull();
-      expect(databaseStore.databases).toHaveLength(1);
-      expect(databaseStore.activeDatabaseId).toBe(databaseStore.databases[0].id);
-      expect(databaseStore.activeDatabase).not.toBeNull();
     });
   });
 
@@ -957,15 +940,6 @@ describe('Database Store', () => {
 
       await databaseStore.switchTo('a');
 
-      expect(onDatabaseActivated).not.toHaveBeenCalled();
-    });
-
-    it('does not fire in browser dev mode', async () => {
-      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
-
-      await databaseStore.load();
-
-      expect(databaseStore.activeDatabaseId).not.toBeNull();
       expect(onDatabaseActivated).not.toHaveBeenCalled();
     });
 

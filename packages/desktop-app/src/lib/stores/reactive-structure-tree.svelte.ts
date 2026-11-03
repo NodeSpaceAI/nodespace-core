@@ -138,8 +138,6 @@ export class ReactiveStructureTree {
   /**
    * Add a child with binary search insertion to maintain sort by order
    *
-   * Note: This method is public to support browser mode SSE sync (BrowserSyncService)
-   * which needs to update the tree structure when external changes are detected.
    */
   addChild(rel: HierarchyRelationship) {
     this.addChildInternal(rel);
@@ -216,8 +214,6 @@ export class ReactiveStructureTree {
   /**
    * Remove a child from parent's children
    *
-   * Note: This method is public to support browser mode SSE sync (BrowserSyncService)
-   * which needs to update the tree structure when external changes are detected.
    */
   removeChild(rel: HierarchyRelationship) {
     const parentId = rel.parentId;
@@ -367,8 +363,7 @@ export class ReactiveStructureTree {
   }
 
   /**
-   * Move a child from one parent to another in-memory (for browser dev mode)
-   * This is necessary because domain events don't fire automatically in browser mode.
+   * Move a child from one parent to another in-memory
    *
    * @param oldParentId - The current parent ID (null if root)
    * @param newParentId - The new parent ID (null to make the child a root node)

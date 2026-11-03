@@ -62,7 +62,7 @@ export function isAiChatNode(node: Node | AiChatNode): node is AiChatNode {
  * Convert a generic Node to AiChatNativeNode.
  *
  * The backend (`node_to_typed_value` in `nodespace-types`) is the single typing
- * authority: for every transport (Tauri IPC and HTTP/SSE) it promotes the
+ * authority: it promotes the
  * chat's fields to the TOP LEVEL of the node. This converter therefore trusts
  * the flat contract and only fills the schema defaults.
  */

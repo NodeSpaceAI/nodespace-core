@@ -2,60 +2,21 @@
  * Tauri System Commands — non-node Tauri IPC wrappers.
  *
  * Node-CRUD operations were removed in C1a; use backendAdapter directly.
- *
- * In browser/proxy mode, model management and agent commands are forwarded to
- * the dev-proxy's /api/agent/* routes, which translate them to gRPC calls on
- * LocalAgentService. PTY commands remain Tauri-only (native process required).
  */
 
 import type { AcpAgentInfo, LocalAgentStatus } from '$lib/types/agent-types';
 import { invoke } from '@tauri-apps/api/core';
-import { handleResponse } from './http-response';
-
-// ============================================================================
-// Environment Detection
-// ============================================================================
-
-/** Check if running in a Tauri desktop environment. */
-function isTauri(): boolean {
-  return (
-    typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
-  );
-}
-
-const PROXY_BASE = 'http://localhost:3001';
-
-async function proxyGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${PROXY_BASE}${path}`);
-  return handleResponse<T>(res);
-}
-
-async function proxyPost<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${PROXY_BASE}${path}`, {
-    method: 'POST',
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  return handleResponse<T>(res);
-}
-
-async function proxyDelete(path: string): Promise<void> {
-  const res = await fetch(`${PROXY_BASE}${path}`, { method: 'DELETE' });
-  await handleResponse<void>(res);
-}
 
 // ============================================================================
 // Local Agent Commands
 // ============================================================================
 
 export async function localAgentStatus(): Promise<LocalAgentStatus> {
-  if (!isTauri()) return { status: 'idle' };
   return invoke<LocalAgentStatus>('local_agent_status');
 }
 
 export async function localAgentCancelTurn(nodeId: string): Promise<void> {
-  if (isTauri()) return invoke<void>('local_agent_cancel_turn', { nodeId });
-  return proxyPost('/api/agent/cancel-turn', { nodeId });
+  return invoke<void>('local_agent_cancel_turn', { nodeId });
 }
 
 /**
@@ -69,9 +30,7 @@ export async function localAgentOpenBoundChat(
   model?: { provider: string; model: string } | null
 ): Promise<string> {
   const args = { nodeId, provider: model?.provider ?? null, model: model?.model ?? null };
-  if (isTauri()) return invoke<string>('local_agent_open_bound_chat', args);
-  const created = await proxyPost<{ chatId: string }>('/api/agent/bound-chat', args);
-  return created.chatId;
+  return invoke<string>('local_agent_open_bound_chat', args);
 }
 
 // ============================================================================
@@ -111,51 +70,39 @@ export interface ChatModelEntry {
  * Settings; every other call site should omit it and accept a cache hit.
  */
 export async function chatModelList(forceRefresh = false): Promise<ChatModelEntry[]> {
-  if (isTauri()) return invoke<ChatModelEntry[]>('chat_model_list', { forceRefresh });
-  return proxyGet<ChatModelEntry[]>(`/api/agent/models?force_refresh=${forceRefresh}`);
+  return invoke<ChatModelEntry[]>('chat_model_list', { forceRefresh });
 }
 
 export async function chatModelRecommended(): Promise<string> {
-  if (isTauri()) return invoke<string>('chat_model_recommended');
-  const res = await proxyGet<{ modelId: string }>('/api/agent/recommended-model');
-  return res.modelId;
+  return invoke<string>('chat_model_recommended');
 }
 
 export async function chatModelDownload(modelId: string): Promise<void> {
-  if (isTauri()) return invoke<void>('chat_model_download', { modelId });
-  return proxyPost(`/api/agent/models/${encodeURIComponent(modelId)}/download`);
+  return invoke<void>('chat_model_download', { modelId });
 }
 
 export async function chatModelCancelDownload(modelId: string): Promise<void> {
-  if (isTauri()) return invoke<void>('chat_model_cancel_download', { modelId });
-  return proxyDelete(`/api/agent/models/${encodeURIComponent(modelId)}/download`);
+  return invoke<void>('chat_model_cancel_download', { modelId });
 }
 
 export async function chatModelDelete(modelId: string): Promise<void> {
-  if (isTauri()) return invoke<void>('chat_model_delete', { modelId });
-  return proxyDelete(`/api/agent/models/${encodeURIComponent(modelId)}`);
+  return invoke<void>('chat_model_delete', { modelId });
 }
 
 export async function chatModelLoad(modelId: string): Promise<void> {
-  if (isTauri()) return invoke<void>('chat_model_load', { modelId });
-  return proxyPost(`/api/agent/models/${encodeURIComponent(modelId)}/load`);
+  return invoke<void>('chat_model_load', { modelId });
 }
 
 export async function chatModelUnload(): Promise<void> {
-  if (isTauri()) return invoke<void>('chat_model_unload');
-  return proxyPost('/api/agent/models/unload');
+  return invoke<void>('chat_model_unload');
 }
 
 export async function getSystemRamGb(): Promise<number> {
-  if (isTauri()) return invoke<number>('get_system_ram_gb');
-  const res = await proxyGet<{ ramGb: number }>('/api/agent/system-ram');
-  return res.ramGb;
+  return invoke<number>('get_system_ram_gb');
 }
 
 export async function ensureModelReady(modelId: string): Promise<boolean> {
-  if (isTauri()) return invoke<boolean>('ensure_model_ready', { modelId });
-  await proxyPost('/api/agent/ensure-model-ready', { modelId });
-  return false;
+  return invoke<boolean>('ensure_model_ready', { modelId });
 }
 
 // ============================================================================

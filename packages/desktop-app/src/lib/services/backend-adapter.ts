@@ -1,19 +1,14 @@
 /**
- * Backend Adapter Pattern for Tauri IPC vs HTTP Dev Server
- *
- * This module provides a unified interface for backend communication that works
- * in both Tauri desktop mode (IPC) and browser development mode (HTTP).
+ * Backend adapter: the frontend's one door to the backend.
  *
  * # Architecture
  *
- * - **TauriAdapter**: Uses Tauri's `invoke()` for IPC communication (desktop app)
- * - **HttpAdapter**: Uses `fetch()` to communicate with HTTP dev-proxy on port 3001 (browser dev)
- * - **MockAdapter**: Returns empty/default values for test environment
- * - **Auto-detection**: Runtime detection based on `window.__TAURI_INTERNALS__` existence
+ * - **TauriAdapter**: Uses Tauri's `invoke()` for IPC (the desktop app)
+ * - **MockAdapter**: Returns empty/default values for the test environment
  *
- * Both adapters are thin transport shims — the request/response shaping rules
- * (which fields are optional-omit vs. tri-state-clearable, matching
- * node_service.proto) live in ./adapter-core so the two paths cannot drift.
+ * TauriAdapter is a thin transport shim: the request shaping rules (which
+ * fields are optional-omit vs. tri-state-clearable, matching node_service.proto)
+ * live in ./adapter-core.
  *
  * # Usage
  *
@@ -60,12 +55,10 @@ import type { CreateRelationshipResult, RawNodeRelationships } from './relations
 import { createLogger } from '$lib/utils/logger';
 import { withDiagnosticLogging } from './diagnostic-logger';
 import { invoke } from '@tauri-apps/api/core';
-import { handleResponse } from './http-response';
 import {
   buildCreateNodeFields,
   buildExecuteQueryWire,
   normalizeChildrenTree,
-  HTTP_ROUTES,
   type BackendAdapter,
   type CreateNodeInput,
   type UpdateNodeInput,
@@ -132,10 +125,8 @@ class TauriAdapter implements BackendAdapter {
   async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
     // Forwards `update` as-is rather than calling buildTaskNodeUpdatePatch —
     // the tri-state clear/set/no-change encoding for this path is done by
-    // the Rust #[tauri::command] handler, not here. That handler and
-    // dev-proxy's buildTaskNodeUpdatePatch call site can't literally share
-    // code across the language boundary; the adapter contract tests (ADR-048
-    // decision 2) drive both and hold the two encodings to one result.
+    // the Rust #[tauri::command] handler, not here; the Tauri-seam tests
+    // (ADR-048) hold that encoding to its documented result.
     return withDiagnosticLogging(
       'updateTaskNode',
       () => invoke<TaskNode>('update_task_node', { id, version, update }),
@@ -522,402 +513,6 @@ class TauriAdapter implements BackendAdapter {
 }
 
 // ============================================================================
-// HTTP Adapter (Browser Dev Mode - fetch to dev-proxy)
-// ============================================================================
-
-export class HttpAdapter implements BackendAdapter {
-  private readonly baseUrl: string;
-
-  constructor(baseUrl: string = 'http://localhost:3001') {
-    this.baseUrl = baseUrl;
-  }
-
-  private getHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json'
-      // No X-Client-Id header needed
-      // dev-proxy represents all browser clients as single logical client
-    };
-  }
-
-  async createNode(input: CreateNodeInput | Node): Promise<CreatedNode> {
-    const now = new Date().toISOString();
-    const { collectionId, ...fields } = buildCreateNodeFields(input);
-    const requestBody = {
-      ...fields,
-      ...(collectionId ? { collectionIds: [collectionId] } : {}),
-      createdAt: now,
-      modifiedAt: now,
-      version: 1
-    };
-
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.createNode()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(requestBody)
-    });
-
-    return await handleResponse<CreatedNode>(response);
-  }
-
-  async getNode(id: string): Promise<Node | null> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getNode(id)}`);
-    if (response.status === 404) return null;
-    return await handleResponse<Node>(response);
-  }
-
-  async updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<Node>(response);
-  }
-
-  async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateTaskNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<TaskNode>(response);
-  }
-
-  async updateIssueNode(id: string, version: number, update: IssueNodeUpdate): Promise<IssueNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateIssueNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<IssueNode>(response);
-  }
-
-  async updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updatePersonNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<PersonNode>(response);
-  }
-
-  async updateProjectNode(
-    id: string,
-    version: number,
-    update: ProjectNodeUpdate
-  ): Promise<ProjectNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateProjectNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<ProjectNode>(response);
-  }
-
-  async updateSoftwareProjectNode(
-    id: string,
-    version: number,
-    update: SoftwareProjectNodeUpdate
-  ): Promise<SoftwareProjectNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateSoftwareProjectNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<SoftwareProjectNode>(response);
-  }
-
-  async updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateQueryNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<QueryNode>(response);
-  }
-
-  async updatePlayNode(id: string, version: number, update: PlayNodeUpdate): Promise<PlayNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updatePlayNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<PlayNode>(response);
-  }
-
-  async updateCollectionNode(
-    id: string,
-    version: number,
-    update: CollectionNodeUpdate
-  ): Promise<CollectionNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateCollectionNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<CollectionNode>(response);
-  }
-
-  async updateSkillNode(id: string, version: number, update: SkillNodeUpdate): Promise<SkillNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateSkillNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<SkillNode>(response);
-  }
-
-  async updateSpecNode(id: string, version: number, update: SpecNodeUpdate): Promise<SpecNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateSpecNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<SpecNode>(response);
-  }
-
-  async updatePlanNode(id: string, version: number, update: PlanNodeUpdate): Promise<PlanNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updatePlanNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<PlanNode>(response);
-  }
-
-  async updateDecisionNode(id: string, version: number, update: DecisionNodeUpdate): Promise<DecisionNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateDecisionNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<DecisionNode>(response);
-  }
-
-  async updateDatabaseSettingsNode(
-    id: string,
-    version: number,
-    update: DatabaseSettingsNodeUpdate
-  ): Promise<DatabaseSettingsNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateDatabaseSettingsNode(id)}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ ...update, version })
-    });
-    return await handleResponse<DatabaseSettingsNode>(response);
-  }
-
-  async deleteNode(id: string, version: number): Promise<DeleteResult> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.deleteNode(id)}`, {
-      method: 'DELETE',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ version })
-    });
-    return await handleResponse<DeleteResult>(response);
-  }
-
-  async getChildren(parentId: string): Promise<Node[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getChildren(parentId)}`);
-    return await handleResponse<Node[]>(response);
-  }
-
-  async getDescendants(rootNodeId: string): Promise<Node[]> {
-    return getDescendantsViaChildrenTree(
-      rootNodeId,
-      (parentId) => this.getChildrenTree(parentId),
-      (parentId) => this.getChildren(parentId)
-    );
-  }
-
-  async getParent(nodeId: string): Promise<NodeReference | null> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getParent(nodeId)}`);
-    return await handleResponse<NodeReference | null>(response);
-  }
-
-  async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getChildrenTree(parentId)}`);
-    const result = await handleResponse<NodeWithChildren | Record<string, never>>(response);
-    return normalizeChildrenTree(result);
-  }
-
-  async moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<MovedNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.moveNode(nodeId)}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ version, parentId: newParentId, insertPosition })
-    });
-    return handleResponse<MovedNode>(response);
-  }
-
-  async moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<MovedChildren> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.moveChildrenToParent(newParentId)}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ children: children.map(c => ({ nodeId: c.id, version: c.version })) })
-    });
-    return handleResponse<MovedChildren>(response);
-  }
-
-  async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.createMention()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ sourceId: mentioningNodeId, targetId: mentionedNodeId })
-    });
-    await handleResponse<void>(response);
-  }
-
-  async deleteMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.deleteMention()}`, {
-      method: 'DELETE',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ sourceId: mentioningNodeId, targetId: mentionedNodeId })
-    });
-    await handleResponse<void>(response);
-  }
-
-  async getOutgoingMentions(nodeId: string): Promise<string[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getOutgoingMentions(nodeId)}`);
-    return await handleResponse<string[]>(response);
-  }
-
-  async getIncomingMentions(nodeId: string): Promise<string[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getIncomingMentions(nodeId)}`);
-    return await handleResponse<string[]>(response);
-  }
-
-  async getMentioningContainers(nodeId: string): Promise<NodeReference[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getMentioningContainers(nodeId)}`);
-    return await handleResponse<NodeReference[]>(response);
-  }
-
-  async queryNodes(query: NodeQuery): Promise<Node[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.queryNodes()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(query)
-    });
-    return await handleResponse<Node[]>(response);
-  }
-
-  async executeQuery(input: ExecuteQueryInput): Promise<Node[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.executeQuery()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(buildExecuteQueryWire(input))
-    });
-    return await handleResponse<Node[]>(response);
-  }
-
-  async countQuery(input: ExecuteQueryInput): Promise<number> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.countQuery()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(buildExecuteQueryWire(input))
-    });
-    return await handleResponse<number>(response);
-  }
-
-  async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.mentionAutocomplete()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ query, limit })
-    });
-    return await handleResponse<Node[]>(response);
-  }
-
-  async findDuplicateFor(
-    nodeType: string,
-    field: string,
-    value: string,
-    excludeId?: string
-  ): Promise<Node | null> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.findDuplicate()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ nodeType, field, value, excludeId })
-    });
-    return await handleResponse<Node | null>(response);
-  }
-
-  async createContainerNode(input: CreateContainerInput): Promise<string> {
-    // Use createNode with no parent for root node creation
-    const created = await this.createNode({
-      id: crypto.randomUUID(),
-      nodeType: input.nodeType,
-      content: input.content,
-      properties: input.properties,
-      mentions: [],
-      parentId: null
-    });
-    return created.id;
-  }
-
-  async getAllSchemas(): Promise<SchemaNode[]> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getAllSchemas()}`);
-    return handleResponse<SchemaNode[]>(response);
-  }
-
-  async getSchema(schemaId: string): Promise<SchemaNode> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getSchema(schemaId)}`);
-    return handleResponse<SchemaNode>(response);
-  }
-
-  async searchNodesByTitle(nodeType: string | null, titleContains: string, limit?: number): Promise<Node[]> {
-    return this.queryNodes({ nodeType: nodeType ?? undefined, titleContains, limit });
-  }
-
-  async getNodeRelationships(nodeId: string): Promise<RawNodeRelationships> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getNodeRelationships(nodeId)}`);
-    return handleResponse<RawNodeRelationships>(response);
-  }
-
-  async createRelationship(
-    sourceId: string,
-    relationshipName: string,
-    targetId: string,
-    edgeData?: Record<string, unknown>
-  ): Promise<CreateRelationshipResult> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.createRelationship()}`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ sourceId, relationshipName, targetId, edgeData: edgeData ?? null })
-    });
-    return handleResponse<CreateRelationshipResult>(response);
-  }
-
-  async deleteRelationship(sourceId: string, relationshipName: string, targetId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.deleteRelationship()}`, {
-      method: 'DELETE',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ sourceId, relationshipName, targetId })
-    });
-    await handleResponse<void>(response);
-  }
-
-  async updateRelationshipProperties(
-    sourceId: string,
-    relationshipName: string,
-    targetId: string,
-    properties: Record<string, unknown>
-  ): Promise<void> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateRelationshipProperties()}`, {
-      method: 'PATCH',
-      headers: this.getHeaders(),
-      body: JSON.stringify({ sourceId, relationshipName, targetId, properties })
-    });
-    await handleResponse<void>(response);
-  }
-
-  async getDaemonVersion(): Promise<string> {
-    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getDaemonVersion()}`);
-    return handleResponse<string>(response);
-  }
-}
-
-// ============================================================================
 // Shared helpers (not transport-specific — recursion, not wire shaping)
 // ============================================================================
 
@@ -1218,16 +813,6 @@ class MockAdapter implements BackendAdapter {
 // ============================================================================
 
 /**
- * Check if running in Tauri desktop environment
- */
-function isTauriEnvironment(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
-  );
-}
-
-/**
  * Check if running in test environment
  */
 function isTestEnvironment(): boolean {
@@ -1235,28 +820,21 @@ function isTestEnvironment(): boolean {
 }
 
 /**
- * Get the appropriate backend adapter based on runtime environment
+ * Get the backend adapter for the runtime environment
  *
  * - Test environment: Returns MockAdapter (no-op mocks)
- * - Tauri desktop app: Returns TauriAdapter (uses IPC)
- * - Web dev mode: Returns HttpAdapter (uses HTTP to port 3001)
+ * - Otherwise: Returns TauriAdapter (uses IPC)
  */
 export function getBackendAdapter(): BackendAdapter {
   if (isTestEnvironment()) {
     return new MockAdapter();
   }
 
-  if (isTauriEnvironment()) {
-    log.debug('Using Tauri IPC adapter');
-    return new TauriAdapter();
-  }
-
-  log.debug('Using HTTP dev server adapter (port 3001)');
-  return new HttpAdapter();
+  log.debug('Using Tauri IPC adapter');
+  return new TauriAdapter();
 }
 
 /**
  * Singleton instance for convenient access
- * Auto-detects environment and returns appropriate adapter
  */
 export const backendAdapter = getBackendAdapter();

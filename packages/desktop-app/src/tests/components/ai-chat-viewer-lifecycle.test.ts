@@ -5,7 +5,7 @@
  * message input for a chat whatever its lifecycle, and gives lifecycle no
  * meaning of its own, so it never reads the field.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import viewerSource from '$lib/components/viewers/ai-chat-native-node-viewer.svelte?raw';
 
@@ -36,11 +36,6 @@ function seedChat(id: string, lifecycleStatus: 'active' | 'archived'): void {
 }
 
 describe('AiChatNativeNodeViewer lifecycle', () => {
-  beforeEach(() => {
-    // The header's model selector loads its catalog over HTTP in browser mode.
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
-  });
-
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();

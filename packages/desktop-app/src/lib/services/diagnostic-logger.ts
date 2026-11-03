@@ -8,7 +8,6 @@
  * - Logs all backend method calls with full arguments
  * - Logs responses (success) and errors (failure)
  * - Maintains an in-memory log buffer for the diagnostic panel
- * - Works in both Tauri desktop mode and browser dev mode
  */
 
 import { createLogger } from '$lib/utils/logger';

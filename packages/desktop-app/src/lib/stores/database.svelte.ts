@@ -62,33 +62,14 @@ export interface DatabaseRefusal {
 }
 
 /**
- * Whether the Tauri IPC bridge is present. Absent under `dev:browser`, where the
- * app runs in a plain browser against the dev-proxy — which forwards NodeService
- * but has no DatabaseService, so calling the `list_databases` invoke throws
- * `Cannot read properties of undefined (reading 'invoke')`. Same probe the model,
- * agent, and external-link surfaces use.
+ * Whether the Tauri IPC bridge is present. Same probe the model, agent, and
+ * external-link surfaces use.
  */
 function isTauriBridgePresent(): boolean {
   return (
     typeof window !== 'undefined' && ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
   );
 }
-
-/**
- * The single implicit database presented in browser dev mode: the dev-proxy is
- * bound to one daemon/database and exposes no registry, so the switcher shows one
- * concrete, non-switchable entry instead of erroring at boot.
- */
-const IMPLICIT_BROWSER_DATABASE: DatabaseInfo = {
-  id: 'default',
-  name: 'Default',
-  path: '',
-  isDefault: true,
-  status: 'open',
-  createdAt: '',
-  lastOpenedAt: null,
-  extensions: {}
-};
 
 /**
  * The active-database selection is desktop-local (not a daemon concept), so it
@@ -189,27 +170,6 @@ class DatabaseStore {
   async load(): Promise<void> {
     this.loading = true;
     this.error = null;
-
-    // Browser dev mode (dev:browser): no Tauri bridge, so there is no database
-    // registry to query. Present a single implicit database rather than logging a
-    // boot error and rendering the switcher's failure fallback. The Tauri app,
-    // where the bridge is present, is unaffected.
-    if (!isTauriBridgePresent()) {
-      this.databases = [IMPLICIT_BROWSER_DATABASE];
-      this.defaultDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
-      if (this.activeDatabaseId === null) {
-        await restorePersistedState(
-          IMPLICIT_BROWSER_DATABASE.id,
-          isTabResolvable,
-          () => this.activeDatabaseId !== null
-        );
-        if (this.activeDatabaseId === null) {
-          this.activeDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
-        }
-      }
-      this.loading = false;
-      return;
-    }
 
     try {
       const listing = await invoke<DatabaseListing>('list_databases');

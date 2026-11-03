@@ -15,7 +15,6 @@
 import type { Node, CollectionNode } from '$lib/types';
 import { createLogger } from '$lib/utils/logger';
 import { invoke } from '@tauri-apps/api/core';
-import { handleResponse } from './http-response';
 
 const log = createLogger('CollectionService');
 
@@ -45,13 +44,6 @@ export interface CollectionMember {
 // ============================================================================
 // Environment Detection
 // ============================================================================
-
-function isTauriEnvironment(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
-  );
-}
 
 function isTestEnvironment(): boolean {
   return typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
@@ -212,121 +204,15 @@ class MockCollectionService implements CollectionServiceInterface {
 // Singleton Export
 // ============================================================================
 
-// ============================================================================
-// HTTP Collection Service (for browser dev mode)
-// ============================================================================
-
-const DEV_PROXY_URL = 'http://localhost:3001';
-
-class HttpCollectionService implements CollectionServiceInterface {
-  async getAllCollections(): Promise<CollectionInfo[]> {
-    log.debug('Fetching all collections via HTTP');
-    const response = await fetch(`${DEV_PROXY_URL}/api/collections`);
-    return handleResponse<CollectionInfo[]>(response);
-  }
-
-  async getCollectionMembers(collectionId: string): Promise<Node[]> {
-    log.debug('Fetching collection members via HTTP', { collectionId });
-    const response = await fetch(`${DEV_PROXY_URL}/api/collections/${encodeURIComponent(collectionId)}/members`);
-    return handleResponse<Node[]>(response);
-  }
-
-  async getCollectionMembersRecursive(collectionId: string): Promise<Node[]> {
-    // For now, just return direct members (recursive not implemented in dev-proxy)
-    return this.getCollectionMembers(collectionId);
-  }
-
-  async getNodeCollections(_nodeId: string): Promise<string[]> {
-    // Not implemented in dev-proxy yet
-    return [];
-  }
-
-  async findCollectionByPath(_path: string): Promise<CollectionNode | null> {
-    // Not implemented in dev-proxy yet
-    return null;
-  }
-
-  async getCollectionByName(_name: string): Promise<CollectionNode | null> {
-    // Not implemented in dev-proxy yet
-    return null;
-  }
-
-  async addNodeToCollection(nodeId: string, collectionId: string): Promise<void> {
-    log.debug('Adding node to collection via HTTP', { nodeId, collectionId });
-    await this.patchMembership(nodeId, { addToCollectionIds: [collectionId] });
-  }
-
-  async addNodeToCollectionPath(nodeId: string, path: string): Promise<string> {
-    log.debug('Adding node to collection path via HTTP', { nodeId, path });
-    const response = await fetch(
-      `${DEV_PROXY_URL}/api/nodes/${encodeURIComponent(nodeId)}/collections`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collectionPath: path })
-      }
-    );
-    return handleResponse<string>(response);
-  }
-
-  async removeNodeFromCollection(nodeId: string, collectionId: string): Promise<void> {
-    log.debug('Removing node from collection via HTTP', { nodeId, collectionId });
-    await this.patchMembership(nodeId, { removeFromCollectionIds: [collectionId] });
-  }
-
-  /** Change a node's memberships through the dev-proxy's node update. */
-  private async patchMembership(
-    nodeId: string,
-    change: { addToCollectionIds?: string[]; removeFromCollectionIds?: string[] }
-  ): Promise<void> {
-    const response = await fetch(`${DEV_PROXY_URL}/api/nodes/${encodeURIComponent(nodeId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(change)
-    });
-    // The proxy answers with the updated node, which no caller needs.
-    await handleResponse<unknown>(response);
-  }
-
-  async createCollection(_name: string, _description?: string): Promise<string> {
-    // Not implemented in dev-proxy yet
-    return '';
-  }
-
-  async renameCollection(collectionId: string, _version: number, newName: string): Promise<CollectionNode> {
-    // Not implemented in dev-proxy yet
-    return {
-      lifecycleStatus: 'active',
-      id: collectionId,
-      nodeType: 'collection',
-      content: newName,
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString(),
-      version: 1,
-      properties: {}
-    };
-  }
-
-  async deleteCollection(_collectionId: string, _version: number): Promise<void> {
-    // Not implemented in dev-proxy yet
-  }
-}
-
 /**
- * Get the collection service instance based on runtime environment
+ * Get the collection service instance: the mock in tests, otherwise Tauri IPC
  */
 function getCollectionService(): CollectionServiceInterface {
   if (isTestEnvironment()) {
     return new MockCollectionService();
   }
 
-  if (isTauriEnvironment()) {
-    return new TauriCollectionService();
-  }
-
-  // For browser dev mode, use HTTP adapter
-  log.info('Using HTTP collection service for browser dev mode');
-  return new HttpCollectionService();
+  return new TauriCollectionService();
 }
 
 /** Singleton collection service instance */

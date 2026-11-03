@@ -3,8 +3,7 @@
  *
  * Defines the event data structures used for real-time synchronization
  * via domain events. The backend emits domain events from NodeService,
- * which are forwarded to the frontend via Tauri events (desktop) or
- * SSE (browser dev mode). These types are consumed by:
+ * which are forwarded to the frontend via Tauri events. These types are consumed by:
  * - tauri-sync-listener.ts (event bridging)
  * - shared-node-store.svelte.ts (node state)
  * - reactive-structure-tree.svelte.ts (hierarchy state)

@@ -1,10 +1,8 @@
 /**
  * Relationship viewer + editor service.
  *
- * Thin dual-mode transport for the typed-relationship commands, routed through
- * the `backendAdapter` (Tauri IPC in the desktop app, HTTP dev-proxy in browser
- * dev mode) exactly like the schema/query paths — so the relationship feature is
- * validatable in `dev:browser`, not just the real Tauri app. Kept separate from
+ * Thin transport for the typed-relationship commands, routed through the
+ * `backendAdapter` exactly like the schema/query paths. Kept separate from
  * `relationship-grouping.ts` so the pure grouping/orientation logic stays free of
  * the adapter import and remains unit-testable.
  */

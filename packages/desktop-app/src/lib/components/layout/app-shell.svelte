@@ -18,7 +18,6 @@
   import { pluginRegistry } from '$lib/plugins/index';
   import { toggleTheme, setTheme } from '$lib/design/theme';
   import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import { browserSyncService } from '$lib/services/browser-sync-service';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
   import { collectionsData } from '$lib/stores/collections.svelte';
@@ -421,12 +420,6 @@
 
       // Set up MCP event listeners for real-time UI updates
       cleanupMCP = setupMCPListeners(SharedNodeStore.getInstance());
-    } else {
-      // Browser mode: Initialize SSE-based sync for real-time updates
-      // This connects to dev-proxy's /api/events endpoint for external change notifications
-      browserSyncService.initialize().catch((error) => {
-        log.error('Failed to initialize browser sync service:', error);
-      });
     }
 
     // Global click handler for links (nodespace://, http://, https://)
@@ -609,8 +602,6 @@
       if (staleNodesInterval) {
         clearInterval(staleNodesInterval);
       }
-      // Cleanup browser sync service (SSE connection)
-      browserSyncService.destroy();
       // Cleanup click handler (must match capture phase flag)
       document.removeEventListener('click', handleLinkClick, true);
 

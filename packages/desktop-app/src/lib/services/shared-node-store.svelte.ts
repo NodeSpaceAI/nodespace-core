@@ -2738,8 +2738,8 @@ export class SharedNodeStore {
     // the daemon's domain-event broadcast" — see UpdateSource in
     // `$lib/types/update-protocol`. Local user actions use `'viewer'`. The
     // guard relies on no other producer of `'database'` events bypassing the
-    // intended skip behavior; the only consumers today are
-    // `tauri-sync-listener` and `browser-sync-service`.
+    // intended skip behavior; the only consumer today is
+    // `tauri-sync-listener`.
     //
     // Fixes typing corruption (chars dropped/replaced
     // under sustained input as the optimistic store is clobbered by the
@@ -4036,9 +4036,8 @@ export class SharedNodeStore {
         const node = nodes[i];
         this.setNode(node, databaseSource); // skipPersistence removed - database source handles it
 
-        // CRITICAL FIX: Register parent-child edge in structureTree for browser mode
-        // In Tauri mode, domain events populate structureTree automatically.
-        // In browser mode (HTTP adapter), we must register edges manually here.
+        // Register the parent-child edge in structureTree now, rather than waiting
+        // for the domain event to populate it.
         // Use index as order since backend returns children in sorted order.
         structureTree.addInMemoryRelationship(parentId, node.id, i + 1);
       }
@@ -4095,9 +4094,8 @@ export class SharedNodeStore {
    * It recursively flattens all nodes into the store and registers ALL parent-child
    * edges in the structureTree, enabling proper expand/collapse for nested hierarchies.
    *
-   * CRITICAL FOR BROWSER MODE: In Tauri mode, domain events populate the
-   * structureTree automatically. In browser mode (HTTP adapter), we must load
-   * the entire tree upfront and register edges manually.
+   * Domain events also populate the structureTree; loading the entire tree
+   * upfront registers its edges without waiting for them.
    *
    * @param parentId - The parent node ID to load tree for
    * @returns Array of ALL nodes (flattened) loaded from database

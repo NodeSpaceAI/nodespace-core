@@ -417,7 +417,7 @@ describe('daemon-status service', () => {
     expect(callback).not.toHaveBeenCalled();
   });
 
-  it('does nothing outside Tauri (browser mode)', async () => {
+  it('does nothing outside Tauri', async () => {
     mockIsTauri.mockReturnValue(false);
     const { daemonStatus, startDaemonStatusListener } = await import('$lib/services/daemon-status');
     startDaemonStatusListener();

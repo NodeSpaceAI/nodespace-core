@@ -21,7 +21,6 @@ import {
   type QueryFilter,
   type QueryNode,
 } from '$lib/types/query';
-import { storageNodeToApiFields } from '$lib/services/node-normalize';
 import {
   DEFAULT_QUERY_TITLE,
   MATERIALIZED_QUERY_TITLE,
@@ -214,18 +213,6 @@ describe('buildMaterializedProperties', () => {
     });
     expect('sorting' in props).toBe(false);
     expect('limit' in props).toBe(false);
-  });
-
-  // The stored bucket travels back through the same storage → wire promotion
-  // the backend applies, so the reopened query must match what was saved.
-  it('reopens with the same filters, sorting, view and Kanban groupBy', () => {
-    const props = buildMaterializedProperties({ targetType: 'invoice', definition, viewConfig });
-    const wire = storageNodeToApiFields('query', { query: props });
-    const reopened = nodeToQueryNode({ ...node('q', { nodeType: 'query' }), ...wire } as Node);
-
-    expect(reopened.properties).toEqual({});
-    expect(parseQueryDefinition(reopened)).toEqual({ ...definition, targetType: 'invoice' });
-    expect(parseViewConfig(reopened)).toEqual(viewConfig);
   });
 });
 

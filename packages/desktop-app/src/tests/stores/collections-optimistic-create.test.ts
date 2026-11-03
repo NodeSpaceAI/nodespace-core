@@ -181,8 +181,7 @@ describe('optimistic collection creation', () => {
   });
 
   it('treats a falsy id from the backend as a failure rather than a confirmed create', async () => {
-    // The browser dev proxy's unimplemented create resolves '' instead of
-    // throwing. Reconciling that would seed a permanently-exempt collection
+    // A backend that answers a create with '' instead of throwing. Reconciling that would seed a permanently-exempt collection
     // keyed on an empty id, which also collides in the sidebar's keyed each.
     mockCreateCollection.mockResolvedValue('');
 
