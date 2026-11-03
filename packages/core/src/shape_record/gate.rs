@@ -63,6 +63,26 @@ fn snapshot_problems(label: &str, text: &str) -> (Vec<String>, Option<Value>) {
     (problems, Some(value))
 }
 
+/// Why `name` cannot name a release snapshot, if it cannot: three numbers
+/// joined by dots, with no prefix, so it is also a safe file name.
+pub fn release_name_problem(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split('.').collect();
+    let numbers = parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    (!numbers).then(|| format!("'{name}' is not a release name: use three numbers, like 0.3.10"))
+}
+
+/// Every problem that stops `name` from being recorded as a release: its own,
+/// and any the record has now. A release keeps the current snapshot as the
+/// next baseline, so it must not keep one with a change nobody classified.
+pub fn check_release(inputs: &Inputs, name: &str) -> Vec<String> {
+    let mut problems: Vec<String> = release_name_problem(name).into_iter().collect();
+    problems.extend(check(inputs));
+    problems
+}
+
 /// Every problem the gate finds; empty when it passes.
 pub fn check(inputs: &Inputs) -> Vec<String> {
     let mut problems = Vec::new();
@@ -125,7 +145,8 @@ pub fn check(inputs: &Inputs) -> Vec<String> {
     }
     for (id, path) in result.stale {
         problems.push(format!(
-            "entry '{id}' covers {path}, which did not change since snapshot '{baseline_name}'"
+            "entry '{id}' covers {path}, which did not change since snapshot '{baseline_name}' \
+             (or is shallower than the unit a change is reported at)"
         ));
     }
     problems
@@ -146,6 +167,7 @@ mod tests {
         canonical_pretty(&assemble(
             &tables,
             &[],
+            json!({ "text": { "contentRole": "body", "participation": { "embedded": true } } }),
             json!({ "s1": { "key": "k", "configVersion": seed_version, "guidanceVersion": "g" } }),
         ))
     }
@@ -328,5 +350,108 @@ mod tests {
             problems.iter().any(|p| p.contains("no release snapshot")),
             "{problems:?}"
         );
+    }
+
+    /// Flipping a registry entry (a type's participation or content role)
+    /// changes the snapshot, and the check demands an entry for it.
+    #[test]
+    fn flipping_a_registry_entry_demands_an_entry() {
+        let base = snapshot(&["id"], "1");
+        for (from, to, path) in [
+            (
+                "\"embedded\": true",
+                "\"embedded\": false",
+                "registry.text.participation",
+            ),
+            (
+                "\"contentRole\": \"body\"",
+                "\"contentRole\": \"name\"",
+                "registry.text.contentRole",
+            ),
+        ] {
+            assert!(base.contains(from), "{from}");
+            let mut value: Value = serde_json::from_str(&base.replace(from, to)).unwrap();
+            value["hash"] = serde_json::from_str::<Value>(&base).unwrap()["hash"].clone();
+            let flipped = canonical_pretty(&value);
+            let problems = run(&flipped, &flipped, &log(json!([])));
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.starts_with(&format!("{path} changed"))),
+                "{path}: {problems:?}"
+            );
+            let covered = log(json!([entry("flip", "core_schema", "migrate", &[path])]));
+            assert_eq!(
+                run(&flipped, &flipped, &covered),
+                Vec::<String>::new(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_release_name_is_three_numbers() {
+        for good in ["0.3.10", "1.0.0", "10.20.30"] {
+            assert!(release_name_problem(good).is_none(), "{good}");
+        }
+        for bad in [
+            "v0.3.10",
+            "0.3",
+            "0.3.10.1",
+            "../0.3.10",
+            "0.3.x",
+            "",
+            "0.3.10/../x",
+            "baseline",
+            " 0.3.10",
+            "0.3.-1",
+        ] {
+            assert!(release_name_problem(bad).is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_release_is_refused_while_the_record_is_out_of_step() {
+        let changed = snapshot(&["id", "extra"], "1");
+        let inputs = |log: &str| {
+            check_release(
+                &Inputs {
+                    releases: vec![("baseline".to_string(), snapshot(&["id"], "1"))],
+                    current: &changed,
+                    generated: &changed,
+                    change_log: log,
+                },
+                "0.4.0",
+            )
+        };
+        let problems = inputs(&log(json!([])));
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with("tables.node changed")),
+            "{problems:?}"
+        );
+        let covered = log(json!([entry(
+            "add-extra",
+            "table_shape",
+            "refuse",
+            &["tables.node"]
+        )]));
+        assert_eq!(inputs(&covered), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_release_with_a_bad_name_is_refused_even_when_in_step() {
+        let same = snapshot(&["id"], "1");
+        let problems = check_release(
+            &Inputs {
+                releases: vec![("baseline".to_string(), same.clone())],
+                current: &same,
+                generated: &same,
+                change_log: &log(json!([])),
+            },
+            "../x",
+        );
+        assert!(!problems.is_empty());
     }
 }

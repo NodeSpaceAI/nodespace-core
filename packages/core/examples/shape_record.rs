@@ -3,6 +3,7 @@
 //!   generate        write `shape-record/current.json` from this build
 //!   check           the gate: fail when the snapshot or the change log is out of step
 //!   release <name>  copy `current.json` to `shape-record/snapshots/<name>.json`
+//!                   (three numbers, like 0.3.10), once `check` passes
 //!
 //! Usage: `cargo run -q -p nodespace-core --example shape_record -- <command>`
 //! (`bun run shape:gen`, `shape:check`, `shape:release`).
@@ -11,7 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use nodespace_core::shape_record::gate::{check, Inputs};
+use nodespace_core::shape_record::gate::{check, check_release, Inputs};
 use nodespace_core::shape_record::snapshot::generate;
 
 fn dir() -> PathBuf {
@@ -75,11 +76,32 @@ async fn run(args: &[String]) -> Result<(), String> {
         }
         Some("release") => {
             let name = args.get(1).ok_or("release needs a name, e.g. 0.3.10")?;
+            let current = read(dir().join("current.json"))?;
+            let change_log = read(dir().join("change-log.json"))?;
+            let problems = check_release(
+                &Inputs {
+                    releases: releases()?,
+                    current: &current,
+                    generated: &generated,
+                    change_log: &change_log,
+                },
+                name,
+            );
+            if !problems.is_empty() {
+                return Err(format!(
+                    "Not recorded as a release:\n{}",
+                    problems
+                        .iter()
+                        .map(|p| format!("  - {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
             let target = dir().join("snapshots").join(format!("{name}.json"));
             if target.exists() {
                 return Err(format!("{} already exists", target.display()));
             }
-            fs::write(&target, read(dir().join("current.json"))?).map_err(|e| e.to_string())?;
+            fs::write(&target, current).map_err(|e| e.to_string())?;
             println!("wrote {}", target.display());
             Ok(())
         }
