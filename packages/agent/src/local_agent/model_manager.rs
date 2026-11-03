@@ -134,6 +134,19 @@ pub struct GgufModelManager {
     on_progress: ProgressCallback,
     /// ID of the currently loaded model (at most one).
     loaded_model_id: Arc<RwLock<Option<String>>>,
+    /// Where downloads fetch from and how often they report progress, when not
+    /// the catalog's URL and the default interval. Set only by
+    /// [`GgufModelManager::with_download_source`].
+    download_source: Option<DownloadSource>,
+}
+
+/// A replacement download source: the URL fetched for every catalog model and
+/// the minimum time between progress reports.
+#[derive(Clone)]
+struct DownloadSource {
+    url: String,
+    total_size: u64,
+    progress_interval: std::time::Duration,
 }
 
 impl GgufModelManager {
@@ -177,7 +190,32 @@ impl GgufModelManager {
             http_client: reqwest::Client::new(),
             on_progress: Arc::new(RwLock::new(HashMap::new())),
             loaded_model_id: Arc::new(RwLock::new(None)),
+            download_source: None,
         })
+    }
+
+    /// Test seam: fetch every download from `url`, expecting `total_size`
+    /// bytes, and report progress at most once per `progress_interval`,
+    /// instead of the catalog's URL, size and default interval. It exists for
+    /// tests only, so a whole `download` (status changes, progress callback,
+    /// verification) can run against a local server; the free-space check and
+    /// progress percentages use `total_size`. The catalog's SHA-256 is still
+    /// verified after the transfer, so such a download ends in a verification
+    /// failure.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_download_source(
+        mut self,
+        url: String,
+        total_size: u64,
+        progress_interval: std::time::Duration,
+    ) -> Self {
+        self.download_source = Some(DownloadSource {
+            url,
+            total_size,
+            progress_interval,
+        });
+        self
     }
 
     /// Register a progress callback for download events for a specific model.
@@ -295,7 +333,11 @@ impl ModelManager for GgufModelManager {
         }
 
         // Check disk space
-        check_disk_space(&self.models_dir, entry.size_bytes)?;
+        let expected_size = self
+            .download_source
+            .as_ref()
+            .map_or(entry.size_bytes, |source| source.total_size);
+        check_disk_space(&self.models_dir, expected_size)?;
 
         // Create cancellation token for this download
         let cancel_token = CancellationToken::new();
@@ -317,16 +359,19 @@ impl ModelManager for GgufModelManager {
                 ModelStatus::Downloading {
                     progress_pct: 0.0,
                     bytes_downloaded: 0,
-                    bytes_total: entry.size_bytes,
+                    bytes_total: expected_size,
                 },
             );
         }
 
         let partial_path = self.models_dir.join(format!("{}.partial", entry.filename));
         let final_path = self.models_dir.join(entry.filename);
-        let url = entry.url.to_string();
+        let (url, progress_interval) = match &self.download_source {
+            Some(source) => (source.url.clone(), source.progress_interval),
+            None => (entry.url.to_string(), PROGRESS_REPORT_INTERVAL),
+        };
         let expected_sha256 = entry.sha256.to_string();
-        let total_size = entry.size_bytes;
+        let total_size = expected_size;
         let model_id_owned = model_id.to_string();
 
         let statuses = self.statuses.clone();
@@ -346,7 +391,7 @@ impl ModelManager for GgufModelManager {
             cancel_token,
             statuses: statuses.clone(),
             on_progress,
-            progress_interval: PROGRESS_REPORT_INTERVAL,
+            progress_interval,
         })
         .await;
 
@@ -883,6 +928,21 @@ mod tests {
     // `DownloadParams` (including `url`), so tests below drive it directly
     // against a tiny in-process HTTP server instead of the network.
 
+    /// Read the request until the blank line that ends its headers, so the
+    /// response is never sent (and the socket never closed) with the request
+    /// still unread.
+    async fn read_request_head(stream: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            match stream.read(&mut byte).await {
+                Ok(1) => head.push(byte[0]),
+                _ => break,
+            }
+        }
+    }
+
     /// Spawn a minimal one-shot HTTP/1.1 server that serves `body` for every
     /// accepted connection, ignoring the request entirely (no request
     /// parsing needed — these tests never send a Range header). Returns the
@@ -902,8 +962,7 @@ mod tests {
                 let body = body.clone();
                 tokio::spawn(async move {
                     // Drain the request line/headers; content is irrelevant.
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.try_read(&mut buf);
+                    read_request_head(&mut stream).await;
 
                     let header = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -938,8 +997,7 @@ mod tests {
                 let body = body.clone();
                 let chunk_delay = chunk_delay;
                 tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.try_read(&mut buf);
+                    read_request_head(&mut stream).await;
 
                     let header = format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1702,5 +1760,41 @@ mod tests {
         let guard = mgr.on_progress.read().await;
         assert!(guard.contains_key("gemma-4-e4b-q4km"));
         assert!(!guard.contains_key("gemma-4-26b-a4b-q8"));
+    }
+
+    /// `download` honours the replacement source end to end: bytes come from
+    /// the local server, the registered callback sees them, and the catalog's
+    /// checksum rejects the body, leaving the model in an error state.
+    #[tokio::test]
+    async fn download_uses_the_replacement_source_and_reports_progress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url =
+            spawn_slow_fake_model_server(vec![0x5Au8; 64], std::time::Duration::from_millis(1))
+                .await;
+        let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf())
+            .unwrap()
+            .with_download_source(format!("{url}/model.gguf"), 64, std::time::Duration::ZERO);
+
+        let seen: Arc<std::sync::Mutex<Vec<DownloadEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        mgr.set_progress_callback(
+            "gemma-4-e4b-q4km",
+            Box::new(move |evt| seen_cb.lock().unwrap().push(evt)),
+        )
+        .await;
+
+        let result = mgr.download("gemma-4-e4b-q4km").await;
+        assert!(
+            matches!(result, Err(ModelError::VerificationFailed(_))),
+            "the catalog checksum must reject the local body: {result:?}"
+        );
+        let last_reported = seen.lock().unwrap().last().map(|e| e.bytes_downloaded);
+        assert_eq!(last_reported, Some(64));
+        let statuses = mgr.statuses.read().await;
+        assert!(matches!(
+            statuses.get("gemma-4-e4b-q4km"),
+            Some(ModelStatus::Error { .. })
+        ));
     }
 }

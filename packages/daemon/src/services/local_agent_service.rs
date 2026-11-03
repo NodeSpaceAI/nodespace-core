@@ -6949,6 +6949,92 @@ mod tests {
         assert_eq!(event.bytes_total, Some(40));
     }
 
+    /// Serve `body` slowly (a few bytes at a time) over HTTP on a local port, so
+    /// a download has time to cross the progress-report interval.
+    async fn spawn_slow_body_server(body: Vec<u8>) -> String {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let body = body.clone();
+                tokio::spawn(async move {
+                    {
+                        use tokio::io::AsyncReadExt;
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            match stream.read(&mut byte).await {
+                                Ok(1) => head.push(byte[0]),
+                                _ => break,
+                            }
+                        }
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    if stream.write_all(header.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    for chunk in body.chunks(16) {
+                        if stream.write_all(chunk).await.is_err() {
+                            return;
+                        }
+                        let _ = stream.flush().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}/model.gguf")
+    }
+
+    /// A model that has to be downloaded reports byte progress through the live
+    /// sender while the download runs, and the callback holding a sender clone
+    /// is cleared once it returns: dropping the caller's sender then closes the
+    /// channel.
+    #[tokio::test]
+    async fn load_reports_download_bytes_live_and_releases_the_sender() {
+        let models = tempfile::TempDir::new().expect("models dir");
+        let url = spawn_slow_body_server(vec![0x5Au8; 96]).await;
+        let manager = GgufModelManager::with_dir(models.path().to_path_buf())
+            .expect("manager")
+            .with_download_source(url, 96, std::time::Duration::ZERO);
+        let shared = SharedLocalAgent::from_model_manager(
+            Some(Arc::new(manager)),
+            MODEL_SPEC_SNAPSHOT_TIMEOUT,
+        );
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
+        let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
+        let svc = LocalAgentServiceImpl::new(shared, node_service, embedding);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let events = svc
+            .load_model_and_collect_events("gemma-4-e4b-q4km", Some(&tx))
+            .await;
+        drop(tx);
+
+        let mut live = Vec::new();
+        while let Some(item) = rx.recv().await {
+            live.push(item.expect("ok event"));
+        }
+        assert!(
+            live.iter()
+                .any(|e| e.event_type == "downloading" && e.bytes_downloaded == Some(96)),
+            "the download's byte count reaches the live stream: {live:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.event_type == "error"),
+            "the local body fails the catalog checksum: {events:?}"
+        );
+        // `rx.recv()` returned None above, so no sender clone outlived the call.
+    }
+
     /// Unloading waits for the swap lock, so the catalog unload and the engine
     /// reset cannot straddle another load's install.
     #[tokio::test]
