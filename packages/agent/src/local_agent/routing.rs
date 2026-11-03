@@ -579,8 +579,8 @@ pub fn lookup_without_stage1(
 /// that only end in a question mark, and no word of it may name a change,
 /// inflected or not. Anything else takes the ordinary route.
 pub fn decision_for_a_question_in_a_pinned_chat(message: &str) -> Option<RouteDecision> {
-    const OPENERS: [&str; 17] = [
-        "what", "which", "who", "whose", "how", "why", "when", "where", "does", "do", "is", "are",
+    const OPENERS: [&str; 16] = [
+        "what", "which", "who", "whose", "how", "why", "when", "where", "does", "is", "are",
         "show", "list", "tell", "describe", "explain",
     ];
     const ALSO_CHANGES: [&str; 5] = ["convert", "drop", "apply", "go", "extended"];
@@ -593,7 +593,8 @@ pub fn decision_for_a_question_in_a_pinned_chat(message: &str) -> Option<RouteDe
     if !words.first().is_some_and(|w| OPENERS.contains(w)) || asks_for_a_change(message) {
         return None;
     }
-    // Inflected forms: "adding", "added", "removes", "dropped".
+    // Inflected forms: "adding", "added", "removes", "dropped". Stems are cut
+    // by characters, so a word in any script is safe.
     let names_a_change = words.iter().any(|w| {
         let mut forms = vec![w.to_string()];
         for suffix in ["s", "es", "d", "ed", "ing"] {
@@ -601,16 +602,12 @@ pub fn decision_for_a_question_in_a_pinned_chat(message: &str) -> Option<RouteDe
                 forms.push(stem.to_string());
                 if suffix == "ing" {
                     forms.push(format!("{stem}e"));
-                    if let [.., a, b] = stem.as_bytes() {
-                        if a == b {
-                            forms.push(stem[..stem.len() - 1].to_string());
-                        }
-                    }
                 }
-                if suffix == "ed" {
-                    if let [.., a, b] = stem.as_bytes() {
-                        if a == b {
-                            forms.push(stem[..stem.len() - 1].to_string());
+                if suffix == "ing" || suffix == "ed" {
+                    let mut chars = stem.chars();
+                    if let (Some(last), Some(before)) = (chars.next_back(), chars.next_back()) {
+                        if last == before {
+                            forms.push(stem.chars().take(stem.chars().count() - 1).collect());
                         }
                     }
                 }
@@ -4994,6 +4991,13 @@ mod tests {
             "Kannst du ein Feld hinzufuegen?",
             "What about removing the field?",
             "Which field should be dropped?",
+            "Do it",
+            "Do that now",
+            "Do the change",
+            "What \u{1041}ed",
+            "What \u{1041}ing",
+            "What \u{1041}\u{1041}ing",
+            "Why \u{00e9}\u{00e9}ed",
             "How about renaming the status field?",
         ] {
             assert_eq!(

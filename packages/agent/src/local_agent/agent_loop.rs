@@ -17523,6 +17523,35 @@ mod tests {
         assert!(!turn.tools[0].contains(&"update_play".to_string()));
     }
 
+    /// Questions the lookup shortcut that needs no Stage 1 does not already
+    /// catch are still settled by the chat's pin: no Stage-1 generation, the
+    /// pinned skill first, read tools only.
+    #[tokio::test]
+    async fn a_pinned_chat_question_the_workspace_shortcut_misses_is_settled_by_the_pin() {
+        for message in ["Explain this play", "Is the owner field required?"] {
+            assert!(
+                routing::lookup_without_stage1(message, message, false).is_none(),
+                "{message} must not be caught by the older shortcut"
+            );
+            let turn = turn_in_a_play_edit_chat(
+                play_edit_session(true, &[]),
+                message,
+                vec![text_round("It closes a parent.")],
+            )
+            .await;
+            assert_eq!(turn.prompts.len(), 1, "no Stage-1 generation: {message}");
+            let authoring = turn.prompts[0]
+                .find("INSTRUCTIONS FOR authoring")
+                .expect("the pinned skill is rendered");
+            let research = turn.prompts[0]
+                .find("INSTRUCTIONS FOR research")
+                .expect("the retrieved skill is rendered");
+            assert!(authoring < research, "{}", turn.prompts[0]);
+            assert!(turn.tools[0].contains(&"get_play".to_string()));
+            assert!(!turn.tools[0].contains(&"update_play".to_string()));
+        }
+    }
+
     /// A request to change something keeps the write tools, however it is
     /// phrased: it is put to Stage 1 and the pinned skill's tools are whole.
     #[tokio::test]
