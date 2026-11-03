@@ -6,9 +6,8 @@
  * holds, `database.row` renders once per database with that row's id, and a
  * throwing row component takes down only its own outlet.
  *
- * No Tauri bridge is mocked: under plain Happy-DOM `databaseStore.load()` takes
- * its no-bridge branch and yields one implicit database, which the tests copy to
- * get more rows.
+ * The Tauri bridge is mocked: `list_databases` answers with one database, which
+ * the tests copy to get more rows.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor, within } from '@testing-library/svelte';
@@ -25,6 +24,32 @@ vi.mock('$lib/utils/logger', () => ({ createLogger: () => log }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: vi.fn()
 }));
+
+import { mockTauriCore } from '../../helpers/mock-tauri-core';
+
+const defaultDatabase = vi.hoisted(() => ({
+  id: 'default',
+  name: 'Default',
+  path: '',
+  isDefault: true,
+  status: 'open',
+  createdAt: '',
+  lastOpenedAt: null,
+  extensions: {}
+}));
+
+// The registry listing the daemon would answer; any other command fails, as it
+// does without a daemon.
+vi.mock('@tauri-apps/api/core', () =>
+  mockTauriCore({
+    invoke: async (command: string) => {
+      if (command === 'list_databases') {
+        return { databases: [defaultDatabase], defaultDatabaseId: defaultDatabase.id };
+      }
+      throw new Error(`no daemon: ${command}`);
+    }
+  })
+);
 
 import DatabaseSettings from '$lib/components/settings/sections/database-settings.svelte';
 import { databaseStore } from '$lib/stores/database.svelte';
@@ -60,10 +85,12 @@ function headerButtons(container: HTMLElement): string[] {
 
 describe('DatabaseSettings extension slots', () => {
   beforeEach(() => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
     log.error.mockClear();
   });
 
   afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     cleanup();
     uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
     resetTestExtension();

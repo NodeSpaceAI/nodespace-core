@@ -2,7 +2,7 @@
 // because they depend on Tauri, which is not a dependency of nodespace-agent).
 pub mod agent_events;
 
-// Tauri commands module (public for dev-server access)
+// Tauri commands module (public for the app binary and the integration tests)
 pub mod commands;
 
 // Local type mirrors for command layer (severs nodespace_core dep from commands/)

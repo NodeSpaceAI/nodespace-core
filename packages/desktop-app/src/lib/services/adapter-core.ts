@@ -2,21 +2,11 @@
  * Transport-agnostic backend adapter core.
  *
  * The daemon's NodeService contract (packages/proto/proto/node_service.proto) is
- * consumed by three independent client paths — TauriAdapter (IPC), HttpAdapter
- * (fetch), and the dev-proxy (REST→gRPC translation) — plus a fourth copy that
- * used to live in the e2e harness. This module is the single place that encodes
+ * consumed by TauriAdapter (IPC). This module is the single place that encodes
  * *what the wire contract is*: which fields are required vs. optional-omit vs.
- * tri-state-clearable, and what each logical operation is named per transport.
- * TauriAdapter/HttpAdapter/dev-proxy call these builders instead of re-deriving
- * the encoding by hand, so a field/shape change can no longer drift between them
- * silently — it becomes one function to update, used everywhere.
+ * tri-state-clearable.
  */
 
-// This file is imported directly by packages/dev-tools/src/dev-proxy.ts via a
-// relative path (a separate workspace package with no SvelteKit/$lib alias
-// resolution). Keep every `$lib`-aliased import type-only — TypeScript erases
-// type-only imports before Bun ever needs to resolve the specifier, but a
-// value-level `$lib` import here would break dev-proxy at runtime.
 import type {
   CollectionNode,
   CollectionNodeUpdate,
@@ -51,8 +41,6 @@ import type {
 import type { DeleteResult, NodeQuery } from '$lib/types/generated';
 import type { SchemaNode } from '$lib/types/schema-node';
 import type { QueryFilter, SortConfig } from '$lib/types/query';
-// Type-only: relationship-grouping is a pure module (no Tauri/DOM/$lib value
-// imports), so this is erased before the dev-proxy's Bun runtime resolves it.
 import type { CreateRelationshipResult, RawNodeRelationships } from './relationship-grouping';
 
 // ============================================================================
@@ -290,7 +278,7 @@ export interface BackendAdapter {
 /**
  * Normalized CreateNode wire fields, matching CreateNodeRequest in
  * node_service.proto: parentId/insertPosition are omittable (proto `optional`),
- * not merely nullable — a `null` sent over IPC/HTTP is a real "no parent" value
+ * not merely nullable — a `null` sent over IPC is a real "no parent" value
  * on the Rust side, not "field absent."
  */
 export interface CreateNodeFields {
@@ -317,128 +305,6 @@ export function buildCreateNodeFields(input: CreateNodeInput | Node): CreateNode
     ...((input as CreateNodeInput).collectionId
       ? { collectionId: (input as CreateNodeInput).collectionId as string }
       : {}),
-  };
-}
-
-// ============================================================================
-// UpdateTaskNode — tri-state clearable-field encoding
-// ============================================================================
-
-/**
- * Wire encoding for a single "optional, clearable" field, mirroring
- * OptionalStringClear / OptionalTimestampClear in node_service.proto:
- *   - field absent from the patch   → no change (outer None)
- *   - field present, value `null`   → clear the value (Some(None))
- *   - field present, value `T`      → set the value (Some(Some(T)))
- */
-export type ClearableField<T> = { clear: true } | { clear: false; value: T } | undefined;
-
-export interface TaskNodeUpdatePatch {
-  status?: string;
-  priority: ClearableField<string>;
-  dueDate: ClearableField<string>;
-  startedAt: ClearableField<string>;
-  completedAt: ClearableField<string>;
-}
-
-function clearable(value: string | null | undefined): ClearableField<string> {
-  if (value === undefined) return undefined;
-  if (value === null) return { clear: true };
-  return { clear: false, value };
-}
-
-/**
- * The fields each per-field typed update carries: its type's schema fields, by
- * wire name. `satisfies Record<keyof …, true>` makes each list exactly the
- * update interface's keys, so a field added to one can't be missed here.
- */
-const TYPED_UPDATE_FIELDS = {
-  task: {
-    status: true,
-    priority: true,
-    dueDate: true,
-    startedAt: true,
-    completedAt: true
-  } satisfies Record<keyof TaskNodeUpdate, true>,
-  person: {
-    firstName: true,
-    lastName: true,
-    email: true
-  } satisfies Record<keyof PersonNodeUpdate, true>,
-  project: {
-    status: true,
-    priority: true,
-    startDate: true,
-    endDate: true
-  } satisfies Record<keyof ProjectNodeUpdate, true>
-} as const;
-
-/** The core types whose typed update travels as one wire field per schema field. */
-export type PerFieldTypedUpdateType = keyof typeof TYPED_UPDATE_FIELDS;
-
-/** The fields `nodeType`'s typed update carries, by wire name. */
-export function typedUpdateFieldNames(nodeType: PerFieldTypedUpdateType): string[] {
-  return Object.keys(TYPED_UPDATE_FIELDS[nodeType]);
-}
-
-/**
- * The keys of a typed update request body that are not fields of that type's
- * update (`version` travels beside them). `content` and `properties` are the
- * ones a caller is likely to send: both belong to the generic node update.
- */
-export function unknownTypedUpdateKeys(
-  nodeType: PerFieldTypedUpdateType,
-  body: Record<string, unknown>
-): string[] {
-  const fields: Record<string, true> = TYPED_UPDATE_FIELDS[nodeType];
-  return Object.keys(body).filter((key) => key !== 'version' && !Object.hasOwn(fields, key));
-}
-
-/**
- * The single authoritative mapping from the frontend's `TaskNodeUpdate` shape
- * (plain `null` = clear, `undefined`/absent = no change) to the tri-state wire
- * patch the daemon expects. Both the dev-proxy's gRPC request and any future
- * Tauri-side equivalent must derive from this function, not re-implement it.
- */
-export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdatePatch {
-  return {
-    status: update.status,
-    priority: clearable(update.priority),
-    dueDate: clearable(update.dueDate),
-    startedAt: clearable(update.startedAt),
-    completedAt: clearable(update.completedAt)
-  };
-}
-
-export interface PersonNodeUpdatePatch {
-  firstName: ClearableField<string>;
-  lastName: ClearableField<string>;
-  email: ClearableField<string>;
-}
-
-/** `PersonNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
-export function buildPersonNodeUpdatePatch(update: PersonNodeUpdate): PersonNodeUpdatePatch {
-  return {
-    firstName: clearable(update.firstName),
-    lastName: clearable(update.lastName),
-    email: clearable(update.email),
-  };
-}
-
-export interface ProjectNodeUpdatePatch {
-  status?: string;
-  priority: ClearableField<string>;
-  startDate: ClearableField<string>;
-  endDate: ClearableField<string>;
-}
-
-/** `ProjectNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
-export function buildProjectNodeUpdatePatch(update: ProjectNodeUpdate): ProjectNodeUpdatePatch {
-  return {
-    status: update.status,
-    priority: clearable(update.priority),
-    startDate: clearable(update.startDate),
-    endDate: clearable(update.endDate),
   };
 }
 
@@ -495,29 +361,6 @@ export function buildExecuteQueryWire(input: ExecuteQueryInput): ExecuteQueryWir
 }
 
 // ============================================================================
-// MoveNode / CreateNode — InsertPosition wire encoding
-// ============================================================================
-
-/** Wire shape for InsertPosition, matching the `oneof position` in node_service.proto. */
-export type InsertPositionWire =
-  | { beginning: true }
-  | { end: true }
-  | { after: string }
-  | Record<string, never>;
-
-export function encodeInsertPosition(pos: InsertPosition | null | undefined): InsertPositionWire {
-  if (!pos) return {};
-  switch (pos.type) {
-    case 'beginning':
-      return { beginning: true };
-    case 'end':
-      return { end: true };
-    case 'after':
-      return { after: pos.siblingId };
-  }
-}
-
-// ============================================================================
 // Response normalization
 // ============================================================================
 
@@ -528,92 +371,3 @@ export function normalizeChildrenTree(
   if (!result || Object.keys(result).length === 0) return null;
   return result as NodeWithChildren;
 }
-
-// ============================================================================
-// Route table — single source of truth for the HTTP surface
-// ============================================================================
-
-/**
- * HTTP route templates used by both HttpAdapter (to build fetch URLs) and the
- * dev-proxy (to route incoming requests to the matching gRPC call). Keeping
- * these in one place means a path change is a single edit instead of two
- * hand-synced pattern literals.
- */
-export const HTTP_ROUTES = {
-  createNode: () => '/api/nodes',
-  getNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
-  updateNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
-  deleteNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
-  updateTaskNode: (id: string) => `/api/tasks/${encodeURIComponent(id)}`,
-  updateIssueNode: (id: string) => `/api/issues/${encodeURIComponent(id)}`,
-  updatePersonNode: (id: string) => `/api/persons/${encodeURIComponent(id)}`,
-  updateProjectNode: (id: string) => `/api/projects/${encodeURIComponent(id)}`,
-  updateSoftwareProjectNode: (id: string) => `/api/software-projects/${encodeURIComponent(id)}`,
-  updateQueryNode: (id: string) => `/api/queries/${encodeURIComponent(id)}`,
-  updatePlayNode: (id: string) => `/api/plays/${encodeURIComponent(id)}`,
-  updateCollectionNode: (id: string) => `/api/collections/${encodeURIComponent(id)}`,
-  updateSkillNode: (id: string) => `/api/skills/${encodeURIComponent(id)}`,
-  updateSpecNode: (id: string) => `/api/specs/${encodeURIComponent(id)}`,
-  updatePlanNode: (id: string) => `/api/plans/${encodeURIComponent(id)}`,
-  updateDecisionNode: (id: string) => `/api/decisions/${encodeURIComponent(id)}`,
-  updateDatabaseSettingsNode: (id: string) => `/api/database-settings/${encodeURIComponent(id)}`,
-  moveNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}/parent`,
-  moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
-  getChildren: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children`,
-  getChildrenTree: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children-tree`,
-  getParent: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/parent-node`,
-  createMention: () => '/api/mentions',
-  deleteMention: () => '/api/mentions',
-  getOutgoingMentions: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/mentions/outgoing`,
-  getIncomingMentions: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/mentions/incoming`,
-  getMentioningContainers: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/mentions/roots`,
-  queryNodes: () => '/api/query',
-  executeQuery: () => '/api/query/execute',
-  countQuery: () => '/api/query/count',
-  mentionAutocomplete: () => '/api/mentions/autocomplete',
-  findDuplicate: () => '/api/nodes/find-duplicate',
-  getAllSchemas: () => '/api/schemas',
-  getSchema: (schemaId: string) => `/api/schemas/${encodeURIComponent(schemaId)}`,
-  getDaemonVersion: () => '/api/daemon/version',
-  getNodeRelationships: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/relationships`,
-  // create (POST) / delete (DELETE) / update-properties (PATCH) share one URL,
-  // differentiated by HTTP method — mirrors the /api/mentions convention.
-  createRelationship: () => '/api/relationships',
-  deleteRelationship: () => '/api/relationships',
-  updateRelationshipProperties: () => '/api/relationships',
-} as const;
-
-/**
- * Path-matching counterparts as RegExp, for the dev-proxy's router. Templates
- * with a dynamic segment expose the same key as HTTP_ROUTES so a new route
- * only needs one addition here plus one in the handler dispatch, not a
- * hand-copied regex that can drift from the URL the adapter actually builds.
- */
-export const HTTP_ROUTE_PATTERNS = {
-  getNode: /^\/api\/nodes\/([^/]+)$/,
-  updateNode: /^\/api\/nodes\/([^/]+)$/,
-  deleteNode: /^\/api\/nodes\/([^/]+)$/,
-  updateTaskNode: /^\/api\/tasks\/([^/]+)$/,
-  updateIssueNode: /^\/api\/issues\/([^/]+)$/,
-  updatePersonNode: /^\/api\/persons\/([^/]+)$/,
-  updateProjectNode: /^\/api\/projects\/([^/]+)$/,
-  updateSoftwareProjectNode: /^\/api\/software-projects\/([^/]+)$/,
-  updateQueryNode: /^\/api\/queries\/([^/]+)$/,
-  updatePlayNode: /^\/api\/plays\/([^/]+)$/,
-  updateCollectionNode: /^\/api\/collections\/([^/]+)$/,
-  updateSkillNode: /^\/api\/skills\/([^/]+)$/,
-  updateSpecNode: /^\/api\/specs\/([^/]+)$/,
-  updatePlanNode: /^\/api\/plans\/([^/]+)$/,
-  updateDecisionNode: /^\/api\/decisions\/([^/]+)$/,
-  updateDatabaseSettingsNode: /^\/api\/database-settings\/([^/]+)$/,
-  moveNode: /^\/api\/nodes\/([^/]+)\/parent$/,
-  moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,
-  getChildren: /^\/api\/nodes\/([^/]+)\/children$/,
-  getChildrenTree: /^\/api\/nodes\/([^/]+)\/children-tree$/,
-  getParent: /^\/api\/nodes\/([^/]+)\/parent-node$/,
-  getOutgoingMentions: /^\/api\/nodes\/([^/]+)\/mentions\/outgoing$/,
-  getIncomingMentions: /^\/api\/nodes\/([^/]+)\/mentions\/incoming$/,
-  getMentioningContainers: /^\/api\/nodes\/([^/]+)\/mentions\/roots$/,
-  getSchema: /^\/api\/schemas\/([^/]+)$/,
-  getNodeRelationships: /^\/api\/nodes\/([^/]+)\/relationships$/,
-} as const;

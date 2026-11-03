@@ -22,16 +22,6 @@ declare const window: WindowWithTauriInternals;
 let initialized = false;
 
 /**
- * Check if running in Tauri desktop environment
- */
-function isTauriEnvironment(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
-  );
-}
-
-/**
  * Wait for the Tauri IPC bridge to be available.
  *
  * Tauri injects `__TAURI_INTERNALS__` asynchronously after the webview
@@ -78,15 +68,6 @@ export async function initializeApp(): Promise<void> {
   }
   initialized = true;
 
-  // Skip Tauri initialization in browser mode (using HTTP dev-proxy)
-  if (!isTauriEnvironment()) {
-    log.debug('Running in browser mode, skipping Tauri initialization');
-    // Still register shutdown handlers for browser mode
-    // This ensures pending writes are flushed in dev mode too
-    registerShutdownHandlers();
-    return;
-  }
-
   try {
     // Wait for Tauri API to be available
     await waitForTauriReady();
@@ -113,8 +94,8 @@ let shutdownHandlersRegistered = false;
  * debounced persistence operations complete (500ms debounce window).
  *
  * This is called during app initialization to register:
- * 1. Browser beforeunload event (for web/dev mode)
- * 2. Tauri window close event (for desktop mode)
+ * 1. Browser beforeunload event (best-effort flush on reload)
+ * 2. Tauri window close event
  */
 export function registerShutdownHandlers(): void {
   if (shutdownHandlersRegistered) {
@@ -122,9 +103,9 @@ export function registerShutdownHandlers(): void {
   }
   shutdownHandlersRegistered = true;
 
-  // Browser beforeunload handler (works in all modes)
+  // beforeunload handler (reload)
   if (typeof window !== 'undefined') {
-    window.addEventListener('beforeunload', async (event) => {
+    window.addEventListener('beforeunload', () => {
       log.debug('Window closing - flushing pending operations...');
 
       // Check if we have pending writes
@@ -133,28 +114,18 @@ export function registerShutdownHandlers(): void {
 
         // Note: beforeunload is sync, but we start the flush anyway.
         // For Tauri apps, the close event handler below handles async flushing.
-        // For browser mode, this provides best-effort flushing.
+        // On a reload, this provides best-effort flushing.
         sharedNodeStore.flushAllPending().catch((err) => {
           log.error('Error flushing pending writes:', err);
         });
-
-        // In browser mode, show confirmation dialog to give flush time to complete
-        if (!isTauriEnvironment()) {
-          event.preventDefault();
-          // Modern browsers require returnValue to be set
-          event.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
-          return event.returnValue;
-        }
       }
     });
 
     log.debug('Registered beforeunload shutdown handler');
   }
 
-  // Tauri window close handler (for desktop app)
-  if (isTauriEnvironment()) {
-    registerTauriCloseHandler();
-  }
+  // Tauri window close handler
+  registerTauriCloseHandler();
 }
 
 /**

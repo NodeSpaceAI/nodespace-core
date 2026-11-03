@@ -15,7 +15,6 @@
  * `hasTypedUpdate`).
  *
  * One table serves every consumer that has to know the mapping:
- * - the dev-proxy's storage → wire conversion (`storageNodeToApiFields`),
  * - the store's typed-update routing (which `updateNode` changes are typed),
  * - schema-driven forms, which address fields by their schema (storage) name.
  */

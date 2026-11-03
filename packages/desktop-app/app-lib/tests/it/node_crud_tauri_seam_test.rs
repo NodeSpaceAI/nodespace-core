@@ -1,11 +1,10 @@
 //! ADR-048 priority flow 1 — node CRUD round-trip through the REAL Tauri
-//! command layer (not a mock, not the HTTP/dev-proxy path).
+//! command layer (not a mock).
 //!
 //! This is the production path: `#[tauri::command]` handler → `GrpcClient`
 //! → gRPC over UDS → a real headless `nodespaced` → real SQLite. It re-runs
-//! the same round-trip `src/tests/e2e/node-roundtrip.e2e.ts` already covers
-//! through `HttpAdapter`, but through the adapter that actually ships in the
-//! desktop build.
+//! the node create, read, update and delete round-trip through the adapter
+//! that ships in the desktop build.
 
 use nodespace_app_lib::commands::nodes::CreateNodeInput;
 use nodespace_app_lib::commands::nodes::{create_node, delete_node, get_node, update_node};

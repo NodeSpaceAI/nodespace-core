@@ -104,8 +104,8 @@ export function parseFailingPaths(output: string): string[] {
  * Widens a failing test path to the package that contains it.
  *
  * Matching only the failing file is precise but misses the motivating case:
- * the test was `watch-nodes.e2e.ts` while the fix was in `dev-proxy.ts`, a
- * different file in a different package. Widening to the package directory
+ * the failing test was in one package while the fix was in a different file
+ * of a different package. Widening to the package directory
  * catches a fix that landed near the behavior under test without widening
  * to the whole repo, where every upstream commit would match and the
  * warning would become noise.
@@ -196,8 +196,8 @@ export function scopesForPaths(paths: string[]): string[] {
  * unconditionally would fire on most failures and train people to ignore
  * the warning — the precise failure mode this is meant to prevent. It still
  * earns its place as a fallback: the case that motivated this check had its
- * fix in the dev-proxy, a different file and package from the e2e test that
- * failed, which only a package-level match connects.
+ * fix in a different file and package from the test that failed, which only
+ * a package-level match connects.
  */
 export function packageScopesForPaths(paths: string[]): string[] {
   const scopes = new Set<string>();

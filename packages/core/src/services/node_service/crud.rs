@@ -201,7 +201,7 @@ impl NodeService {
     /// Refuse a generic properties patch from a typed client when it names a
     /// declared field of a core type that has a typed update (ADR-086 §7).
     ///
-    /// A typed client (the desktop app, the dev-proxy) writes a core type's
+    /// A typed client (the desktop app) writes a core type's
     /// fields only through that type's typed update, so each field has one
     /// write path from it and one typed shape. The generic update stays for
     /// content, extension fields and types with no typed update. The CLI and

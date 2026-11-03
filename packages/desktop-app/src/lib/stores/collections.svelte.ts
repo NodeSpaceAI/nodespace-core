@@ -236,8 +236,7 @@ class CollectionsDataStore {
       const id = await collectionService.createCollection(name, description);
       // A backend that reports success without an id has not created anything
       // we can reconcile against — treat it as a failure rather than seeding a
-      // permanently-exempt placeholder keyed on an empty id. The browser dev
-      // proxy's unimplemented create resolves '' exactly like this.
+      // permanently-exempt placeholder keyed on an empty id.
       if (!id) {
         throw new Error('Collection create returned no id');
       }

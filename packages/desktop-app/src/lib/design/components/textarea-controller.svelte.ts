@@ -7,7 +7,7 @@
  *
  * Key Design Decisions:
  * - Dual usage: Class can be instantiated directly in tests, or via factory in components
- * - Content sync effect: KEPT - necessary for external content changes (SSE, undo/redo)
+ * - Content sync effect: KEPT - necessary for external content changes (daemon events, undo/redo)
  * - Config sync effect: ELIMINATED - controller stores getter, reads on-demand
  * - Early-returns in updateContent() prevent unnecessary DOM operations
  *
@@ -1290,7 +1290,7 @@ export function createTextareaController(
   // The TextareaController is a vanilla TypeScript class that doesn't inherently
   // react to prop changes, so this effect bridges Svelte's reactive system with
   // the imperative controller by syncing external content changes (database sync
-  // via SSE, undo/redo, parent programmatic updates, initial prop hydration).
+  // via daemon events, undo/redo, parent programmatic updates, initial prop hydration).
   // updateContent() early-returns when the textarea value already matches the
   // prop, so typing doesn't trigger unnecessary DOM operations.
   //

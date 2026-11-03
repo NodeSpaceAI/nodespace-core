@@ -306,7 +306,7 @@ export interface InitializationResult {
  * reference/viewer resolution is available immediately on launch.
  *
  * Dynamic registration for schemas created/deleted at runtime is handled
- * by BrowserSyncService and TauriSyncListener, which call
+ * by TauriSyncListener, which calls
  * registerSchemaPlugin / unregisterSchemaPlugin on domain events.
  *
  * Call this once during app startup in the root layout.

@@ -266,8 +266,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // CRITICAL FIX: Register parent-child edge in ReactiveStructureTree immediately
     // This makes the new node visible in visibleNodesFromStores for instant UI feedback
-    // In Tauri mode, domain events will also fire but addChild handles duplicates gracefully
-    // In browser mode, this is the only way the tree gets updated (no domain events)
+    // Domain events will also fire but addChild handles duplicates gracefully
     if (newParentId) {
       // Calculate order: insert right after afterNodeId in the sibling list
       const childrenWithOrder = structureTree.getChildrenWithOrder(newParentId);
@@ -1121,7 +1120,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     // Sibling positioning removed - Backend handles ordering via fractional IDs
 
     // Update ReactiveStructureTree (single source of truth for hierarchy)
-    // In Tauri mode, domain events update the tree, but in browser mode we must do it manually
+    // Domain events also update the tree; doing it now gives instant feedback
     structureTree.moveInMemoryRelationship(currentParentId, targetParentId, nodeId);
 
     events.hierarchyChanged();

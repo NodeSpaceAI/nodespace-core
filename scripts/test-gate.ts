@@ -12,7 +12,7 @@
  *   reaches while developing, with `bun run test:changed`.
  * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): lint, then the
  *   full pyramid — every unit tier, workspace clippy, the daemon build, the
- *   SKILL.md, generated-TypeScript and node-types.md drift checks, e2e and
+ *   SKILL.md, generated-TypeScript and node-types.md drift checks and
  *   the Tauri-seam tests — unscoped, on the PR rebased onto current main.
  *   The only automated test run a change gets.
  *
@@ -342,12 +342,6 @@ await Promise.all([
 
 await run(TIERS.rust);
 await run(TIERS.browser);
-await run({
-  label: "test:e2e (headless daemon round-trip)",
-  command: "bun run test:e2e",
-  timeoutMs: 10 * MINUTE,
-  env: { NODESPACED_BINARY: daemonBinary },
-});
 // --test it: the crate's integration-test binary (tests/it/), and only it. This
 // crate's `src/` unit tests are in-process, need no daemon binary, and run
 // headless in ~2s at full parallelism, so `rust:test` (above) runs them

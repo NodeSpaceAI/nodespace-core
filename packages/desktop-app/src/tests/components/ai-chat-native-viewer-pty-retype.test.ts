@@ -39,8 +39,6 @@ function seedNativeChat(): void {
 
 describe('AiChatNativeNodeViewer harness selection', () => {
   beforeEach(() => {
-    // The header's model selector loads its catalog over HTTP in browser mode.
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     // A non-empty agent list keeps the selector from fetching one itself.
     agentStore.agents = [
       {

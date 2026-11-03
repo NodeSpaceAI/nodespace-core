@@ -1,11 +1,10 @@
 /**
  * Collection Refresh Utility
  *
- * Shared debounced collection refresh logic used by both Tauri and browser
- * sync services to update the collections sidebar when member_of relationships change.
+ * Shared debounced collection refresh logic used by the Tauri sync listener
+ * to update the collections sidebar when member_of relationships change.
  *
- * Extracted from browser-sync-service.ts and tauri-sync-listener.ts
- * to follow DRY principle.
+ * Extracted from tauri-sync-listener.ts.
  */
 
 import { collectionsData, collectionsState } from '$lib/stores/collections.svelte';

@@ -1,15 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildCreateNodeFields,
-  buildProjectNodeUpdatePatch,
-  buildTaskNodeUpdatePatch,
-  encodeInsertPosition,
   normalizeChildrenTree,
   insertPosition,
-  typedUpdateFieldNames,
-  unknownTypedUpdateKeys,
 } from '$lib/services/adapter-core';
-import { writableTypedCoreKeys } from '$lib/types/typed-core-fields';
 
 describe('adapter-core: buildCreateNodeFields', () => {
   it('defaults optional fields for a minimal input', () => {
@@ -46,104 +40,6 @@ describe('adapter-core: buildCreateNodeFields', () => {
     });
     expect(fields.parentId).toBe('parent-1');
     expect(fields.insertPosition).toEqual({ type: 'after', siblingId: 'sibling-1' });
-  });
-});
-
-describe('adapter-core: buildTaskNodeUpdatePatch (tri-state clearable encoding)', () => {
-  it('omits a field entirely when absent from the update (no change)', () => {
-    const patch = buildTaskNodeUpdatePatch({ status: 'done' });
-    expect(patch.priority).toBeUndefined();
-    expect(patch.dueDate).toBeUndefined();
-  });
-
-  it('encodes null as an explicit clear', () => {
-    const patch = buildTaskNodeUpdatePatch({ dueDate: null });
-    expect(patch.dueDate).toEqual({ clear: true });
-  });
-
-  it('encodes a value as an explicit set', () => {
-    const patch = buildTaskNodeUpdatePatch({ dueDate: '2026-01-01T00:00:00Z' });
-    expect(patch.dueDate).toEqual({ clear: false, value: '2026-01-01T00:00:00Z' });
-  });
-
-  it('passes status straight through (no clear semantics)', () => {
-    const patch = buildTaskNodeUpdatePatch({ status: 'in_progress' });
-    expect(patch.status).toBe('in_progress');
-  });
-
-  it('names the keys of a request body that are not fields of the typed update', () => {
-    expect(
-      unknownTypedUpdateKeys('task', {
-        version: 3,
-        status: 'done',
-        priority: null,
-        dueDate: '2026-01-01'
-      })
-    ).toEqual([]);
-    expect(
-      unknownTypedUpdateKeys('task', {
-        version: 3,
-        content: 'Renamed',
-        properties: { 'custom:x': 1 }
-      })
-    ).toEqual(['content', 'properties']);
-    expect(unknownTypedUpdateKeys('person', { version: 1, firstName: 'Ada' })).toEqual([]);
-    // A task field is not a person field, and an inherited Object key is not a field.
-    expect(unknownTypedUpdateKeys('person', { dueDate: null, toString: 'x' })).toEqual([
-      'dueDate',
-      'toString'
-    ]);
-    expect(unknownTypedUpdateKeys('project', { endDate: null, content: 'Renamed' })).toEqual([
-      'content'
-    ]);
-  });
-
-  // The store sends a type's writable typed core keys; the dev-proxy and the
-  // Tauri command refuse anything outside the update's fields. A key in one
-  // list and not the other is a write the backend rejects.
-  it.each(['task', 'person', 'project'] as const)(
-    'the %s update fields are the keys the store sends for it',
-    (nodeType) => {
-      expect(typedUpdateFieldNames(nodeType).sort()).toEqual(
-        [...writableTypedCoreKeys(nodeType)].sort()
-      );
-    }
-  );
-
-  it('carries the task schema fields only', () => {
-    const patch = buildTaskNodeUpdatePatch({ status: 'done' });
-    // No development field: the pull request and the commits are an issue's.
-    expect(Object.keys(patch).sort()).toEqual([
-      'completedAt',
-      'dueDate',
-      'priority',
-      'startedAt',
-      'status'
-    ]);
-  });
-
-  it('carries the project schema fields only', () => {
-    const patch = buildProjectNodeUpdatePatch({ status: 'active' });
-    // No source field: the repository and the checkout folder are a software project's.
-    expect(Object.keys(patch).sort()).toEqual(['endDate', 'priority', 'startDate', 'status']);
-  });
-
-  it('treats a null priority the same as any other clearable field', () => {
-    const patch = buildTaskNodeUpdatePatch({ priority: null });
-    expect(patch.priority).toEqual({ clear: true });
-  });
-});
-
-describe('adapter-core: encodeInsertPosition', () => {
-  it('encodes beginning/end/after to the proto oneof shape', () => {
-    expect(encodeInsertPosition(insertPosition.beginning())).toEqual({ beginning: true });
-    expect(encodeInsertPosition(insertPosition.end())).toEqual({ end: true });
-    expect(encodeInsertPosition(insertPosition.after('sib'))).toEqual({ after: 'sib' });
-  });
-
-  it('encodes null/undefined as the unset oneof (empty object)', () => {
-    expect(encodeInsertPosition(null)).toEqual({});
-    expect(encodeInsertPosition(undefined)).toEqual({});
   });
 });
 

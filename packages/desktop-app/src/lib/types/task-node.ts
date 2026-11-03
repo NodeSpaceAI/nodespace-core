@@ -127,7 +127,7 @@ export function setTaskDueDate(node: TaskNode, dueDate: string | undefined): Tas
  * Convert a generic Node to a TaskNode by extracting type-specific fields from properties
  *
  * The backend (`node_to_typed_value` in `nodespace-types`) is the single typing
- * authority: for every transport (Tauri IPC and HTTP/SSE) it promotes task fields
+ * authority: it promotes task fields
  * to the TOP LEVEL of the node and flattens the `properties.task` namespace away.
  * See the `wire_contract` tests in `nodespace-types/src/convert.rs`. This converter
  * therefore trusts the flat contract and only fills defaults for missing fields.

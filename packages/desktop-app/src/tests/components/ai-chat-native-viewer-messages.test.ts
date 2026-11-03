@@ -80,8 +80,6 @@ function messageIds(container: HTMLElement): (string | null)[] {
 
 describe('AiChatNativeNodeViewer message nodes', () => {
   beforeEach(() => {
-    // The header's model selector and the children load go over HTTP in browser mode.
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     seedChat();
   });
 

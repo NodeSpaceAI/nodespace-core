@@ -62,10 +62,8 @@ for (const storageKey of ['localStorage', 'sessionStorage'] as const) {
   }
 }
 
-// Mock window.__TAURI__ as undefined to force HTTP adapter usage in tests
-// This ensures tests use the HTTP dev server instead of Tauri IPC
+// Tests run without Tauri: keep window.__TAURI__ undefined so no test reaches IPC
 if (typeof window !== 'undefined') {
-  // Ensure __TAURI__ is undefined for HTTP adapter detection
   Object.defineProperty(window, '__TAURI__', {
     value: undefined,
     writable: false,
@@ -334,10 +332,8 @@ if (!(globalThis.Event as unknown as Wrapped)[WRAPPED]) {
 }
 
 // Mock Tauri environment detection
-// Tests run in browser mode (without Tauri), so __TAURI__ should not be defined
-// This prevents TauriNodeService from trying to invoke Rust commands
+// Tests run without Tauri, so __TAURI__ should not be defined
 if (typeof window !== 'undefined') {
-  // Ensure __TAURI__ is undefined so isTauriEnvironment() returns false
   delete (window as unknown as Record<string, unknown>).__TAURI__;
 }
 

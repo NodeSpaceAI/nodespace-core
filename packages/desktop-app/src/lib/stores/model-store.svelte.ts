@@ -497,17 +497,6 @@ class ModelStore {
             )
           )
         );
-      } else {
-        // Browser mode: the dev-proxy relays the same daemon progress over SSE.
-        const { browserSyncService } = await import('$lib/services/browser-sync-service');
-        unlisteners.push(
-          browserSyncService.onModelLoadProgress((e) => {
-            this.applyPreparationStatus(e.modelId, e.status);
-            if (e.bytesDownloaded !== undefined && e.bytesTotal !== undefined) {
-              this.applyPreparationProgress(e.modelId, e.bytesDownloaded, e.bytesTotal);
-            }
-          })
-        );
       }
       await tauriCommands.ensureModelReady(modelId);
     } catch (err) {

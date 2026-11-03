@@ -7,13 +7,11 @@
  * extensions through the `database.actions` / `database.row` slots, covered in
  * `database-settings-extensions.test.ts`.
  *
- * No Tauri bridge is mocked here: `isTauriBridgePresent()` (database.svelte.ts)
- * is false under plain Happy-DOM, so `databaseStore.load()` takes its
- * no-bridge branch (a single implicit local database, no `invoke` call) and
+ * The Tauri bridge is mocked: `list_databases` answers with one database, and
  * `identity-card.svelte`'s own `invoke('get_local_identity')` rejects into
- * its own caught/logged fallback — both harmless for what this file checks.
+ * its own caught/logged fallback, harmless for what this file checks.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 
 vi.mock('$lib/utils/logger', () => ({
@@ -23,6 +21,32 @@ vi.mock('$lib/utils/logger', () => ({
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: vi.fn()
 }));
+
+import { mockTauriCore } from '../../helpers/mock-tauri-core';
+
+const defaultDatabase = vi.hoisted(() => ({
+  id: 'default',
+  name: 'Default',
+  path: '',
+  isDefault: true,
+  status: 'open',
+  createdAt: '',
+  lastOpenedAt: null,
+  extensions: {}
+}));
+
+// The registry listing the daemon would answer; any other command fails, as it
+// does without a daemon.
+vi.mock('@tauri-apps/api/core', () =>
+  mockTauriCore({
+    invoke: async (command: string) => {
+      if (command === 'list_databases') {
+        return { databases: [defaultDatabase], defaultDatabaseId: defaultDatabase.id };
+      }
+      throw new Error(`no daemon: ${command}`);
+    }
+  })
+);
 
 import DatabaseSettings from '$lib/components/settings/sections/database-settings.svelte';
 import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
@@ -44,7 +68,12 @@ const REMOVED_WORDING = new RegExp(
 );
 
 describe('DatabaseSettings', () => {
+  beforeEach(() => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+  });
+
   afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     cleanup();
     vi.restoreAllMocks();
   });

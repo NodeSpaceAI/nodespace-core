@@ -153,7 +153,7 @@ describe('pane-content hydration (event-driven)', () => {
     const dates = ['2026-07-05', '2026-07-06', '2026-07-07', '2026-07-08', '2026-07-09'];
     const calls = dates.map((date) => harness.hydrateNode(date, 'tab-1'));
 
-    // Resolve out of order, simulating an unreliable dev-proxy connection.
+    // Resolve out of order, simulating an unreliable daemon connection.
     for (const date of [...dates].reverse()) {
       resolvers.get(date)?.({ id: date });
     }

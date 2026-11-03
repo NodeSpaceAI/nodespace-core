@@ -21,7 +21,7 @@
  *
  * `lifecycle.start()`
  *   - Called once per webview load, from the app shell's mount, and only when the
- *     Tauri bridge is present. Never in browser dev mode.
+ *     Tauri bridge is present.
  *   - May return a cleanup, synchronously or through a promise. The cleanups run
  *     when the shell unmounts, in reverse registration order, whichever order the
  *     `start()` calls settled in. A `start()` that settles after that has already
@@ -40,7 +40,7 @@
  *   - So when it runs, the new database is the routed one and `sharedNodeStore`
  *     holds no data from the previous one. An extension clears its own
  *     per-database caches here.
- *   - It does not fire in browser dev mode, for a switch a newer switch
+ *   - It does not fire outside the Tauri bridge, for a switch a newer switch
  *     superseded, for a `switchTo()` to the database already active, or for a
  *     later `load()` that keeps the current selection. Nor does it fire when
  *     evicting the previous database's caches throws; the store then records the

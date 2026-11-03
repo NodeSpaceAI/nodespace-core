@@ -120,7 +120,7 @@ export interface DaemonStatusSource {
    * connection and recover it in place. Resolves `true` if a wedge was found
    * and the connection was rebuilt (the caller should then re-fire reconnect
    * listeners), `false` if the connection was already live. Sources whose
-   * transport cannot wedge (tests, browser dev) may omit this.
+   * transport cannot wedge (tests) may omit this.
    */
   probeChannel?(): Promise<boolean>;
 }
@@ -225,8 +225,8 @@ function tauriSource(): DaemonStatusSource {
 /**
  * Start the shared daemon-status service against a given source (defaults to
  * the Tauri-backed source). Safe to call multiple times — only the first
- * call actually starts listening. Outside Tauri (browser dev mode) the
- * default source is a no-op, same as before.
+ * call actually starts listening. Outside Tauri the
+ * default source is a no-op.
  */
 export function startDaemonStatusListener(source?: DaemonStatusSource): void {
   if (started) return;
@@ -369,7 +369,7 @@ export async function getOtherDaemon(): Promise<string | null> {
  * socket. Applies the resulting status through the shared
  * contract, so a healthy start fires `onDaemonReconnect` listeners exactly as
  * any other recovery would, and returns it. A source with no Tauri behind it
- * (the harness, the dev proxy) has no daemon to start, so it re-reads the
+ * (the harness) has no daemon to start, so it re-reads the
  * status instead and returns the one now current.
  */
 export async function retryDaemonStart(): Promise<string> {

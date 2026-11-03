@@ -50,7 +50,6 @@ export async function cleanupTestDatabase(dbPath: string): Promise<void> {
  */
 export async function initializeTestDatabase(
   _dbPath: string,
-  _serverUrl: string = 'http://localhost:3001',
   _maxRetries: number = 3
 ): Promise<string> {
   throw new Error(

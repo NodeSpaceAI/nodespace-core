@@ -109,7 +109,7 @@ describe("parseFailingPaths", () => {
 
 describe("packageScopeFor", () => {
   test("widens a path inside packages/ to its package directory", () => {
-    expect(packageScopeFor("packages/dev-tools/src/dev-proxy.ts")).toBe("packages/dev-tools");
+    expect(packageScopeFor("packages/daemon/src/main.rs")).toBe("packages/daemon");
   });
 
   test("falls back to the top-level directory outside packages/", () => {
@@ -233,7 +233,7 @@ describe("correlateUpstreamFixes", () => {
 
   test("falls back to a package match, labelled as the weaker signal (the cross-file shape)", async () => {
     // The motivating case: the failing test was watch-nodes.e2e.ts while the
-    // fix was in dev-proxy.ts. The exact file matches nothing, so only the
+    // fix was in another file of another package. The exact file matches nothing, so only the
     // package-level fallback connects them — at lower confidence.
     let call = 0;
     const result = await correlateUpstreamFixes(VITEST_FAILURE, {
