@@ -5,3 +5,5 @@ COLLECTION: If the user names a collection or folder, pass it as `--collection <
 RE-IMPORTING: Running the same import again skips documents already imported, so it never duplicates. `--replace` refreshes a document's children from the file and keeps its root node, so links to it survive.
 
 NODE TYPE: An import creates text and header nodes. For records of another type, create each one with `nodespace node create --type <type>` instead.
+
+MARKDOWN SOURCE OR SINGLE NODES: a markdown source, such as a document, a pasted page or a copied Google Doc, goes in with `nodespace import file <path>` or `nodespace import dir <dir>`, not node by node. When you create individual nodes instead, use the node type that matches the syntax and keep that type's own prefix in the content: `--type header` keeps "## " and its level, `--type ordered-list` keeps "1. ", `--type quote-block` keeps "> ", a checkbox keeps its box. A plain list item is a `--type text` node under its header with no "- " or "* " in front of it; the outline supplies the bullet. Never type markdown syntax into a text node.

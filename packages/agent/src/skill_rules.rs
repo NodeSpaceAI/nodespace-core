@@ -982,6 +982,62 @@ pub fn skill_md_play_rules() -> String {
 mod tests {
     use super::*;
 
+    fn procedure_rule(id: &str) -> &'static ProcedureRule {
+        PROCEDURE_RULES
+            .iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("procedure rule {id} is registered"))
+    }
+
+    /// The one rule for writing markdown into nodes reaches both kinds of
+    /// agent, and the section rule they share agrees with it: a header keeps
+    /// its prefix and a text item under it carries no marker.
+    #[test]
+    fn markdown_into_nodes_is_one_rule_in_both_variants() {
+        let import = procedure_rule("bulk-import-steps");
+        for (form, text, import_verb, text_type) in [
+            (
+                "local",
+                import.imperative,
+                "create_nodes_from_markdown",
+                "text node",
+            ),
+            ("cli", import.prose, "nodespace import", "--type text"),
+        ] {
+            for needle in [
+                "MARKDOWN SOURCE OR SINGLE NODES",
+                import_verb,
+                "Google Doc",
+                "keep that type's own prefix",
+                "ordered-list",
+                "quote-block",
+                "no \"- \" or \"* \" in front of it",
+                "Never type markdown syntax into a text node",
+                text_type,
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{form} bulk-import-steps lacks {needle:?}"
+                );
+            }
+        }
+        let section = procedure_rule("section-create");
+        for (form, text) in [("local", section.imperative), ("cli", section.prose)] {
+            for needle in [
+                "## ",
+                "keeps its prefix",
+                "no \"- \", \"* \" or other marker",
+                "syntax is never typed into a text node",
+                "ordered-list",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{form} section-create lacks {needle:?}"
+                );
+            }
+        }
+    }
+
     /// Every form of every rule, of every kind, as `(id, text)`.
     fn every_rule_form() -> impl Iterator<Item = (&'static str, &'static str)> {
         anchored_rules()
