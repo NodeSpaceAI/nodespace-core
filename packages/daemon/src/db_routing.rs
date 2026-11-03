@@ -226,9 +226,7 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::Internal);
         let message = status.message();
         assert!(
-            message.contains("missing tables")
-                && message.contains("structural_rule")
-                && message.contains("type_ancestry"),
+            message.contains("missing tables") && message.contains("structural_rule"),
             "the status must name the tables that differ: {message}"
         );
         assert!(

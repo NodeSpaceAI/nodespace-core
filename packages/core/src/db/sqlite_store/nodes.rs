@@ -6864,6 +6864,12 @@ mod case_folding_tests {
     #[tokio::test]
     async fn a_collection_name_with_a_non_ascii_capital_is_found_by_name() -> Result<()> {
         let (store, _t) = bare_store().await?;
+        // A bare store holds no schema nodes, and the type ancestry is read
+        // from them: `collection` is a type once its schema node exists.
+        let mut collection_schema =
+            Node::new("schema".to_string(), "collection".to_string(), json!({}));
+        collection_schema.id = "collection".to_string();
+        store.create_node(collection_schema, None, None).await?;
         let id = make_titled(&store, "collection", "Équipe").await?;
 
         for name in ["Équipe", "ÉQUIPE"] {

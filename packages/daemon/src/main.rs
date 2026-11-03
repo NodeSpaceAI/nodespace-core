@@ -1425,12 +1425,13 @@ mod open_default_database_tests {
         // and the list grows with each one.
         let mismatch = SchemaMismatch::find_in(&err)
             .unwrap_or_else(|| panic!("expected a SchemaMismatch, got: {err:#}"));
-        for table in ["structural_rule", "type_ancestry"] {
-            assert!(
-                mismatch.missing_tables.iter().any(|t| t == table),
-                "{table} must be reported missing: {mismatch:?}"
-            );
-        }
+        assert!(
+            mismatch
+                .missing_tables
+                .iter()
+                .any(|t| t == "structural_rule"),
+            "structural_rule must be reported missing: {mismatch:?}"
+        );
         assert!(mismatch.unexpected_tables.is_empty(), "{mismatch:?}");
         let recorded: nodespace_types::IncompatibleDatabase =
             serde_json::from_slice(&std::fs::read(&marker).expect("the marker is written"))

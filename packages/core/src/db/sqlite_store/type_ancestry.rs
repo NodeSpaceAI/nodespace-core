@@ -3,8 +3,8 @@
 //!
 //! Code that applies a type's rule never compares `node_type` with a string:
 //! a subtype would fall out of the rule. It asks here for the type's chain or
-//! its nearest core ancestor, read from the `type_ancestry` table that the
-//! schema triggers keep in step with the `extends` edges.
+//! its nearest core ancestor, read from the `type_ancestry` view over the
+//! `extends` edges.
 use super::*;
 use crate::db::schema::TYPE_ANCESTRY_TABLE;
 use crate::models::CoreNodeType;

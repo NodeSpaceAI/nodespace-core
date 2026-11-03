@@ -204,28 +204,6 @@ CREATE TABLE IF NOT EXISTS pending_seed_update (
     PRIMARY KEY (node_id, aspect)
 ) STRICT, WITHOUT ROWID;
 
--- The resolved `extends` chain of every type, so SQL can apply a base type's
--- rule to its subtypes (ADR-086 §5): one row per (type, ancestor) pair, the
--- type itself included at depth 0. `issue extends task` holds
--- (issue, issue, 0) and (issue, task, 1).
---
--- A trigger or an index cannot call the type registry, and comparing
--- `node_type` with a literal misses every subtype. Joining against this table
--- is how "is this node a collection, or a subtype of one?" is asked in SQL.
---
--- It is derived data, kept in step by the triggers below rather than by the
--- code that writes schemas: they fire inside the transaction that writes the
--- schema node or the `extends` edge, on every write path.
-CREATE TABLE IF NOT EXISTS type_ancestry (
-    node_type TEXT    NOT NULL,
-    ancestor  TEXT    NOT NULL,
-    depth     INTEGER NOT NULL,
-    PRIMARY KEY (node_type, ancestor)
-) STRICT, WITHOUT ROWID;
-
--- "Every type that is, or extends, X": the lookup a base-type rule makes.
-CREATE INDEX IF NOT EXISTS idx_type_ancestry_ancestor ON type_ancestry (ancestor, node_type);
-
 -- The structural rules each type declares (ADR-089): which children its nodes
 -- may have, and where they may sit in the `has_child` tree. One row per
 -- declared rule, and one per named type for the two rules that take a list:
@@ -237,10 +215,9 @@ CREATE INDEX IF NOT EXISTS idx_type_ancestry_ancestor ON type_ancestry (ancestor
 --
 -- A type with no row for a rule declares `any`. A row binds the declaring type
 -- and every type extending it, and a `target` covers its own subtypes: both
--- are resolved by joining `type_ancestry`.
+-- are resolved by joining the `type_ancestry` view.
 --
--- Like `type_ancestry` it is derived data. A core type's rows come from the
--- registry. Every other type's are kept in step with its schema node by the
+-- It is derived data. A core type's rows come from the registry. Every other type's are kept in step with its schema node by the
 -- structural-rule triggers, inside the statement that writes the schema.
 CREATE TABLE IF NOT EXISTS structural_rule (
     node_type TEXT NOT NULL,
@@ -250,7 +227,7 @@ CREATE TABLE IF NOT EXISTS structural_rule (
 ) STRICT, WITHOUT ROWID;
 "#;
 
-/// The name of the table holding every type's resolved `extends` chain.
+/// The name of the view holding every type's resolved `extends` chain.
 pub const TYPE_ANCESTRY_TABLE: &str = "type_ancestry";
 
 /// The name of the table holding every type's declared structural rules.
@@ -565,7 +542,7 @@ async fn create_schema_objects(conn: &libsql::Connection) -> Result<()> {
     .await
     .context("Failed to create title FTS5 delete trigger")?;
 
-    create_type_ancestry_objects(conn).await?;
+    create_type_ancestry_view(conn).await?;
 
     create_structural_rule_objects(conn).await?;
 
@@ -618,126 +595,48 @@ async fn create_schema_objects(conn: &libsql::Connection) -> Result<()> {
     Ok(())
 }
 
-/// The rows and triggers that keep [`TYPE_ANCESTRY_TABLE`] equal to the
-/// closure of the schema `extends` edges.
+/// Create the [`TYPE_ANCESTRY_TABLE`] view: the resolved `extends` chain of
+/// every type, computed from the `extends` edges on read, so there is no copy
+/// to keep in step with them.
 ///
-/// The table is maintained entirely in SQL so that no write path can leave it
-/// behind: each trigger runs inside the statement that changed a schema node
-/// or an `extends` edge, and so inside that write's transaction.
+/// One row per (type, ancestor) pair, the type itself at depth 0: `issue
+/// extends task` yields (issue, issue, 0) and (issue, task, 1). A schema node
+/// is a type, so each is its own ancestor; `schema` has no schema node of its
+/// own and contributes its depth-0 row as a constant arm.
 ///
-/// A schema has at most one parent, which is what makes the incremental
-/// updates exact: every path from a descendant of `C` to an ancestor of `P`
-/// runs through the one edge `C -> P`, so adding or removing that edge adds or
-/// removes exactly the pairs (descendant-or-self of `C`) x (ancestor-or-self
-/// of `P`).
-async fn create_type_ancestry_objects(conn: &libsql::Connection) -> Result<()> {
+/// The recursive step joins `relationship` through the endpoint index
+/// (`idx_rel_in`: endpoint, then relationship type), never from the
+/// relationship-type index: a walk SQLite drives from that index is about 50
+/// times slower. The index is named so the planner cannot pick another.
+///
+/// A cycle cannot loop the walk: `UNION` collapses repeated rows and the
+/// depth is capped at the same bound as every other `extends` walk.
+async fn create_type_ancestry_view(conn: &libsql::Connection) -> Result<()> {
     use crate::models::schema::EXTENDS_RELATIONSHIP;
     use crate::models::CoreNodeType;
 
-    // The core types' chains come from the registry, so a base-type rule holds
-    // from the first statement on a new database, before any schema node is
-    // seeded. `schema` is the one core type with no schema node of its own, so
-    // this is also the only place its row comes from.
-    for core in CoreNodeType::ALL {
-        for (depth, ancestor) in core.chain().into_iter().enumerate() {
-            conn.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO {TYPE_ANCESTRY_TABLE} (node_type, ancestor, depth) \
-                     VALUES (?1, ?2, ?3)"
-                ),
-                libsql::params![core.as_str(), ancestor.as_str(), depth as i64],
-            )
-            .await
-            .with_context(|| format!("Failed to seed the type ancestry of '{core}'"))?;
-        }
-    }
-
-    let new_is_schema = is_exactly_sql("new.node_type", CoreNodeType::Schema);
-    let old_is_schema = is_exactly_sql("old.node_type", CoreNodeType::Schema);
-    // A core type's chain is the registry's and outlives any schema node that
-    // shares its id, so the rows seeded above are never dropped. `schema` is
-    // the case that matters: it has no schema node of its own, and a user
-    // schema named after it must not take the meta-type's row with it.
-    let old_is_not_core = format!("old.id NOT IN ({})", sql_type_list(&CoreNodeType::ALL));
-
-    // A schema node is a type: it is its own ancestor at depth 0.
-    let add_self = format!(
-        "INSERT OR IGNORE INTO {TYPE_ANCESTRY_TABLE} (node_type, ancestor, depth) \
-         VALUES (new.id, new.id, 0);"
-    );
-    // A type that stops existing takes its whole chain with it: its own rows,
-    // and the pairs that ran through it for every type extending it.
-    let drop_type = format!(
-        "DELETE FROM {TYPE_ANCESTRY_TABLE} \
-         WHERE node_type IN (SELECT node_type FROM {TYPE_ANCESTRY_TABLE} WHERE ancestor = old.id) \
-           AND ancestor IN (SELECT ancestor FROM {TYPE_ANCESTRY_TABLE} WHERE node_type = old.id);"
-    );
-    // `in_node` extends `out_node`: every descendant-or-self of the child
-    // gains every ancestor-or-self of the parent.
-    let link = format!(
-        "INSERT OR REPLACE INTO {TYPE_ANCESTRY_TABLE} (node_type, ancestor, depth) \
-         SELECT d.node_type, a.ancestor, d.depth + 1 + a.depth \
-         FROM {TYPE_ANCESTRY_TABLE} d, {TYPE_ANCESTRY_TABLE} a \
-         WHERE d.ancestor = new.in_node AND a.node_type = new.out_node;"
-    );
-    let unlink = format!(
-        "DELETE FROM {TYPE_ANCESTRY_TABLE} \
-         WHERE node_type IN (SELECT node_type FROM {TYPE_ANCESTRY_TABLE} WHERE ancestor = old.in_node) \
-           AND ancestor IN (SELECT ancestor FROM {TYPE_ANCESTRY_TABLE} WHERE node_type = old.out_node);"
-    );
-
-    let triggers = [
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_schema_insert AFTER INSERT ON node \
-             WHEN {new_is_schema} BEGIN {add_self} END"
+    let schema_type = CoreNodeType::Schema.as_str();
+    let max_depth = crate::schema::extends_chain::MAX_EXTENDS_DEPTH;
+    conn.execute(
+        &format!(
+            "CREATE VIEW IF NOT EXISTS {TYPE_ANCESTRY_TABLE} (node_type, ancestor, depth) AS \
+             WITH RECURSIVE chain(node_type, ancestor, depth) AS ( \
+                 SELECT id, id, 0 FROM node WHERE node_type = '{schema_type}' \
+                 UNION \
+                 SELECT c.node_type, r.out_node, c.depth + 1 \
+                 FROM chain c \
+                 JOIN relationship r INDEXED BY idx_rel_in \
+                   ON r.in_node = c.ancestor AND r.relationship_type = '{EXTENDS_RELATIONSHIP}' \
+                 WHERE c.depth < {max_depth} \
+             ) \
+             SELECT node_type, ancestor, depth FROM chain \
+             UNION \
+             SELECT '{schema_type}', '{schema_type}', 0"
         ),
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_schema_delete AFTER DELETE ON node \
-             WHEN {old_is_schema} AND {old_is_not_core} BEGIN {drop_type} END"
-        ),
-        // A node retyped into or out of `schema` starts or stops being a type.
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_schema_retype_in AFTER UPDATE OF node_type ON node \
-             WHEN {new_is_schema} AND NOT {old_is_schema} BEGIN {add_self} END"
-        ),
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_schema_retype_out AFTER UPDATE OF node_type ON node \
-             WHEN {old_is_schema} AND NOT {new_is_schema} AND {old_is_not_core} \
-             BEGIN {drop_type} END"
-        ),
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_extends_insert AFTER INSERT ON relationship \
-             WHEN new.relationship_type = '{EXTENDS_RELATIONSHIP}' BEGIN {link} END"
-        ),
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_extends_delete AFTER DELETE ON relationship \
-             WHEN old.relationship_type = '{EXTENDS_RELATIONSHIP}' BEGIN {unlink} END"
-        ),
-        // A re-target rewrites `out_node` in place, so the old edge's pairs go
-        // before the new edge's are added.
-        format!(
-            "CREATE TRIGGER IF NOT EXISTS type_ancestry_extends_update \
-             AFTER UPDATE OF in_node, out_node, relationship_type ON relationship \
-             WHEN old.relationship_type = '{EXTENDS_RELATIONSHIP}' \
-               OR new.relationship_type = '{EXTENDS_RELATIONSHIP}' \
-             BEGIN \
-               DELETE FROM {TYPE_ANCESTRY_TABLE} \
-               WHERE old.relationship_type = '{EXTENDS_RELATIONSHIP}' \
-                 AND node_type IN (SELECT node_type FROM {TYPE_ANCESTRY_TABLE} WHERE ancestor = old.in_node) \
-                 AND ancestor IN (SELECT ancestor FROM {TYPE_ANCESTRY_TABLE} WHERE node_type = old.out_node); \
-               INSERT OR REPLACE INTO {TYPE_ANCESTRY_TABLE} (node_type, ancestor, depth) \
-               SELECT d.node_type, a.ancestor, d.depth + 1 + a.depth \
-               FROM {TYPE_ANCESTRY_TABLE} d, {TYPE_ANCESTRY_TABLE} a \
-               WHERE new.relationship_type = '{EXTENDS_RELATIONSHIP}' \
-                 AND d.ancestor = new.in_node AND a.node_type = new.out_node; \
-             END"
-        ),
-    ];
-    for trigger in triggers {
-        conn.execute(&trigger, ())
-            .await
-            .with_context(|| format!("Failed to create type-ancestry trigger: {trigger}"))?;
-    }
+        (),
+    )
+    .await
+    .context("Failed to create the type-ancestry view")?;
     Ok(())
 }
 
@@ -1481,12 +1380,9 @@ mod tests {
         let path = dir.path().join("missing-tables.db");
         let conn = open(&path).await;
         create_schema(&conn).await.unwrap();
-        conn.execute_batch(
-            "DROP TABLE structural_rule;
-             DROP TABLE type_ancestry;",
-        )
-        .await
-        .unwrap();
+        conn.execute_batch("DROP TABLE structural_rule;")
+            .await
+            .unwrap();
         let tables_before = names_of(&conn, "table").await;
         let triggers_before = names_of(&conn, "trigger").await;
         let indexes_before = names_of(&conn, "index").await;
@@ -1499,7 +1395,7 @@ mod tests {
         assert_eq!(
             mismatch,
             &SchemaMismatch {
-                missing_tables: vec!["structural_rule".to_string(), "type_ancestry".to_string()],
+                missing_tables: vec!["structural_rule".to_string()],
                 unexpected_tables: vec![],
                 tables: vec![],
                 core_types: vec![],
@@ -1507,7 +1403,7 @@ mod tests {
         );
         let message = err.to_string();
         assert!(
-            message.contains("missing tables structural_rule, type_ancestry"),
+            message.contains("missing tables structural_rule"),
             "the message must name the missing tables: {message}"
         );
 
@@ -1576,8 +1472,7 @@ mod tests {
                 "node",
                 "pending_seed_update",
                 "relationship",
-                "structural_rule",
-                "type_ancestry"
+                "structural_rule"
             ]
         );
         let relationship = expected
@@ -1719,7 +1614,7 @@ mod tests {
         assert_eq!(names_of(&conn, "view").await, vec!["node".to_string()]);
     }
 
-    // ---- The type-ancestry table (ADR-086 §5) ----
+    // ---- The type-ancestry view (ADR-102) ----
 
     async fn fresh() -> (libsql::Connection, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -1748,7 +1643,7 @@ mod tests {
         .unwrap();
     }
 
-    /// `node_type`'s chain as the table holds it: `(ancestor, depth)` nearest
+    /// `node_type`'s chain as the view yields it: `(ancestor, depth)` nearest
     /// first.
     async fn chain(conn: &libsql::Connection, node_type: &str) -> Vec<(String, i64)> {
         let mut rows = conn
@@ -1769,21 +1664,70 @@ mod tests {
         items.iter().map(|(a, d)| (a.to_string(), *d)).collect()
     }
 
-    /// Every core type is its own ancestor from the first statement on a new
-    /// database, before any schema node exists, the `schema` meta-type
-    /// included.
+    /// `schema` has no schema node of its own, so the view carries its row
+    /// from the first statement on a new database; every other type is a
+    /// schema node and appears with it.
     #[tokio::test]
-    async fn a_fresh_database_holds_every_core_types_chain() {
+    async fn a_fresh_database_holds_the_schema_types_own_row() {
         let (conn, _dir) = fresh().await;
-        for core in crate::models::CoreNodeType::ALL {
-            let expected: Vec<(String, i64)> = core
-                .chain()
-                .into_iter()
-                .enumerate()
-                .map(|(depth, t)| (t.as_str().to_string(), depth as i64))
-                .collect();
-            assert_eq!(chain(&conn, core.as_str()).await, expected, "{core}");
+        assert_eq!(chain(&conn, "schema").await, pairs(&[("schema", 0)]));
+        assert_eq!(count(&conn, "SELECT count(*) FROM type_ancestry").await, 1);
+    }
+
+    /// The ancestry is a view over the `extends` edges: there is no table to
+    /// fall out of step, and no trigger maintains one.
+    #[tokio::test]
+    async fn the_ancestry_is_a_view_with_no_maintenance_triggers() {
+        let (conn, _dir) = fresh().await;
+        assert!(names_of(&conn, "view")
+            .await
+            .contains(&"type_ancestry".to_string()));
+        assert!(!names_of(&conn, "table")
+            .await
+            .contains(&"type_ancestry".to_string()));
+        assert!(names_of(&conn, "trigger")
+            .await
+            .iter()
+            .all(|t| !t.starts_with("type_ancestry")));
+        assert!(names_of(&conn, "index")
+            .await
+            .iter()
+            .all(|i| !i.contains("type_ancestry")));
+    }
+
+    /// A corrupt edge set that closes a cycle ends: the walk is bounded.
+    #[tokio::test]
+    async fn a_cycle_of_extends_edges_does_not_loop_the_view() {
+        let (conn, _dir) = fresh().await;
+        for id in ["a", "b"] {
+            add_schema(&conn, id).await;
         }
+        extend(&conn, "a", "b").await;
+        extend(&conn, "b", "a").await;
+        let rows = chain(&conn, "a").await;
+        assert!(rows.len() <= crate::schema::extends_chain::MAX_EXTENDS_DEPTH + 1);
+        assert!(rows.contains(&("b".to_string(), 1)));
+    }
+
+    /// The walk is served by the endpoint index, not the relationship-type
+    /// index that was measured about 50 times slower.
+    #[tokio::test]
+    async fn the_ancestry_walk_uses_the_endpoint_index() {
+        let (conn, _dir) = fresh().await;
+        let mut rows = conn
+            .query(
+                "EXPLAIN QUERY PLAN SELECT ancestor FROM type_ancestry WHERE node_type = 'x'",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut plan = String::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            plan.push_str(&row.get::<String>(3).unwrap());
+            plan.push('\n');
+        }
+        assert!(plan.contains("idx_rel_in"), "{plan}");
+        assert!(!plan.contains("idx_rel_type"), "{plan}");
     }
 
     /// Adding an `extends` edge gives the subtype, and every type below it,
@@ -1931,21 +1875,21 @@ mod tests {
         .await
     }
 
-    /// A core type's row survives a schema node of the same id being deleted.
-    /// `schema` has no schema node of its own, so its row has no other source.
+    /// `schema` has no schema node of its own, so its row has no source but
+    /// the view's constant arm: a user schema named `schema` that is deleted
+    /// does not take the meta-type's row with it.
     #[tokio::test]
-    async fn deleting_a_schema_named_after_a_core_type_keeps_the_core_row() {
+    async fn deleting_a_schema_named_schema_keeps_the_meta_types_row() {
         let (conn, _dir) = fresh().await;
-        for id in ["schema", "task"] {
-            add_schema(&conn, id).await;
-            conn.execute("DELETE FROM node WHERE id = ?1", libsql::params![id])
-                .await
-                .unwrap();
-            assert_eq!(chain(&conn, id).await, pairs(&[(id, 0)]), "{id}");
-        }
+        add_schema(&conn, "schema").await;
+        assert_eq!(chain(&conn, "schema").await, pairs(&[("schema", 0)]));
+        conn.execute("DELETE FROM node WHERE id = 'schema'", ())
+            .await
+            .unwrap();
+        assert_eq!(chain(&conn, "schema").await, pairs(&[("schema", 0)]));
     }
 
-    /// The root-only rule is enforced against the ancestry table, so it holds
+    /// The root-only rule is enforced against the ancestry view, so it holds
     /// for a subtype of a root-only type on both paths that could break it:
     /// giving such a node a parent, and retyping a node that has one.
     #[tokio::test]

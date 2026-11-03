@@ -1148,8 +1148,10 @@ mod tests {
         let (svc, _tmp) = exclusion_fixture().await;
         let cs = CollectionService::new(svc.store(), &svc);
         let paths = vec!["Private".to_string()];
-        // Resolving the path creates the collection, so the failure below is
-        // in reading its members, not in resolving it.
+        // Resolving the path creates the collection. Resolving it again reads
+        // the type ancestry, which is a walk over `relationship`, so with the
+        // table gone the failure surfaces in the resolution step; either way
+        // it is returned, not swallowed.
         excluded_member_ids(&cs, &paths).await.unwrap();
         svc.store()
             .write()
@@ -1163,6 +1165,7 @@ mod tests {
                 &err,
                 OpsError::Internal(m)
                     if m.starts_with("Failed to get members of excluded collection 'Private'")
+                        || m.starts_with("Failed to resolve excluded collection 'Private'")
             ),
             "{err:?}"
         );
