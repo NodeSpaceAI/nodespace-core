@@ -1228,6 +1228,31 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
     let _ = shutdown.send(());
 }
 
+/// A failed command adds no advice when the daemon matches this CLI, and a
+/// daemon that cannot be reached adds none either.
+#[tokio::test]
+async fn failed_command_against_a_matching_daemon_gets_no_update_advice() {
+    let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
+    let version = nodespace_cli::version_skew::daemon_version(&sock).await;
+    assert_eq!(
+        version.as_deref(),
+        Some(nodespace_cli::version_skew::CLI_VERSION)
+    );
+
+    let status = anyhow::Error::new(tonic::Status::not_found("no such node"));
+    let kept = nodespace_cli::note_version_skew(status, Some(sock.to_str().unwrap())).await;
+    assert!(
+        !format!("{kept:?}").contains("update NodeSpace"),
+        "matching versions must not add advice: {kept:?}"
+    );
+
+    let gone = tempfile::TempDir::new().unwrap().path().join("none.sock");
+    let status = anyhow::Error::new(tonic::Status::not_found("no such node"));
+    let kept = nodespace_cli::note_version_skew(status, gone.to_str()).await;
+    assert!(!format!("{kept:?}").contains("update NodeSpace"));
+    let _ = shutdown.send(());
+}
+
 #[tokio::test]
 async fn diagnostics_collect_reports_counts_and_recency() {
     let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
@@ -1250,6 +1275,17 @@ async fn diagnostics_collect_reports_counts_and_recency() {
     assert!(
         baseline.total_node_count.is_some(),
         "a successful query must report a count, not unknown"
+    );
+    // The in-process daemon is this workspace's build, so the versions match:
+    // the report names the daemon's version and raises no skew warning.
+    assert_eq!(
+        baseline.daemon_version.as_deref(),
+        Some(nodespace_cli::version_skew::CLI_VERSION)
+    );
+    assert!(
+        baseline.warnings.is_empty(),
+        "matching versions must not warn: {:?}",
+        baseline.warnings
     );
     // The registry has exactly the seeded default, and it is the target when no
     // database is selected.

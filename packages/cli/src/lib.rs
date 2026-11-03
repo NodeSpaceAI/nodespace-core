@@ -8,6 +8,7 @@ pub mod journal;
 pub mod output;
 pub mod paths;
 pub mod terminal;
+pub mod version_skew;
 
 pub use output::{exit_if_broken_pipe, install_broken_pipe_handler, BROKEN_PIPE_EXIT_CODE};
 
@@ -708,10 +709,40 @@ pub async fn resolve_routing(
 /// rewritten to the shared refusal text by [`render_refusal`]. `main` prints
 /// the error and exits non-zero either way.
 pub async fn run(cli: Cli) -> Result<()> {
-    dispatch(cli)
-        .await
-        .map_err(render_refusal)
-        .map_err(render_status)
+    let socket = cli.socket.clone();
+    match dispatch(cli).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let error = note_version_skew(error, socket.as_deref()).await;
+            Err(render_status(render_refusal(error)))
+        }
+    }
+}
+
+/// Adds the "update NodeSpace" advice to a command that failed with a daemon
+/// status when the daemon is on a different release than this CLI.
+///
+/// Only a failure pays for the extra daemon call: a command that succeeded is
+/// never slowed down or failed over a version difference. A failure that is
+/// not a daemon status (a connection error, a bad argument) is left alone.
+pub async fn note_version_skew(error: anyhow::Error, socket: Option<&str>) -> anyhow::Error {
+    let is_status = error
+        .chain()
+        .any(|cause| cause.downcast_ref::<tonic::Status>().is_some());
+    if !is_status {
+        return error;
+    }
+    #[cfg(unix)]
+    let sock = resolve_socket_path(socket);
+    #[cfg(windows)]
+    let sock = std::path::PathBuf::from(resolve_pipe_name(socket));
+    let Some(daemon) = version_skew::daemon_version(&sock).await else {
+        return error;
+    };
+    match version_skew::skew_message(version_skew::CLI_VERSION, &daemon) {
+        Some(note) => error.context(note),
+        None => error,
+    }
 }
 
 /// Replace a gRPC status in an error's chain with [`status_text`], keeping
