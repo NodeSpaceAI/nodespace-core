@@ -1,14 +1,16 @@
 ---
 name: run-app
-description: Launch NodeSpace (daemon + dev-proxy + frontend) and drive it in a browser to see a change working in the real app. Use when asked to run, start, or screenshot the app, or to confirm a change works outside the test suite.
+description: Launch the NodeSpace desktop app (dev:tauri) and drive it through the debug bridge to see a change working in the real app. Use when asked to run, start, or screenshot the app, or to confirm a change works outside the test suite.
 allowed-tools: Bash, Read, Write, Edit
 ---
 
 ## What this skill is for
 
-Running the real app — daemon, dev-proxy and frontend — so you can look at
-actual rendered nodes. Use it when tests pass but you need to *see* something:
-a visual change, a layout, an interaction.
+Running the real desktop app so you can look at actual rendered nodes. There is
+one backend path, the Tauri command layer; no browser mode and no HTTP dev-proxy
+exist (ADR-103). Use it when tests pass but you need to *see* something: a
+visual change, a layout, an interaction. The app runs in the WKWebView it ships
+with and is driven through the debug bridge.
 
 ## CRITICAL: never launch the daemon against the user's real database
 
@@ -20,7 +22,7 @@ notes. Two traps, both of which have bitten before:
    checkout refuses any argument other than `--tray` and `--version` with a
    one-line error and exit status 2 before anything starts, but an older one
    (the installed `/usr/local/bin` or Homebrew daemon, or a stale
-   `target/debug/nodespaced` that step 1 reuses) ignores unknown flags and
+   `target/debug/nodespaced`) ignores unknown flags and
    starts serving. Do not probe a binary you did not just build. The flags are
    constants in `packages/daemon/src/main.rs`; the environment variables it
    honours are resolved in `packages/daemon/src/lib.rs`.
@@ -37,130 +39,10 @@ starts with none; to test against a provider, add it in the isolated database
 (the Settings screen, or the settings node's typed update), never by copying a
 real database over it.
 
-## Launch sequence
+## Launch and inspect (debug bridge)
 
-Run every step from the repo (or worktree) root.
-
-### 1. Build the daemon if needed
-
-```bash
-ls target/debug/nodespaced || bun run build:sidecars --debug
-```
-
-A fresh worktree has no binary. `build:sidecars --debug` produces it (several
-minutes cold).
-
-### 2. Start the daemon on an isolated home + SHORT socket path
-
-```bash
-mkdir -p /tmp/nsd && rm -f /tmp/nsd/d.sock
-NODESPACE_HOME=<scratchpad>/nshome \
-NODESPACED_SOCKET=/tmp/nsd/d.sock \
-  ./target/debug/nodespaced > <scratchpad>/daemon.log 2>&1
-```
-
-Run it with `run_in_background: true`.
-
-**The socket path must be short.** Unix sockets cap at `SUN_LEN` (~104 chars),
-and a session scratchpad path alone can exceed it. The failure is explicit:
-
-```
-Error: Failed to bind Unix socket: ...
-Caused by: path must be shorter than SUN_LEN
-```
-
-So: **database** under the scratchpad (isolated), **socket** under `/tmp/nsd`
-(short). They do not have to be co-located.
-
-The isolated home holds no embedding model, so the daemon starts with semantic
-search off and puts nothing on the GPU. To check a change that needs semantic
-search, add `NODESPACED_MODEL_PATH=$HOME/.nodespace/models/nomic-embed-text-v1.5.Q8_0.gguf`,
-which loads the model onto the GPU.
-
-Wait for readiness with an `until` loop, not a fixed sleep — first boot seeds
-~37 agent roots:
-
-```bash
-until [ -S /tmp/nsd/d.sock ] || grep -qiE "^Error|panic" <scratchpad>/daemon.log; do sleep 1; done
-grep -iE "serving default database|gRPC server listening|^Error" <scratchpad>/daemon.log | tail -3
-```
-
-**Confirm the log line says the scratch path, not `/Users/<you>/.nodespace/`.**
-That one line is the check that isolation worked.
-
-### 3. Start the frontend pointed at the same socket
-
-```bash
-NODESPACED_SOCKET=/tmp/nsd/d.sock bun run dev:browser > <scratchpad>/dev.log 2>&1
-```
-
-Background it. `dev:browser` runs the dev-proxy (:3001) and Vite (:5173)
-together. **The socket variable must match the daemon's** — the proxy defaults
-to `~/.nodespace/daemon.sock` and will sit at "Connecting to local service…"
-forever if it points somewhere else.
-
-```bash
-until curl -s -o /dev/null http://localhost:5173/; do sleep 1; done
-curl -s -o /dev/null -w "proxy: HTTP %{http_code}\n" http://localhost:3001/health
-```
-
-Both up = the full chain (frontend → proxy → gRPC → daemon → SQLite) is live.
-
-### 4. Drive it
-
-Navigate to `http://localhost:5173/` with Playwright. A scratch DB opens on
-today's Daily Journal with one empty node.
-
-"Connecting to local service…" plus zero nodes means the daemon is not
-reachable — fix that rather than working around it. Injecting your own markup
-tests your markup, not the app.
-
-Create nodes by typing into the real textarea:
-
-```js
-const ta = page.locator('textarea.node__content').first();
-await ta.click();
-await ta.pressSequentially('A text node', { delay: 5 });
-await page.keyboard.press('Enter');
-```
-
-Markdown prefixes (`# `, `[] `, `> `, `1. `) change node type, but typing them
-fast races the input handler and mangles the text. Add `waitForTimeout(400)`
-between nodes, and do not trust the resulting text — for visual checks the
-garbled text is usually irrelevant, but do not report it as correct content.
-
-Routes are a dead end: the root layout renders the app shell for every path, so
-a temporary `+page.svelte` never mounts.
-
-### 5. Toggle themes
-
-`.dark` / `.light` live on `documentElement`:
-
-```js
-document.documentElement.classList.remove('dark');
-document.documentElement.classList.add('light');
-```
-
-Always check both — light-mode-only verification misses the case where
-something inherits `--foreground` and turns near-white on dark.
-
-### 6. Clean up
-
-Stop both background tasks, then:
-
-```bash
-rm -rf /tmp/nsd
-pgrep -fl "nodespaced|dev-proxy"     # expect nothing
-ls -la ~/.nodespace/database/nodespace.db   # mtime must predate your session
-```
-
-Delete stray screenshots and `.playwright-mcp/` from the repo before
-committing.
-
-## Inspecting the real Tauri app (debug bridge)
-
-`bun run dev:tauri` carries a development-only bridge, so you can inspect the
-WKWebView the app ships with, not Chrome. Drive it with `tauri-mcp`.
+`bun run dev` runs `bun run dev:tauri`, which carries a development-only bridge,
+so you can inspect the WKWebView the app ships with. Drive it with `tauri-mcp`.
 
 **Launching the app cannot be isolated from the user's service registration.**
 It installs the sidecars into `~/.nodespace/bin-dev`, kills a daemon on the default
@@ -229,6 +111,33 @@ bunx tauri-mcp driver-session stop
   cannot be verified this way.
 - A second app takes the next free port from 9223; target it with `--port`.
 
+Create nodes by typing into the real textarea through the bridge
+(`webview-interact` to click `.node__content--view`, then `webview-keyboard`
+to type). Markdown prefixes (`# `, `[] `, `> `, `1. `) change node type, but
+typing them fast races the input handler and mangles the text; do not trust the
+resulting text, and do not report it as correct content.
+
+Routes are a dead end: the root layout renders the app shell for every path.
+
+## Toggle themes
+
+`.dark` / `.light` live on `documentElement`; set them with `webview-execute-js`:
+
+```js
+document.documentElement.classList.remove('dark');
+document.documentElement.classList.add('light');
+```
+
+Always check both — light-mode-only verification misses the case where
+something inherits `--foreground` and turns near-white on dark.
+
+## Clean up
+
+End the driver session, restore the launchd registration as above, and delete
+stray screenshots (and `.playwright-mcp/`) from the repo before committing.
+Confirm `~/.nodespace/database/nodespace.db` has an mtime that predates your
+session.
+
 ## Reading colors accurately
 
 Computed values beat eyeballing a screenshot. Measure on a real rendered
@@ -252,9 +161,9 @@ p.remove();
 
 | Thing | Value |
 |---|---|
-| Isolation lever | `NODESPACE_HOME` (**not** `NODESPACED_DB_PATH` alone) |
-| Socket var | `NODESPACED_SOCKET`, same value for daemon and proxy |
-| Socket path | Must be short — `/tmp/nsd/d.sock`, never the scratchpad |
-| Headless | Default — tray mode needs `--tray` |
-| Ports | Vite 5173, dev-proxy 3001 |
+| Launch | `bun run dev` (= `bun run dev:tauri`) |
+| Bridge | `bunx tauri-mcp`, port 9223 |
+| Launchd label (per user, not isolable) | `app.nodespace.daemon.dev` |
+| Isolation lever for a standalone daemon | `NODESPACE_HOME` (**not** `NODESPACED_DB_PATH` alone) |
+| Socket path | Must be short — never the scratchpad |
 | Real DB (never touch) | `~/.nodespace/database/nodespace.db` |
