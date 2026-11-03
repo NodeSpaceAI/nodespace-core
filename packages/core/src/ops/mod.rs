@@ -155,6 +155,13 @@ impl From<NodeServiceError> for OpsError {
             NodeServiceError::CollectionNotFound(name) => OpsError::CollectionNotFound { name },
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),
+            NodeServiceError::CollectionIdTaken {
+                holder_id,
+                holder_title,
+                ..
+            } => OpsError::AlreadyExists {
+                id: format!("collection '{holder_title}' (id {holder_id})"),
+            },
             NodeServiceError::CollectionCycle(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::CollectionDepthExceeded { path, max_depth } => {
                 OpsError::ValidationFailed(format!(

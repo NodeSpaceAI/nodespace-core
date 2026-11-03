@@ -90,6 +90,17 @@ pub enum NodeServiceError {
     #[error("Invalid collection path: {0}")]
     InvalidCollectionPath(String),
 
+    /// A node already holds the deterministic id a new collection would take
+    /// (a live collection of another spelling, a renamed or archived collection,
+    /// or a node of another type), so the create is refused rather than reusing it
+    #[error("Cannot create collection '{name}': {holder_type} node '{holder_title}' (id {holder_id}) already holds its id")]
+    CollectionIdTaken {
+        name: String,
+        holder_id: String,
+        holder_title: String,
+        holder_type: String,
+    },
+
     /// Collection not found
     #[error("Collection not found: {0}")]
     CollectionNotFound(String),
