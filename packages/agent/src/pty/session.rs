@@ -30,7 +30,8 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
@@ -64,6 +65,12 @@ const OUTPUT_CHANNEL_CAPACITY: usize = 256;
 /// worst case (one keystroke echo), but typical chunks are tens to a few
 /// hundred bytes, so 4 KiB amortises syscalls without delaying small writes.
 const READ_BUFFER_BYTES: usize = 4096;
+
+/// How long the exit watcher waits for the output reader to reach EOF after the
+/// child has exited before publishing the exit status anyway. The reader
+/// normally finishes at once; the bound covers a descendant that keeps the PTY
+/// open past the child's own exit.
+const READER_DRAIN_BOUND: Duration = Duration::from_secs(2);
 
 /// Default PTY size used at launch. Callers reshape via [`PtySession::resize`]
 /// as soon as they know their terminal geometry.
@@ -333,8 +340,8 @@ impl PtySession {
         let child_killer = Arc::new(Mutex::new(child_killer));
         let capture = Arc::new(Mutex::new(SessionCapture::new()));
 
-        spawn_reader_task(reader, output_tx.clone(), capture.clone());
-        spawn_exit_watcher_task(child, exit_tx.clone());
+        let reader_done = spawn_reader_task(reader, output_tx.clone(), capture.clone());
+        spawn_exit_watcher_task(child, exit_tx.clone(), reader_done, READER_DRAIN_BOUND);
 
         Ok(Self {
             id,
@@ -487,12 +494,18 @@ impl PtySession {
 /// The task ends naturally when the reader returns EOF (child closed the PTY)
 /// or hits an error. Each chunk is also pushed into `capture` so the capture
 /// service can assemble a transcript or summary after the session ends.
+///
+/// The returned receiver reports disconnected once the task has finished, so
+/// the exit watcher can hold the exit status back until all output is captured.
 fn spawn_reader_task(
     mut reader: Box<dyn Read + Send>,
     output_tx: broadcast::Sender<OutputChunk>,
     capture: Arc<Mutex<SessionCapture>>,
-) {
+) -> mpsc::Receiver<()> {
+    let (done_tx, done_rx) = mpsc::channel::<()>();
     tokio::task::spawn_blocking(move || {
+        // Dropped when the task ends by any path, which is the signal.
+        let _done = done_tx;
         let mut buf = [0u8; READ_BUFFER_BYTES];
         loop {
             match reader.read(&mut buf) {
@@ -517,6 +530,7 @@ fn spawn_reader_task(
             }
         }
     });
+    done_rx
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -583,9 +597,16 @@ impl PtySession {
 }
 
 /// Background task: own the child, wait for it to exit, latch the status.
+///
+/// The status is published only after the output reader has finished (its
+/// sender in `reader_done` dropped), so a consumer woken by the exit sees every
+/// chunk of the child's output in the capture buffer. `drain_bound` caps that
+/// wait.
 fn spawn_exit_watcher_task(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     exit_tx: watch::Sender<Option<ExitStatus>>,
+    reader_done: mpsc::Receiver<()>,
+    drain_bound: Duration,
 ) {
     tokio::task::spawn_blocking(move || {
         let status = match child.wait() {
@@ -601,6 +622,9 @@ fn spawn_exit_watcher_task(
                 }
             }
         };
+        // The reader never sends a value; this returns when its sender drops
+        // (`Disconnected`) or when the bound passes (`Timeout`).
+        let _ = reader_done.recv_timeout(drain_bound);
         let _ = exit_tx.send(Some(status));
     });
 }
@@ -674,6 +698,64 @@ mod tests {
         })
         .await
         .expect("exit status latched within deadline")
+    }
+
+    #[derive(Debug)]
+    struct ImmediateChild;
+
+    impl portable_pty::ChildKiller for ImmediateChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+            Box::new(ImmediateChild)
+        }
+    }
+
+    impl portable_pty::Child for ImmediateChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+            Ok(Some(portable_pty::ExitStatus::with_exit_code(0)))
+        }
+        fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+            Ok(portable_pty::ExitStatus::with_exit_code(0))
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn exit_is_not_published_until_the_reader_has_finished() {
+        let (exit_tx, mut exit_rx) = watch::channel::<Option<ExitStatus>>(None);
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        spawn_exit_watcher_task(
+            Box::new(ImmediateChild),
+            exit_tx,
+            done_rx,
+            Duration::from_secs(30),
+        );
+
+        // The child has already exited, but the reader still holds its sender.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(exit_rx.borrow().is_none(), "exit published before drain");
+
+        drop(done_tx);
+        let status = await_exit(&mut exit_rx, Duration::from_secs(5)).await;
+        assert!(status.success);
+    }
+
+    #[tokio::test]
+    async fn exit_is_published_after_the_drain_bound_if_the_reader_never_finishes() {
+        let (exit_tx, mut exit_rx) = watch::channel::<Option<ExitStatus>>(None);
+        let (_done_tx, done_rx) = mpsc::channel::<()>();
+        spawn_exit_watcher_task(
+            Box::new(ImmediateChild),
+            exit_tx,
+            done_rx,
+            Duration::from_millis(100),
+        );
+        let status = await_exit(&mut exit_rx, Duration::from_secs(5)).await;
+        assert!(status.success);
     }
 
     #[tokio::test]
