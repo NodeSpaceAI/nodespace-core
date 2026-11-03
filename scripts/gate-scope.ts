@@ -134,7 +134,7 @@ export function classify(files: string[]): GateScope {
       if (RUST_READ_SCRIPT_DIRS.some((d) => file.startsWith(d))) scope.rust = true;
       continue;
     }
-    if (file.startsWith("packages/desktop-app/") || file.startsWith("packages/dev-tools/")) {
+    if (file.startsWith("packages/desktop-app/")) {
       scope.frontend = true;
       continue;
     }

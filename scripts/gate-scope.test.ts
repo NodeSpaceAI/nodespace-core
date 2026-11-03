@@ -19,10 +19,6 @@ describe("classify", () => {
     });
   });
 
-  test("the dev-proxy counts as frontend", () => {
-    expect(classify(["packages/dev-tools/src/proxy.ts"]).frontend).toBe(true);
-  });
-
   test("a Rust change runs Rust and the (seconds-long) scripts tests, not the frontend tiers", () => {
     const scope = classify(["packages/core/src/services/node_service/mod.rs"]);
     expect(scope).toEqual({ fullReason: null, ...NONE, rust: true, scripts: true });

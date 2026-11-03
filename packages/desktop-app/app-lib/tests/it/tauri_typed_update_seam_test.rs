@@ -1,20 +1,10 @@
-//! ADR-048 priority flow 8 — adapter contract parity (decision 5).
+//! ADR-048 priority flow 8 — typed updates and insert positions through the
+//! REAL Tauri command layer.
 //!
-//! `src/tests/e2e/adapter-contract.e2e.ts` already proves HttpAdapter and
-//! dev-proxy agree on these same operations against a real daemon, and
-//! notes explicitly (its own module doc) that "a true Tauri-IPC round-trip
-//! ... requires a Rust-side integration test — tracked separately, not
-//! something a TypeScript harness without a webview can drive." This file
-//! is that Rust-side half: it drives the identical operations — task
-//! tri-state clear/set/no-change, and InsertPosition on both create and
-//! move — through the REAL TauriAdapter path (the `#[tauri::command]`
-//! functions themselves) against a real daemon, and asserts the same
-//! outcomes the TS suite asserts for HttpAdapter/dev-proxy. Two suites
-//! independently pinning the same documented contract is what makes a
-//! divergence between the paths a test failure rather than a silent drift
-//! — neither suite can drift without the OTHER one continuing to pass, so
-//! a change that breaks the contract on one path and not the other shows up
-//! as exactly one of the two suites failing.
+//! Drives the task tri-state clear/set/no-change, the typed updates of the
+//! core types, and InsertPosition on both create and move through the
+//! `#[tauri::command]` functions themselves against a real daemon. With one
+//! adapter (ADR-103) this is the contract test: the Tauri seam alone.
 
 use nodespace_app_lib::commands::nodes::{
     create_node, get_children, get_node, move_node, update_collection_node,
@@ -52,10 +42,9 @@ fn task_input(id: &str) -> CreateNodeInput {
     }
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "create → update task fields with
-/// tri-state clear/set/no-change → read back matches".
+/// create → update task fields with tri-state clear/set/no-change → read back matches
 #[tokio::test]
-async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_contract() {
+async fn task_tri_state_update_clear_set_no_change_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -108,10 +97,9 @@ async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_cont
     assert_eq!(cleared["status"], json!("in_progress"));
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "create → typed person update → read
-/// back carries typed fields and the templated title".
+/// create → typed person update → read back carries typed fields and the templated title
 #[tokio::test]
-async fn person_typed_update_matches_the_http_adapter_contract() {
+async fn person_typed_update_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -171,10 +159,9 @@ async fn person_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(cleared["lastName"], json!("Lovelace"));
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "create → typed query update → read
-/// back carries typed fields".
+/// create → typed query update → read back carries typed fields
 #[tokio::test]
-async fn query_typed_update_matches_the_http_adapter_contract() {
+async fn query_typed_update_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -238,10 +225,9 @@ async fn query_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(reread["filters"][0]["value"], json!("open"));
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "create → typed play update → read
-/// back carries typed fields".
+/// create → typed play update → read back carries typed fields
 #[tokio::test]
-async fn play_typed_update_matches_the_http_adapter_contract() {
+async fn play_typed_update_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -311,10 +297,9 @@ async fn play_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(reread["rules"][0]["name"], json!("greet"));
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "create → typed collection update →
-/// read back carries the typed description".
+/// create → typed collection update → read back carries the typed description
 #[tokio::test]
-async fn collection_typed_update_matches_the_http_adapter_contract() {
+async fn collection_typed_update_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -368,10 +353,9 @@ async fn collection_typed_update_matches_the_http_adapter_contract() {
     );
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "create → typed skill update → read
-/// back carries typed fields".
+/// create → typed skill update → read back carries typed fields
 #[tokio::test]
-async fn skill_typed_update_matches_the_http_adapter_contract() {
+async fn skill_typed_update_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -438,11 +422,10 @@ async fn skill_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(cleared["toolWhitelist"], json!(["update_node", "get_node"]));
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "typed database-settings update → read
-/// back carries the typed list". The list is cleared again before the daemon
+/// typed database-settings update → read back carries the typed list. The list is cleared again before the daemon
 /// goes away, so nothing later opens a database that requires an extension.
 #[tokio::test]
-async fn database_settings_typed_update_matches_the_http_adapter_contract() {
+async fn database_settings_typed_update_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -509,10 +492,9 @@ async fn database_settings_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(cleared["providers"], json!([]));
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "createNode honors an explicit
-/// InsertPosition the same way move/reorder do".
+/// createNode honors an explicit InsertPosition the same way move/reorder do
 #[tokio::test]
-async fn create_node_insert_position_matches_the_http_adapter_contract() {
+async fn create_node_insert_position_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
@@ -547,10 +529,9 @@ async fn create_node_insert_position_matches_the_http_adapter_contract() {
     assert_eq!(child_ids, vec![second_id, first_id]);
 }
 
-/// Mirrors `adapter-contract.e2e.ts`'s "moveNode honors an explicit
-/// InsertPosition (regression: dev-proxy previously ignored it entirely)".
+/// moveNode honors an explicit InsertPosition
 #[tokio::test]
-async fn move_node_insert_position_matches_the_http_adapter_contract() {
+async fn move_node_insert_position_through_the_command_layer() {
     let daemon = SpawnedDaemon::spawn();
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();

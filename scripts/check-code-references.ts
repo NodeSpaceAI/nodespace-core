@@ -28,7 +28,6 @@ export const SCAN_ROOTS = [
   "packages/cli",
   "packages/nodespace-types",
   "packages/proto",
-  "packages/dev-tools",
   "packages/skill",
   "packages/agent",
   "packages/nlp-engine",
