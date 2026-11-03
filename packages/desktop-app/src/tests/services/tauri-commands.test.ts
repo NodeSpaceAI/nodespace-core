@@ -57,7 +57,7 @@ describe('Tauri System Commands - API Surface', () => {
     });
   });
 
-  describe('PTY session commands ', () => {
+  describe('PTY session commands', () => {
     beforeEach(() => {
       mockInvoke.mockReset();
     });

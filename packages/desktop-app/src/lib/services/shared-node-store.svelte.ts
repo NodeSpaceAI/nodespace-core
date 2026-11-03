@@ -2110,7 +2110,7 @@ export class SharedNodeStore {
           const changedFields = Object.keys(changes);
           // Capture non-content fields (e.g. nodeType) at schedule time.
           // Content is intentionally re-read at execute time to get latest typed value,
-          // but nodeType must be captured now — SSE can overwrite the store before execution.
+          // but nodeType must be captured now — a daemon event can overwrite the store before execution.
           const capturedNonContentFields: Record<string, unknown> = {};
           for (const field of changedFields) {
             if (field !== 'content') {
@@ -2203,7 +2203,7 @@ export class SharedNodeStore {
                   }
 
                   // Build updatePayload: content from current store state (latest typed value),
-                  // all other fields from captured values at schedule time (immune to SSE overwrites).
+                  // all other fields from captured values at schedule time (immune to daemon-event overwrites).
                   const updatePayload: Record<string, unknown> = { ...capturedNonContentFields };
                   if (changedFields.includes('content')) {
                     updatePayload['content'] = currentNode.content;
