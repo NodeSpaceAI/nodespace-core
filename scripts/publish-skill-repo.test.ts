@@ -4,6 +4,7 @@
 // `--push` runs against a local bare repository standing in for SKILL_REPO
 // (scripts/fake-external-repo.ts), never the network or a real
 // SKILL_REPO_TOKEN.
+import { stampMinCliVersion } from "../packages/skill/src/min-cli-version";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { $ } from "bun";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -156,9 +157,16 @@ describe("renderPublishFiles", () => {
     const { body } = readSkillSource();
 
     expect(skillMd.content.startsWith("---\nname: nodespace\n")).toBe(true);
-    expect(skillMd.content).toContain(body);
+    expect(skillMd.content).toContain(stampMinCliVersion(body, "0.2.2"));
     // name must match the directory it publishes into.
     expect(skillMd.relPath.split("/")[1]).toBe("nodespace");
+  });
+
+  test("stamps the released version into SKILL.md as the CLI minimum", () => {
+    const files = renderPublishFiles("v0.2.2");
+    const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
+    expect(skillMd.content).toContain("version **0.2.2 or newer**");
+    expect(skillMd.content).not.toContain("{{MIN_CLI_VERSION}}");
   });
 
   test("stamps a compatibility field with the released app version, within the spec's 500-char limit", () => {

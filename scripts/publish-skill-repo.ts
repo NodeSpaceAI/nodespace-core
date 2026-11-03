@@ -93,6 +93,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildSkillFrontmatter, CLAUDE_CODE_PLUGIN, SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
 import { listReferenceFiles } from "../packages/skill/src/installer";
+import { stampMinCliVersion } from "../packages/skill/src/min-cli-version";
 import { pushFilesToRepo, type RepoFile } from "./push-to-external-repo";
 
 export const SKILL_REPO = "NodeSpaceAI/nodespace-skill";
@@ -161,7 +162,9 @@ export function renderPublishFiles(version: string): RepoFile[] {
     const isSkillMd = relSrcPath === "SKILL.md";
     return {
       relPath: `${SKILL_PUBLISH_DIR}/${relSrcPath}`,
-      content: isSkillMd ? frontmatter + "\n" + content : content,
+      content: isSkillMd
+        ? frontmatter + "\n" + stampMinCliVersion(content, v)
+        : content,
     };
   });
 }

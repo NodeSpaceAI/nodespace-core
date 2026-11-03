@@ -598,3 +598,64 @@ fn every_schema_rule_reaches_the_skill() {
         missing.join(", ")
     );
 }
+
+/// SKILL.md opens with the CLI version check, names the minimum through the
+/// placeholder the build stamps, forbids falling back or upgrading, and has a
+/// preflight row for a CLI that runs but is too old.
+#[test]
+fn skill_md_starts_with_a_cli_version_check_and_a_too_old_row() {
+    let body = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill/SKILL.md"),
+    )
+    .expect("read SKILL.md");
+
+    let check = body
+        .find("## First: Check the CLI Version")
+        .expect("SKILL.md must have the version-check section");
+    let model = body
+        .find("## How NodeSpace Thinks")
+        .expect("mental model section");
+    assert!(
+        check < model,
+        "the version check comes before everything else"
+    );
+    let section = &body[check..model];
+    assert!(section.contains("nodespace --version"));
+    assert!(section.contains("{{MIN_CLI_VERSION}}"));
+    assert!(section.contains("Tell the user to update NodeSpace"));
+    assert!(section.contains("Do not fall back"));
+    assert!(section.contains("do not upgrade the CLI yourself"));
+
+    let row = body
+        .lines()
+        .find(|line| line.starts_with('|') && line.contains("unrecognized subcommand"))
+        .expect("preflight table needs a row for a CLI that is too old");
+    assert!(row.contains("update NodeSpace"));
+    assert!(row.contains("{{MIN_CLI_VERSION}}"));
+}
+
+/// The version the stamped minimum is compared with is the one the CLI prints:
+/// `nodespace --version` ends in the workspace version the skill is stamped
+/// from, in the `major.minor.patch` shape the stamp requires.
+#[test]
+fn cli_prints_the_workspace_version_the_skill_is_stamped_with() {
+    let err = Cli::command()
+        .try_get_matches_from(["nodespace", "--version"])
+        .expect_err("--version exits through clap");
+    let printed = err.to_string();
+    assert!(
+        printed.trim_end().ends_with(env!("CARGO_PKG_VERSION")),
+        "unexpected --version output: {printed}"
+    );
+    let parts: Vec<&str> = env!("CARGO_PKG_VERSION").split('.').collect();
+    assert_eq!(parts.len(), 3);
+    assert!(parts.iter().all(|p| p.parse::<u64>().is_ok()));
+
+    let manifest =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"))
+            .expect("read workspace Cargo.toml");
+    assert!(
+        manifest.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "the CLI version must be the workspace version"
+    );
+}
