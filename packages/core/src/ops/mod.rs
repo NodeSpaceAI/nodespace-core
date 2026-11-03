@@ -155,12 +155,8 @@ impl From<NodeServiceError> for OpsError {
             NodeServiceError::CollectionNotFound(name) => OpsError::CollectionNotFound { name },
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),
-            NodeServiceError::CollectionIdTaken {
-                holder_id,
-                holder_title,
-                ..
-            } => OpsError::AlreadyExists {
-                id: format!("collection '{holder_title}' (id {holder_id})"),
+            err @ NodeServiceError::CollectionIdTaken { .. } => OpsError::AlreadyExists {
+                id: err.to_string(),
             },
             NodeServiceError::CollectionCycle(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::CollectionDepthExceeded { path, max_depth } => {
@@ -175,6 +171,29 @@ impl From<NodeServiceError> for OpsError {
             err @ NodeServiceError::EmbeddingUnavailable(_) => OpsError::Internal(err.to_string()),
             NodeServiceError::BulkOperationFailed { context } => OpsError::Internal(context),
             NodeServiceError::InitializationError(msg) => OpsError::Internal(msg),
+        }
+    }
+}
+
+#[cfg(test)]
+mod collection_id_taken_tests {
+    use super::*;
+
+    #[test]
+    fn refusal_names_the_requested_name_and_the_holders_type() {
+        let err = OpsError::from(NodeServiceError::CollectionIdTaken {
+            name: "Clients".into(),
+            holder_id: "id-1".into(),
+            holder_title: "Accounts".into(),
+            holder_type: "text".into(),
+        });
+        match err {
+            OpsError::AlreadyExists { id } => {
+                assert!(id.contains("'Clients'"), "{id}");
+                assert!(id.contains("text node 'Accounts'"), "{id}");
+                assert!(id.contains("id-1"), "{id}");
+            }
+            other => panic!("unexpected variant: {other:?}"),
         }
     }
 }

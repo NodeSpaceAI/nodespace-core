@@ -530,6 +530,24 @@ impl<'a> CollectionService<'a> {
     /// create of the same name, the winner is found by name; a renamed, archived or
     /// differently typed holder still surfaces the refusal.
     async fn get_or_create_collection(&self, name: &str) -> Result<(Node, bool), NodeServiceError> {
+        self.get_or_create_collection_with(
+            name,
+            |n| async move { self.create_collection(&n).await },
+        )
+        .await
+    }
+
+    /// [`Self::get_or_create_collection`] with the create step supplied, so a
+    /// lost race can be exercised.
+    async fn get_or_create_collection_with<F, Fut>(
+        &self,
+        name: &str,
+        create: F,
+    ) -> Result<(Node, bool), NodeServiceError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Node, NodeServiceError>>,
+    {
         let lookup_name = name.trim();
         if let Some(existing) = self
             .store
@@ -539,7 +557,7 @@ impl<'a> CollectionService<'a> {
         {
             return Ok((existing, false));
         }
-        match self.create_collection(name).await {
+        match create(name.to_string()).await {
             Ok(created) => Ok((created, true)),
             Err(err @ NodeServiceError::CollectionIdTaken { .. }) => {
                 match self
@@ -1197,6 +1215,31 @@ mod tests {
             }
             other => panic!("expected CollectionIdTaken, got {other:?}"),
         }
+    }
+
+    /// A create that loses a race to a concurrent create of the same name
+    /// resolves to the winner, not to an error and not as a create.
+    #[tokio::test]
+    async fn get_or_create_returns_the_race_winner_found_by_name() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let (svc_ref, ns_ref) = (&svc, &ns);
+        let (node, created) = svc
+            .get_or_create_collection_with("Race", |name| async move {
+                // The concurrent create lands between our lookup and our insert.
+                svc_ref.create_collection(&name).await?;
+                Err(id_taken(
+                    &name,
+                    &ns_ref
+                        .get_node(&deterministic_collection_id(&name))
+                        .await?
+                        .unwrap(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(node.id, deterministic_collection_id("Race"));
     }
 
     /// Creating a collection whose deterministic id a live collection already holds

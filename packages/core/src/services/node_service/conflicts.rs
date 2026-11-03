@@ -88,13 +88,27 @@ fn refuse_self_merge(survivor_id: &str, loser_id: &str) -> Result<(), NodeServic
     Ok(())
 }
 
-/// Colliding values (or names) read per query by the reconciliation scan.
-const SCAN_CHUNK: u32 = 200;
-/// Members of one colliding group the scan examines; a larger group is
-/// journaled for its first members and the rest are found as those are resolved.
-const SCAN_GROUP_MEMBERS: u32 = 20;
-/// Records one scan writes before stopping; a later sweep continues.
-const SCAN_MAX_JOURNALED: u32 = 500;
+/// The bounds of one reconciliation scan.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScanLimits {
+    /// Colliding values (or names) read per query.
+    pub chunk: u32,
+    /// Members of one colliding group examined; a larger group is journaled for
+    /// its first members and the rest are found as those are resolved.
+    pub group_members: u32,
+    /// Records one scan writes before stopping; a later sweep continues.
+    pub max_journaled: u32,
+}
+
+impl Default for ScanLimits {
+    fn default() -> Self {
+        Self {
+            chunk: 200,
+            group_members: 20,
+            max_journaled: 500,
+        }
+    }
+}
 
 impl NodeService {
     /// List conflict records, optionally filtered by status/kind.
@@ -491,17 +505,37 @@ impl NodeService {
     /// exists in ANY status (open, dismissed, resolved) is left alone and a
     /// second run journals nothing new.
     ///
-    /// Bounded: groups are found in keyset-paged chunks of [`SCAN_CHUNK`] by
+    /// Bounded: groups are found in keyset-paged chunks of `ScanLimits::chunk` by
     /// read queries (no write lock is held between them; each journal write is
-    /// its own short transaction), at most [`SCAN_GROUP_MEMBERS`] members of a
-    /// group are examined, and at most [`SCAN_MAX_JOURNALED`] records are written
+    /// its own short transaction), at most `ScanLimits::group_members` members of a
+    /// group are examined, and at most `ScanLimits::max_journaled` records are written
     /// per call, the rest being found by a later sweep.
     ///
     /// Returns the number of records journaled.
     pub async fn journal_missed_collisions(&self) -> Result<u32, NodeServiceError> {
+        self.journal_missed_collisions_within(ScanLimits::default())
+            .await
+    }
+
+    /// [`Self::journal_missed_collisions`] under explicit bounds.
+    pub(crate) async fn journal_missed_collisions_within(
+        &self,
+        limits: ScanLimits,
+    ) -> Result<u32, NodeServiceError> {
         let mut journaled = 0u32;
-        self.scan_collection_name_collisions(&mut journaled).await?;
-        self.scan_unique_field_collisions(&mut journaled).await?;
+        // One kind's hard error must not hide the other kind's collisions.
+        if let Err(e) = self
+            .scan_collection_name_collisions(&mut journaled, limits)
+            .await
+        {
+            tracing::warn!(error = %e, "reconciliation sweep: collection-name scan failed, continuing");
+        }
+        if let Err(e) = self
+            .scan_unique_field_collisions(&mut journaled, limits)
+            .await
+        {
+            tracing::warn!(error = %e, "reconciliation sweep: unique-field scan failed");
+        }
         Ok(journaled)
     }
 
@@ -514,12 +548,13 @@ impl NodeService {
         discriminator: &str,
         detail: &serde_json::Value,
         journaled: &mut u32,
+        limits: ScanLimits,
     ) -> Result<(), NodeServiceError> {
         let Some((anchor, others)) = ids.split_first() else {
             return Ok(());
         };
         for other in others {
-            if *journaled >= SCAN_MAX_JOURNALED {
+            if *journaled >= limits.max_journaled {
                 return Ok(());
             }
             let node_ids = vec![anchor.clone(), other.clone()];
@@ -551,24 +586,25 @@ impl NodeService {
     async fn scan_collection_name_collisions(
         &self,
         journaled: &mut u32,
+        limits: ScanLimits,
     ) -> Result<(), NodeServiceError> {
         let mut after: Option<String> = None;
         loop {
             let titles = self
                 .store
-                .duplicated_collection_titles(after.as_deref(), SCAN_CHUNK)
+                .duplicated_collection_titles(after.as_deref(), limits.chunk)
                 .await
                 .map_err(NodeServiceError::from_store)?;
             let Some(last) = titles.last().cloned() else {
                 return Ok(());
             };
             for title in &titles {
-                if *journaled >= SCAN_MAX_JOURNALED {
+                if *journaled >= limits.max_journaled {
                     return Ok(());
                 }
                 let ids = self
                     .store
-                    .collection_ids_with_title(title, SCAN_GROUP_MEMBERS)
+                    .collection_ids_with_title(title, limits.group_members)
                     .await
                     .map_err(NodeServiceError::from_store)?;
                 // Named as detection and the still-holds re-check name them: by
@@ -597,10 +633,11 @@ impl NodeService {
                     &name,
                     &detail,
                     journaled,
+                    limits,
                 )
                 .await?;
             }
-            if titles.len() < SCAN_CHUNK as usize {
+            if titles.len() < limits.chunk as usize {
                 return Ok(());
             }
             after = Some(last);
@@ -611,6 +648,7 @@ impl NodeService {
     async fn scan_unique_field_collisions(
         &self,
         journaled: &mut u32,
+        limits: ScanLimits,
     ) -> Result<(), NodeServiceError> {
         let node_types = self
             .store
@@ -618,11 +656,14 @@ impl NodeService {
             .await
             .map_err(NodeServiceError::from_store)?;
         for node_type in node_types {
-            if *journaled >= SCAN_MAX_JOURNALED {
+            if *journaled >= limits.max_journaled {
                 return Ok(());
             }
             // One type's unreadable schema or failed query must not hide the rest.
-            if let Err(e) = self.scan_unique_fields_of_type(&node_type, journaled).await {
+            if let Err(e) = self
+                .scan_unique_fields_of_type(&node_type, journaled, limits)
+                .await
+            {
                 tracing::warn!(
                     node_type = %node_type,
                     error = %e,
@@ -637,6 +678,7 @@ impl NodeService {
         &self,
         node_type: &str,
         journaled: &mut u32,
+        limits: ScanLimits,
     ) -> Result<(), NodeServiceError> {
         let (fields, owners, _chain) = self.resolve_field_owners(node_type).await?;
         for field in fields
@@ -660,7 +702,7 @@ impl NodeService {
                         &field.name,
                         case_insensitive,
                         after.as_deref(),
-                        SCAN_CHUNK,
+                        limits.chunk,
                     )
                     .await
                     .map_err(NodeServiceError::from_store)?;
@@ -668,7 +710,7 @@ impl NodeService {
                     break;
                 };
                 for value in &values {
-                    if *journaled >= SCAN_MAX_JOURNALED {
+                    if *journaled >= limits.max_journaled {
                         return Ok(());
                     }
                     // Detection skips empty / whitespace-only values.
@@ -683,7 +725,7 @@ impl NodeService {
                             &field.name,
                             case_insensitive,
                             value,
-                            SCAN_GROUP_MEMBERS,
+                            limits.group_members,
                         )
                         .await
                         .map_err(NodeServiceError::from_store)?;
@@ -714,10 +756,11 @@ impl NodeService {
                         &discriminator,
                         &detail,
                         journaled,
+                        limits,
                     )
                     .await?;
                 }
-                if values.len() < SCAN_CHUNK as usize {
+                if values.len() < limits.chunk as usize {
                     break;
                 }
                 after = Some(last);
@@ -883,5 +926,128 @@ impl NodeService {
             }
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod scan_limit_tests {
+    use super::*;
+    use crate::db::SqliteStore;
+    use crate::models::{Node, NodeUpdate};
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    async fn service() -> (NodeService, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(dir.path().join("db")).await.unwrap());
+        (NodeService::new(&mut store).await.unwrap(), dir)
+    }
+
+    async fn set_status(svc: &NodeService, id: &str, status: &str) {
+        let version = svc.get_node(id).await.unwrap().unwrap().version;
+        svc.update_node(
+            id,
+            version,
+            NodeUpdate::new().with_lifecycle_status(status.to_string()),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// `copies` collections named `name` that collide without any inline
+    /// journal: all but the last are created archived and restored afterwards.
+    async fn missed_group(svc: &NodeService, name: &str, copies: usize) -> Vec<String> {
+        let mut ids = Vec::new();
+        for i in 0..copies {
+            let id = svc
+                .create_node(Node::new(
+                    "collection".to_string(),
+                    name.to_string(),
+                    serde_json::json!({}),
+                ))
+                .await
+                .unwrap();
+            if i + 1 < copies {
+                set_status(svc, &id, "archived").await;
+            }
+            ids.push(id);
+        }
+        for id in &ids[..copies - 1] {
+            set_status(svc, id, "active").await;
+        }
+        ids
+    }
+
+    async fn run(svc: &NodeService, limits: ScanLimits) -> u32 {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            svc.journal_missed_collisions_within(limits),
+        )
+        .await
+        .expect("the scan terminates")
+        .unwrap()
+    }
+
+    fn limits(chunk: u32, group_members: u32, max_journaled: u32) -> ScanLimits {
+        ScanLimits {
+            chunk,
+            group_members,
+            max_journaled,
+        }
+    }
+
+    /// More groups than one chunk: paging reaches every group and ends, even
+    /// with a chunk of one (a paging comparator that re-reads the last value
+    /// would never end).
+    #[tokio::test]
+    async fn paging_across_chunks_journals_every_group_and_terminates() {
+        for chunk in [1, 2] {
+            let (svc, _dir) = service().await;
+            for i in 0..5 {
+                missed_group(&svc, &format!("group{i}"), 2).await;
+            }
+            assert_eq!(run(&svc, limits(chunk, 20, 500)).await, 5, "chunk {chunk}");
+            assert_eq!(run(&svc, limits(chunk, 20, 500)).await, 0, "chunk {chunk}");
+        }
+    }
+
+    /// A group of three is journaled as pairs of its lowest id with each other
+    /// member, so every member is covered.
+    #[tokio::test]
+    async fn a_group_of_three_has_every_member_covered() {
+        let (svc, _dir) = service().await;
+        let ids = missed_group(&svc, "trio", 3).await;
+        assert_eq!(run(&svc, limits(200, 20, 500)).await, 2);
+        let mut covered = HashSet::new();
+        for id in &ids {
+            if !svc.conflicts_for_node(id).await.unwrap().is_empty() {
+                covered.insert(id.clone());
+            }
+        }
+        assert_eq!(covered, ids.into_iter().collect::<HashSet<_>>());
+        assert_eq!(run(&svc, limits(200, 20, 500)).await, 0);
+    }
+
+    /// The scan stops at the cap and the next sweep continues where it left off.
+    #[tokio::test]
+    async fn the_cap_stops_a_sweep_and_the_next_continues() {
+        let (svc, _dir) = service().await;
+        for i in 0..5 {
+            missed_group(&svc, &format!("group{i}"), 2).await;
+        }
+        let capped = limits(200, 20, 2);
+        assert_eq!(run(&svc, capped).await, 2);
+        assert_eq!(run(&svc, capped).await, 2);
+        assert_eq!(run(&svc, capped).await, 1);
+        assert_eq!(run(&svc, capped).await, 0);
+        assert_eq!(svc.list_conflicts(None, None, None).await.unwrap().len(), 5);
+    }
+
+    /// Only the first `group_members` members of a larger group are examined.
+    #[tokio::test]
+    async fn a_group_beyond_the_member_limit_is_journaled_for_its_first_members() {
+        let (svc, _dir) = service().await;
+        missed_group(&svc, "crowd", 4).await;
+        assert_eq!(run(&svc, limits(200, 3, 500)).await, 2);
     }
 }

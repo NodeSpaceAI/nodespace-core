@@ -1120,6 +1120,9 @@ pub async fn handle_create_nodes_from_markdown(
                                         msg
                                     ))
                                 }
+                                NodeServiceError::CollectionIdTaken { ref holder_id, .. } => {
+                                    MarkdownError::already_exists(holder_id.clone(), e.to_string())
+                                }
                                 _ => MarkdownError::internal_error(format!(
                                     "Failed to resolve collection: {}",
                                     e
@@ -1243,6 +1246,9 @@ pub async fn handle_create_nodes_from_markdown(
                     }
                     NodeServiceError::CollectionCycle(msg) => {
                         MarkdownError::invalid_params(format!("Collection cycle detected: {}", msg))
+                    }
+                    NodeServiceError::CollectionIdTaken { ref holder_id, .. } => {
+                        MarkdownError::already_exists(holder_id.clone(), e.to_string())
                     }
                     _ => {
                         MarkdownError::internal_error(format!("Failed to add to collection: {}", e))
