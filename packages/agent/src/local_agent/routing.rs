@@ -562,7 +562,7 @@ pub fn lookup_without_stage1(
 }
 
 /// The decision for a question typed in a chat that pins a skill: a lookup of
-/// the message, or `None` when it is not a question or names a change.
+/// the message, or `None` when the ordinary route should decide.
 ///
 /// The chat was opened to ask about a node and to change it, and asking comes
 /// first (ADR-100). A question there is about that node, so it is read as the
@@ -570,10 +570,56 @@ pub fn lookup_without_stage1(
 /// skill's read tools and none of its write tools ([`read_only_candidates`]).
 /// Left to Stage 1 or to retrieval, "Does this type extend another type?" was
 /// ranked behind five skills about other things and offered their write
-/// tools. A message that names a change is left to the ordinary route.
+/// tools.
+///
+/// Stripping write tools from a request to change something is the costly
+/// error, so this under-triggers. The message must open with an English
+/// question or retrieval word, which keeps out polite requests ("can you",
+/// "could you", "please", "go ahead", "sure") and requests in other languages
+/// that only end in a question mark, and no word of it may name a change,
+/// inflected or not. Anything else takes the ordinary route.
 pub fn decision_for_a_question_in_a_pinned_chat(message: &str) -> Option<RouteDecision> {
+    const OPENERS: [&str; 17] = [
+        "what", "which", "who", "whose", "how", "why", "when", "where", "does", "do", "is", "are",
+        "show", "list", "tell", "describe", "explain",
+    ];
+    const ALSO_CHANGES: [&str; 5] = ["convert", "drop", "apply", "go", "extended"];
     let message = message.trim();
-    if !is_lookup_shaped(message) || asks_for_a_change(message) {
+    let lowered = message.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if !words.first().is_some_and(|w| OPENERS.contains(w)) || asks_for_a_change(message) {
+        return None;
+    }
+    // Inflected forms: "adding", "added", "removes", "dropped".
+    let names_a_change = words.iter().any(|w| {
+        let mut forms = vec![w.to_string()];
+        for suffix in ["s", "es", "d", "ed", "ing"] {
+            if let Some(stem) = w.strip_suffix(suffix) {
+                forms.push(stem.to_string());
+                if suffix == "ing" {
+                    forms.push(format!("{stem}e"));
+                    if let [.., a, b] = stem.as_bytes() {
+                        if a == b {
+                            forms.push(stem[..stem.len() - 1].to_string());
+                        }
+                    }
+                }
+                if suffix == "ed" {
+                    if let [.., a, b] = stem.as_bytes() {
+                        if a == b {
+                            forms.push(stem[..stem.len() - 1].to_string());
+                        }
+                    }
+                }
+            }
+        }
+        let refs: Vec<&str> = forms.iter().map(String::as_str).collect();
+        asks_for_a_write(&refs) || refs.iter().any(|f| ALSO_CHANGES.contains(f))
+    });
+    if names_a_change {
         return None;
     }
     Some(RouteDecision::Lookup(message.to_string()))
@@ -4907,14 +4953,17 @@ mod tests {
         }
     }
 
-    /// A question typed in a pinned chat is a lookup of the message; a message
-    /// that names a change, or is not a question, is left to the ordinary route.
+    /// A question typed in a pinned chat is a lookup of the message; a request
+    /// that names a change, however it is phrased, keeps the ordinary route
+    /// and with it the write tools.
     #[test]
     fn a_question_in_a_pinned_chat_is_a_lookup() {
         for question in [
             "Does this type extend another type?",
             "Explain this type",
             "what does this field mean",
+            "Which values does status take?",
+            "Is the owner field required?",
         ] {
             assert_eq!(
                 decision_for_a_question_in_a_pinned_chat(question),
@@ -4922,11 +4971,30 @@ mod tests {
                 "{question}"
             );
         }
+    }
+
+    #[test]
+    fn a_change_request_in_a_pinned_chat_keeps_the_ordinary_route() {
         for other in [
             "Add a field called owner",
             "Can you remove the due date field?",
             "Show me the type, then rename a field",
             "owner should be a person",
+            "What about adding a field for the owner?",
+            "Can I get an owner field added?",
+            "Could you extend project instead?",
+            "Please convert status to a list?",
+            "What if we drop the due date?",
+            "Why not apply that to every task?",
+            "Go ahead and add it?",
+            "Sure, can you apply that?",
+            "Would you rename it?",
+            "Can you make it required?",
+            "Wie fuege ich ein Feld hinzu?",
+            "Kannst du ein Feld hinzufuegen?",
+            "What about removing the field?",
+            "Which field should be dropped?",
+            "How about renaming the status field?",
         ] {
             assert_eq!(
                 decision_for_a_question_in_a_pinned_chat(other),

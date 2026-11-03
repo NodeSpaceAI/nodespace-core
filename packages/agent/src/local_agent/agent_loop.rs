@@ -17499,6 +17499,98 @@ mod tests {
         assert!(turn.result.tool_calls_made.is_empty());
     }
 
+    /// A question typed in a chat that pins a skill, though it is not one of
+    /// the options the chat offered, skips Stage 1, is led by the pinned skill
+    /// and is offered its read tools only.
+    #[tokio::test]
+    async fn a_typed_question_in_a_pinned_chat_leads_with_the_pinned_skill_and_reads_only() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(true, &[]),
+            "What does this play do?",
+            vec![text_round("It closes a parent.")],
+        )
+        .await;
+
+        assert_eq!(turn.prompts.len(), 1, "no Stage-1 generation");
+        let authoring = turn.prompts[0]
+            .find("INSTRUCTIONS FOR authoring")
+            .expect("the pinned skill is rendered");
+        let research = turn.prompts[0]
+            .find("INSTRUCTIONS FOR research")
+            .expect("the retrieved skill is rendered");
+        assert!(authoring < research, "{}", turn.prompts[0]);
+        assert!(turn.tools[0].contains(&"get_play".to_string()));
+        assert!(!turn.tools[0].contains(&"update_play".to_string()));
+    }
+
+    /// A request to change something keeps the write tools, however it is
+    /// phrased: it is put to Stage 1 and the pinned skill's tools are whole.
+    #[tokio::test]
+    async fn a_change_request_in_a_pinned_chat_keeps_the_write_tools() {
+        for message in [
+            "Change when it runs",
+            "Can you change when it runs?",
+            "What about adding a rule?",
+        ] {
+            // A question-shaped message is put to Stage 1 alone first, then
+            // blended with the turns ahead of it.
+            let stage1_passes = if routing::is_lookup_shaped(message) {
+                2
+            } else {
+                1
+            };
+            let mut rounds: Vec<Vec<StreamingChunk>> = (0..stage1_passes)
+                .map(|_| {
+                    tool_round(
+                        "r1",
+                        routing::ROUTE_QUERY_TOOL,
+                        r#"{"query":"change when the rule runs"}"#,
+                    )
+                })
+                .collect();
+            rounds.push(text_round("Which rule?"));
+            let turn =
+                turn_in_a_play_edit_chat(play_edit_session(true, &[]), message, rounds).await;
+            assert_eq!(
+                turn.prompts.len(),
+                stage1_passes + 1,
+                "Stage 1, then Stage 2: {message}"
+            );
+            let stage2_tools = turn.tools.last().expect("Stage 2 offered tools");
+            assert!(
+                stage2_tools.contains(&"update_play".to_string()),
+                "{message}: {stage2_tools:?}"
+            );
+        }
+    }
+
+    /// The same question in a chat that pins nothing is routed as it always
+    /// was: put to Stage 1, with no skill led.
+    #[tokio::test]
+    async fn a_question_in_a_chat_that_pins_nothing_is_still_put_to_stage_1() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(false, &[]),
+            "What does this play do?",
+            vec![
+                tool_round(
+                    "r1",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"what a play does"}"#,
+                ),
+                text_round("It closes a parent."),
+            ],
+        )
+        .await;
+
+        assert!(turn.prompts.len() >= 2, "Stage 1 ran: {:?}", turn.prompts);
+        assert!(
+            turn.prompts
+                .iter()
+                .all(|p| !p.contains("INSTRUCTIONS FOR authoring")),
+            "no pinned skill in an unpinned chat"
+        );
+    }
+
     #[test]
     fn the_stage1_pins_line_names_the_skills_and_the_nodes() {
         use crate::agent_types::PinnedSubject;
