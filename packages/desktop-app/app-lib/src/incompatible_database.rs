@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use nodespace_types::IncompatibleDatabase;
+use nodespace_types::{IncompatibleDatabase, IncompatibleDatabaseKind};
 use serde::Serialize;
 use tauri::AppHandle;
 
@@ -269,9 +269,24 @@ pub async fn reset_incompatible_database(
     reset(&app).await.map_err(|e| format!("{e:#}"))
 }
 
+/// Only a schema refusal is cured by moving a file aside. An unusable registry
+/// is the user's `databases.toml`, which may still list databases worth
+/// restoring from a backup, so it is never moved automatically.
+fn ensure_resettable(record: &IncompatibleDatabase) -> Result<()> {
+    if record.kind != IncompatibleDatabaseKind::Schema {
+        bail!(
+            "{} is the database registry, not a database; restore it from a backup or delete \
+             it yourself, then retry",
+            record.database_path
+        );
+    }
+    Ok(())
+}
+
 async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
     let marker = marker_path().context("cannot resolve the home directory")?;
     let record = read_marker(&marker).context("there is no incompatible database to reset")?;
+    ensure_resettable(&record)?;
 
     let socket_path = crate::services::grpc_client::resolve_socket_path();
     if daemon_setup::check_daemon_socket(socket_path.as_path()).await != DaemonStatus::NotRunning {
@@ -310,6 +325,19 @@ async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unusable_registry_is_never_moved_aside() {
+        let mut record = IncompatibleDatabase {
+            kind: IncompatibleDatabaseKind::Registry,
+            database_path: "/h/.nodespace/databases.toml".to_string(),
+            detail: "the file is empty".to_string(),
+            detected_at: "2026-11-03T10:00:00Z".to_string(),
+        };
+        assert!(ensure_resettable(&record).is_err());
+        record.kind = IncompatibleDatabaseKind::Schema;
+        assert!(ensure_resettable(&record).is_ok());
+    }
 
     fn write(path: &Path, contents: &str) {
         std::fs::write(path, contents).unwrap();
@@ -417,11 +445,20 @@ mod tests {
 
         write(
             &marker,
-            r#"{"databasePath":"/x/nodespace.db","detail":"relationship: missing reverse_relationship_type","detectedAt":"2026-09-28T10:00:00Z"}"#,
+            r#"{"kind":"schema","databasePath":"/x/nodespace.db","detail":"relationship: missing reverse_relationship_type","detectedAt":"2026-09-28T10:00:00Z"}"#,
         );
         assert_eq!(
             read_marker(&marker).map(|r| r.database_path),
             Some("/x/nodespace.db".to_string())
+        );
+
+        write(
+            &marker,
+            r#"{"kind":"registry","databasePath":"/x/databases.toml","detail":"the file is empty","detectedAt":"2026-11-03T10:00:00Z"}"#,
+        );
+        assert_eq!(
+            read_marker(&marker).map(|r| r.kind),
+            Some(IncompatibleDatabaseKind::Registry)
         );
 
         write(&marker, "{ not json");

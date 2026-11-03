@@ -10,6 +10,10 @@
 //! `Restart=on-failure`) every few seconds, forever, with the reason buried in
 //! a log file.
 //!
+//! An empty or unparseable database registry (`databases.toml`) is handled the
+//! same way, with the marker's registry kind: see
+//! [`stop_cleanly_on_unusable_registry`].
+//!
 //! So on that one failure the daemon records it in a marker file the desktop
 //! app reads — which database, and why — and then exits with status 0, which
 //! both service managers treat as a deliberate stop rather than a crash (see
@@ -28,7 +32,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use nodespace_core::db::schema::SchemaMismatch;
-use nodespace_types::IncompatibleDatabase;
+use nodespace_types::{IncompatibleDatabase, IncompatibleDatabaseKind};
 
 use crate::services::{DatabaseId, RegistryUnusable};
 use crate::{DatabaseManager, DatabaseServices};
@@ -113,11 +117,41 @@ pub fn stop_cleanly_on_incompatible_database(result: Result<()>) -> Result<()> {
 /// few seconds, forever. The error is logged with the registry path and the
 /// recovery step (restore a backup, or delete the file) before the clean exit.
 ///
-/// Unlike the incompatible-database case this writes no marker, so the app
-/// shows its generic "daemon not running" state and the log is the
-/// explanation. A registry that could not be *read* (permissions, I/O) keeps
-/// its non-zero status, since that may be transient.
+/// The refusal is also recorded in the incompatible-database marker, with the
+/// [`IncompatibleDatabaseKind::Registry`] kind, so the app can say why the
+/// daemon is not running instead of showing its generic state. A registry that
+/// could not be *read* (permissions, I/O) keeps its non-zero status, since that
+/// may be transient.
 pub fn stop_cleanly_on_unusable_registry(result: Result<()>) -> Result<()> {
+    match marker_path() {
+        Ok(marker) => stop_cleanly_on_unusable_registry_at(result, &marker),
+        Err(e) => {
+            tracing::warn!(
+                error = format!("{e:#}"),
+                "could not resolve the incompatible-database marker path"
+            );
+            stop_cleanly_on_unusable_registry_without_marker(result)
+        }
+    }
+}
+
+fn stop_cleanly_on_unusable_registry_at(result: Result<()>, marker: &Path) -> Result<()> {
+    if let Err(e) = &result {
+        if let Some(unusable) = RegistryUnusable::find_in(e) {
+            if let Err(record_err) = record_registry_refusal(marker, unusable) {
+                // The clean exit still stands; without the marker the app only
+                // loses the explanation.
+                tracing::warn!(
+                    error = format!("{record_err:#}"),
+                    "could not write the incompatible-database marker"
+                );
+            }
+        }
+    }
+    stop_cleanly_on_unusable_registry_without_marker(result)
+}
+
+fn stop_cleanly_on_unusable_registry_without_marker(result: Result<()>) -> Result<()> {
     match result {
         Err(e) if RegistryUnusable::find_in(&e).is_some() => {
             tracing::error!(
@@ -131,31 +165,43 @@ pub fn stop_cleanly_on_unusable_registry(result: Result<()>) -> Result<()> {
     }
 }
 
+fn record_registry_refusal(marker: &Path, unusable: &RegistryUnusable) -> Result<()> {
+    write_marker(
+        marker,
+        &IncompatibleDatabase {
+            kind: IncompatibleDatabaseKind::Registry,
+            database_path: unusable.path.display().to_string(),
+            detail: unusable.detail.clone(),
+            detected_at: chrono::Utc::now().to_rfc3339(),
+        },
+    )
+}
+
+fn write_marker(marker: &Path, record: &IncompatibleDatabase) -> Result<()> {
+    let json =
+        serde_json::to_vec_pretty(record).context("serialize incompatible-database marker")?;
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let tmp = marker.with_extension("json.tmp");
+    crate::durable_write::write_durably(&tmp, marker, &json)
+        .with_context(|| format!("write {}", marker.display()))
+}
+
 /// Write the marker for `database_path` refused with `mismatch`. Written to a
 /// sibling temp file and renamed into place, so the app never reads half a
 /// record.
 pub async fn record(marker: &Path, database_path: &Path, mismatch: &SchemaMismatch) -> Result<()> {
     let record = IncompatibleDatabase {
+        kind: IncompatibleDatabaseKind::Schema,
         database_path: database_path.display().to_string(),
         detail: mismatch.to_string(),
         detected_at: chrono::Utc::now().to_rfc3339(),
     };
-    let json =
-        serde_json::to_vec_pretty(&record).context("serialize incompatible-database marker")?;
-    if let Some(parent) = marker.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create {}", parent.display()))?;
-    }
-    let tmp = marker.with_extension("json.tmp");
-    let marker_owned = marker.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        crate::durable_write::write_durably(&tmp, &marker_owned, &json)
-    })
-    .await
-    .context("incompatible-database marker write task panicked")?
-    .with_context(|| format!("write {}", marker.display()))?;
-    Ok(())
+    let marker = marker.to_path_buf();
+    tokio::task::spawn_blocking(move || write_marker(&marker, &record))
+        .await
+        .context("incompatible-database marker write task panicked")?
 }
 
 /// Remove the marker, if any. Called once the default database has opened, so
@@ -212,6 +258,7 @@ mod tests {
         record(&marker, &db, &mismatch()).await.unwrap();
         let read: IncompatibleDatabase =
             serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+        assert_eq!(read.kind, IncompatibleDatabaseKind::Schema);
         assert_eq!(read.database_path, db.display().to_string());
         assert!(read
             .detail
@@ -295,10 +342,17 @@ mod tests {
         for body in ["", "  \n", "databases = [[[ not toml"] {
             std::fs::write(&path, body).unwrap();
             let err = crate::services::Registry::load(&path).await.unwrap_err();
+            let marker = dir.path().join("incompatible-database.json");
             assert!(
-                stop_cleanly_on_unusable_registry(Err(err)).is_ok(),
+                stop_cleanly_on_unusable_registry_at(Err(err), &marker).is_ok(),
                 "{body:?} must stop cleanly"
             );
+            let recorded: IncompatibleDatabase =
+                serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+            assert_eq!(recorded.kind, IncompatibleDatabaseKind::Registry);
+            assert_eq!(recorded.database_path, path.display().to_string());
+            assert!(!recorded.detail.is_empty());
+            clear(&marker).await;
             assert_eq!(std::fs::read_to_string(&path).unwrap(), body, "left alone");
         }
 
@@ -307,7 +361,10 @@ mod tests {
             detail: "empty".into(),
         })
         .context("loading registry");
-        assert!(stop_cleanly_on_unusable_registry(Err(wrapped)).is_ok());
+        let marker = dir.path().join("incompatible-database.json");
+        assert!(stop_cleanly_on_unusable_registry_at(Err(wrapped), &marker).is_ok());
+
+        clear(&marker).await;
 
         // A directory where the file should be is a read failure, not content.
         let unreadable = dir.path().join("dir-registry");
@@ -315,8 +372,14 @@ mod tests {
         let err = crate::services::Registry::load(&unreadable)
             .await
             .unwrap_err();
-        assert!(stop_cleanly_on_unusable_registry(Err(err)).is_err());
-        assert!(stop_cleanly_on_unusable_registry(Err(anyhow::anyhow!("other"))).is_err());
-        assert!(stop_cleanly_on_unusable_registry(Ok(())).is_ok());
+        assert!(stop_cleanly_on_unusable_registry_at(Err(err), &marker).is_err());
+        assert!(
+            stop_cleanly_on_unusable_registry_at(Err(anyhow::anyhow!("other")), &marker).is_err()
+        );
+        assert!(stop_cleanly_on_unusable_registry_at(Ok(()), &marker).is_ok());
+        assert!(
+            !marker.exists(),
+            "only an unusable registry writes the marker"
+        );
     }
 }

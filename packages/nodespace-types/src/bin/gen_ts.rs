@@ -201,6 +201,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         TypeCategory,
         ContentRole,
         IncompatibleDatabase,
+        IncompatibleDatabaseKind,
         // generated registries
         StructuralRules,
         CoreTypeEntry,

@@ -14,14 +14,17 @@ vi.mock('$lib/utils/logger', () => ({
 
 const getIncompatibleDatabase = vi.fn();
 const resetIncompatibleDatabase = vi.fn();
+const retryDaemonStart = vi.fn();
 vi.mock('$lib/services/daemon-status', () => ({
   getIncompatibleDatabase: () => getIncompatibleDatabase(),
-  resetIncompatibleDatabase: () => resetIncompatibleDatabase()
+  resetIncompatibleDatabase: () => resetIncompatibleDatabase(),
+  retryDaemonStart: () => retryDaemonStart()
 }));
 
 import IncompatibleDatabaseBanner from '$lib/components/layout/incompatible-database-banner.svelte';
 
 const record = {
+  kind: 'schema',
   databasePath: '/Users/u/.nodespace/database/nodespace.db',
   detail: 'relationship: missing reverse_relationship_type',
   detectedAt: '2026-09-28T10:00:00Z'
@@ -82,5 +85,24 @@ describe('IncompatibleDatabaseBanner', () => {
         "Couldn't move the database aside: the NodeSpace background service is running, so its database is in use"
       )
     ).toBeTruthy();
+  });
+
+  it('for an unusable registry offers Retry, never moving a database aside', async () => {
+    getIncompatibleDatabase.mockResolvedValue({
+      kind: 'registry',
+      databasePath: '/Users/u/.nodespace/databases.toml',
+      detail: 'the file is empty',
+      detectedAt: '2026-11-03T10:00:00Z'
+    });
+    retryDaemonStart.mockResolvedValue('healthy');
+    render(IncompatibleDatabaseBanner);
+
+    expect(await screen.findByText('/Users/u/.nodespace/databases.toml')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain("can't read its list of databases");
+    expect(screen.queryByRole('button', { name: 'Start fresh…' })).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(retryDaemonStart).toHaveBeenCalledTimes(1));
+    expect(resetIncompatibleDatabase).not.toHaveBeenCalled();
   });
 });

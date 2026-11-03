@@ -140,7 +140,7 @@ async fn check_daemon_status_reads_the_marker_under_a_redirected_home() {
         state_dir.join(nodespace_proto::socket::incompatible_database_name(cfg!(
             debug_assertions
         ))),
-        r#"{"databasePath":"/tmp/x.db","detail":"older schema","detectedAt":"2026-10-13T00:00:00+00:00"}"#,
+        r#"{"kind":"schema","databasePath":"/tmp/x.db","detail":"older schema","detectedAt":"2026-10-13T00:00:00+00:00"}"#,
     )
     .unwrap();
 

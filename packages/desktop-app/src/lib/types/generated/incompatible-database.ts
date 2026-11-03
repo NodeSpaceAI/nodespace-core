@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { IncompatibleDatabaseKind } from './incompatible-database-kind';
 
 /**
  * The daemon's default database was created by a different version of
@@ -8,7 +9,13 @@
  */
 export type IncompatibleDatabase = {
   /**
-   * Absolute path of the database file the daemon refused to open.
+   * What kind of refusal this is; decides what the user is told and offered.
+   */
+  kind: IncompatibleDatabaseKind;
+  /**
+   * Absolute path of the file the daemon refused: the database for
+   * [`IncompatibleDatabaseKind::Schema`], the registry for
+   * [`IncompatibleDatabaseKind::Registry`].
    */
   databasePath: string;
   /**

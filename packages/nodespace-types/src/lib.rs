@@ -75,7 +75,7 @@ pub use database_settings::{
 };
 pub use decision::{DecisionNode, DecisionNodeUpdate, DecisionStatus};
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
-pub use incompatible_database::IncompatibleDatabase;
+pub use incompatible_database::{IncompatibleDatabase, IncompatibleDatabaseKind};
 pub use issue::{IssueNode, IssueNodeUpdate, IssueStatus};
 pub use node::{
     DeleteResult, Node, NodeEnvelope, NodeQuery, NodeReference, NodeUpdate, OrderBy,

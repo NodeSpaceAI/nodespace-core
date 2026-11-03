@@ -13,6 +13,7 @@
   import {
     getIncompatibleDatabase,
     resetIncompatibleDatabase,
+    retryDaemonStart,
     type IncompatibleDatabase
   } from '$lib/services/daemon-status';
   import { createLogger } from '$lib/utils/logger';
@@ -31,6 +32,22 @@
       })
       .catch((err) => log.warn('Failed to read the incompatible database record', err));
   });
+
+  const unusableRegistry = $derived(record?.kind === 'registry');
+  let retrying = $state(false);
+
+  async function retry() {
+    retrying = true;
+    error = null;
+    try {
+      await retryDaemonStart();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      log.error('Failed to restart the daemon', err);
+    } finally {
+      retrying = false;
+    }
+  }
 
   async function moveAside() {
     resetting = true;
@@ -56,20 +73,34 @@
 
 <div class="incompatible-database-banner" role="alert">
   <div class="message">
-    <strong>This database was created by a different version of NodeSpace and can&apos;t be opened.</strong>
-    <span>
-      NodeSpace doesn't convert databases between versions. Move it aside to start with a fresh
-      one — the old file is kept as a backup next to it, not deleted.
-    </span>
+    {#if unusableRegistry}
+      <strong>NodeSpace can&apos;t read its list of databases.</strong>
+      <span>
+        The registry file is empty or damaged. Restore it from a backup, or delete it to start
+        with a fresh list (your database files are not touched), then retry.
+      </span>
+    {:else}
+      <strong>This database was created by a different version of NodeSpace and can&apos;t be opened.</strong>
+      <span>
+        NodeSpace doesn't convert databases between versions. Move it aside to start with a fresh
+        one — the old file is kept as a backup next to it, not deleted.
+      </span>
+    {/if}
     {#if record}
       <span class="path" title={record.detail}>{record.databasePath}</span>
     {/if}
     {#if error}
-      <span class="error">Couldn't move the database aside: {error}</span>
+      <span class="error">
+        {unusableRegistry ? "Couldn't restart NodeSpace" : "Couldn't move the database aside"}: {error}
+      </span>
     {/if}
   </div>
   <div class="actions">
-    {#if confirming}
+    {#if unusableRegistry}
+      <button class="primary" disabled={retrying} onclick={retry}>
+        {retrying ? 'Retrying…' : 'Retry'}
+      </button>
+    {:else if confirming}
       <button class="primary" disabled={resetting} onclick={moveAside}>
         {resetting ? 'Moving aside…' : 'Move aside and start fresh'}
       </button>
