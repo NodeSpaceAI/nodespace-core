@@ -287,6 +287,16 @@ use crate::models::Node;
 use serde_json::json;
 use std::sync::Arc;
 
+/// The refusal for a create whose deterministic id `holder` already occupies.
+fn id_taken(name: &str, holder: &Node) -> NodeServiceError {
+    NodeServiceError::CollectionIdTaken {
+        name: name.to_string(),
+        holder_id: holder.id.clone(),
+        holder_title: holder.content.clone(),
+        holder_type: holder.node_type.clone(),
+    }
+}
+
 /// Helper to convert anyhow errors to NodeServiceError with database context
 fn db_error(e: anyhow::Error, context: &str) -> NodeServiceError {
     NodeServiceError::DatabaseError(DatabaseError::SqlExecutionError {
@@ -412,8 +422,7 @@ impl<'a> CollectionService<'a> {
                 Some(existing) => (existing.clone(), false),
                 None => {
                     // Create new collection
-                    let new_node = self.create_collection(&segment.name).await?;
-                    (new_node, true)
+                    self.get_or_create_collection(&segment.name).await?
                 }
             };
 
@@ -484,24 +493,25 @@ impl<'a> CollectionService<'a> {
         // double-create resolves to the same node.
         let node_id = deterministic_collection_id(&validated_name);
 
-        // Get-or-create: reuse an existing node with this id (a prior create, a synced
-        // copy, or a race winner) rather than erroring on the duplicate id.
+        // Never reuse a node that already holds this id: it may be a renamed
+        // collection (which keeps the id of its first name), an archived one, or a
+        // node of another type. Callers look the name up first and only create on a miss.
         if let Some(existing) = self.node_service.get_node(&node_id).await? {
-            return Ok(existing);
+            return Err(id_taken(&validated_name, &existing));
         }
 
         // Use NodeService for node creation (emits NodeCreated event)
         let node = Node::new_with_id(
             node_id.clone(),
             "collection".to_string(),
-            validated_name,
+            validated_name.clone(),
             json!({}),
         );
         if let Err(e) = self.node_service.create_node(node).await {
-            // A concurrent create of the same deterministic id may have won the race —
-            // reuse it rather than failing the import.
+            // A concurrent create of the same deterministic id may have won the race;
+            // report it as taken so the caller's lookup decides whether it is usable.
             if let Some(existing) = self.node_service.get_node(&node_id).await? {
-                return Ok(existing);
+                return Err(id_taken(&validated_name, &existing));
             }
             return Err(e);
         }
@@ -511,6 +521,57 @@ impl<'a> CollectionService<'a> {
             .get_node(&node_id)
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(&node_id))
+    }
+
+    /// The active collection named `name`, creating it when there is none.
+    ///
+    /// `create_collection` refuses when any node holds the name's id, so this does
+    /// the explicit lookup first. When the create loses a race to a concurrent
+    /// create of the same name, the winner is found by name; a renamed, archived or
+    /// differently typed holder still surfaces the refusal.
+    async fn get_or_create_collection(&self, name: &str) -> Result<(Node, bool), NodeServiceError> {
+        self.get_or_create_collection_with(
+            name,
+            |n| async move { self.create_collection(&n).await },
+        )
+        .await
+    }
+
+    /// [`Self::get_or_create_collection`] with the create step supplied, so a
+    /// lost race can be exercised.
+    async fn get_or_create_collection_with<F, Fut>(
+        &self,
+        name: &str,
+        create: F,
+    ) -> Result<(Node, bool), NodeServiceError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<Node, NodeServiceError>>,
+    {
+        let lookup_name = name.trim();
+        if let Some(existing) = self
+            .store
+            .get_collection_by_name(lookup_name)
+            .await
+            .map_err(|e| db_error(e, "Failed to look up collection"))?
+        {
+            return Ok((existing, false));
+        }
+        match create(name.to_string()).await {
+            Ok(created) => Ok((created, true)),
+            Err(err @ NodeServiceError::CollectionIdTaken { .. }) => {
+                match self
+                    .store
+                    .get_collection_by_name(lookup_name)
+                    .await
+                    .map_err(|e| db_error(e, "Failed to look up collection"))?
+                {
+                    Some(winner) => Ok((winner, false)),
+                    None => Err(err),
+                }
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// Add a node to a collection by path
@@ -782,7 +843,7 @@ impl<'a> CollectionService<'a> {
                     id.clone()
                 } else {
                     // Create new collection
-                    let new_node = self.create_collection(&segment.name).await?;
+                    let (new_node, _) = self.get_or_create_collection(&segment.name).await?;
                     let new_id = new_node.id.clone();
                     collection_id_cache.insert(norm_name.clone(), new_id.clone());
                     new_id
@@ -1138,6 +1199,128 @@ mod tests {
             "independent stores mint the same collection id"
         );
         assert_eq!(a.leaf.id, deterministic_collection_id("Architecture"));
+    }
+
+    fn assert_id_taken(err: NodeServiceError, name: &str, holder_id: &str, holder_type: &str) {
+        match err {
+            NodeServiceError::CollectionIdTaken {
+                name: n,
+                holder_id: id,
+                holder_type: t,
+                ..
+            } => {
+                assert_eq!(n, name);
+                assert_eq!(id, holder_id);
+                assert_eq!(t, holder_type);
+            }
+            other => panic!("expected CollectionIdTaken, got {other:?}"),
+        }
+    }
+
+    /// A create that loses a race to a concurrent create of the same name
+    /// resolves to the winner, not to an error and not as a create.
+    #[tokio::test]
+    async fn get_or_create_returns_the_race_winner_found_by_name() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let (svc_ref, ns_ref) = (&svc, &ns);
+        let (node, created) = svc
+            .get_or_create_collection_with("Race", |name| async move {
+                // The concurrent create lands between our lookup and our insert.
+                svc_ref.create_collection(&name).await?;
+                Err(id_taken(
+                    &name,
+                    &ns_ref
+                        .get_node(&deterministic_collection_id(&name))
+                        .await?
+                        .unwrap(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert!(!created);
+        assert_eq!(node.id, deterministic_collection_id("Race"));
+    }
+
+    /// Creating a collection whose deterministic id a live collection already holds
+    /// is refused rather than silently returning that collection.
+    #[tokio::test]
+    async fn create_collection_refuses_a_live_holder_of_the_id() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let inbox = svc.resolve_path("Inbox").await.unwrap().leaf;
+
+        let err = svc.create_collection("Inbox").await.unwrap_err();
+        assert_id_taken(err, "Inbox", &inbox.id, "collection");
+    }
+
+    /// A renamed collection keeps the id of its first name; filing under that old
+    /// name must not land in the renamed collection or report a create.
+    #[tokio::test]
+    async fn resolve_path_refuses_the_old_name_of_a_renamed_collection() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let clients = svc.resolve_path("Clients").await.unwrap().leaf;
+        ns.update_node(
+            &clients.id,
+            clients.version,
+            crate::models::NodeUpdate::new().with_content("Accounts".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let err = svc.resolve_path("Clients").await.unwrap_err();
+        assert_id_taken(err, "Clients", &clients.id, "collection");
+        let err = svc
+            .bulk_resolve_collections(&["Work:Clients".to_string()])
+            .await
+            .unwrap_err();
+        assert_id_taken(err, "Clients", &clients.id, "collection");
+        // The renamed collection is still found under its current name.
+        let again = svc.resolve_path("Accounts").await.unwrap();
+        assert_eq!(again.leaf.id, clients.id);
+        assert!(!again.collections[0].created);
+    }
+
+    /// An archived collection is hidden from the name lookup but still holds its id.
+    #[tokio::test]
+    async fn resolve_path_refuses_the_name_of_an_archived_collection() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let old = svc.resolve_path("Old").await.unwrap().leaf;
+        ns.update_node(
+            &old.id,
+            old.version,
+            crate::models::NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let err = svc.resolve_path("Old").await.unwrap_err();
+        assert_id_taken(err, "Old", &old.id, "collection");
+        assert!(
+            ns.get_node(&old.id).await.unwrap().is_some(),
+            "the archived collection is left as it was"
+        );
+    }
+
+    /// A node of another type sitting at the id is not a collection to reuse.
+    #[tokio::test]
+    async fn create_collection_refuses_a_non_collection_holder_of_the_id() {
+        let (ns, _dir) = test_node_service().await;
+        let svc = CollectionService::new(ns.store(), &ns);
+        let id = deterministic_collection_id("Notes");
+        ns.create_node(Node::new_with_id(
+            id.clone(),
+            "text".to_string(),
+            "Notes".to_string(),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+
+        let err = svc.resolve_path("Notes").await.unwrap_err();
+        assert_id_taken(err, "Notes", &id, "text");
     }
 
     /// Re-resolving a path (and paths that share a segment) never creates duplicate

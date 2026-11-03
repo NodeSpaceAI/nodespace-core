@@ -4369,6 +4369,61 @@ impl SqliteStore {
         exclude_id: Option<&str>,
         case_insensitive: bool,
     ) -> Result<Option<String>> {
+        let Some((lhs, _, needle)) = Self::unique_value_expr(
+            "find_conflicting_unique",
+            node_type,
+            bucket,
+            field,
+            case_insensitive,
+            value,
+        ) else {
+            return Ok(None);
+        };
+
+        // An absent exclude_id compares against the empty string, which no node id
+        // equals, so nothing is excluded.
+        let exclude = exclude_id.unwrap_or("").to_string();
+
+        let sql = format!(
+            "SELECT id FROM node WHERE node_type = ?1 AND {} = ?2 AND id != ?3 \
+             AND {} LIMIT 1",
+            lhs,
+            crate::governance::participates_sql("")
+        );
+
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![node_type.to_string(), needle, exclude],
+            )
+            .await
+            .context("Failed to search for conflicting unique value")?;
+
+        if let Some(row) = rows.next().await? {
+            let id: String = row.get(0)?;
+            Ok(Some(id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// The SQL expression that reads a unique field's value, shared by every
+    /// query that compares one (`find_conflicting_unique` and the sweep's
+    /// grouping scan) so they cannot disagree. `None` when an identifier is
+    /// not safe to interpolate, which callers treat as "no collision".
+    ///
+    /// Returns the (possibly `LOWER`-folded) comparison expression, the path
+    /// to test `json_type` against, and `value` folded to match.
+    fn unique_value_expr(
+        caller: &str,
+        node_type: &str,
+        bucket: &str,
+        field: &str,
+        case_insensitive: bool,
+        value: &str,
+    ) -> Option<(String, String, String)> {
         // `node_type`/`bucket`/`field` are interpolated into the SQL text below
         // (SQLite has no bind-parameter form for identifiers/JSON-path segments).
         // Every current call path reaches here only after `validate_schema_field_name`
@@ -4411,51 +4466,194 @@ impl SqliteStore {
                 node_type,
                 bucket,
                 field,
-                "find_conflicting_unique: rejected a non-identifier node_type/bucket/field \
+                "{caller}: rejected a non-identifier node_type/bucket/field \
                  rather than build unsafe SQL from it; treating as no-conflict"
             );
-            return Ok(None);
+            return None;
         }
 
-        let extract = format!(
-            "json_extract(properties, '{}')",
-            crate::db::json_path::bucket_field_path(bucket, field)
-        );
+        let path = crate::db::json_path::bucket_field_path(bucket, field);
+        let extract = format!("json_extract(properties, '{path}')");
         let (lhs, needle) = if case_insensitive {
             // SQLite LOWER() folds ASCII only, so the bound value is folded the
             // same way.
-            (format!("LOWER({})", extract), value.to_ascii_lowercase())
+            (format!("LOWER({extract})"), value.to_ascii_lowercase())
         } else {
             (extract, value.to_string())
         };
+        Some((lhs, path, needle))
+    }
 
-        // An absent exclude_id compares against the empty string, which no node id
-        // equals, so nothing is excluded.
-        let exclude = exclude_id.unwrap_or("").to_string();
+    /// Distinct node types that have at least one participating node.
+    pub async fn participating_node_types(&self) -> Result<Vec<String>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &format!(
+                    "SELECT DISTINCT node_type FROM node WHERE {}",
+                    crate::governance::participates_sql("")
+                ),
+                (),
+            )
+            .await
+            .context("Failed to list participating node types")?;
+        let mut types = Vec::new();
+        while let Some(row) = rows.next().await? {
+            types.push(row.get::<String>(0)?);
+        }
+        Ok(types)
+    }
 
+    /// One chunk of the values that more than one participating node of
+    /// `node_type` holds in a `unique` string field, in ascending order after
+    /// `after` (keyset paging, so a chunk never re-reads earlier ones). Values
+    /// are folded when the field is case-insensitive. Uses the same expression
+    /// and participation rule as `find_conflicting_unique`.
+    pub async fn unique_value_duplicates(
+        &self,
+        node_type: &str,
+        bucket: &str,
+        field: &str,
+        case_insensitive: bool,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        let Some((lhs, path, _)) = Self::unique_value_expr(
+            "unique_value_duplicates",
+            node_type,
+            bucket,
+            field,
+            case_insensitive,
+            "",
+        ) else {
+            return Ok(Vec::new());
+        };
         let sql = format!(
-            "SELECT id FROM node WHERE node_type = ?1 AND {} = ?2 AND id != ?3 \
-             AND {} LIMIT 1",
-            lhs,
+            "SELECT {lhs} AS v FROM node WHERE node_type = ?1 AND {} \
+             AND json_type(properties, '{path}') = 'text' AND v > ?2 \
+             GROUP BY v HAVING COUNT(*) > 1 ORDER BY v LIMIT ?3",
             crate::governance::participates_sql("")
         );
-
         let mut rows = self
             .read()
             .await?
             .query(
                 &sql,
-                libsql::params![node_type.to_string(), needle, exclude],
+                libsql::params![
+                    node_type.to_string(),
+                    after.unwrap_or("").to_string(),
+                    i64::from(limit)
+                ],
             )
             .await
-            .context("Failed to search for conflicting unique value")?;
-
-        if let Some(row) = rows.next().await? {
-            let id: String = row.get(0)?;
-            Ok(Some(id))
-        } else {
-            Ok(None)
+            .context("Failed to list duplicated unique values")?;
+        let mut values = Vec::new();
+        while let Some(row) = rows.next().await? {
+            values.push(row.get::<String>(0)?);
         }
+        Ok(values)
+    }
+
+    /// Ids of up to `limit` participating nodes of `node_type` whose unique
+    /// field holds `value` (already folded for a case-insensitive field), in id
+    /// order.
+    pub async fn ids_with_unique_value(
+        &self,
+        node_type: &str,
+        bucket: &str,
+        field: &str,
+        case_insensitive: bool,
+        value: &str,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        let Some((lhs, _, needle)) = Self::unique_value_expr(
+            "ids_with_unique_value",
+            node_type,
+            bucket,
+            field,
+            case_insensitive,
+            value,
+        ) else {
+            return Ok(Vec::new());
+        };
+        let sql = format!(
+            "SELECT id FROM node WHERE node_type = ?1 AND {lhs} = ?2 AND {} \
+             ORDER BY id LIMIT ?3",
+            crate::governance::participates_sql("")
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![node_type.to_string(), needle, i64::from(limit)],
+            )
+            .await
+            .context("Failed to list nodes holding a unique value")?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get::<String>(0)?);
+        }
+        Ok(ids)
+    }
+
+    /// One chunk of the case-folded titles that more than one participating
+    /// collection holds, ascending after `after`. Same lookup shape and
+    /// participation rule as `get_collection_by_name`.
+    pub async fn duplicated_collection_titles(
+        &self,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT LOWER(title) AS t FROM node WHERE {} AND {} AND title IS NOT NULL \
+             AND LOWER(title) > ?1 GROUP BY t HAVING COUNT(*) > 1 ORDER BY t LIMIT ?2",
+            crate::db::schema::is_a_sql("node_type", &[crate::models::CoreNodeType::Collection]),
+            crate::governance::participates_sql("")
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![after.unwrap_or("").to_string(), i64::from(limit)],
+            )
+            .await
+            .context("Failed to list duplicated collection titles")?;
+        let mut titles = Vec::new();
+        while let Some(row) = rows.next().await? {
+            titles.push(row.get::<String>(0)?);
+        }
+        Ok(titles)
+    }
+
+    /// Ids of up to `limit` participating collections whose case-folded title is
+    /// `lower_title`, in id order.
+    pub async fn collection_ids_with_title(
+        &self,
+        lower_title: &str,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT id FROM node WHERE {} AND {} AND LOWER(title) = ?1 ORDER BY id LIMIT ?2",
+            crate::db::schema::is_a_sql("node_type", &[crate::models::CoreNodeType::Collection]),
+            crate::governance::participates_sql("")
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![lower_title.to_string(), i64::from(limit)],
+            )
+            .await
+            .context("Failed to list collections with a title")?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get::<String>(0)?);
+        }
+        Ok(ids)
     }
 
     /// Resolve entity names in `message` to nodes, via the `node_title_fts`
