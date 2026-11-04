@@ -682,8 +682,14 @@ impl NodeBehavior for SpecNodeBehavior {
         false
     }
 
-    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
-        None
+    /// The title is the default embeddable content; the body is the subtree
+    /// below it, aggregated the way a text document root's is.
+    fn get_aggregated_content<'a>(
+        &'a self,
+        node: &'a Node,
+        accessor: &'a dyn NodeAccessor,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(aggregate_children_content(node, accessor))
     }
 }
 
@@ -706,8 +712,14 @@ impl NodeBehavior for PlanNodeBehavior {
         false
     }
 
-    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
-        None
+    /// The title is the default embeddable content; the body is the subtree
+    /// below it, aggregated the way a text document root's is.
+    fn get_aggregated_content<'a>(
+        &'a self,
+        node: &'a Node,
+        accessor: &'a dyn NodeAccessor,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(aggregate_children_content(node, accessor))
     }
 }
 
@@ -730,8 +742,14 @@ impl NodeBehavior for DecisionNodeBehavior {
         false
     }
 
-    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
-        None
+    /// The title is the default embeddable content; the body is the subtree
+    /// below it, aggregated the way a text document root's is.
+    fn get_aggregated_content<'a>(
+        &'a self,
+        node: &'a Node,
+        accessor: &'a dyn NodeAccessor,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(aggregate_children_content(node, accessor))
     }
 }
 
@@ -5179,6 +5197,33 @@ mod tests {
                 .is_some(),
             "schema nodes with content should be embeddable"
         );
+
+        // decision, spec, plan: the record people search by what it says. The
+        // title is the own content; the body is the subtree below it.
+        for node_type in ["decision", "spec", "plan"] {
+            let node = Node::new(
+                node_type.to_string(),
+                "Use libsql for the local store".to_string(),
+                json!({}),
+            );
+            assert!(
+                registry
+                    .get(node_type)
+                    .unwrap()
+                    .get_embeddable_content(&node)
+                    .is_some(),
+                "{node_type} nodes with a title should be embeddable"
+            );
+            let empty = Node::new(node_type.to_string(), "  ".to_string(), json!({}));
+            assert!(
+                registry
+                    .get(node_type)
+                    .unwrap()
+                    .get_embeddable_content(&empty)
+                    .is_none(),
+                "{node_type} nodes with a blank title should not be embeddable"
+            );
+        }
 
         // ai-chat: conversations are deliberately NOT embedded
         let chat_node = Node::new(
