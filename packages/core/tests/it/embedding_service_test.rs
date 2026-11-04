@@ -352,6 +352,34 @@ async fn test_queue_for_embedding_non_embeddable() -> Result<()> {
     Ok(())
 }
 
+/// A decision, a spec and a plan are embedding roots: queueing a line of the
+/// body marks the root stale. A decision under a parent is not a root, so the
+/// parent is queued and the decision is not.
+#[tokio::test]
+async fn test_decision_spec_plan_are_queued_as_roots() -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    for node_type in ["decision", "spec", "plan"] {
+        let root = create_root_node(&node_service, node_type, "Storage choice").await?;
+        let body = create_child_node(&node_service, &root.id, "text", "Portability wins").await?;
+        embedding_service.queue_for_embedding(&body.id).await?;
+        let stale_ids = store.get_stale_embedding_root_ids(None, 0, 3).await?;
+        assert!(
+            stale_ids.contains(&root.id),
+            "a {node_type} body edit must queue the {node_type}"
+        );
+        assert!(!stale_ids.contains(&body.id));
+    }
+
+    let parent = create_root_node(&node_service, "text", "Design notes").await?;
+    let nested = create_child_node(&node_service, &parent.id, "decision", "Nested choice").await?;
+    embedding_service.queue_for_embedding(&nested.id).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(None, 0, 3).await?;
+    assert!(stale_ids.contains(&parent.id));
+    assert!(!stale_ids.contains(&nested.id));
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_queue_nodes_for_embedding_deduplicates_roots() -> Result<()> {
     let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;

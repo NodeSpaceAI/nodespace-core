@@ -6671,6 +6671,54 @@ mod knowledge_listing_tests {
         Ok(())
     }
 
+    /// A decision, a spec and a plan are knowledge: the default listing returns
+    /// each root and the body line under it, as it does for a text document,
+    /// and still leaves a system node out.
+    #[tokio::test]
+    async fn knowledge_listing_returns_decision_spec_plan_roots_and_their_body() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let store = SqliteStore::new(temp_dir.path().join("test.db")).await?;
+
+        let mut expected = Vec::new();
+        for node_type in ["decision", "spec", "plan"] {
+            let root = Node::new(
+                node_type.to_string(),
+                "Storage choice".to_string(),
+                json!({}),
+            );
+            let root_id = root.id.clone();
+            store.create_node(root, None, None).await?;
+            let body = Node::new(
+                "text".to_string(),
+                "Portability wins".to_string(),
+                json!({}),
+            );
+            let body_id = body.id.clone();
+            store.create_node(body, None, None).await?;
+            store.move_node(&body_id, Some(&root_id), None).await?;
+            expected.push(root_id);
+            expected.push(body_id);
+        }
+        let system = Node::new("tool".to_string(), "A system tool".to_string(), json!({}));
+        let system_id = system.id.clone();
+        store.create_node(system, None, None).await?;
+
+        let found = store
+            .list_knowledge_nodes(
+                NodeQuery::default(),
+                KnowledgeListing {
+                    scope_types_only: true,
+                },
+            )
+            .await?;
+        let ids: Vec<&str> = found.iter().map(|n| n.id.as_str()).collect();
+        for id in &expected {
+            assert!(ids.contains(&id.as_str()), "{id} should be listed: {ids:?}");
+        }
+        assert!(!ids.contains(&system_id.as_str()));
+        Ok(())
+    }
+
     /// The listing's root walk must reach `relationship` by the node it is
     /// leaving, through `idx_rel_out (out_node, relationship_type)`, and
     /// never drive off `idx_rel_type`, which scans every `has_child` edge per

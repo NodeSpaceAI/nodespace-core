@@ -1,1 +1,21 @@
-{"entries":[]}
+{
+  "entries": [
+    {
+      "id": "spec-plan-decision-embedded-as-roots",
+      "after": "0.3.11",
+      "covers": [
+        "registry.decision.participation",
+        "registry.plan.participation",
+        "registry.spec.participation"
+      ],
+      "area": "core_schema",
+      "class": "migrate",
+      "summary": "A decision, a spec and a plan are embedded as roots with their subtree; they were not embedded.",
+      "userProducible": false,
+      "migrate": {
+        "affectedData": "The embedding rows of every existing decision, spec and plan root: none exist, and no normal path creates one until the root or a line of its body is edited.",
+        "transformation": "Queue each existing decision, spec and plan root for embedding."
+      }
+    }
+  ]
+}

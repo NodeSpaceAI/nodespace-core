@@ -49,6 +49,9 @@ pub const KNOWLEDGE_CORE_TYPES: &[crate::models::CoreNodeType] = &[
     crate::models::CoreNodeType::Table,
     crate::models::CoreNodeType::Task,
     crate::models::CoreNodeType::Issue,
+    crate::models::CoreNodeType::Spec,
+    crate::models::CoreNodeType::Plan,
+    crate::models::CoreNodeType::Decision,
     crate::models::CoreNodeType::Date,
     crate::models::CoreNodeType::Project,
     crate::models::CoreNodeType::SoftwareProject,
@@ -1286,7 +1289,8 @@ mod tests {
         };
 
         for t in [
-            "text", "header", "task", "date", "project", "person", "company",
+            "text", "header", "task", "date", "project", "person", "company", "spec", "plan",
+            "decision",
         ] {
             assert!(knowledge(&of_type(t)), "{t} must be in the default scope");
         }
@@ -1822,6 +1826,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(batch.len(), 2, "Should return only existing nodes");
+    }
+
+    /// A decision, a spec and a plan embed their body: the phrase in a nested
+    /// child is in the text that is embedded for the root.
+    #[tokio::test]
+    async fn test_decision_spec_plan_aggregate_their_body() {
+        for node_type in ["decision", "spec", "plan"] {
+            let mut accessor = MockNodeAccessor::new();
+            let root = Node::new(
+                node_type.to_string(),
+                "Storage choice".to_string(),
+                json!({}),
+            );
+            let header = Node::new("header".to_string(), "## Rationale".to_string(), json!({}));
+            let body = Node::new(
+                "text".to_string(),
+                "Single-file portability beats a server".to_string(),
+                json!({}),
+            );
+            accessor.add_node(root.clone());
+            accessor.set_children(&root.id, vec![header.clone()]);
+            accessor.set_children(&header.id, vec![body]);
+
+            let registry = NodeBehaviorRegistry::new();
+            let behavior = registry.get(node_type).unwrap();
+            assert!(behavior.get_embeddable_content(&root).is_some());
+            let aggregated = behavior
+                .get_aggregated_content(&root, &accessor)
+                .await
+                .unwrap_or_default();
+            assert!(
+                aggregated.contains("Single-file portability beats a server"),
+                "{node_type} must embed its nested body, got: {aggregated:?}"
+            );
+        }
+    }
+
+    /// A decision under a parent is not a root, so its body is embedded once,
+    /// inside the parent's text, and not again for the decision.
+    #[tokio::test]
+    async fn test_decision_under_a_parent_embeds_its_body_once() {
+        let mut accessor = MockNodeAccessor::new();
+        let parent = Node::new("text".to_string(), "Design notes".to_string(), json!({}));
+        let decision = Node::new(
+            "decision".to_string(),
+            "Storage choice".to_string(),
+            json!({}),
+        );
+        let body = Node::new(
+            "text".to_string(),
+            "Single-file portability beats a server".to_string(),
+            json!({}),
+        );
+        accessor.add_node(parent.clone());
+        accessor.set_children(&parent.id, vec![decision.clone()]);
+        accessor.set_children(&decision.id, vec![body]);
+
+        let registry = NodeBehaviorRegistry::new();
+        let aggregated = registry
+            .get("text")
+            .unwrap()
+            .get_aggregated_content(&parent, &accessor)
+            .await
+            .unwrap_or_default();
+        assert_eq!(
+            aggregated
+                .matches("Single-file portability beats a server")
+                .count(),
+            1,
+            "the body is in the parent's embedding exactly once: {aggregated:?}"
+        );
     }
 
     /// Verify that text behavior's get_aggregated_content() collects children
