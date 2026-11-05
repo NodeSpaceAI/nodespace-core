@@ -3686,6 +3686,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "tempfile",
  "thiserror 1.0.69",
  "ts-rs",
  "url",

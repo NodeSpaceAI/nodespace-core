@@ -1225,10 +1225,11 @@ fn exe_dirs(exe: &Path) -> Vec<PathBuf> {
 }
 
 /// Resource-root candidates for a directory holding the sidecar: the sibling
-/// `skill/` first, then the macOS app-bundle layout
+/// `skill/` first, then the Windows install layout (`resources\skill` beside
+/// the executables), then the macOS app-bundle layout
 /// (`<..>.app/Contents/MacOS` -> `../Resources/resources/skill`).
 fn resource_root_candidates(dir: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![dir.join("skill")];
+    let mut roots = vec![dir.join("skill"), dir.join("resources").join("skill")];
     if dir.file_name().is_some_and(|n| n == "MacOS")
         && dir
             .parent()
@@ -1242,12 +1243,13 @@ fn resource_root_candidates(dir: &Path) -> Vec<PathBuf> {
     roots
 }
 
-use nodespace_types::app_bundle::{is_app_bundle_exe, BUNDLE_MARKER_NAME};
+use nodespace_types::app_bundle::{is_app_install_exe, BUNDLE_MARKER_NAME};
 
 /// The bundled `nodespace` recorded beside `exe` by the desktop app, if any.
 /// Only an absolute path that resolves (symlinks followed) to a file inside
-/// an `.app/Contents/MacOS` directory is honoured; anything else in the
-/// marker is ignored rather than followed.
+/// an `.app/Contents/MacOS` directory, or to `nodespace.exe` beside the
+/// app executable (the Windows install directory), is honoured; anything else
+/// in the marker is ignored rather than followed.
 fn recorded_bundle_exe(exe: &Path) -> Option<PathBuf> {
     let marker = exe.parent()?.join(BUNDLE_MARKER_NAME);
     let text = std::fs::read_to_string(marker).ok()?;
@@ -1256,7 +1258,7 @@ fn recorded_bundle_exe(exe: &Path) -> Option<PathBuf> {
         return None;
     }
     let resolved = recorded.canonicalize().ok()?;
-    is_app_bundle_exe(&resolved).then_some(resolved)
+    is_app_install_exe(&resolved).then_some(resolved)
 }
 
 /// The compiled installer and its resource root in `dir`, if both are there.
@@ -2395,6 +2397,81 @@ mod tests {
             }
             Installer::Script { .. } => panic!("expected compiled"),
         }
+    }
+
+    /// Lays out a Windows install directory: the executables and
+    /// `resources/skill` side by side, as the installer places them.
+    fn stage_windows_install(install: &Path) -> PathBuf {
+        stage_sidecar(install);
+        std::fs::write(install.join("nodespace-app.exe"), b"").expect("app exe");
+        std::fs::write(install.join("nodespace.exe"), b"").expect("bundled exe");
+        let root = install.join("resources").join("skill");
+        stage_skill(&root);
+        root
+    }
+
+    #[test]
+    fn compiled_installer_beside_finds_resources_in_the_windows_install_layout() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let install = tmp.path().join("Program Files").join("NodeSpace");
+        let root = stage_windows_install(&install);
+
+        match compiled_installer_beside(&install.join("nodespace.exe")).expect("windows layout") {
+            Installer::Compiled { resource_root, .. } => assert_eq!(resource_root, root),
+            Installer::Script { .. } => panic!("expected compiled"),
+        }
+    }
+
+    #[test]
+    fn staged_copy_finds_the_installer_in_the_recorded_windows_install() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tmp_root = tmp.path().canonicalize().expect("canonicalize");
+        let install = tmp_root.join("Program Files").join("NodeSpace");
+        let root = stage_windows_install(&install);
+        let bin = tmp_root.join("home/.nodespace/bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        std::fs::write(bin.join("nodespace.exe"), b"").expect("staged exe");
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            install.join("nodespace.exe").display().to_string(),
+        )
+        .expect("marker");
+
+        match compiled_installer_beside(&bin.join("nodespace.exe")).expect("recorded install") {
+            Installer::Compiled {
+                binary,
+                resource_root,
+            } => {
+                assert_eq!(
+                    binary,
+                    install.join(bundled_sidecar_name("nodespace-skill-installer"))
+                );
+                assert_eq!(resource_root, root);
+            }
+            Installer::Script { .. } => panic!("expected compiled"),
+        }
+        assert!(searched_locations(&bin.join("nodespace.exe")).contains(&install));
+    }
+
+    /// A recorded `nodespace.exe` with no app executable beside it is not an
+    /// install, so it is not followed.
+    #[test]
+    fn a_recorded_windows_exe_without_the_app_beside_it_is_not_trusted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        let evil = root.join("evil");
+        stage_sidecar(&evil);
+        stage_skill(&evil.join("resources").join("skill"));
+        std::fs::write(evil.join("nodespace.exe"), b"").expect("cli");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        std::fs::write(
+            bin.join(BUNDLE_MARKER_NAME),
+            evil.join("nodespace.exe").display().to_string(),
+        )
+        .expect("marker");
+        assert!(recorded_bundle_exe(&bin.join("nodespace.exe")).is_none());
+        assert!(compiled_installer_beside(&bin.join("nodespace.exe")).is_none());
     }
 
     #[test]
