@@ -105,6 +105,14 @@ pub const fn daemon_socket_relative(is_debug: bool) -> &'static str {
 /// long-lived service, so there is no plist-equivalent to drift out of sync.
 pub const DAEMON_PIPE_NAME: &str = r"\\.\pipe\nodespace-daemon";
 
+/// The registry key (under `HKCU`) whose values Windows runs at login, and the
+/// value under it that starts the daemon. The desktop app writes it when it
+/// registers the daemon; the CLI's `uninstall` removes it. Both read these, so
+/// the two cannot drift apart.
+pub const WINDOWS_AUTORUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+/// See [`WINDOWS_AUTORUN_KEY`].
+pub const WINDOWS_AUTORUN_VALUE: &str = "NodeSpaceDaemon";
+
 /// The command-line flag that opts the daemon into tray mode.
 ///
 /// The daemon is headless unless told otherwise, so the desktop app's daemon,

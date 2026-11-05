@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::skill;
+#[cfg(windows)]
+use super::uninstall_windows;
 
 #[derive(Args, Debug)]
 pub struct UninstallArgs {}
@@ -42,12 +44,6 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     let state_dir = nodespace_daemon::nodespace_dir()?;
     let redirected = nodespace_daemon::nodespace_home_override().is_some();
 
-    if cfg!(windows) {
-        if let Some(message) = windows_manual_steps(&state_dir, redirected) {
-            anyhow::bail!(message);
-        }
-    }
-
     let leftovers = root_owned_leftovers(PKG_INSTALLED_PATHS);
     uninstall(
         &state_dir,
@@ -55,9 +51,10 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
         INSTALLED_APP.map(Path::new),
         &leftovers,
         || {
-            stop_daemon();
+            let problems = stop_daemon(&state_dir);
             // Before the bin directory goes: the skill installer sits in it.
             report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
+            problems
         },
     )
 }
@@ -84,13 +81,19 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
 /// user owns is removed, then the command fails with the commands to run, in
 /// place of reporting an uninstall that did not happen. A redirected run
 /// leaves them alone, so it does not report them.
+///
+/// `remove_from_user_home` returns the steps it could not complete (the
+/// daemon would not stop, the autorun entry would not go). They fail the
+/// command together with any directory that could not be removed, in place of
+/// the success line.
 fn uninstall(
     state_dir: &Path,
     redirected: bool,
     installed_app: Option<&Path>,
     root_owned_leftovers: &[PathBuf],
-    remove_from_user_home: impl FnOnce(),
+    remove_from_user_home: impl FnOnce() -> Vec<String>,
 ) -> Result<()> {
+    let mut problems = Vec::new();
     if redirected {
         println!(
             "NODESPACE_HOME is set: the daemon service and agent skills in your own home were left in place."
@@ -99,12 +102,12 @@ fn uninstall(
         if let Some(message) = installed_app.and_then(uninstall_blocker) {
             anyhow::bail!(message);
         }
-        remove_from_user_home();
+        problems = remove_from_user_home();
     }
     let failures = remove_bin_dir(state_dir);
     remove_sock(state_dir);
-    if !failures.is_empty() {
-        anyhow::bail!(bin_dir_failure_message(&failures, state_dir));
+    if !failures.is_empty() || !problems.is_empty() {
+        anyhow::bail!(incomplete_message(&problems, &failures, state_dir));
     }
 
     if !redirected && !root_owned_leftovers.is_empty() {
@@ -119,47 +122,37 @@ fn uninstall(
     Ok(())
 }
 
-/// Why Windows cannot run this command, or `None` when it can.
-///
-/// Windows has no daemon stop or autorun removal here, so removing the binaries
-/// would fail while they are open and leave the daemon and its `Run` registry
-/// entry in place. The command refuses before touching anything and prints the
-/// commands to run instead. They are only printed, never run. A redirected run
-/// leaves the daemon and the registry alone, so it is not refused.
-fn windows_manual_steps(state_dir: &Path, redirected: bool) -> Option<String> {
-    if redirected {
-        return None;
+/// The failure printed when part of the uninstall did not happen: the steps
+/// that failed and the install directories that could not be removed, with
+/// why, in place of a success line.
+fn incomplete_message(
+    problems: &[String],
+    failures: &[(PathBuf, std::io::Error)],
+    state_dir: &Path,
+) -> String {
+    let mut message = String::from("NodeSpace was not fully uninstalled.");
+    if !problems.is_empty() {
+        message.push_str(&format!(
+            " These steps failed:\n  {}",
+            problems.join("\n  ")
+        ));
     }
-    let bins = nodespace_proto::socket::DAEMON_BIN_DIR_NAMES
-        .iter()
-        .map(|name| format!("rmdir /s /q \"{}\"", state_dir.join(name).display()))
-        .collect::<Vec<_>>()
-        .join("\n  ");
-    Some(format!(
-        "NodeSpace cannot be uninstalled by this command on Windows, and nothing was removed.\n\
-         It does not stop the daemon or remove its autorun entry, so the daemon would start again at the next login.\n\
-         To uninstall, run in a Command Prompt:\n  \
-         taskkill /F /IM nodespaced.exe\n  \
-         reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v NodeSpaceDaemon /f\n  \
-         {bins}\n\
-         Your data at {} is not touched by these commands.",
+    if !failures.is_empty() {
+        let listed = failures
+            .iter()
+            .map(|(path, e)| format!("{}: {e}", path.display()))
+            .collect::<Vec<_>>()
+            .join("\n  ");
+        message.push_str(&format!(
+            " These paths could not be removed:\n  {listed}\n\
+             Close anything using them and remove them yourself."
+        ));
+    }
+    message.push_str(&format!(
+        " Your data at {} has been preserved.",
         state_dir.join("database").display()
-    ))
-}
-
-/// The failure printed when install directories could not be removed: which
-/// paths remain and why, in place of a success line.
-fn bin_dir_failure_message(failures: &[(PathBuf, std::io::Error)], state_dir: &Path) -> String {
-    let listed = failures
-        .iter()
-        .map(|(path, e)| format!("{}: {e}", path.display()))
-        .collect::<Vec<_>>()
-        .join("\n  ");
-    format!(
-        "NodeSpace was not fully uninstalled. These paths could not be removed:\n  {listed}\n\
-         Close anything using them and remove them yourself. Your data at {} has been preserved.",
-        state_dir.join("database").display()
-    )
+    ));
+    message
 }
 
 /// The members of `candidates` that exist on this machine and belong to the
@@ -289,7 +282,7 @@ fn report_skill_removal(w: &mut impl std::io::Write, installer: Result<skill::In
 }
 
 #[cfg(target_os = "macos")]
-fn stop_daemon() {
+fn stop_daemon(_state_dir: &Path) -> Vec<String> {
     let uid = unsafe { libc::getuid() };
     let _ = Command::new("launchctl")
         .args(["bootout", &format!("gui/{uid}"), "app.nodespace.daemon"])
@@ -302,10 +295,11 @@ fn stop_daemon() {
             .join("app.nodespace.daemon.plist");
         let _ = fs::remove_file(&plist);
     }
+    Vec::new()
 }
 
 #[cfg(target_os = "linux")]
-fn stop_daemon() {
+fn stop_daemon(_state_dir: &Path) -> Vec<String> {
     let _ = Command::new("systemctl")
         .args(["--user", "stop", "nodespace"])
         .status();
@@ -321,10 +315,41 @@ fn stop_daemon() {
             .join("nodespace.service");
         let _ = fs::remove_file(&service);
     }
+    Vec::new()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn stop_daemon() {}
+/// The daemon's process image name on Windows.
+#[cfg(windows)]
+const DAEMON_IMAGE_NAME: &str = "nodespaced.exe";
+
+/// Windows has no service manager here: the app spawns the daemon directly and
+/// registers it in the `HKCU` `Run` key. Removes that entry first, so nothing
+/// starts the daemon again, then stops the daemon running from this install's
+/// `bin`/`bin-dev` directories. Both steps run whatever the other does; each
+/// failure is returned, not printed over.
+#[cfg(windows)]
+fn stop_daemon(state_dir: &Path) -> Vec<String> {
+    use nodespace_proto::socket::{
+        DAEMON_BIN_DIR_NAMES, WINDOWS_AUTORUN_KEY, WINDOWS_AUTORUN_VALUE,
+    };
+    let mut problems = Vec::new();
+    if let Err(e) = uninstall_windows::remove_autorun(WINDOWS_AUTORUN_KEY, WINDOWS_AUTORUN_VALUE) {
+        problems.push(format!("{e:#}"));
+    }
+    let bin_dirs: Vec<PathBuf> = DAEMON_BIN_DIR_NAMES
+        .iter()
+        .map(|name| state_dir.join(name))
+        .collect();
+    if let Err(e) = uninstall_windows::stop_daemons(&[DAEMON_IMAGE_NAME], &bin_dirs) {
+        problems.push(format!("{e:#}"));
+    }
+    problems
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn stop_daemon(_state_dir: &Path) -> Vec<String> {
+    Vec::new()
+}
 
 /// Remove both build flavours' sidecar install directories, for the same
 /// reason as [`remove_sock`]: this binary cannot tell which flavour installed
@@ -336,9 +361,60 @@ fn remove_bin_dir(state_dir: &Path) -> Vec<(PathBuf, std::io::Error)> {
     let mut failures = Vec::new();
     for name in nodespace_proto::socket::DAEMON_BIN_DIR_NAMES {
         let dir = state_dir.join(name);
+        // Windows cannot delete an executable that is running, and
+        // `remove_dir_all` stops at the first file it cannot delete, leaving
+        // everything after it. Walk the tree instead so only the files in use
+        // remain, each named.
+        #[cfg(windows)]
+        failures.extend(remove_tree_collecting(&dir));
+        #[cfg(not(windows))]
         if let Err(e) = fs::remove_dir_all(&dir) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 failures.push((dir, e));
+            }
+        }
+    }
+    failures
+}
+
+/// Removes everything under `dir` it can, then `dir` itself, and returns each
+/// path it could not remove with why. A path that is already gone is not a
+/// failure. A directory is reported only when it is itself the problem: one
+/// that is merely not empty because a child failed is not listed twice.
+#[cfg(any(windows, test))]
+fn remove_tree_collecting(dir: &Path) -> Vec<(PathBuf, std::io::Error)> {
+    let mut failures = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return failures,
+        Err(e) => return vec![(dir.to_path_buf(), e)],
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                failures.push((dir.to_path_buf(), e));
+                continue;
+            }
+        };
+        // `symlink_metadata`: a link is removed, never followed.
+        match path.symlink_metadata() {
+            Ok(meta) if meta.is_dir() => failures.extend(remove_tree_collecting(&path)),
+            Ok(_) => {
+                if let Err(e) = fs::remove_file(&path) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        failures.push((path, e));
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => failures.push((path, e)),
+        }
+    }
+    if failures.is_empty() {
+        if let Err(e) = fs::remove_dir(dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                failures.push((dir.to_path_buf(), e));
             }
         }
     }
@@ -508,6 +584,7 @@ mod tests {
 
         let error = uninstall(&state_dir, false, Some(&app), &[], || {
             removed_from_user_home = true;
+            Vec::new()
         })
         .expect_err("refused");
 
@@ -533,7 +610,8 @@ mod tests {
             let mut removed_from_user_home = false;
 
             uninstall(&state_dir, false, app, &[], || {
-                removed_from_user_home = true
+                removed_from_user_home = true;
+                Vec::new()
             })
             .expect("uninstalled");
 
@@ -553,6 +631,7 @@ mod tests {
 
         uninstall(&state_dir, true, Some(&app), &[], || {
             removed_from_user_home = true;
+            Vec::new()
         })
         .expect("uninstalled");
 
@@ -751,6 +830,7 @@ mod tests {
 
         let error = uninstall(&state_dir, false, None, &leftovers, || {
             removed_from_user_home = true;
+            Vec::new()
         })
         .expect_err("a .pkg install cannot be fully removed without administrator rights");
 
@@ -775,23 +855,85 @@ mod tests {
         let (state_dir, _binary) = installed_state_dir(dir.path());
         let leftovers = vec![PathBuf::from("/usr/local/bin/nodespace")];
 
-        uninstall(&state_dir, true, None, &leftovers, || {}).expect("uninstalled");
+        uninstall(&state_dir, true, None, &leftovers, Vec::new).expect("uninstalled");
     }
 
-    /// Windows refuses with the commands and removes nothing; a redirected run
-    /// is not refused.
+    /// A step the user-home removal could not complete (the daemon would not
+    /// stop, the autorun entry would not go) fails the command with that step
+    /// named, still removes the directories, and never prints the success line.
     #[test]
-    fn windows_manual_steps_prints_the_commands_and_refuses() {
-        let state_dir = Path::new("C:\\Users\\a\\.nodespace");
-        let message = windows_manual_steps(state_dir, false).expect("refused");
-        assert!(message.contains("taskkill /F /IM nodespaced.exe"));
-        assert!(message.contains(
-            "reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v NodeSpaceDaemon /f"
-        ));
-        assert!(message.contains("rmdir /s /q"));
-        assert!(message.contains("nothing was removed"));
+    fn uninstall_fails_and_names_a_step_that_could_not_complete() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, binary) = installed_state_dir(dir.path());
+
+        let error = uninstall(&state_dir, false, None, &[], || {
+            vec!["Could not stop the daemon: access denied".to_owned()]
+        })
+        .expect_err("an unfinished step must fail the uninstall");
+
+        assert!(!binary.exists(), "what can be removed still goes");
+        let message = error.to_string();
+        assert!(message.contains("not fully uninstalled"));
+        assert!(message.contains("These steps failed:"));
+        assert!(message.contains("Could not stop the daemon: access denied"));
+        assert!(!message.contains("These paths could not be removed"));
         assert!(!message.contains("NodeSpace uninstalled."));
-        assert!(windows_manual_steps(state_dir, true).is_none());
+    }
+
+    /// A failed step and an undeletable directory are both reported.
+    #[test]
+    fn incomplete_message_lists_steps_and_paths() {
+        let state_dir = Path::new("state");
+        let failures = vec![(
+            state_dir.join("bin"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )];
+        let message = incomplete_message(&["step one".to_owned()], &failures, state_dir);
+        assert!(message.contains("These steps failed:\n  step one"));
+        assert!(message.contains("These paths could not be removed:"));
+        assert!(message.contains(&state_dir.join("bin").display().to_string()));
+        assert!(message.contains("has been preserved"));
+    }
+
+    /// Files that cannot be removed do not stop the rest of the tree from
+    /// going: each is reported, and their directories stay.
+    #[cfg(unix)]
+    #[test]
+    fn remove_tree_collecting_keeps_going_past_a_file_it_cannot_remove() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("bin");
+        let locked = root.join("a-locked");
+        fs::create_dir_all(&locked).expect("locked dir");
+        fs::write(locked.join("stuck"), "").expect("stuck file");
+        fs::write(locked.join("stuck-too"), "").expect("second stuck file");
+        fs::create_dir_all(root.join("sub")).expect("sub");
+        fs::write(root.join("sub").join("gone"), "").expect("file");
+        fs::write(root.join("z-after"), "").expect("file");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).expect("chmod");
+
+        let failures = remove_tree_collecting(&root);
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).expect("restore");
+        let mut paths: Vec<_> = failures.iter().map(|(p, _)| p.clone()).collect();
+        paths.sort();
+        assert_eq!(paths, vec![locked.join("stuck"), locked.join("stuck-too")]);
+        assert!(!root.join("sub").exists(), "removable directories go");
+        assert!(!root.join("z-after").exists(), "files after the failure go");
+        assert!(locked.join("stuck").exists());
+    }
+
+    #[test]
+    fn remove_tree_collecting_removes_a_whole_tree_and_ignores_a_missing_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("bin");
+        fs::create_dir_all(root.join("a").join("b")).expect("dirs");
+        fs::write(root.join("a").join("b").join("f"), "").expect("file");
+        fs::write(root.join("g"), "").expect("file");
+
+        assert!(remove_tree_collecting(&root).is_empty());
+        assert!(!root.exists());
+        assert!(remove_tree_collecting(&root).is_empty(), "already gone");
     }
 
     /// A bin directory that cannot be removed fails the command with the path,
@@ -807,7 +949,7 @@ mod tests {
         fs::create_dir_all(&inner).expect("inner");
         fs::write(inner.join("f"), "").expect("file");
         fs::set_permissions(&inner, fs::Permissions::from_mode(0o500)).expect("chmod");
-        let result = uninstall(&state_dir, true, None, &[], || {});
+        let result = uninstall(&state_dir, true, None, &[], Vec::new);
         fs::set_permissions(&inner, fs::Permissions::from_mode(0o700)).expect("restore");
         let error = result.expect_err("an undeletable directory must fail the uninstall");
         let message = error.to_string();

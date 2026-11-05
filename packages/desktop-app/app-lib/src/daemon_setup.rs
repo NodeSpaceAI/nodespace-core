@@ -2798,9 +2798,7 @@ fn enable_systemd_service(binary_updated: bool) -> Result<()> {
 // ── Windows: direct spawn + HKCU autorun ─────────────────────────────────────
 
 #[cfg(windows)]
-const WINDOWS_AUTORUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-#[cfg(windows)]
-const WINDOWS_AUTORUN_VALUE: &str = "NodeSpaceDaemon";
+use nodespace_proto::socket::{WINDOWS_AUTORUN_KEY, WINDOWS_AUTORUN_VALUE};
 
 /// Compute the (stdout, stderr) log file paths for the daemon, given its log
 /// directory. Filenames are identical to the ones the macOS `launchd` plist
