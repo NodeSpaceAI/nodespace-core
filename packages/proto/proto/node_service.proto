@@ -25,6 +25,11 @@ service NodeService {
 
   // Core CRUD
   rpc CreateNode(CreateNodeRequest) returns (NodeResponse);
+  // CreateNode for content that is a markdown document (the CLI's `node
+  // create`): for a document type, the first line is the node's content,
+  // front matter is its properties and the rest is parsed into child nodes.
+  // CreateNode stores `content` as given.
+  rpc CreateDocument(CreateNodeRequest) returns (NodeResponse);
   rpc GetNode(GetNodeRequest) returns (NodeResponse);
   // Read a node with the nodes a set of relationship paths reach from it,
   // and the skills attached to any node returned.

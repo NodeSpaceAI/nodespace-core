@@ -317,11 +317,13 @@ impl Drop for ActiveDbGuard {
     }
 }
 
-#[tonic::async_trait]
-impl GrpcNodeService for NodeServiceImpl {
-    async fn create_node(
+impl NodeServiceImpl {
+    /// Create a node; with `document`, its content is a markdown document
+    /// (see `node_ops::create_document_node`).
+    async fn create(
         &self,
         request: Request<CreateNodeRequest>,
+        document: bool,
     ) -> Result<Response<NodeResponse>, Status> {
         let this = self.route(&request).await?;
         let req = request.into_inner();
@@ -348,9 +350,12 @@ impl GrpcNodeService for NodeServiceImpl {
             lifecycle_status: req.lifecycle_status,
         };
 
-        let output = node_ops::create_node(&this.node_service, input)
-            .await
-            .map_err(ops_error_to_status)?;
+        let output = if document {
+            node_ops::create_document_node(&this.node_service, input).await
+        } else {
+            node_ops::create_node(&this.node_service, input).await
+        }
+        .map_err(ops_error_to_status)?;
 
         let node = fetch_node(&this.node_service, &output.node_id).await?;
         let node_type = node.node_type.clone();
@@ -366,6 +371,23 @@ impl GrpcNodeService for NodeServiceImpl {
             node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
             placement,
         }))
+    }
+}
+
+#[tonic::async_trait]
+impl GrpcNodeService for NodeServiceImpl {
+    async fn create_node(
+        &self,
+        request: Request<CreateNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        self.create(request, false).await
+    }
+
+    async fn create_document(
+        &self,
+        request: Request<CreateNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        self.create(request, true).await
     }
 
     async fn get_node(
@@ -8525,5 +8547,85 @@ mod tests {
                 t.title
             );
         }
+    }
+
+    /// `CreateNode` stores content as given; `CreateDocument` takes it as a
+    /// markdown document.
+    #[tokio::test]
+    async fn create_document_splits_a_markdown_document_and_create_node_does_not() {
+        let (svc, _tmp) = make_service().await;
+        let request = |content: &str| {
+            Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "decision".to_string(),
+                content: content.to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            })
+        };
+        let text = "---\ndecision_status: accepted\nauthor: ann\n---\n# Pick\n\nbody";
+
+        let plain = svc.create_node(request(text)).await.unwrap().into_inner();
+        let plain_node = svc
+            .node_service
+            .get_node(&plain.node_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plain_node.content, text);
+        assert!(svc
+            .node_service
+            .get_children(&plain.node_id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let doc = svc
+            .create_document(request(text))
+            .await
+            .unwrap()
+            .into_inner();
+        let node = svc
+            .node_service
+            .get_node(&doc.node_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.content, "Pick");
+        assert_eq!(node.properties["decision"]["decision_status"], "accepted");
+        assert_eq!(node.properties["decision"]["custom:author"], "ann");
+        assert_eq!(
+            svc.node_service
+                .get_children(&doc.node_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A refused document is an invalid-argument status and creates nothing.
+        let before = svc
+            .node_service
+            .query_nodes_by_type("decision", true)
+            .await
+            .unwrap()
+            .len();
+        let status = svc
+            .create_document(request("```rust\nx\n```\n\nbody"))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            svc.node_service
+                .query_nodes_by_type("decision", true)
+                .await
+                .unwrap()
+                .len(),
+            before
+        );
     }
 }

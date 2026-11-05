@@ -114,7 +114,9 @@ pub struct CreateArgs {
     /// `project`, `spec`, `plan`, `decision`) given more than one block, the
     /// first line is the node's content (a leading `#` marker is dropped) and
     /// the rest is parsed into child nodes, as `import file` parses it; a
-    /// leading `---` front matter block becomes properties of the node.
+    /// leading `---` front matter block becomes properties of the node. The
+    /// first line must be a plain line or a heading, and a `---` block that is
+    /// not a YAML mapping is refused; nothing is created.
     /// Other types keep multi-line content as one node. Omit for a type with
     /// a title template (e.g. `person`): its name comes from the template's
     /// fields, set with `--property`, and content is rejected. A value may
@@ -466,7 +468,7 @@ async fn create(
     let properties = merge_properties(args.properties_json, args.properties).unwrap_or_default();
 
     let response = client
-        .create_node(CreateNodeRequest {
+        .create_document(CreateNodeRequest {
             node_type: args.node_type,
             content: args.content.unwrap_or_default(),
             parent_id: args.parent,

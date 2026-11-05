@@ -295,11 +295,13 @@ async fn import_single_file(
         node_service,
         &root_id,
         &title,
-        opts.use_filename_as_title,
         &content,
-        &front_matter,
-        is_archived,
-        opts.replace,
+        DocumentOptions {
+            title_from_filename: opts.use_filename_as_title,
+            front_matter: front_matter.clone(),
+            is_archived,
+            replace: opts.replace,
+        },
     )
     .await
     {
@@ -1660,17 +1662,30 @@ impl LocalFileImportResult {
 // Markdown content importer (from commands/import.rs)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
+/// What an import says about one document beyond its text.
+struct DocumentOptions {
+    /// The title is the file's name rather than its first line.
+    title_from_filename: bool,
+    /// The properties of the root, from the document's front matter.
+    front_matter: serde_json::Map<String, serde_json::Value>,
+    is_archived: bool,
+    /// Refresh a document imported before instead of leaving it untouched.
+    replace: bool,
+}
+
 async fn import_markdown_content(
     node_service: &CoreNodeService,
     root_id: &str,
     title: &str,
-    title_from_filename: bool,
     content: &str,
-    front_matter: &serde_json::Map<String, serde_json::Value>,
-    is_archived: bool,
-    replace: bool,
+    options: DocumentOptions,
 ) -> Result<(String, usize), String> {
+    let DocumentOptions {
+        title_from_filename,
+        front_matter,
+        is_archived,
+        replace,
+    } = options;
     let root_content = root_content_for_title(title, title_from_filename);
 
     let content_for_children = content_without_title_line(content, title, title_from_filename);
@@ -2102,11 +2117,13 @@ mod tests {
             &ns,
             &root_id,
             "# Setup",
-            false,
             content,
-            &Default::default(),
-            false,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: false,
+                replace: false,
+            },
         )
         .await
         .expect("the document imports");
@@ -2291,11 +2308,13 @@ mod tests {
             &ns,
             &root_id,
             "# Plan",
-            false,
             "# Plan\n\nfine\n\nPOISON line\n",
-            &Default::default(),
-            false,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: false,
+                replace: false,
+            },
         )
         .await;
         assert!(result.is_err(), "the rejected body fails the import");
@@ -2308,11 +2327,13 @@ mod tests {
             &ns,
             &root_id,
             "# Plan",
-            false,
             "# Plan\n\nfine\n",
-            &Default::default(),
-            false,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: false,
+                replace: false,
+            },
         )
         .await
         .expect("the corrected file imports");
@@ -2367,11 +2388,13 @@ mod tests {
             &ns,
             &root_id,
             "# Old Plan",
-            false,
             "# Old Plan\n\nold body\n",
-            &Default::default(),
-            false,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: false,
+                replace: false,
+            },
         )
         .await
         .expect("first import");
@@ -2381,11 +2404,13 @@ mod tests {
             &ns,
             &root_id,
             "# New Plan",
-            false,
             "# New Plan\n\nPOISON body\n",
-            &Default::default(),
-            true,
-            true,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: true,
+                replace: true,
+            },
         )
         .await;
         assert!(result.is_err());
@@ -2409,11 +2434,13 @@ mod tests {
             &ns,
             &root_id,
             "# Old",
-            false,
             "# Old\n\nbody\n",
-            &Default::default(),
-            false,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: false,
+                replace: false,
+            },
         )
         .await
         .expect("first import");
@@ -2430,11 +2457,13 @@ mod tests {
             &ns,
             &root_id,
             "# Old",
-            false,
             "# Old\n\nbody\n",
-            &Default::default(),
-            true,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: true,
+                replace: false,
+            },
         )
         .await
         .expect("re-import");
@@ -2461,11 +2490,13 @@ mod tests {
             &ns,
             &root_id,
             "# Old",
-            false,
             content,
-            &Default::default(),
-            true,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: true,
+                replace: false,
+            },
         )
         .await
         .expect("first import");
@@ -2475,11 +2506,13 @@ mod tests {
             &ns,
             &root_id,
             "# Old",
-            false,
             content,
-            &Default::default(),
-            true,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: true,
+                replace: false,
+            },
         )
         .await
         .expect("re-import");
@@ -2500,11 +2533,13 @@ mod tests {
             &ns,
             &root_id,
             "# Old",
-            false,
             "# Old\n\nold body\n",
-            &Default::default(),
-            true,
-            false,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: true,
+                replace: false,
+            },
         )
         .await
         .expect("first import");
@@ -2522,11 +2557,13 @@ mod tests {
             &ns,
             &root_id,
             "# New",
-            false,
             "# New\n\nnew body\n",
-            &Default::default(),
-            true,
-            true,
+            DocumentOptions {
+                title_from_filename: false,
+                front_matter: Default::default(),
+                is_archived: true,
+                replace: true,
+            },
         )
         .await
         .expect("replace");
@@ -3759,7 +3796,7 @@ mod tests {
         let imported = import_single_file(&ns, &file, &ImportOptions::default()).await;
         assert!(imported.success, "{:?}", imported.error);
 
-        let created = nodespace_core::ops::node_ops::create_node(
+        let created = nodespace_core::ops::node_ops::create_document_node(
             &ns,
             nodespace_core::ops::node_ops::CreateNodeInput {
                 id: None,

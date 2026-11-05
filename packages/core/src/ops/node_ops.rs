@@ -176,8 +176,8 @@ fn parse_filter_operator(op: &str) -> Result<FilterOperator, OpsError> {
 // ============================================================================
 
 /// The types whose nodes are the root of a document: a node of one of these
-/// (or of a type that extends one) takes its content as a markdown document,
-/// the first line being its title and the rest its body.
+/// (or of a type that extends one) takes its content as a markdown document
+/// when it is created through [`create_document_node`].
 ///
 /// The markup types (`code-block`, `quote-block`, `table` and the other block
 /// types) keep multi-line content as it is, and so do the types that name
@@ -202,11 +202,16 @@ struct DocumentBody {
     children: Vec<crate::markdown::PreparedNode>,
 }
 
+fn parse_error(e: impl std::fmt::Debug) -> OpsError {
+    OpsError::InvalidParams(format!("Failed to parse markdown: {e:?}"))
+}
+
 /// Turn the content of a create into a document: the root takes the title
 /// and the front matter, and the rest is parsed into children by the
 /// importer's parser. Does nothing for a type that is not a document type, or
 /// for content that is a single block with no front matter, which is stored as
-/// given.
+/// given. Refuses (so nothing is created) content whose first line cannot be
+/// a title, and a front matter block that does not parse.
 async fn split_document(
     node_service: &Arc<NodeService>,
     input: &mut CreateNodeInput,
@@ -221,16 +226,33 @@ async fn split_document(
     if !is_document_type || input.content.trim().is_empty() {
         return Ok(None);
     }
+    if input.content.len() > crate::markdown::MAX_MARKDOWN_SIZE {
+        return Err(OpsError::InvalidParams(format!(
+            "Markdown content exceeds maximum size of {} bytes (got {} bytes)",
+            crate::markdown::MAX_MARKDOWN_SIZE,
+            input.content.len()
+        )));
+    }
 
-    let front_matter = crate::markdown::split_front_matter(&input.content);
+    let front_matter = match crate::markdown::parse_front_matter(&input.content) {
+        crate::markdown::FrontMatterBlock::Absent => None,
+        crate::markdown::FrontMatterBlock::Parsed(front) => Some(front),
+        crate::markdown::FrontMatterBlock::Malformed => {
+            return Err(OpsError::InvalidParams(
+                "The content starts with a `---` block that is not front matter: between the \
+                 `---` lines it must be a YAML mapping with unique string keys"
+                    .to_string(),
+            ))
+        }
+    };
     let document = match &front_matter {
         Some(front) => front.body.clone(),
         None => input.content.clone(),
     };
 
     // A single block is the node's own content, as it has always been.
-    let blocks = crate::markdown::prepare_nodes_from_markdown(&document, None)
-        .map_err(|e| OpsError::InvalidParams(format!("Failed to parse markdown: {e:?}")))?;
+    let blocks =
+        crate::markdown::prepare_nodes_from_markdown(&document, None).map_err(parse_error)?;
     if front_matter.is_none() && blocks.len() <= 1 {
         return Ok(None);
     }
@@ -244,6 +266,12 @@ async fn split_document(
                     .to_string(),
             )
         })?;
+    if let Some(problem) = crate::markdown::title_line_problem(first_line) {
+        return Err(OpsError::InvalidParams(format!(
+            "The first line of a markdown document is the node's title, and it must be a plain \
+             line or a heading; this one is {problem}"
+        )));
+    }
     let title = crate::markdown::root_content_for_title(first_line, false);
     let body = crate::markdown::content_without_title_line(&document, first_line, false);
 
@@ -252,7 +280,7 @@ async fn split_document(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let children = crate::markdown::prepare_nodes_from_markdown(&body, Some(root_id.clone()))
-        .map_err(|e| OpsError::InvalidParams(format!("Failed to parse markdown: {e:?}")))?;
+        .map_err(parse_error)?;
     if children.len() + 1 > crate::markdown::MAX_NODES_PER_IMPORT {
         return Err(OpsError::InvalidParams(format!(
             "The content would create {} nodes, exceeding the maximum of {}",
@@ -263,7 +291,8 @@ async fn split_document(
 
     if let Some(front) = front_matter {
         // A key the type declares is set as that field; any other becomes
-        // `custom:<key>`. A property the caller gave explicitly wins.
+        // `custom:<key>` (a type that is not a core type is open and takes
+        // its keys as given). A property the caller gave explicitly wins.
         let undeclared: HashSet<String> = node_service
             .undeclared_core_keys(&input.node_type, &front.fields)
             .await?
@@ -292,17 +321,21 @@ async fn split_document(
     Ok(Some(DocumentBody { root_id, children }))
 }
 
-/// Create a node, optionally adding to a collection and setting lifecycle status.
+/// Create a node from a markdown document: the entry point for a caller that
+/// means its content to be one (the CLI's `node create`). A node of a document
+/// type given more than one block, or front matter, has its first line as its
+/// content, its front matter as its properties and the rest as its children
+/// (see [`DOCUMENT_TYPES`]). Anything else is [`create_node`].
 ///
-/// A node of a document type given more than one block of markdown, or front
-/// matter, is created as a document: its first line is its content, its front
-/// matter its properties and the rest its children (see [`DOCUMENT_TYPES`]).
-pub async fn create_node(
+/// The root and its body are written by two transactions, so the guarantee is
+/// weaker than one: if the body cannot be written the root is deleted again,
+/// and the call fails.
+pub async fn create_document_node(
     node_service: &Arc<NodeService>,
     mut input: CreateNodeInput,
 ) -> Result<CreateNodeOutput, OpsError> {
     let document = split_document(node_service, &mut input).await?;
-    let output = create_one_node(node_service, input).await?;
+    let output = create_node(node_service, input).await?;
     let Some(DocumentBody { root_id, children }) = document else {
         return Ok(output);
     };
@@ -333,7 +366,8 @@ pub async fn create_node(
     Ok(output)
 }
 
-async fn create_one_node(
+/// Create a node, optionally adding to a collection and setting lifecycle status.
+pub async fn create_node(
     node_service: &Arc<NodeService>,
     input: CreateNodeInput,
 ) -> Result<CreateNodeOutput, OpsError> {

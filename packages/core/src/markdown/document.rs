@@ -22,31 +22,99 @@ pub struct FrontMatter {
     pub body: String,
 }
 
+/// What the start of a document holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FrontMatterBlock {
+    /// The document does not start with a `---` line closed by a later `---`
+    /// or `...` line.
+    Absent,
+    /// A block that parses as a non-empty YAML mapping with string keys.
+    Parsed(FrontMatter),
+    /// The first line is `---` and a closing line follows, but what is between
+    /// them is not a non-empty YAML mapping with unique string keys (a YAML
+    /// error, a list, plain text, a non-string or repeated key).
+    Malformed,
+}
+
+/// Read the front matter block at the start of `content`.
+pub fn parse_front_matter(content: &str) -> FrontMatterBlock {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first().map(|l| l.trim_end_matches('\r')) != Some("---") {
+        return FrontMatterBlock::Absent;
+    }
+    let Some(close) = lines
+        .iter()
+        .skip(1)
+        .position(|l| matches!(l.trim_end_matches('\r'), "---" | "..."))
+        .map(|i| i + 1)
+    else {
+        return FrontMatterBlock::Absent;
+    };
+    let block = lines[1..close].join("\n");
+    // Read as YAML first: a mapping with a repeated key is an error there,
+    // where reading straight into JSON would keep the last one. JSON needs
+    // every key to be a string.
+    let fields = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&block)
+        .ok()
+        .filter(|yaml| {
+            yaml.as_mapping()
+                .is_some_and(|map| map.keys().all(serde_yaml_ng::Value::is_string))
+        })
+        .and_then(|yaml| serde_json::to_value(yaml).ok());
+    match fields {
+        Some(Value::Object(fields)) if !fields.is_empty() => {
+            FrontMatterBlock::Parsed(FrontMatter {
+                fields,
+                body: lines[close + 1..].join("\n"),
+            })
+        }
+        _ => FrontMatterBlock::Malformed,
+    }
+}
+
 /// Split front matter off the start of `content`.
 ///
 /// A block is front matter when the first line is exactly `---`, a later line
 /// is exactly `---` or `...`, and the lines between them parse as a non-empty
-/// YAML mapping. Anything else is not front matter and returns `None`, so a
-/// `---` that does not meet the rule stays a horizontal line.
+/// YAML mapping. Anything else returns `None`, so a `---` that does not meet
+/// the rule stays a horizontal line (the importer's rule; see
+/// [`parse_front_matter`] for a caller that refuses a malformed block).
 pub fn split_front_matter(content: &str) -> Option<FrontMatter> {
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first().map(|l| l.trim_end_matches('\r')) != Some("---") {
-        return None;
+    match parse_front_matter(content) {
+        FrontMatterBlock::Parsed(front) => Some(front),
+        _ => None,
     }
-    let close = lines
-        .iter()
-        .skip(1)
-        .position(|l| matches!(l.trim_end_matches('\r'), "---" | "..."))?
-        + 1;
-    let block = lines[1..close].join("\n");
-    let fields = match serde_yaml_ng::from_str::<Value>(&block) {
-        Ok(Value::Object(fields)) if !fields.is_empty() => fields,
-        _ => return None,
+}
+
+/// Why `line` cannot be the title of a document, or `None` when it can: a
+/// title is a plain line or a heading. A line that opens a list, quote, code
+/// fence, table, rule or checklist item would be a fragment of that block once
+/// taken out of its document.
+pub fn title_line_problem(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('|') {
+        return Some("a table row");
+    }
+    let parsed = match super::prepare_nodes_from_markdown(trimmed, None) {
+        Ok(nodes) => nodes,
+        Err(_) => return Some("not valid markdown"),
     };
-    Some(FrontMatter {
-        fields,
-        body: lines[close + 1..].join("\n"),
-    })
+    match parsed.as_slice() {
+        [node]
+            if matches!(node.node_type.as_str(), "text" | "header") && node.content == trimmed =>
+        {
+            None
+        }
+        [node] => Some(match node.node_type.as_str() {
+            "code-block" => "a code fence",
+            "quote-block" => "a quote",
+            "ordered-list" => "a numbered list",
+            "horizontal-line" => "a horizontal rule",
+            "checkbox" => "a checklist item",
+            _ => "a list item",
+        }),
+        _ => Some("more than one block"),
+    }
 }
 
 /// The properties a root takes from its front matter, ready to store.
@@ -69,7 +137,11 @@ pub fn front_matter_properties(
         if key.starts_with('_') {
             continue;
         }
-        let namespaced = EXTENSION_PREFIXES.iter().any(|p| key.starts_with(p));
+        // A prefix with nothing after it names no field, so it is not a
+        // namespace: the key is stored under `custom:` like any other.
+        let namespaced = EXTENSION_PREFIXES
+            .iter()
+            .any(|p| key.strip_prefix(p).is_some_and(|rest| !rest.is_empty()));
         let declared = is_declared(&key) && crate::models::CoreNodeType::from_id(&key).is_none();
         let stored = if namespaced || declared {
             key
@@ -152,6 +224,61 @@ mod tests {
         // Not exactly the marker.
         assert!(split_front_matter("--- \na: 1\n---\nx").is_none());
         assert!(split_front_matter("----\na: 1\n---\nx").is_none());
+    }
+
+    #[test]
+    fn a_closed_block_that_is_not_a_mapping_is_malformed() {
+        for doc in [
+            "---\n1: a\n---\n# T",
+            "---\na: 1\na: 2\n---\n# T",
+            "---\na: [1\n---\n# T",
+            "---\n- a\n---\n# T",
+            "---\njust text\n---\n# T",
+            "---\n---\n# T",
+        ] {
+            assert_eq!(
+                parse_front_matter(doc),
+                FrontMatterBlock::Malformed,
+                "{doc:?}"
+            );
+        }
+        assert_eq!(
+            parse_front_matter("---\na: 1\n# T"),
+            FrontMatterBlock::Absent
+        );
+        assert_eq!(
+            parse_front_matter("# T\n---\na: 1\n---"),
+            FrontMatterBlock::Absent
+        );
+    }
+
+    #[test]
+    fn only_a_plain_line_or_a_heading_can_be_a_title() {
+        for ok in ["Title", "# Title", "## Title", "A sentence, with commas."] {
+            assert_eq!(title_line_problem(ok), None, "{ok:?}");
+        }
+        for bad in [
+            "```rust",
+            "| a | b |",
+            "1. x",
+            "> q",
+            "- a",
+            "- [ ] t",
+            "---",
+        ] {
+            assert!(title_line_problem(bad).is_some(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_namespace_is_not_a_namespace() {
+        let Value::Object(fields) = json!({"custom:": 1, "plugin:": 2, "org:x": 3}) else {
+            unreachable!()
+        };
+        let props = front_matter_properties(fields, |_| false);
+        assert_eq!(props["custom:custom:"], json!(1));
+        assert_eq!(props["custom:plugin:"], json!(2));
+        assert_eq!(props["org:x"], json!(3));
     }
 
     #[test]
