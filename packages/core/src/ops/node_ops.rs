@@ -175,8 +175,165 @@ fn parse_filter_operator(op: &str) -> Result<FilterOperator, OpsError> {
 // Operations
 // ============================================================================
 
+/// The types whose nodes are the root of a document: a node of one of these
+/// (or of a type that extends one) takes its content as a markdown document,
+/// the first line being its title and the rest its body.
+///
+/// The markup types (`code-block`, `quote-block`, `table` and the other block
+/// types) keep multi-line content as it is, and so do the types that name
+/// themselves some other way (`person`, `date`, `collection`, `schema` and the
+/// rest).
+const DOCUMENT_TYPES: [CoreNodeType; 8] = [
+    CoreNodeType::Text,
+    CoreNodeType::Task,
+    CoreNodeType::Project,
+    CoreNodeType::Spec,
+    CoreNodeType::Plan,
+    CoreNodeType::Decision,
+    // `issue` and `software-project` extend `task` and `project`; they are
+    // listed so the list reads as the types a document can be.
+    CoreNodeType::Issue,
+    CoreNodeType::SoftwareProject,
+];
+
+/// A document's body, parsed to hang under its root.
+struct DocumentBody {
+    root_id: String,
+    children: Vec<crate::markdown::PreparedNode>,
+}
+
+/// Turn the content of a create into a document: the root takes the title
+/// and the front matter, and the rest is parsed into children by the
+/// importer's parser. Does nothing for a type that is not a document type, or
+/// for content that is a single block with no front matter, which is stored as
+/// given.
+async fn split_document(
+    node_service: &Arc<NodeService>,
+    input: &mut CreateNodeInput,
+) -> Result<Option<DocumentBody>, OpsError> {
+    let mut is_document_type = false;
+    for base in DOCUMENT_TYPES {
+        if node_service.type_is_a(&input.node_type, base).await? {
+            is_document_type = true;
+            break;
+        }
+    }
+    if !is_document_type || input.content.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let front_matter = crate::markdown::split_front_matter(&input.content);
+    let document = match &front_matter {
+        Some(front) => front.body.clone(),
+        None => input.content.clone(),
+    };
+
+    // A single block is the node's own content, as it has always been.
+    let blocks = crate::markdown::prepare_nodes_from_markdown(&document, None)
+        .map_err(|e| OpsError::InvalidParams(format!("Failed to parse markdown: {e:?}")))?;
+    if front_matter.is_none() && blocks.len() <= 1 {
+        return Ok(None);
+    }
+
+    let first_line = document
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .ok_or_else(|| {
+            OpsError::InvalidParams(
+                "The content has front matter but no title: the first line after it is the node's title"
+                    .to_string(),
+            )
+        })?;
+    let title = crate::markdown::root_content_for_title(first_line, false);
+    let body = crate::markdown::content_without_title_line(&document, first_line, false);
+
+    let root_id = input
+        .id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let children = crate::markdown::prepare_nodes_from_markdown(&body, Some(root_id.clone()))
+        .map_err(|e| OpsError::InvalidParams(format!("Failed to parse markdown: {e:?}")))?;
+    if children.len() + 1 > crate::markdown::MAX_NODES_PER_IMPORT {
+        return Err(OpsError::InvalidParams(format!(
+            "The content would create {} nodes, exceeding the maximum of {}",
+            children.len() + 1,
+            crate::markdown::MAX_NODES_PER_IMPORT
+        )));
+    }
+
+    if let Some(front) = front_matter {
+        // A key the type declares is set as that field; any other becomes
+        // `custom:<key>`. A property the caller gave explicitly wins.
+        let undeclared: HashSet<String> = node_service
+            .undeclared_core_keys(&input.node_type, &front.fields)
+            .await?
+            .into_iter()
+            .collect();
+        let from_front_matter =
+            crate::markdown::front_matter_properties(front.fields, |key| !undeclared.contains(key));
+        let mut properties = match std::mem::take(&mut input.properties) {
+            Value::Object(map) => map,
+            Value::Null => serde_json::Map::new(),
+            other => {
+                input.properties = other;
+                return Err(OpsError::InvalidParams(
+                    "properties must be an object when the content has front matter".to_string(),
+                ));
+            }
+        };
+        for (key, value) in from_front_matter {
+            properties.entry(key).or_insert(value);
+        }
+        input.properties = Value::Object(properties);
+    }
+
+    input.id = Some(root_id.clone());
+    input.content = title;
+    Ok(Some(DocumentBody { root_id, children }))
+}
+
 /// Create a node, optionally adding to a collection and setting lifecycle status.
+///
+/// A node of a document type given more than one block of markdown, or front
+/// matter, is created as a document: its first line is its content, its front
+/// matter its properties and the rest its children (see [`DOCUMENT_TYPES`]).
 pub async fn create_node(
+    node_service: &Arc<NodeService>,
+    mut input: CreateNodeInput,
+) -> Result<CreateNodeOutput, OpsError> {
+    let document = split_document(node_service, &mut input).await?;
+    let output = create_one_node(node_service, input).await?;
+    let Some(DocumentBody { root_id, children }) = document else {
+        return Ok(output);
+    };
+    if children.is_empty() {
+        return Ok(output);
+    }
+
+    let rows: Vec<_> = children
+        .into_iter()
+        .map(|n| {
+            (
+                n.id,
+                n.node_type,
+                n.content,
+                n.parent_id.or_else(|| Some(root_id.clone())),
+                n.order,
+                n.properties,
+            )
+        })
+        .collect();
+    if let Err(error) = node_service.bulk_create_hierarchy(rows).await {
+        // The root alone is not the document that was asked for.
+        if let Err(cleanup) = node_service.delete_node_unchecked(&root_id).await {
+            tracing::warn!(root_id, %cleanup, "could not remove a document root whose body failed");
+        }
+        return Err(error.into());
+    }
+    Ok(output)
+}
+
+async fn create_one_node(
     node_service: &Arc<NodeService>,
     input: CreateNodeInput,
 ) -> Result<CreateNodeOutput, OpsError> {

@@ -110,10 +110,15 @@ pub struct CreateArgs {
     /// Node type, e.g. `text`, `task`, `date`.
     #[arg(long = "type")]
     pub node_type: String,
-    /// Content (plain text or markdown). Omit for a type with a title
-    /// template (e.g. `person`): its name comes from the template's fields,
-    /// set with `--property`, and content is rejected. A value may begin with
-    /// a dash, as a checklist item or a list line does.
+    /// Content (plain text or markdown). For a document type (`text`, `task`,
+    /// `project`, `spec`, `plan`, `decision`) given more than one block, the
+    /// first line is the node's content (a leading `#` marker is dropped) and
+    /// the rest is parsed into child nodes, as `import file` parses it; a
+    /// leading `---` front matter block becomes properties of the node.
+    /// Other types keep multi-line content as one node. Omit for a type with
+    /// a title template (e.g. `person`): its name comes from the template's
+    /// fields, set with `--property`, and content is rejected. A value may
+    /// begin with a dash, as a checklist item or a list line does.
     #[arg(long, allow_hyphen_values = true, value_parser = parse_content)]
     pub content: Option<String>,
     /// Parent node ID (omit to create a root node).

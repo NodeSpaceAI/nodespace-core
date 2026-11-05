@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nodespace_core::markdown::{
-    prepare_nodes_from_markdown, transform_links_in_nodes_with_mentions, PreparedNode,
+    content_without_title_line, front_matter_properties, prepare_nodes_from_markdown,
+    root_content_for_title, split_front_matter, transform_links_in_nodes_with_mentions,
+    PreparedNode,
 };
 use nodespace_core::models::CoreNodeType;
 use nodespace_core::services::{
@@ -109,33 +111,14 @@ fn import_identity_key(source: &str, relative_path: &str) -> String {
     format!("{source}\u{0}{relative_path}")
 }
 
-/// The content of a document's root node: the plain title. A title taken from
-/// the file's first line loses a leading Markdown heading marker (`#` to
-/// `######` and the space after it); a filename-derived title is used as is.
-fn root_content_for_title(title: &str, from_filename: bool) -> String {
-    if from_filename {
-        return title.to_string();
+/// A document's front matter split from the rest: the properties its root
+/// takes (an imported root is a `text` node, which declares no field, so every
+/// key is an extension field) and the document without the block.
+fn split_document(content: String) -> (String, serde_json::Map<String, serde_json::Value>) {
+    match split_front_matter(&content) {
+        Some(front) => (front.body, front_matter_properties(front.fields, |_| false)),
+        None => (content, serde_json::Map::new()),
     }
-    let trimmed = title.trim();
-    let level = trimmed.bytes().take_while(|b| *b == b'#').count();
-    match trimmed[level..].strip_prefix(' ') {
-        Some(rest) if (1..=6).contains(&level) => rest.trim().to_string(),
-        _ => trimmed.to_string(),
-    }
-}
-
-/// The content the children are parsed from. When the title is the file's
-/// first non-blank line, that line becomes the root and is dropped here; a
-/// title taken from the filename leaves the content whole, since its first
-/// line is body text even when it equals the filename stem.
-fn content_without_title_line(content: &str, title: &str, title_from_filename: bool) -> String {
-    let first_line = content.lines().find(|l| !l.trim().is_empty());
-    if title_from_filename || first_line != Some(title) {
-        return content.to_string();
-    }
-    let lines: Vec<&str> = content.lines().collect();
-    let first_idx = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
-    lines[first_idx + 1..].join("\n")
 }
 
 #[derive(Clone)]
@@ -228,11 +211,15 @@ async fn run_single_file_import(
             step_name: "complete".to_string(),
             message: if result.success {
                 format!(
-                    "Imported {} ({} nodes)",
+                    "Imported {} ({} nodes{})",
                     path.file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or(&file_path),
-                    result.nodes_created
+                    result.nodes_created,
+                    match result.front_matter_keys {
+                        0 => String::new(),
+                        n => format!(", {n} front matter keys"),
+                    }
                 )
             } else {
                 format!(
@@ -271,6 +258,8 @@ async fn import_single_file(
         (None, false)
     };
 
+    let (content, front_matter) = split_document(content);
+
     let title = if opts.use_filename_as_title {
         path.file_stem()
             .and_then(|s| s.to_str())
@@ -308,12 +297,19 @@ async fn import_single_file(
         &title,
         opts.use_filename_as_title,
         &content,
+        &front_matter,
         is_archived,
         opts.replace,
     )
     .await
     {
         Ok((root_id, nodes_created)) => {
+            // A document left untouched stored nothing.
+            let front_matter_keys = if nodes_created == 0 {
+                0
+            } else {
+                front_matter.len()
+            };
             if let Some(ref coll) = collection {
                 let collection_service = CollectionService::new(node_service.store(), node_service);
                 if let Err(e) = collection_service
@@ -327,6 +323,7 @@ async fn import_single_file(
                         file_path: path.to_string_lossy().to_string(),
                         root_id: Some(root_id),
                         nodes_created,
+                        front_matter_keys,
                         success: false,
                         error: Some(format!("Imported but failed to add to collection: {}", e)),
                         collection: None,
@@ -338,6 +335,7 @@ async fn import_single_file(
                 file_path: path.to_string_lossy().to_string(),
                 root_id: Some(root_id),
                 nodes_created,
+                front_matter_keys,
                 success: true,
                 error: None,
                 collection,
@@ -556,6 +554,7 @@ async fn run_batch_import(
             file_path: p.file_path.to_string_lossy().to_string(),
             root_id: Some(p.root_id.clone()),
             nodes_created: 0,
+            front_matter_keys: p.root_properties.len(),
             success: true,
             error: None,
             collection: p.collection_path.clone(),
@@ -710,8 +709,9 @@ async fn run_batch_import(
             let outcome = r.root_id.as_ref().and_then(|rid| writer.outcomes.get(rid));
             match outcome {
                 Some(DocOutcome::Written { nodes, .. }) => r.nodes_created = *nodes,
-                Some(DocOutcome::Skipped) => {}
+                Some(DocOutcome::Skipped) => r.front_matter_keys = 0,
                 Some(DocOutcome::Failed { nodes, error }) => {
+                    r.front_matter_keys = 0;
                     r.nodes_created = *nodes;
                     r.success = false;
                     r.error = Some(error.clone());
@@ -733,6 +733,10 @@ async fn run_batch_import(
             "Imported {} files ({} nodes)",
             writer.new_docs, writer.nodes_written
         );
+        let front_matter_keys: usize = phase1_results.iter().map(|r| r.front_matter_keys).sum();
+        if front_matter_keys > 0 {
+            summary.push_str(&format!(", {front_matter_keys} front matter keys"));
+        }
         if writer.refreshed_docs > 0 {
             summary.push_str(&format!(", {} refreshed", writer.refreshed_docs));
         }
@@ -937,7 +941,8 @@ impl Phase2Writer {
         let mut skipped: Vec<String> = Vec::new();
         // A replaced document's new root content and old child ids, applied
         // only once its fresh subtree has committed.
-        let mut refreshed_roots: Vec<(String, String)> = Vec::new();
+        let mut refreshed_roots: Vec<(String, String, serde_json::Map<String, serde_json::Value>)> =
+            Vec::new();
         let mut prune: Vec<String> = Vec::new();
         let mut chunk_mentions: Vec<(String, String)> = Vec::new();
         let mut memberships: Vec<(String, String)> = Vec::new();
@@ -958,7 +963,11 @@ impl Phase2Writer {
                         continue;
                     }
                 }
-                refreshed_roots.push((file.root_id.clone(), file.root_content));
+                refreshed_roots.push((
+                    file.root_id.clone(),
+                    file.root_content,
+                    file.root_properties,
+                ));
             } else if !exists {
                 rows.push((
                     file.root_id.clone(),
@@ -966,7 +975,7 @@ impl Phase2Writer {
                     file.root_content,
                     None,
                     1.0,
-                    serde_json::json!({}),
+                    serde_json::Value::Object(file.root_properties),
                 ));
             }
 
@@ -1047,8 +1056,11 @@ impl Phase2Writer {
         // links and mentions, survive), then prune its OLD children. Both wait
         // for the fresh subtree to commit, so a failed chunk never truncates
         // or retitles a document.
-        for (root_id, content) in &refreshed_roots {
-            let update = nodespace_core::NodeUpdate::new().with_content(content.clone());
+        for (root_id, content, properties) in &refreshed_roots {
+            let mut update = nodespace_core::NodeUpdate::new().with_content(content.clone());
+            if !properties.is_empty() {
+                update = update.with_properties(serde_json::Value::Object(properties.clone()));
+            }
             if let Err(e) = refresh_root(&self.node_service, root_id, update).await {
                 tracing::error!("Failed to refresh root {}: {}", root_id, e);
                 self.fail(root_id, &format!("Root refresh failed: {e}"));
@@ -1062,7 +1074,7 @@ impl Phase2Writer {
                     e
                 );
                 let error = format!("Stale subtree prune failed: {e}");
-                for (root_id, _) in &refreshed_roots {
+                for (root_id, _, _) in &refreshed_roots {
                     self.fail(root_id, &error);
                 }
             }
@@ -1071,7 +1083,7 @@ impl Phase2Writer {
         // content effectively changed — re-mark it stale so it re-embeds. New
         // roots already get their markers inside bulk_create_hierarchy_trusted.
         if !refreshed_roots.is_empty() {
-            let root_ids: Vec<String> = refreshed_roots.into_iter().map(|(r, _)| r).collect();
+            let root_ids: Vec<String> = refreshed_roots.into_iter().map(|(r, _, _)| r).collect();
             if let Err(e) = self.store.requeue_root_embeddings(&root_ids).await {
                 tracing::warn!(
                     "Failed to re-mark {} replaced root(s) stale: {}",
@@ -1266,6 +1278,8 @@ fn prepare_file_import(
         .unwrap_or(&file_read.relative_path)
         .to_string();
 
+    let (content, root_properties) = split_document(file_read.content);
+
     let title = if use_filename_as_title {
         file_read
             .path
@@ -1274,8 +1288,7 @@ fn prepare_file_import(
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Untitled".to_string())
     } else {
-        file_read
-            .content
+        content
             .lines()
             .find(|l| !l.trim().is_empty())
             .map(|s| s.to_string())
@@ -1286,14 +1299,14 @@ fn prepare_file_import(
 
     let root_content = root_content_for_title(&title, use_filename_as_title);
 
-    let content_for_children =
-        content_without_title_line(&file_read.content, &title, use_filename_as_title);
+    let content_for_children = content_without_title_line(&content, &title, use_filename_as_title);
 
     let outcome = match prepare_nodes_from_markdown(&content_for_children, Some(root_id.clone())) {
         Ok(children) => Ok(PreparedFileImport {
             file_path: file_read.path,
             root_id,
             root_content,
+            root_properties,
             is_archived: file_read.is_archived,
             collection_path: file_read.collection_path,
             children,
@@ -1359,6 +1372,7 @@ fn proto_file_result(r: LocalFileImportResult) -> FileImportResult {
         file_path: r.file_path,
         root_id: r.root_id.unwrap_or_default(),
         nodes_created: r.nodes_created as u32,
+        front_matter_keys: r.front_matter_keys as u32,
         success: r.success,
         error: r.error.unwrap_or_default(),
         collection: r.collection.unwrap_or_default(),
@@ -1595,6 +1609,8 @@ struct PreparedFileImport {
     file_path: PathBuf,
     root_id: String,
     root_content: String,
+    /// The root's properties, from the document's front matter.
+    root_properties: serde_json::Map<String, serde_json::Value>,
     is_archived: bool,
     collection_path: Option<String>,
     children: Vec<PreparedNode>,
@@ -1617,6 +1633,8 @@ struct LocalFileImportResult {
     file_path: String,
     root_id: Option<String>,
     nodes_created: usize,
+    /// Front matter keys stored on the root.
+    front_matter_keys: usize,
     success: bool,
     error: Option<String>,
     collection: Option<String>,
@@ -1629,6 +1647,7 @@ impl LocalFileImportResult {
             file_path,
             root_id: None,
             nodes_created: 0,
+            front_matter_keys: 0,
             success: false,
             error: Some(msg.to_string()),
             collection: None,
@@ -1641,12 +1660,14 @@ impl LocalFileImportResult {
 // Markdown content importer (from commands/import.rs)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn import_markdown_content(
     node_service: &CoreNodeService,
     root_id: &str,
     title: &str,
     title_from_filename: bool,
     content: &str,
+    front_matter: &serde_json::Map<String, serde_json::Value>,
     is_archived: bool,
     replace: bool,
 ) -> Result<(String, usize), String> {
@@ -1718,7 +1739,7 @@ async fn import_markdown_content(
             root_content.clone(),
             None,
             1.0,
-            serde_json::json!({}),
+            serde_json::Value::Object(front_matter.clone()),
         ));
     }
     rows.extend(prepared_nodes.iter().map(|n| {
@@ -1748,6 +1769,9 @@ async fn import_markdown_content(
             .map_err(|e| format!("Failed to read existing subtree: {}", e))?;
         follow_up.prune_ids = descendants.into_iter().map(|n| n.id).collect();
         let mut update = nodespace_core::NodeUpdate::new().with_content(root_content);
+        if !front_matter.is_empty() {
+            update = update.with_properties(serde_json::Value::Object(front_matter.clone()));
+        }
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
         }
@@ -1860,6 +1884,7 @@ mod tests {
             file_path: file.to_string(),
             root_id: Some(format!("root-{file}")),
             nodes_created: 3,
+            front_matter_keys: 0,
             success: true,
             error: None,
             collection: Some("docs".to_string()),
@@ -1935,6 +1960,7 @@ mod tests {
             file_path: PathBuf::from("vanished.md"),
             root_id,
             root_content: "Vanished".to_string(),
+            root_properties: Default::default(),
             is_archived,
             collection_path: None,
             children: Vec::new(),
@@ -2072,9 +2098,18 @@ mod tests {
         let content =
             "# Setup\n- Install\n  1. Download deps\n     - bun\n     - cargo\n  2. Build\n     continuation line\n- Run\n  - quickly";
 
-        import_markdown_content(&ns, &root_id, "# Setup", false, content, false, false)
-            .await
-            .expect("the document imports");
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# Setup",
+            false,
+            content,
+            &Default::default(),
+            false,
+            false,
+        )
+        .await
+        .expect("the document imports");
 
         let mut outline: Vec<(usize, String)> = Vec::new();
         let mut stack = vec![(root_id, 0usize)];
@@ -2258,6 +2293,7 @@ mod tests {
             "# Plan",
             false,
             "# Plan\n\nfine\n\nPOISON line\n",
+            &Default::default(),
             false,
             false,
         )
@@ -2274,6 +2310,7 @@ mod tests {
             "# Plan",
             false,
             "# Plan\n\nfine\n",
+            &Default::default(),
             false,
             false,
         )
@@ -2332,6 +2369,7 @@ mod tests {
             "# Old Plan",
             false,
             "# Old Plan\n\nold body\n",
+            &Default::default(),
             false,
             false,
         )
@@ -2345,6 +2383,7 @@ mod tests {
             "# New Plan",
             false,
             "# New Plan\n\nPOISON body\n",
+            &Default::default(),
             true,
             true,
         )
@@ -2372,6 +2411,7 @@ mod tests {
             "# Old",
             false,
             "# Old\n\nbody\n",
+            &Default::default(),
             false,
             false,
         )
@@ -2392,6 +2432,7 @@ mod tests {
             "# Old",
             false,
             "# Old\n\nbody\n",
+            &Default::default(),
             true,
             false,
         )
@@ -2416,14 +2457,32 @@ mod tests {
         let ns = Arc::new(ns);
         let root_id = deterministic_root_id("old.md");
         let content = "# Old\n\nbody\n";
-        import_markdown_content(&ns, &root_id, "# Old", false, content, true, false)
-            .await
-            .expect("first import");
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# Old",
+            false,
+            content,
+            &Default::default(),
+            true,
+            false,
+        )
+        .await
+        .expect("first import");
         let before = ns.get_node(&root_id).await.unwrap().unwrap().version;
 
-        import_markdown_content(&ns, &root_id, "# Old", false, content, true, false)
-            .await
-            .expect("re-import");
+        import_markdown_content(
+            &ns,
+            &root_id,
+            "# Old",
+            false,
+            content,
+            &Default::default(),
+            true,
+            false,
+        )
+        .await
+        .expect("re-import");
         assert_eq!(
             ns.get_node(&root_id).await.unwrap().unwrap().version,
             before
@@ -2443,6 +2502,7 @@ mod tests {
             "# Old",
             false,
             "# Old\n\nold body\n",
+            &Default::default(),
             true,
             false,
         )
@@ -2464,6 +2524,7 @@ mod tests {
             "# New",
             false,
             "# New\n\nnew body\n",
+            &Default::default(),
             true,
             true,
         )
@@ -3528,5 +3589,209 @@ mod tests {
         assert_eq!(count("Posts"), Some(1));
         assert_eq!(count("Archived"), Some(1));
         assert_eq!(count("Notes"), Some(1));
+    }
+
+    // ------------------------------------------------------------------
+    // Front matter
+    // ------------------------------------------------------------------
+
+    const FRONT_MATTER_DOC: &str = "---\nauthor: ann\ncount: 3\ndraft: true\ntags: [a, b]\nowner:\n  team: core\n---\n# The Title\n\nBody text.\n";
+
+    /// Import one file through the single-file path and the batch path, and
+    /// return both roots' nodes (content, properties) and results.
+    async fn import_both_ways(
+        content: &str,
+    ) -> (
+        CoreNodeService,
+        [(String, LocalFileImportResult); 2],
+        tempfile::TempDir,
+    ) {
+        let (ns, dir) = new_service_and_dir().await;
+        let ns_arc = Arc::new(ns);
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let single = src.join("single.md");
+        let batch = src.join("batch.md");
+        std::fs::write(&single, content).unwrap();
+        std::fs::write(&batch, content).unwrap();
+        let opts = ImportOptions {
+            base_directory: src.to_str().unwrap().to_string(),
+            ..Default::default()
+        };
+
+        let single_result = import_single_file(&ns_arc, &single, &opts).await;
+        let single_root = single_result.root_id.clone().expect("single root");
+
+        let done = run_batch_and_wait(
+            Arc::clone(&ns_arc),
+            vec![batch.to_str().unwrap().to_string()],
+            opts,
+        )
+        .await;
+        let r = &done.results[0];
+        assert!(r.success, "{}", r.error);
+        let batch_result = LocalFileImportResult {
+            file_path: r.file_path.clone(),
+            root_id: Some(r.root_id.clone()),
+            nodes_created: r.nodes_created as usize,
+            front_matter_keys: r.front_matter_keys as usize,
+            success: r.success,
+            error: None,
+            collection: None,
+            archived: false,
+        };
+        let batch_root = r.root_id.clone();
+        let ns = Arc::try_unwrap(ns_arc).ok().expect("sole owner");
+        (
+            ns,
+            [(single_root, single_result), (batch_root, batch_result)],
+            dir,
+        )
+    }
+
+    async fn child_kinds(ns: &CoreNodeService, root: &str) -> Vec<(String, String)> {
+        ns.get_children(root)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| (n.node_type, n.content))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn front_matter_becomes_properties_of_the_root_and_makes_no_node() {
+        let (ns, roots, _dir) = import_both_ways(FRONT_MATTER_DOC).await;
+        for (root_id, result) in &roots {
+            let root = ns.get_node(root_id).await.unwrap().unwrap();
+            assert_eq!(root.node_type, "text");
+            assert_eq!(root.content, "The Title");
+            let props = &root.properties["text"];
+            assert_eq!(props["custom:author"], serde_json::json!("ann"));
+            assert_eq!(props["custom:count"], serde_json::json!(3));
+            assert_eq!(props["custom:draft"], serde_json::json!(true));
+            assert_eq!(props["custom:tags"], serde_json::json!(["a", "b"]));
+            assert_eq!(props["custom:owner"], serde_json::json!({"team": "core"}));
+            assert_eq!(result.front_matter_keys, 5);
+            // No `---` node and no node for the fields: only the body.
+            assert_eq!(
+                child_kinds(&ns, root_id).await,
+                vec![("text".to_string(), "Body text.".to_string())]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dash_line_that_is_not_front_matter_is_a_horizontal_line() {
+        // Not closed around a YAML mapping.
+        for doc in [
+            "---\nnot a mapping\n---\n# Title\n\nBody\n",
+            "---\n# Title\n\nBody\n",
+            "---\n- a\n- b\n---\n# Title\n",
+        ] {
+            let (ns, roots, _dir) = import_both_ways(doc).await;
+            for (root_id, result) in &roots {
+                let root = ns.get_node(root_id).await.unwrap().unwrap();
+                assert_eq!(root.content, "---", "{doc:?}");
+                assert_eq!(result.front_matter_keys, 0, "{doc:?}");
+                assert!(root.properties["text"]
+                    .as_object()
+                    .is_none_or(|o| o.is_empty()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dash_line_after_the_first_line_is_a_horizontal_line() {
+        let doc = "# Title\n\n---\nauthor: ann\n---\n\nBody\n";
+        let (ns, roots, _dir) = import_both_ways(doc).await;
+        for (root_id, result) in &roots {
+            let root = ns.get_node(root_id).await.unwrap().unwrap();
+            assert_eq!(root.content, "Title");
+            assert_eq!(result.front_matter_keys, 0);
+            let kinds = child_kinds(&ns, root_id).await;
+            assert!(
+                kinds.iter().any(|(t, _)| t == "horizontal-line"),
+                "{kinds:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_without_front_matter_imports_unchanged() {
+        let (ns, roots, _dir) = import_both_ways("# Title\n\nBody\n").await;
+        for (root_id, result) in &roots {
+            let root = ns.get_node(root_id).await.unwrap().unwrap();
+            assert_eq!(root.content, "Title");
+            assert_eq!(result.front_matter_keys, 0);
+            assert!(root.properties["text"]
+                .as_object()
+                .is_none_or(|o| o.is_empty()));
+            assert_eq!(
+                child_kinds(&ns, root_id).await,
+                vec![("text".to_string(), "Body".to_string())]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_heading_marker_is_stripped_from_the_root_in_every_shape() {
+        for first in ["# Title", "## Title", "Title"] {
+            let doc = format!("---\na: 1\n---\n{first}\n\nBody\n");
+            let (ns, roots, _dir) = import_both_ways(&doc).await;
+            for (root_id, _) in &roots {
+                let root = ns.get_node(root_id).await.unwrap().unwrap();
+                assert_eq!(root.content, "Title", "{first:?}");
+            }
+        }
+    }
+
+    /// A body parsed under a new node gives the same child types, content and
+    /// order as importing the same text as a file.
+    #[tokio::test]
+    async fn a_created_documents_body_matches_the_same_text_imported() {
+        let body = "Intro.\n\n## Steps\n\n1. one\n2. two\n\n```rust\nfn main() {}\n```\n\n- bullet\n\n> quoted\n";
+        let text = format!("# Doc\n\n{body}");
+
+        let (ns, dir) = new_service_and_dir().await;
+        let ns = Arc::new(ns);
+        let file = dir.path().join("doc.md");
+        std::fs::write(&file, &text).unwrap();
+        let imported = import_single_file(&ns, &file, &ImportOptions::default()).await;
+        assert!(imported.success, "{:?}", imported.error);
+
+        let created = nodespace_core::ops::node_ops::create_node(
+            &ns,
+            nodespace_core::ops::node_ops::CreateNodeInput {
+                id: None,
+                node_type: "decision".to_string(),
+                content: text.clone(),
+                parent_id: None,
+                position: nodespace_core::services::InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        async fn outline(ns: &CoreNodeService, root: &str) -> Vec<(usize, String, String)> {
+            let mut out = Vec::new();
+            let mut stack = vec![(root.to_string(), 0usize)];
+            while let Some((id, depth)) = stack.pop() {
+                let children = ns.get_children(&id).await.unwrap();
+                if depth > 0 {
+                    let node = ns.get_node(&id).await.unwrap().unwrap();
+                    out.push((depth, node.node_type, node.content));
+                }
+                stack.extend(children.into_iter().rev().map(|c| (c.id, depth + 1)));
+            }
+            out
+        }
+        let from_file = outline(&ns, imported.root_id.as_deref().unwrap()).await;
+        let from_create = outline(&ns, &created.node_id).await;
+        assert!(!from_file.is_empty());
+        assert_eq!(from_create, from_file);
     }
 }

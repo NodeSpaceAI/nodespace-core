@@ -40,6 +40,7 @@ mod find_skills_schema_metadata_test;
 mod issue_and_software_project_test;
 mod kebab_schema_id_test;
 mod link_field_type_test;
+mod markdown_document_create_test;
 mod mentioning_containers_test;
 mod merge_nodes_test;
 mod move_node_ordering_test;
