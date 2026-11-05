@@ -75,17 +75,9 @@ struct NodeIdPayload {
 }
 
 /// Spawn the watcher as a Tokio task. Returns immediately; the task runs
-/// until `cancel_token` is cancelled or the process exits.
-#[cfg(not(unix))]
-pub fn spawn(
-    _app: AppHandle,
-    _grpc_client: GrpcClient,
-    _cancel_token: tokio_util::sync::CancellationToken,
-) {
-    // No-op on Windows — watcher uses Unix Domain Socket transport.
-}
-
-#[cfg(unix)]
+/// until `cancel_token` is cancelled or the process exits. The transport is
+/// whatever the shared [`GrpcClient`] dials (a Unix socket, or a Named Pipe on
+/// Windows), so the watcher runs on every platform.
 pub fn spawn(
     app: AppHandle,
     grpc_client: GrpcClient,
@@ -108,7 +100,6 @@ pub fn spawn(
 /// integration test can drive it against `tauri::test`'s `MockRuntime` — a
 /// real event bus with no webview. The production `spawn` entry point above
 /// still only ever instantiates this with the real runtime.
-#[cfg(unix)]
 pub async fn run<R: Runtime>(
     app: AppHandle<R>,
     grpc_client: GrpcClient,
@@ -159,7 +150,6 @@ fn pause_after(outcome: &Result<()>) -> Pause {
 /// [`pause_after`] decides. `db_changed` is the active-database generation
 /// (`GrpcClient::subscribe_active_database`); it persists across attempts, so
 /// a change that lands while an attempt is running is seen by the next wait.
-#[cfg(unix)]
 async fn watch_loop<A, F>(
     mut db_changed: tokio::sync::watch::Receiver<u64>,
     cancel_token: tokio_util::sync::CancellationToken,
@@ -247,7 +237,6 @@ where
 /// until the stream ends or errors. The client carries the active database's
 /// routing header, so the daemon serves only that database's events. Returns
 /// `Ok(())` on clean stream end, `Err` on transport or stream error.
-#[cfg(unix)]
 async fn stream_once<R: Runtime>(app: &AppHandle<R>, grpc_client: &GrpcClient) -> Result<()> {
     // The subscription must carry this window's client id so the daemon knows
     // which writes are this window's own (made via `echo_suppressed_client`)
@@ -416,7 +405,7 @@ fn emit_relationship<R: Runtime>(
     emit_routed(app, name, &payload, target);
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
