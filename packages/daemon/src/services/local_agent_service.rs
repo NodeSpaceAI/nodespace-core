@@ -1149,8 +1149,20 @@ impl LocalAgentServiceImpl {
                 {
                     Ok(()) => needs_idle_reset = false,
                     Err(e) => {
+                        // The reply is stored with its record or not at all, so
+                        // nothing of it remains. Say so in the chat, as a failed
+                        // inference does, rather than leave the user's message
+                        // unanswered.
                         tracing::warn!(node_id, error = %e, "failed to append assistant message");
-                        needs_idle_reset = true;
+                        let error_text = format!("This turn's reply could not be saved: {e}");
+                        needs_idle_reset = self
+                            .append_assistant_message(
+                                &node_id,
+                                &error_text,
+                                AssistantRecord::default(),
+                            )
+                            .await
+                            .is_err();
                     }
                 }
             }

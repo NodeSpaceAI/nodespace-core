@@ -376,9 +376,8 @@ impl<'a> NewMessage<'a> {
 /// from repeating them. An edge whose node is already gone is left out (a
 /// node deleted later in the same turn has nothing to point at).
 ///
-/// If the edges cannot be written at all, the message is still stored, on its
-/// own, and the failure is logged: a reply the user never sees is worse than
-/// one whose records are missing.
+/// If the edges cannot be written, nothing is stored and the error is
+/// returned: the caller decides what the user sees.
 pub async fn append_message(
     node_service: &NodeService,
     chat_id: &str,
@@ -413,33 +412,19 @@ pub async fn append_message(
         return node_service.create_node_with_parent(params).await;
     }
 
-    match node_service
-        .create_node_with_relationships(params.clone(), relationships.clone())
-        .await
-    {
-        Ok((message_id, skipped)) => {
-            for index in skipped {
-                let edge = &relationships[index];
-                tracing::debug!(
-                    message_id,
-                    relationship = %edge.name,
-                    target_id = %edge.target_id,
-                    "an ai-chat-message edge was not recorded: its node no longer exists"
-                );
-            }
-            Ok(message_id)
-        }
-        Err(error) => {
-            tracing::warn!(
-                chat_id,
-                %error,
-                edges = relationships.len(),
-                "an ai-chat message could not be stored with its edges; storing it without \
-                 them, so the record of what its turn did is lost"
-            );
-            node_service.create_node_with_parent(params).await
-        }
+    let (message_id, skipped) = node_service
+        .create_node_with_relationships(params, relationships.clone())
+        .await?;
+    for index in skipped {
+        let edge = &relationships[index];
+        tracing::debug!(
+            message_id,
+            relationship = %edge.name,
+            target_id = %edge.target_id,
+            "an ai-chat-message edge was not recorded: its node no longer exists"
+        );
     }
+    Ok(message_id)
 }
 
 /// The edges a message is created with: what its turn wrote, looked up and
@@ -836,6 +821,53 @@ mod tests {
             .map(|e| e.node_id.as_str())
             .collect();
         assert_eq!(looked_up, [node_uri(&other_chat)]);
+    }
+
+    /// A message whose edges cannot be written is not stored at all: it never
+    /// exists without the record of what its turn did.
+    #[tokio::test]
+    async fn a_message_whose_edges_cannot_be_written_is_not_stored() {
+        let (svc, tmp) = test_service().await;
+        let chat = create(&svc, "ai-chat-native", "Untitled").await;
+        let target = create(&svc, "text", "Held").await;
+        let held = [PendingDeletion {
+            node_id: target.clone(),
+            title: "Held".to_string(),
+            node_type: "text".to_string(),
+            version: 1,
+            descendant_count: 0,
+        }];
+        // Make the store refuse that edge, as a failing write would.
+        let db = libsql::Builder::new_local(tmp.path().join("test.db"))
+            .build()
+            .await
+            .unwrap();
+        db.connect()
+            .unwrap()
+            .execute(
+                "CREATE TRIGGER refuse_held BEFORE INSERT ON relationship \
+                 WHEN new.relationship_type = 'pending_delete' \
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END",
+                (),
+            )
+            .await
+            .unwrap();
+
+        let result = append_message(
+            &svc,
+            &chat,
+            NewMessage {
+                pending_deletions: &held,
+                ..NewMessage::text(AiChatMessageRole::Assistant, "Delete it?")
+            },
+        )
+        .await;
+
+        assert!(result.is_err(), "the failed edge write reaches the caller");
+        assert!(
+            load_messages(&svc, &chat).await.unwrap().is_empty(),
+            "no message is left behind"
+        );
     }
 
     /// A delete of a chat can be held and found again: the edge from the
