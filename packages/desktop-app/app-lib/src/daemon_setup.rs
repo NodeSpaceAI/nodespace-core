@@ -123,7 +123,7 @@ const DAEMON_DB_DIR: &str = ".nodespace/database";
 const DAEMON_LOG_DIR: &str = ".nodespace/logs";
 pub(crate) const DAEMON_BINARY_NAME: &str = "nodespaced";
 const CLI_BINARY_NAME: &str = "nodespace";
-use nodespace_types::app_bundle::{is_app_bundle_exe, BUNDLE_MARKER_NAME};
+use nodespace_types::app_bundle::{is_app_install_exe, BUNDLE_MARKER_NAME};
 
 #[cfg(target_os = "linux")]
 const SYSTEMD_SERVICE_NAME: &str = "nodespace.service";
@@ -1130,9 +1130,9 @@ async fn bring_up_daemon() -> Result<()> {
     match resolve_sidecar_path(CLI_BINARY_NAME) {
         Ok(bundled_cli) => {
             if let Err(e) = record_bundle_marker(&bin_dir, &bundled_cli) {
-                // Not being inside an .app (dev builds, Windows, Linux) is
-                // expected; only a real failure on an app bundle is a warning.
-                if is_app_bundle_exe(&bundled_cli) {
+                // Not being in an installed app (dev builds, Linux) is
+                // expected; only a real failure on an app install is a warning.
+                if is_app_install_exe(&bundled_cli) {
                     tracing::warn!("Could not record the app bundle beside the staged CLI: {e:#}");
                 } else {
                     tracing::debug!("Not recording an app bundle beside the staged CLI: {e:#}");
@@ -1643,14 +1643,15 @@ where
 fn record_bundle_marker(bin_dir: &Path, bundled_cli: &Path) -> Result<()> {
     let marker = bin_dir.join(BUNDLE_MARKER_NAME);
     sweep_stale_marker_tmp(bin_dir);
-    // Only a CLI inside an `.app/Contents/MacOS` is recorded; the reader
-    // applies the same rule, so anything else would never be followed.
+    // Only a CLI in an installed app (`.app/Contents/MacOS` on macOS, beside
+    // the app executable on Windows) is recorded; the reader applies the same
+    // rule, so anything else would never be followed.
     let bundled_cli = bundled_cli
         .canonicalize()
         .unwrap_or_else(|_| bundled_cli.to_path_buf());
-    if !is_app_bundle_exe(&bundled_cli) {
+    if !is_app_install_exe(&bundled_cli) {
         anyhow::bail!(
-            "Not recording {}: it is not inside an .app/Contents/MacOS directory",
+            "Not recording {}: it is not in an .app/Contents/MacOS directory or beside the app executable",
             bundled_cli.display()
         );
     }
@@ -6017,6 +6018,27 @@ mod bundle_marker_tests {
             .filter(|n| n.contains(".tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    /// The Windows installer puts `nodespace.exe` beside `nodespace-app.exe`;
+    /// that directory is recorded, and the same CLI anywhere else is not.
+    #[test]
+    fn the_windows_install_directory_is_recorded() {
+        let install = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        std::fs::write(install.path().join("nodespace-app.exe"), b"").unwrap();
+        let bundled = install.path().join("nodespace.exe");
+        std::fs::write(&bundled, b"").unwrap();
+        record_bundle_marker(bin.path(), &bundled).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bin.path().join(BUNDLE_MARKER_NAME)).unwrap(),
+            bundled.canonicalize().unwrap().display().to_string()
+        );
+
+        let lone = tempfile::tempdir().unwrap();
+        std::fs::write(lone.path().join("nodespace.exe"), b"").unwrap();
+        let other = tempfile::tempdir().unwrap();
+        assert!(record_bundle_marker(other.path(), &lone.path().join("nodespace.exe")).is_err());
     }
 
     #[test]
