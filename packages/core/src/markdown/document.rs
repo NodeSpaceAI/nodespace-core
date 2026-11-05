@@ -101,7 +101,9 @@ pub fn title_line_problem(line: &str) -> Option<&'static str> {
     };
     match parsed.as_slice() {
         [node]
-            if matches!(node.node_type.as_str(), "text" | "header") && node.content == trimmed =>
+            if (crate::models::CoreNodeType::Text.is_exactly(&node.node_type)
+                || crate::models::CoreNodeType::Header.is_exactly(&node.node_type))
+                && node.content == trimmed =>
         {
             None
         }
