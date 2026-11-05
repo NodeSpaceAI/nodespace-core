@@ -45,7 +45,7 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     let redirected = nodespace_daemon::nodespace_home_override().is_some();
 
     let leftovers = root_owned_leftovers(PKG_INSTALLED_PATHS);
-    uninstall(
+    uninstall_deferring(
         &state_dir,
         redirected,
         INSTALLED_APP.map(Path::new),
@@ -56,7 +56,34 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
             report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
             problems
         },
+        running_image().as_deref(),
+        remove_after_exit,
     )
+}
+
+/// The executable this command is running from, where Windows will not let it
+/// delete itself. Only Windows needs it: elsewhere a running file can be
+/// unlinked, so there is no image to wait for.
+#[cfg(windows)]
+fn running_image() -> Option<PathBuf> {
+    std::env::current_exe().ok()
+}
+
+#[cfg(not(windows))]
+fn running_image() -> Option<PathBuf> {
+    None
+}
+
+/// Hands the files this process holds open to a helper that removes them once
+/// this process has exited.
+#[cfg(windows)]
+fn remove_after_exit(paths: &[PathBuf]) -> Result<()> {
+    uninstall_windows::remove_after_exit(std::process::id(), paths)
+}
+
+#[cfg(not(windows))]
+fn remove_after_exit(_paths: &[PathBuf]) -> Result<()> {
+    Ok(())
 }
 
 /// Uninstalls the NodeSpace whose state directory is `state_dir`.
@@ -86,12 +113,40 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
 /// daemon would not stop, the autorun entry would not go). They fail the
 /// command together with any directory that could not be removed, in place of
 /// the success line.
+#[cfg(test)]
 fn uninstall(
     state_dir: &Path,
     redirected: bool,
     installed_app: Option<&Path>,
     root_owned_leftovers: &[PathBuf],
     remove_from_user_home: impl FnOnce() -> Vec<String>,
+) -> Result<()> {
+    uninstall_deferring(
+        state_dir,
+        redirected,
+        installed_app,
+        root_owned_leftovers,
+        remove_from_user_home,
+        None,
+        |_| Ok(()),
+    )
+}
+
+/// [`uninstall`] for a process that may be running from a file it has to
+/// remove. `running_image` is that file (Windows cannot delete an executable
+/// while it runs). When it is the ONLY thing that could not be removed and no
+/// step failed, the command has done everything it can: `defer_removal` is
+/// handed the file, and the directories that held it, to remove once this
+/// process has exited, the user is told so, and the command succeeds. Anything
+/// else left behind still fails the command, the running file included.
+fn uninstall_deferring(
+    state_dir: &Path,
+    redirected: bool,
+    installed_app: Option<&Path>,
+    root_owned_leftovers: &[PathBuf],
+    remove_from_user_home: impl FnOnce() -> Vec<String>,
+    running_image: Option<&Path>,
+    defer_removal: impl FnOnce(&[PathBuf]) -> Result<()>,
 ) -> Result<()> {
     let mut problems = Vec::new();
     if redirected {
@@ -104,10 +159,32 @@ fn uninstall(
         }
         problems = remove_from_user_home();
     }
-    let failures = remove_bin_dir(state_dir);
+    let mut failures = remove_bin_dir(state_dir);
     remove_sock(state_dir);
+    let mut deferred = None;
+    if problems.is_empty() && only_the_running_image_remains(&failures, running_image) {
+        let mut targets: Vec<PathBuf> = failures.iter().map(|(path, _)| path.clone()).collect();
+        targets.extend(
+            nodespace_proto::socket::DAEMON_BIN_DIR_NAMES
+                .iter()
+                .map(|name| state_dir.join(name)),
+        );
+        match defer_removal(&targets) {
+            Ok(()) => {
+                deferred = Some(failures.remove(0).0);
+                failures.clear();
+            }
+            Err(e) => problems.push(format!("{e:#}")),
+        }
+    }
     if !failures.is_empty() || !problems.is_empty() {
         anyhow::bail!(incomplete_message(&problems, &failures, state_dir));
+    }
+    if let Some(image) = &deferred {
+        println!(
+            "{} is in use by this command and will be removed when it exits.",
+            image.display()
+        );
     }
 
     if !redirected && !root_owned_leftovers.is_empty() {
@@ -120,6 +197,30 @@ fn uninstall(
     );
 
     Ok(())
+}
+
+/// Whether the one thing that could not be removed is `running_image`, the
+/// executable this process runs from. Paths compare as Windows does: ignoring
+/// ASCII case and the `\\?\` verbatim prefix, with `/` and `\` alike. Any
+/// other failure, or a second one beside it, is not expected and returns
+/// `false`.
+fn only_the_running_image_remains(
+    failures: &[(PathBuf, std::io::Error)],
+    running_image: Option<&Path>,
+) -> bool {
+    let Some(image) = running_image else {
+        return false;
+    };
+    let [(path, _)] = failures else {
+        return false;
+    };
+    fn normal(path: &Path) -> String {
+        let text = path.to_string_lossy().replace('/', "\\");
+        text.strip_prefix("\\\\?\\")
+            .unwrap_or(&text)
+            .to_ascii_lowercase()
+    }
+    normal(path) == normal(image)
 }
 
 /// The failure printed when part of the uninstall did not happen: the steps
@@ -651,7 +752,7 @@ mod tests {
         let compact: String = run.split_whitespace().collect();
         assert!(
             compact.contains(
-                "uninstall(&state_dir,redirected,INSTALLED_APP.map(Path::new),&leftovers,"
+                "uninstall_deferring(&state_dir,redirected,INSTALLED_APP.map(Path::new),&leftovers,"
             ),
             "run no longer passes the installed app to uninstall:\n{run}"
         );
@@ -934,6 +1035,167 @@ mod tests {
         assert!(remove_tree_collecting(&root).is_empty());
         assert!(!root.exists());
         assert!(remove_tree_collecting(&root).is_empty(), "already gone");
+    }
+
+    fn failure(path: &str) -> (PathBuf, std::io::Error) {
+        (
+            PathBuf::from(path),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        )
+    }
+
+    /// The running image alone is expected; anything else is not.
+    #[test]
+    fn only_the_running_image_remains_classifies_the_leftovers() {
+        let image = Path::new(r"C:\Users\a\.nodespace\bin\nodespace.exe");
+        let same = |path: &str| only_the_running_image_remains(&[failure(path)], Some(image));
+        assert!(same(r"C:\Users\a\.nodespace\bin\nodespace.exe"));
+        assert!(same(r"c:\users\A\.NodeSpace\bin\NODESPACE.EXE"));
+        assert!(same(r"\\?\C:\Users\a\.nodespace\bin\nodespace.exe"));
+        assert!(same("C:/Users/a/.nodespace/bin/nodespace.exe"));
+        // Another file, even beside it, is a real failure.
+        assert!(!same(r"C:\Users\a\.nodespace\bin\nodespaced.exe"));
+        assert!(!same(r"C:\Users\a\.nodespace\bin"));
+        // The image plus anything else fails.
+        assert!(!only_the_running_image_remains(
+            &[
+                failure(r"C:\Users\a\.nodespace\bin\nodespace.exe"),
+                failure(r"C:\Users\a\.nodespace\bin\nodespaced.exe"),
+            ],
+            Some(image)
+        ));
+        // Nothing failed, or no image is known: nothing is deferred.
+        assert!(!only_the_running_image_remains(&[], Some(image)));
+        assert!(!only_the_running_image_remains(
+            &[failure(r"C:\Users\a\.nodespace\bin\nodespace.exe")],
+            None
+        ));
+    }
+
+    /// Makes `<state_dir>/<name>/locked/f` undeletable and returns the
+    /// directory to restore afterwards.
+    #[cfg(unix)]
+    fn lock_bin(state_dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let inner = state_dir.join(name).join("locked");
+        fs::create_dir_all(&inner).expect("inner");
+        fs::write(inner.join("f"), "").expect("file");
+        fs::set_permissions(&inner, fs::Permissions::from_mode(0o500)).expect("chmod");
+        inner
+    }
+
+    #[cfg(unix)]
+    fn unlock(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).expect("restore");
+    }
+
+    /// When the running image is the only thing left, the removal is handed
+    /// off with it and the directories, and the command succeeds. (On Unix the
+    /// path that fails is the directory, so it stands in for the image.)
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_defers_the_running_image_when_it_is_all_that_is_left() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, _binary) = installed_state_dir(dir.path());
+        let inner = lock_bin(&state_dir, "bin");
+        let image = state_dir.join("bin");
+        let mut handed = Vec::new();
+
+        let result = uninstall_deferring(
+            &state_dir,
+            false,
+            None,
+            &[],
+            Vec::new,
+            Some(&image),
+            |paths| {
+                handed = paths.to_vec();
+                Ok(())
+            },
+        );
+
+        unlock(&inner);
+        result.expect("the running image alone must not fail the uninstall");
+        assert_eq!(handed[0], image);
+        assert!(handed.contains(&state_dir.join("bin")));
+        assert!(handed.contains(&state_dir.join("bin-dev")));
+    }
+
+    /// Anything beside the running image fails the command and defers nothing.
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_still_fails_when_something_else_is_left_beside_the_image() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, _binary) = installed_state_dir(dir.path());
+        let first = lock_bin(&state_dir, "bin");
+        let second = lock_bin(&state_dir, "bin-dev");
+        let image = state_dir.join("bin");
+        let mut deferred = false;
+
+        let result =
+            uninstall_deferring(&state_dir, false, None, &[], Vec::new, Some(&image), |_| {
+                deferred = true;
+                Ok(())
+            });
+
+        unlock(&first);
+        unlock(&second);
+        let message = result.expect_err("a second leftover must fail").to_string();
+        assert!(!deferred, "nothing is deferred when something else failed");
+        assert!(message.contains(&state_dir.join("bin").display().to_string()));
+        assert!(message.contains(&state_dir.join("bin-dev").display().to_string()));
+        assert!(!message.contains("NodeSpace uninstalled."));
+    }
+
+    /// A failed step beside the running image also fails the command.
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_does_not_defer_when_a_step_failed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, _binary) = installed_state_dir(dir.path());
+        let inner = lock_bin(&state_dir, "bin");
+        let image = state_dir.join("bin");
+        let mut deferred = false;
+
+        let result = uninstall_deferring(
+            &state_dir,
+            false,
+            None,
+            &[],
+            || vec!["step failed".to_owned()],
+            Some(&image),
+            |_| {
+                deferred = true;
+                Ok(())
+            },
+        );
+
+        unlock(&inner);
+        assert!(result.is_err());
+        assert!(!deferred);
+    }
+
+    /// If the helper cannot be started the file is not reported as handled.
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_fails_when_the_deferred_removal_cannot_be_scheduled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, _binary) = installed_state_dir(dir.path());
+        let inner = lock_bin(&state_dir, "bin");
+        let image = state_dir.join("bin");
+
+        let result =
+            uninstall_deferring(&state_dir, false, None, &[], Vec::new, Some(&image), |_| {
+                anyhow::bail!("no helper")
+            });
+
+        unlock(&inner);
+        let message = result
+            .expect_err("an unscheduled removal must fail")
+            .to_string();
+        assert!(message.contains("no helper"));
+        assert!(!message.contains("NodeSpace uninstalled."));
     }
 
     /// A bin directory that cannot be removed fails the command with the path,
