@@ -125,4 +125,7 @@ message FileImportResult {
   // Collection the file was routed to (empty when not assigned).
   string collection = 6;
   bool archived = 7;
+  // Front matter keys stored as properties of the document's root. Zero when
+  // the file had no front matter block, or the document was left untouched.
+  uint32 front_matter_keys = 8;
 }

@@ -112,6 +112,7 @@ fn results_to_json(results: &[FileImportResult]) -> serde_json::Value {
                     "error": r.error,
                     "collection": r.collection,
                     "archived": r.archived,
+                    "front_matter_keys": r.front_matter_keys,
                 })
             })
             .collect(),
@@ -186,9 +187,10 @@ async fn run_file(client: &mut ImportClient, args: ImportFileArgs, json: bool) -
                 for r in &event.results {
                     if r.success {
                         println!(
-                            "✓ {} ({} nodes){}",
+                            "✓ {} ({} nodes){}{}",
                             r.file_path,
                             r.nodes_created,
+                            front_matter_note(r.front_matter_keys),
                             if r.collection.is_empty() {
                                 String::new()
                             } else {
@@ -484,6 +486,16 @@ fn directory_failure_result(directory: &str, error: &str) -> FileImportResult {
         error: error.to_string(),
         collection: String::new(),
         archived: false,
+        front_matter_keys: 0,
+    }
+}
+
+/// What a result says of front matter: nothing when the file had none.
+fn front_matter_note(keys: u32) -> String {
+    match keys {
+        0 => String::new(),
+        1 => ", 1 front matter key".to_string(),
+        n => format!(", {n} front matter keys"),
     }
 }
 
@@ -611,6 +623,20 @@ fn collect_recursive(
 mod path_tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn front_matter_note_names_the_stored_keys_only_when_there_are_some() {
+        assert_eq!(front_matter_note(0), "");
+        assert_eq!(front_matter_note(1), ", 1 front matter key");
+        assert_eq!(front_matter_note(4), ", 4 front matter keys");
+    }
+
+    #[test]
+    fn json_results_carry_the_front_matter_key_count() {
+        let mut r = result(true);
+        r.front_matter_keys = 3;
+        assert_eq!(results_to_json(&[r])[0]["front_matter_keys"], 3);
+    }
 
     fn result(success: bool) -> FileImportResult {
         FileImportResult {

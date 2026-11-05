@@ -116,7 +116,7 @@ nodespace node create --type text --content "Meeting notes" --parent <parent-id>
 
 **Options:**
 - `--type <type>` — node type: `text`, `task`, `date`, or any schema-defined type
-- `--content <text>` — the text content of the node
+- `--content <text>` — the content of the node. For `text`, `task`, `project`, `spec`, `plan` and `decision` (and types extending them) given more than one block, it is a markdown document: the first line is the node's own content (a leading `#` marker is dropped), the rest is parsed into child nodes the way `import file` parses it, and a leading `---` front matter block (a YAML mapping) becomes properties of the node. The first line must be a plain line or a heading, and a `---` block that is not a YAML mapping is refused with nothing created. A single block is stored as given, and `code-block`, `quote-block`, `table` and the other types keep multi-line content as one node
 - `--parent <id>` — optional parent node ID (creates a child node)
 - `--property key=value` / `--properties '{json}'` — set properties (see *Two ways to set properties* above)
 
@@ -138,6 +138,8 @@ A collection is identified by its name (case-insensitive): `node create --type c
 **Success semantics:** once `node create` returns an ID, the node exists — confirm what was created to the user and stop. Don't immediately `node get` the same ID to verify; the create response is the confirmation.
 
 **If it has headings, it is a tree, not a node.** NodeSpace is one-node-per-block, with hierarchy as first-class edges — a document with sections (an ADR, a spec, a plan) decomposes into a root node plus one child per section, not one node whose `content` holds the whole document:
+
+One call is enough for a document: `node create --type decision --content "# Title\n\n## Context\n..."` creates the decision with `Title` as its content and the sections as its children. A front matter block at the top sets properties: a key that is a declared field of the type (`decision_status: accepted`) is set as that field and validated; any other key is stored as `custom:<key>`; a key already namespaced (`custom:x`) is stored as given and a key starting with `_` is ignored. The multi-call form below does the same by hand:
 
 ```bash
 # Multi-call: root, then one child per section
@@ -1063,7 +1065,7 @@ Operate on individual nodes (get, context, create, update, set-status, move, del
 **`nodespace node create`** — Create a new node
 
 - `--type <NODE_TYPE>` — Node type, e.g. `text`, `task`, `date` (required)
-- `--content <CONTENT>` — Content (plain text or markdown). Omit for a type with a title template (e.g. `person`): its name comes from the template's fields, set with `--property`, and content is rejected. A value may begin with a dash, as a checklist item or a list line does
+- `--content <CONTENT>` — Content (plain text or markdown). For a document type (`text`, `task`, `project`, `spec`, `plan`, `decision`) given more than one block, the first line is the node's content (a leading `#` marker is dropped) and the rest is parsed into child nodes, as `import file` parses it; a leading `---` front matter block becomes properties of the node. The first line must be a plain line or a heading, and a `---` block that is not a YAML mapping is refused; nothing is created. Other types keep multi-line content as one node. Omit for a type with a title template (e.g. `person`): its name comes from the template's fields, set with `--property`, and content is rejected. A value may begin with a dash, as a checklist item or a list line does
 - `--parent <PARENT>` — Parent node ID (omit to create a root node)
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Required this way for any schema field that is `required` with no default — validation runs at create time, so there is no way to supply it afterward via `update`
 - `--properties <JSON>` — Set several properties at once from one JSON object: `--properties '{"key":"value"}'`. Each value keeps the JSON type it is written with, so this is the form for nested values and for a string that reads as a number (`{"estimate":"3"}`). May be combined with `--property`, which wins for a key given both ways

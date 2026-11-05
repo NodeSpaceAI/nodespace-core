@@ -42,7 +42,7 @@ Through the `nodespace` tool there is no `--version` (it refuses it); the prefli
 Use NodeSpace as a working memory across sessions:
 
 1. **Search at session start** — search for prior context before you begin. (`nodespace search "topic"`)
-2. **Save as you go** — save discoveries, decisions, and summaries during the session. Don't wait until the end. (`nodespace node create --type text --content "…"`)
+2. **Save as you go** — save discoveries, decisions, and summaries during the session. Don't wait until the end. (`nodespace node create --type text --content "…"`) A multi-block markdown `--content` is a document: its first line is the node's content and the rest becomes child nodes (details in `references/cli.md`).
 3. **It persists across sessions** — your context window does not. Anything worth remembering next time should be stored.
 
 Date nodes make temporal retrieval reliable: if a finding is time-bound, attach it under today's date node so future searches can scope by day.

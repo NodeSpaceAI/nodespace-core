@@ -32,7 +32,12 @@
 //! }
 //! ```
 
+mod document;
 mod error;
+pub use document::{
+    content_without_title_line, front_matter_properties, parse_front_matter,
+    root_content_for_title, split_front_matter, title_line_problem, FrontMatter, FrontMatterBlock,
+};
 pub use error::MarkdownError;
 
 use crate::models::{CoreNodeType, Node, TaskStatus};
@@ -47,10 +52,10 @@ use std::sync::Arc;
 /// **Rationale:** Prevents DoS attacks from malicious AI agents attempting to import
 /// extremely large markdown files. 1MB is sufficient for typical documents (100-1000 nodes)
 /// while protecting against memory exhaustion. Most markdown notes are < 100KB.
-const MAX_MARKDOWN_SIZE: usize = 1_000_000;
+pub(crate) const MAX_MARKDOWN_SIZE: usize = 1_000_000;
 
 /// Maximum number of nodes that can be created in a single import
-const MAX_NODES_PER_IMPORT: usize = 1000;
+pub(crate) const MAX_NODES_PER_IMPORT: usize = 1000;
 
 /// Maximum content length (in characters) for a text node to be rendered as a bullet item
 ///
