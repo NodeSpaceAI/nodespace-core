@@ -1148,9 +1148,19 @@ impl LocalAgentServiceImpl {
                     .await
                 {
                     Ok(()) => needs_idle_reset = false,
-                    Err(e) => {
-                        tracing::warn!(node_id, error = %e, "failed to append assistant message");
-                        needs_idle_reset = true;
+                    Err(failure) => {
+                        tracing::warn!(node_id, error = %failure, "failed to append assistant message");
+                        needs_idle_reset = match failure {
+                            // The reply is stored with its record or not at
+                            // all, so nothing of it remains: say so in the
+                            // chat rather than leave the message unanswered.
+                            AppendFailure::NotStored(_) => {
+                                self.post_unsaved_reply_notice(&node_id).await
+                            }
+                            // The reply is stored; only the idle status is
+                            // missing. Nothing to add to the chat.
+                            AppendFailure::StatusNotWritten(_) => true,
+                        };
                     }
                 }
             }
@@ -1268,7 +1278,7 @@ impl LocalAgentServiceImpl {
             ..Default::default()
         });
 
-        if let Err(e) = self
+        if let Err(failure) = self
             .append_assistant_message(
                 node_id,
                 &text,
@@ -1281,14 +1291,33 @@ impl LocalAgentServiceImpl {
             )
             .await
         {
-            tracing::warn!(node_id, error = %e, "failed to append delete confirmation reply");
-            if let Err(e) = self
-                .write_ai_chat_turn_status(node_id, AiChatTurnStatus::Idle)
-                .await
-            {
-                tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
+            tracing::warn!(node_id, error = %failure, "failed to append delete confirmation reply");
+            let needs_idle_reset = match failure {
+                AppendFailure::NotStored(_) => self.post_unsaved_reply_notice(node_id).await,
+                AppendFailure::StatusNotWritten(_) => true,
+            };
+            if needs_idle_reset {
+                if let Err(e) = self
+                    .write_ai_chat_turn_status(node_id, AiChatTurnStatus::Idle)
+                    .await
+                {
+                    tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
+                }
             }
         }
+    }
+
+    /// Say in the chat that a turn's reply could not be stored, which also
+    /// marks the turn finished. Returns whether the chat still needs its
+    /// status reset (the notice itself could not be stored either).
+    ///
+    /// The turn's own writes have already run and the notice carries no
+    /// `wrote` edges, so it says so: neither the user nor the next turn
+    /// should repeat them. The cause stays in the log.
+    async fn post_unsaved_reply_notice(&self, node_id: &str) -> bool {
+        self.append_assistant_message(node_id, UNSAVED_REPLY_NOTICE, AssistantRecord::default())
+            .await
+            .is_err()
     }
 
     /// Title this chat in the background if it still needs one.
@@ -1494,7 +1523,7 @@ impl LocalAgentServiceImpl {
         node_id: &str,
         content: &str,
         record: AssistantRecord<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<(), AppendFailure> {
         let AssistantRecord {
             reasoning,
             completed_writes,
@@ -1519,12 +1548,36 @@ impl LocalAgentServiceImpl {
             },
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppendFailure::NotStored(e.to_string()))?;
 
         self.write_ai_chat_turn_status(node_id, AiChatTurnStatus::Idle)
             .await
+            .map_err(AppendFailure::StatusNotWritten)
     }
 }
+
+/// Why [`LocalAgentServiceImpl::append_assistant_message`] failed: the two
+/// leave the chat in different states.
+#[derive(Debug)]
+enum AppendFailure {
+    /// The reply, with its record, was not stored.
+    NotStored(String),
+    /// The reply is stored; the chat's idle status was not written.
+    StatusNotWritten(String),
+}
+
+impl std::fmt::Display for AppendFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStored(e) => write!(f, "reply not stored: {e}"),
+            Self::StatusNotWritten(e) => write!(f, "reply stored, status not written: {e}"),
+        }
+    }
+}
+
+/// What the chat shows when a turn's reply could not be stored.
+const UNSAVED_REPLY_NOTICE: &str = "This turn's reply could not be saved. Changes it made may \
+     already have been applied, so check before repeating them.";
 
 // ---------------------------------------------------------------------------
 // gRPC trait implementation
@@ -4860,6 +4913,100 @@ mod tests {
     }
 
     // -- Agent-flow (stuck-state) coverage with a stub model ----------------
+
+    /// Make the store refuse `statement`'s trigger body, as a failing write
+    /// would: runs `create trigger` SQL on a second connection to the
+    /// daemon's test database.
+    async fn install_trigger(tempdir: &tempfile::TempDir, sql: &str) {
+        let db = libsql::Builder::new_local(tempdir.path().join("daemon-db"))
+            .build()
+            .await
+            .unwrap();
+        db.connect().unwrap().execute(sql, ()).await.unwrap();
+    }
+
+    /// Refuse every new chat message except the notice that a reply could not
+    /// be saved.
+    const REFUSE_REPLIES: &str = "CREATE TRIGGER refuse_replies BEFORE INSERT ON node \
+         WHEN new.node_type = 'ai-chat-message' AND new.content NOT LIKE '%could not be saved%' \
+         BEGIN SELECT RAISE(ABORT, 'secret database detail'); END";
+
+    /// A turn whose reply cannot be stored says so in the chat: no half-stored
+    /// reply, no raw database error, and the turn still ends idle.
+    #[tokio::test]
+    async fn a_turn_whose_reply_cannot_be_stored_says_so_in_the_chat() {
+        let (svc, node_service, tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("Hello back!")))
+            .await;
+        let node_id = create_processing_node_with_user_message(&node_service, "Hi there").await;
+        install_trigger(&tempdir, REFUSE_REPLIES).await;
+
+        svc.maybe_handle_ai_chat_node(&node_id).await;
+
+        let ai_chat = get_ai_chat(&node_service, &node_id).await;
+        let assistant: Vec<&str> = ai_chat
+            .messages
+            .iter()
+            .filter(|m| m.role == AiChatMessageRole::Assistant)
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(assistant, [UNSAVED_REPLY_NOTICE]);
+        assert!(!assistant[0].contains("secret database detail"));
+        assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
+    }
+
+    /// A reply that is stored but whose idle status could not be written is
+    /// not "unsaved": nothing is added to the chat.
+    #[tokio::test]
+    async fn a_status_write_failure_after_a_stored_reply_posts_no_notice() {
+        let (svc, node_service, tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("Hello back!")))
+            .await;
+        let node_id = create_processing_node_with_user_message(&node_service, "Hi there").await;
+        install_trigger(
+            &tempdir,
+            "CREATE TRIGGER refuse_status BEFORE UPDATE ON node \
+             WHEN old.node_type = 'ai-chat-native' \
+             BEGIN SELECT RAISE(ABORT, 'status refused'); END",
+        )
+        .await;
+
+        svc.maybe_handle_ai_chat_node(&node_id).await;
+
+        let ai_chat = get_ai_chat(&node_service, &node_id).await;
+        let assistant: Vec<&str> = ai_chat
+            .messages
+            .iter()
+            .filter(|m| m.role == AiChatMessageRole::Assistant)
+            .map(|m| m.content.as_str())
+            .collect();
+        assert!(!assistant.contains(&UNSAVED_REPLY_NOTICE), "{assistant:?}");
+        assert_eq!(assistant, ["Hello back!"]);
+
+        let direct = svc
+            .append_assistant_message(&node_id, "Direct", AssistantRecord::default())
+            .await;
+        assert!(matches!(direct, Err(AppendFailure::StatusNotWritten(_))));
+    }
+
+    /// A confirmed delete whose reply cannot be stored still tells the user,
+    /// rather than leaving the chat with no reply.
+    #[tokio::test]
+    async fn a_delete_confirmation_whose_reply_cannot_be_stored_says_so_in_the_chat() {
+        let (svc, node_service, tempdir) = test_service().await;
+        let (chat_id, target_id) = chat_answering_a_delete_confirmation(&node_service, "yes").await;
+        install_trigger(&tempdir, REFUSE_REPLIES).await;
+
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        assert!(!node_exists(&node_service, &target_id).await);
+        let ai_chat = get_ai_chat(&node_service, &chat_id).await;
+        assert_eq!(
+            ai_chat.messages.last().unwrap().content,
+            UNSAVED_REPLY_NOTICE
+        );
+        assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
+    }
 
     #[tokio::test]
     async fn send_message_reaches_idle_with_stub_engine() {
