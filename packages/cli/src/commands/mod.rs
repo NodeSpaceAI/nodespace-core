@@ -16,6 +16,8 @@ pub mod seed;
 pub mod session;
 pub mod skill;
 pub mod uninstall;
+#[cfg(windows)]
+mod uninstall_windows;
 pub mod wait;
 
 /// Fail with `message` when a lookup matched nothing. A reset that found no
