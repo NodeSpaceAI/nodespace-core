@@ -48,7 +48,56 @@ fn unembedded_subtree_child_sql(id_expr: &str) -> String {
     )
 }
 
+/// SQL for "the node `id_expr` is an embedding root": a tree root, a filed
+/// descendant, or a child of a chat. The same three kinds
+/// [`SqliteStore::embedding_root_id`] resolves to, built from the same two
+/// predicates so the two cannot drift apart.
+fn embedding_root_sql(id_expr: &str) -> String {
+    format!(
+        "(NOT EXISTS (SELECT 1 FROM relationship pr0 \
+            WHERE pr0.out_node = {id_expr} AND pr0.relationship_type = 'has_child') \
+          OR {} OR {})",
+        filed_descendant_sql(id_expr),
+        unembedded_subtree_child_sql(id_expr)
+    )
+}
+
 impl SqliteStore {
+    /// One page of embedding roots (see [`embedding_root_sql`]) that hold no
+    /// embedding row at all: not embedded, and not queued either (a queued
+    /// root has a stale marker, a root that used up its retries keeps its
+    /// rows). Archived nodes are left out. Ordered by id; pass the last id of
+    /// the previous page as `after` to read the next one.
+    pub async fn get_unembedded_root_ids(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT n.id FROM node n \
+             WHERE n.id > ?1 AND {} AND {} \
+               AND NOT EXISTS (SELECT 1 FROM embedding e WHERE e.node_id = n.id) \
+             ORDER BY n.id LIMIT ?2",
+            crate::governance::participates_sql("n"),
+            embedding_root_sql("n.id")
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![after.unwrap_or("").to_string(), limit as i64],
+            )
+            .await
+            .context("Failed to get unembedded root IDs")?;
+
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get(0)?);
+        }
+        Ok(ids)
+    }
+
     /// The descendants of embedding root `root_id` that are filed into a
     /// collection of their own (ADR-059 §7). Only the topmost are returned:
     /// each one's subtree is out of the root's vector as a whole, and each one

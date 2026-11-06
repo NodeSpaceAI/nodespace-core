@@ -715,6 +715,86 @@ impl NodeEmbeddingService {
         Ok(())
     }
 
+    /// Queue every embedding root of an embeddable type that has no embedding
+    /// and no stale marker, and return how many were queued.
+    ///
+    /// Embedding roots are the ones [`SqliteStore::embedding_root_id`]
+    /// resolves to: tree roots, filed descendants, and children of a chat.
+    /// Run when the model becomes ready. It heals every way such a root can
+    /// miss embedding (an interrupted run, a model that was not ready, a type
+    /// that became embeddable) without any version check. A queued root has a
+    /// stale marker, so a second run finds it already accounted for.
+    ///
+    /// Cost per run: the database is read in id-ordered pages, one query and
+    /// one batched node read per page, and one batched insert per page that
+    /// has anything to queue. A root that is not embeddable (a task, empty
+    /// content) gets no marker, so it is read again on every run; whether a
+    /// type is embeddable is a behaviour decision, resolved once per type per
+    /// run, not a column the query can filter on.
+    pub async fn queue_unembedded_roots(&self) -> Result<usize, NodeServiceError> {
+        self.queue_unembedded_roots_paged(Self::SWEEP_PAGE).await
+    }
+
+    /// Roots read per page by [`Self::queue_unembedded_roots`].
+    const SWEEP_PAGE: usize = 500;
+
+    /// [`Self::queue_unembedded_roots`] with a chosen page size.
+    pub async fn queue_unembedded_roots_paged(
+        &self,
+        page: usize,
+    ) -> Result<usize, NodeServiceError> {
+        let page = page.max(1);
+        let mut after: Option<String> = None;
+        let mut queued = 0usize;
+        let mut behaviors: HashMap<String, Arc<dyn NodeBehavior>> = HashMap::new();
+
+        loop {
+            let ids = self
+                .store
+                .get_unembedded_root_ids(after.as_deref(), page)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to list unembedded roots: {}",
+                        e
+                    ))
+                })?;
+            let Some(last) = ids.last() else { break };
+            after = Some(last.clone());
+
+            let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let mut to_queue = Vec::new();
+            for node in self.node_accessor.get_nodes(&id_refs).await? {
+                if !behaviors.contains_key(&node.node_type) {
+                    let behavior = self.behavior_for(&node.node_type).await;
+                    behaviors.insert(node.node_type.clone(), behavior);
+                }
+                if behaviors[&node.node_type]
+                    .get_embeddable_content(&node)
+                    .is_some()
+                {
+                    to_queue.push(node.id);
+                }
+            }
+            queued += self
+                .store
+                .create_stale_embedding_markers_bulk(&to_queue)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to create stale markers: {}", e))
+                })?;
+
+            if ids.len() < page {
+                break;
+            }
+        }
+
+        if queued > 0 {
+            tracing::info!("Queued {} unembedded roots for embedding", queued);
+        }
+        Ok(queued)
+    }
+
     /// Queue multiple nodes for embedding
     ///
     /// Efficiently handles multiple nodes by deduplicating roots.

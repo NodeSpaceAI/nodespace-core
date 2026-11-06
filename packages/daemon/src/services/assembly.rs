@@ -926,7 +926,11 @@ async fn wire_database_embeddings_bg(
 
     // Wire up automatic wake-on-change now that the processor exists.
     node_service.set_embedding_waker(processor.waker());
-    // Process any nodes that became stale during the load window.
+    // Queue roots that never got embedded, whatever the cause, then process
+    // everything stale (including nodes that went stale during the load window).
+    if let Err(e) = embedding_service.queue_unembedded_roots().await {
+        tracing::warn!(error = %e, "Failed to queue unembedded roots at startup");
+    }
     processor.wake();
 
     // Publish to both state handles atomically enough for practical purposes.
