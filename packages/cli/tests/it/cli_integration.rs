@@ -2679,13 +2679,13 @@ fn query_run_parses_beside_the_inline_query() {
     assert!(parse(&["nodespace", "query", "--type", "task"]).is_ok());
     assert!(parse(&["nodespace", "query"]).is_err());
     assert!(parse(&["nodespace", "query", "run"]).is_err());
-    assert!(parse(&["nodespace", "query", "run", "Ready tasks"]).is_ok());
-    assert!(parse(&["nodespace", "--json", "query", "run", "Ready tasks"]).is_ok());
+    assert!(parse(&["nodespace", "query", "run", "Awaiting review"]).is_ok());
+    assert!(parse(&["nodespace", "--json", "query", "run", "Awaiting review"]).is_ok());
     assert!(parse(&[
         "nodespace",
         "query",
         "run",
-        "Ready tasks",
+        "Awaiting review",
         "--filters",
         "[]",
         "--limit",
@@ -2693,12 +2693,20 @@ fn query_run_parses_beside_the_inline_query() {
     ])
     .is_ok());
     // A saved query carries its own type and sorting.
-    assert!(parse(&["nodespace", "query", "run", "Ready tasks", "--type", "task"]).is_err());
     assert!(parse(&[
         "nodespace",
         "query",
         "run",
-        "Ready tasks",
+        "Awaiting review",
+        "--type",
+        "task"
+    ])
+    .is_err());
+    assert!(parse(&[
+        "nodespace",
+        "query",
+        "run",
+        "Awaiting review",
         "--sorting",
         "[]"
     ])

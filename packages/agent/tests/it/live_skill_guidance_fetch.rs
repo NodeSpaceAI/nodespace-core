@@ -282,7 +282,7 @@ async fn writing_a_spec_and_implementing_a_ready_task_fetch_their_procedures() {
             "implement the next ready task",
             "Implementing a Task",
             &[
-                "nodespace query run \"Ready tasks\" --with-context --limit 1",
+                "nodespace query --type task --filters",
                 "nodespace node set-status <task-id> in_progress --version <n>",
                 "A VERSION CONFLICT",
                 "nodespace node set-status <task-id> in_review --version <n>",

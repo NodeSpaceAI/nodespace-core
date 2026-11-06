@@ -378,13 +378,13 @@ This is the CLI counterpart of the property-filtering path of the local agent's 
 
 ### Run a saved query
 
-A saved query is a `query` node: a view, or a queue of work such as "Ready tasks", that someone defined once. Run it by its id or its title instead of copying its filters:
+A saved query is a `query` node: a view, or a queue of work such as "Awaiting review", that someone defined once. Run it by its id or its title instead of copying its filters:
 
 ```bash
-nodespace query run "Ready tasks"
+nodespace query run "Awaiting review"
 nodespace query run <query-id>
-nodespace --json query run "Ready tasks" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]' --limit 1
-nodespace --json query run "Ready tasks" --with-context --limit 1    # the next piece of work, whole
+nodespace --json query run "Awaiting review" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]' --limit 1
+nodespace --json query run "Awaiting review" --with-context --limit 1    # the next piece of work, whole
 ```
 
 It returns the nodes the query matches now, with its stored filters, sorting, limit and relative dates, and beside them the skills attached to the query itself.

@@ -30,8 +30,7 @@ use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::{CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use nodespace_core::services::query_service::core_queries::{
     AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, DECISIONS_BY_STATUS_QUERY_ID,
-    IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
-    READY_TO_MERGE_QUERY_ID, SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+    PLANS_BY_STATUS_QUERY_ID, READY_TO_MERGE_QUERY_ID, SPECS_BY_STATUS_QUERY_ID,
 };
 use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 
@@ -39,8 +38,8 @@ use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 /// (ADR-090 §3).
 pub const PLAY_AUTHORING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c";
 
-/// The Implementing a Task skill's fixed id: the procedure of the "Ready
-/// tasks" and "In progress" queues.
+/// The Implementing a Task skill's fixed id: the procedure for doing a task,
+/// found by what it is for.
 pub const IMPLEMENTING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c10";
 
 /// The Reviewing a Task skill's fixed id: the procedure of the "Awaiting
@@ -58,12 +57,12 @@ pub const ASKING_THE_USER_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c15
 /// The Explaining skill's fixed id: Asking the User names it.
 pub const EXPLAINING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c16";
 
-/// The Creating a Task skill's fixed id: the procedure of the "Needs
-/// shaping" queue, and of any task created outside a spec.
+/// The Creating a Task skill's fixed id: the procedure for any task
+/// created outside a spec.
 pub const CREATING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c17";
 
-/// The Answering a Question skill's fixed id: the procedure of the "Waiting
-/// on you" queue.
+/// The Answering a Question skill's fixed id: the procedure for a question
+/// put to the user.
 pub const ANSWERING_A_QUESTION_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c18";
 
 /// The Building and Changing a View skill's fixed id. A chat opened on a saved
@@ -948,15 +947,16 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Implementing a Task
         //
-        // One procedure start to finish, attached to the two queues a task
-        // is in while it is being done, so a task carries it from the moment
-        // it is ready until it is handed over (ADR-094 §3 and §4). Adapted
-        // from `implement`, `implement-spec` and `tdd` (mattpocock/skills,
-        // MIT). Replaces the earlier Implementing a Task in place.
+        // One procedure start to finish, attached to nothing: it has no node
+        // of its own to attach to, and is found by what it is for (ADR-094,
+        // amendment of 2026-11-03). Its first step carries the search for the
+        // ready tasks. Adapted from `implement`, `implement-spec` and `tdd`
+        // (mattpocock/skills, MIT). Replaces the earlier Implementing a Task
+        // in place.
         id: IMPLEMENTING_A_TASK_SKILL_ID,
         title: "Implementing a Task",
         use_for: "Implement a task from the ready queue: take the next ready task, start it, work through its checklist with evidence, record the pull request, and hand it over for review. Use when the user says to pick up the next task, do the ready work, or continue or resume the task in progress.",
-        tools: &["run_query", "get_node_context", "update_task_status", "update_node", "create_node", "get_node", "route_clarify"],
+        tools: &["search_nodes", "get_node_context", "update_task_status", "update_node", "create_node", "get_node", "route_clarify"],
         // A list, a read, a start, and per item a tick and its evidence.
         max_iterations: 40,
         not_for: None,
@@ -966,7 +966,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
             CoreNodeType::Checkbox.as_str(),
             CoreNodeType::Text.as_str(),
         ],
-        attached_to: &[READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID],
+        attached_to: &[],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/implementing-a-task.md"),
     },
@@ -1026,10 +1026,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Creating a Task
         //
         // Adapted from the triage procedure of `mattpocock/skills` (MIT
-        // licensed). The procedure of "Needs shaping", and found by the
-        // skill match whenever work that did not come from a spec is about
-        // to be recorded. Shaping happens here, at creation: nothing is
-        // triaged later.
+        // licensed). Found by the skill match whenever work that did not
+        // come from a spec is about to be recorded. Shaping happens here, at
+        // creation: nothing is triaged later.
         id: CREATING_A_TASK_SKILL_ID,
         title: "Creating a Task",
         use_for: "Record newly found work that has no spec: a bug report, a chore, or a follow-up found in the middle of other work. Check it is not already built or declined, reproduce the bug, and write its brief and checklist so it is ready the moment it exists.",
@@ -1045,24 +1044,25 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
             CoreNodeType::Text.as_str(),
             CoreNodeType::Decision.as_str(),
         ],
-        attached_to: &[NEEDS_SHAPING_QUERY_ID],
+        attached_to: &[],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/creating-a-task.md"),
     },
     SkillSeed {
         // Answering a Question
         //
-        // The procedure of the "Waiting on you" queue (ADR-099). It, and the
-        // spec and plan approvals, are where an agent puts a question to the
+        // The procedure for a question put to the user (ADR-099). Its first
+        // step carries the search for what is waiting. It, and the spec and
+        // plan approvals, are where an agent puts a question to the
         // user and waits: it records their answer and never gives one.
         id: ANSWERING_A_QUESTION_SKILL_ID,
         title: "Answering a Question",
         use_for: "Show what is waiting on the user and record their answer to each question, so the blocked work can go on.",
-        tools: &["run_query", "get_node_context", "get_node", "create_node", "update_task_status", "route_clarify"],
+        tools: &["search_nodes", "get_node_context", "get_node", "create_node", "update_task_status", "route_clarify"],
         max_iterations: 6,
         not_for: None,
         applies_to: &[CoreNodeType::Task.as_str(), CoreNodeType::Text.as_str()],
-        attached_to: &[WAITING_ON_YOU_QUERY_ID],
+        attached_to: &[],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/answering-a-question.md"),
     },
@@ -1120,9 +1120,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Diagnosing a Bug
         //
-        // Attached to "Needs shaping": a defect typed in by hand arrives
-        // there with no reproduction and no cause, which is what the
-        // procedure supplies before the work is shaped. Adapted from
+        // Attached to nothing: a defect typed in by hand arrives with no
+        // reproduction and no cause, which is what the procedure supplies
+        // before the work is shaped. Adapted from
         // `diagnosing-bugs` (mattpocock/skills, MIT).
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c1c",
         title: "Diagnosing a Bug",
@@ -1136,7 +1136,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
             CoreNodeType::Decision.as_str(),
             CoreNodeType::Text.as_str(),
         ],
-        attached_to: &[NEEDS_SHAPING_QUERY_ID],
+        attached_to: &[],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/diagnosing-a-bug.md"),
     },
@@ -1233,7 +1233,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Instrumenting a Change
         //
-        // Attached to "Needs shaping": what to log and measure is written as
+        // Attached to nothing: what to log and measure is written as
         // criteria on a task before it is built. Adapted from
         // `observability-and-instrumentation` (addyosmani/agent-skills, MIT).
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c21",
@@ -1248,7 +1248,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
             CoreNodeType::Checkbox.as_str(),
             CoreNodeType::Text.as_str(),
         ],
-        attached_to: &[NEEDS_SHAPING_QUERY_ID],
+        attached_to: &[],
         role: SkillRole::Procedure,
         body: include_str!("seeds/skills/instrumenting-a-change.md"),
     },

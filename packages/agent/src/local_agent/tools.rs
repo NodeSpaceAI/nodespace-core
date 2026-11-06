@@ -1296,8 +1296,8 @@ fn def_search_nodes() -> ToolDefinition {
                         "properties": {
                             "type": {
                                 "type": "string",
-                                "enum": ["property", "content", "metadata", "relationship"],
-                                "description": "Filter category: 'property' for ANY schema/node field (status, due_date, priority, and all custom schema fields) — use this for status. 'content' for node text. 'metadata' ONLY for the 4 built-in fields created_at, modified_at, node_type, content — NEVER use 'metadata' for status or any schema field, it will fail with 'Invalid metadata field'. 'relationship' for graph edges."
+                                "enum": ["property", "content", "metadata", "relationship", "related", "permitted"],
+                                "description": "Filter category: 'property' for ANY schema/node field (status, due_date, priority, and all custom schema fields) — use this for status. 'content' for node text. 'metadata' ONLY for the 4 built-in fields created_at, modified_at, node_type, content — NEVER use 'metadata' for status or any schema field, it will fail with 'Invalid metadata field'. 'relationship' for graph edges. 'related' for the nodes a path reaches: it needs a 'path' and a nested 'filter'. 'permitted' keeps the nodes for which setting 'property' to 'value' would not be refused by a rule."
                             },
                             "operator": {
                                 "type": "string",
@@ -1373,6 +1373,23 @@ fn def_search_nodes() -> ToolDefinition {
                             "node_id": {
                                 "type": "string",
                                 "description": "For 'relationship' filters: the node the path must reach. {\"path\": [\"child_of\"], \"node_id\": X} selects the children of X."
+                            },
+                            "anchor": {
+                                "type": "string",
+                                "enum": ["current_person"],
+                                "description": "For 'relationship' filters, in place of 'node_id': \"current_person\" is the user of this app."
+                            },
+                            "filter": {
+                                "type": "object",
+                                "description": "For 'related' filters: the filter, with these same fields, that a node reached by 'path' must match."
+                            },
+                            "negate": {
+                                "type": "boolean",
+                                "description": "Set true to keep the nodes this filter does NOT hold for. On a 'related' filter, keep the nodes whose path reaches no node matching the nested 'filter'."
+                            },
+                            "stored": {
+                                "type": "boolean",
+                                "description": "Property filters only. Set true to compare the value each node stores, not the value it reads as at the queried type."
                             }
                         },
                         "required": ["type", "operator"]
@@ -2704,7 +2721,7 @@ fn def_run_query() -> ToolDefinition {
     ToolDefinition {
         name: "run_query".into(),
         description: "Run a saved query the user names — a stored view or queue such as \
-            'Ready tasks' — and return the nodes it currently matches, with the query's own \
+            'Awaiting review' — and return the nodes it currently matches, with the query's own \
             filters, sorting and limit. Name it by its title or its id. Use this only when the \
             user refers to a saved query; to search by title, type or field values yourself, use \
             search_nodes. 'filters' narrows this one run (they are ANDed with the stored filters) \
@@ -2719,7 +2736,7 @@ fn def_run_query() -> ToolDefinition {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The saved query's title (e.g. 'Ready tasks') or its node id"
+                    "description": "The saved query's title (e.g. 'Awaiting review') or its node id"
                 },
                 "filters": {
                     "type": "array",
@@ -14044,7 +14061,38 @@ mod tests {
             ));
         }
 
+        // The exact arguments of a search a procedure carries (`{"node_type": ...`)
+        // state conditions on status, not the vocabulary: "open", "done" and
+        // "cancelled" appear in them as the values the filters compare. They are
+        // left out of the sweep; a list written in the prose around them is not.
+        fn without_search_arguments(text: &str) -> String {
+            let mut out = String::new();
+            let mut rest = text;
+            while let Some(start) = rest.find("{\"node_type\"") {
+                out.push_str(&rest[..start]);
+                let mut depth = 0usize;
+                let mut end = rest.len();
+                for (offset, c) in rest[start..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = start + offset + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rest = &rest[end..];
+            }
+            out.push_str(rest);
+            out
+        }
+
         for (name, text) in guidance {
+            let text = without_search_arguments(&text);
             // Scope to a paragraph first, then to a sentence within it.
             //
             // Splitting the whole text on `.` alone is not sufficient: this

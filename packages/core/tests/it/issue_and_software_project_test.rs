@@ -16,14 +16,14 @@ use nodespace_core::ops::query_ops::{
     execute_query_nodes, run_saved_query_nodes, ExecuteQueryInput, RunSavedQueryInput,
 };
 use nodespace_core::services::query_service::core_queries::{
-    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, IN_PROGRESS_QUERY_ID,
-    READY_TASKS_QUERY_ID, READY_TO_MERGE_QUERY_ID,
+    AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, READY_TO_MERGE_QUERY_ID,
 };
 use nodespace_core::services::NodeServiceError;
 use serde_json::{json, Value};
 use std::time::Duration;
 
 use crate::core_model_plays_test::Harness;
+use crate::core_queries_test::define_removed_queue;
 
 const TASK_NEEDS_LINEAGE: &str = "until that plan is approved and the task is linked";
 const TASK_SPEC_NOT_APPROVED: &str = "none of its specs is approved";
@@ -558,7 +558,8 @@ async fn a_task_query_reads_an_issue_status_as_the_one_it_maps_to() -> Result<()
     // left to "Changes requested". The three queues that follow an issue
     // through review are written against `issue`, so each lists it by the
     // status it stores.
-    assert_eq!(saved_query(&h, IN_PROGRESS_QUERY_ID).await, [task]);
+    let in_progress = define_removed_queue(&h.service, "In progress").await;
+    assert_eq!(saved_query(&h, &in_progress).await, [task]);
     assert_eq!(saved_query(&h, AWAITING_REVIEW_QUERY_ID).await, [reviewing]);
     assert_eq!(saved_query(&h, CHANGES_REQUESTED_QUERY_ID).await, [changes]);
     assert_eq!(saved_query(&h, READY_TO_MERGE_QUERY_ID).await, [ready]);
@@ -587,7 +588,8 @@ async fn ready_tasks_lists_a_ready_issue() -> Result<()> {
         .await?;
     h.child(&started, "checkbox", "- [ ] It works").await?;
 
-    let listed = saved_query(&h, READY_TASKS_QUERY_ID).await;
+    let ready_tasks = define_removed_queue(&h.service, "Ready tasks").await;
+    let listed = saved_query(&h, &ready_tasks).await;
     assert_eq!(listed, [ready]);
     assert!(!listed.contains(&bare) && !listed.contains(&gated) && !listed.contains(&started));
     h.stop().await;

@@ -868,7 +868,7 @@ describe('a session, whichever harness it runs in', () => {
     await session.start('/work/widgets', { sessionId: 'ses_1' });
 
     await session.afterTool(
-      'nodespace --json query run "Ready tasks" --with-context --limit 1',
+      'nodespace --json query run "Awaiting review" --with-context --limit 1',
       JSON.stringify({ items: [{ node: { id: 't1' } }] })
     );
     w.now += 61_000;

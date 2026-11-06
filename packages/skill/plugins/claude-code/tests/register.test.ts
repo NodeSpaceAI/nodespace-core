@@ -779,7 +779,7 @@ describe('the item being worked on', () => {
     const { clock } = host(on, w, {}, '1 item(s):\n\n--- item 1 (context version c1) ---\nid:              t1\ntype:            task')
 
     await $.session.start(START)
-    await $.tool.call(bash('nodespace query run "Ready tasks" --with-context --limit 1'))
+    await $.tool.call(bash('nodespace query run "Awaiting review" --with-context --limit 1'))
     await clock.advance(60_000)
 
     const before = w.calls.length

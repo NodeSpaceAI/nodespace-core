@@ -709,7 +709,8 @@ fn the_wait_commands_parse_with_their_conditions_and_durations() {
     assert_eq!(args.timing.timeout, Duration::from_secs(1800));
     assert_eq!(args.timing.interval, Duration::from_secs(15));
 
-    let cli = parse(&["nodespace", "wait", "query", "Ready tasks"]).expect("a query wait parses");
+    let cli =
+        parse(&["nodespace", "wait", "query", "Awaiting review"]).expect("a query wait parses");
     let nodespace_cli::Command::Wait {
         action: WaitAction::Query(args),
     } = cli.command
@@ -724,12 +725,20 @@ fn the_wait_commands_parse_with_their_conditions_and_durations() {
         "nodespace",
         "wait",
         "query",
-        "Ready tasks",
+        "Awaiting review",
         "--until",
         "not-empty",
     ])
     .expect("not-empty parses");
-    parse(&["nodespace", "wait", "query", "Ready tasks", "--item", "abc"]).expect("--item parses");
+    parse(&[
+        "nodespace",
+        "wait",
+        "query",
+        "Awaiting review",
+        "--item",
+        "abc",
+    ])
+    .expect("--item parses");
     assert!(
         parse(&[
             "nodespace",

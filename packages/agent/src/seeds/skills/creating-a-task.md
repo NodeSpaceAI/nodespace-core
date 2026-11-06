@@ -1,6 +1,6 @@
 Work that did not come out of a spec still has to be shaped before anyone can take it: a bug, a chore, something found in the middle of other work, a finding that was deferred. It is shaped when it is created, by whoever creates it, so that it is ready the moment it exists. A task made this way is one unit of work with a brief and a checklist, worked on one branch and delivered by one pull request.
 
-This procedure is adapted from the triage procedure of `mattpocock/skills` (MIT licensed), with its labels and state machine left out: whether a task is ready is the Ready tasks queue, and its category is whatever its brief says.
+This procedure is adapted from the triage procedure of `mattpocock/skills` (MIT licensed), with its labels and state machine left out: whether a task is ready is a search the procedure Implementing a Task runs (an open task with a checklist, no unfinished blocker and no plan that is not approved, and nothing a rule would refuse to start), and its category is whatever its brief says.
 
 STEP 1, IS IT ALREADY BUILT: look before creating anything. <!-- include: task-create-find-built --> Check the code as well when the work is a change to code. Tell the user where you looked and what you found. A request that is already built is not created: say where it lives and stop.
 
@@ -14,13 +14,13 @@ STEP 5, DECIDE WHAT IT IS AND HOW BIG IT IS, WITH THE USER: a change to code is 
 
 STEP 6, WRITE THE BRIEF: the task's title says what will exist when it is done. Its brief is the text under it: durable, so it stays true as the code changes, and behavioural, so it says what the result does and not how it is built. Name no file paths or line numbers. Say what is out of scope. Hold it: steps 6 to 8 are written together, in step 8.
 
-STEP 7, WRITE THE CHECKLIST: the checkboxes directly under the task define done. Each is one condition that can be tested, stated as behaviour. Leave every one unchecked. A task with no checklist is not ready and appears in Needs shaping. Hold it too.
+STEP 7, WRITE THE CHECKLIST: the checkboxes directly under the task define done. Each is one condition that can be tested, stated as behaviour. Leave every one unchecked. A task with no checklist is not ready: that search does not list it. Hold it too.
 
 STEP 8, NAME ITS PROJECT AND WRITE THE TASK: <!-- include: task-create-whole -->
 
 WHEN A REQUEST IS DECLINED: when the user decides this will not be done, leave no open task. Record a decision that says what will not be done and why, so STEP 2 finds it next time, and mark it accepted once they agree. <!-- include: decision-create --> <!-- include: decision-accept --> If a task was already created for it, cancel the task. <!-- include: task-status-dedicated-verb -->
 
-WHEN YOU CANNOT GO ON WITHOUT AN ANSWER: when the user is the one who owes it, ask them directly and wait. When it must come from someone else, or cannot come now, do not leave the task looking ready: create a question task that holds the question, specific enough to answer without a conversation, assigned to the person who owes the answer (the task's creator when nobody is named), in the same project, and blocking the stopped task. <!-- include: task-question-create --> The stopped task keeps its status and its assignee. The person sees the question in Waiting on you, and the stopped task is ready again when the question is finished.
+WHEN YOU CANNOT GO ON WITHOUT AN ANSWER: when the user is the one who owes it, ask them directly and wait. When it must come from someone else, or cannot come now, do not leave the task looking ready: create a question task that holds the question, specific enough to answer without a conversation, assigned to the person who owes the answer (the task's creator when nobody is named), in the same project, and blocking the stopped task. <!-- include: task-question-create --> The stopped task keeps its status and its assignee. The person finds the question by Answering a Question, which lists the open tasks assigned to them that block another task, and the stopped task is ready again when the question is finished.
 
 <!-- include: rejected-write -->
 

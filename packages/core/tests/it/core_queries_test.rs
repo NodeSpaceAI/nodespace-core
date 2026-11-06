@@ -1,16 +1,21 @@
 //! The saved queries every database is seeded with (ADR-092 §7 and §8): the
-//! three status lists and the five queues, what "Ready tasks" keeps and in
-//! what order, what "Needs shaping" and "Waiting on you" list (ADR-099), and
-//! that a user's edit to one survives a reopen.
+//! three status lists and the three review queues, and that a user's edit to
+//! one survives a reopen.
+//!
+//! It also pins what the four task-level lists that are no longer seeded
+//! mean ("Ready tasks", "In progress", "Needs shaping" and "Waiting on you";
+//! ADR-099). Their definitions are kept in `fixtures/removed_task_queues.json`
+//! and built here as ordinary saved queries, so the conditions a rule or skill
+//! now carries are checked against the behaviour they had.
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::markdown::prepare_nodes_from_template;
+use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
 use nodespace_core::models::{Node, NodeUpdate, QueryFields};
 use nodespace_core::ops::query_ops::{run_saved_query_nodes, RunSavedQueryInput};
 use nodespace_core::services::query_service::core_queries::{
     core_query_templates, AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, CORE_QUERY_IDS,
-    IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID, READY_TO_MERGE_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+    READY_TO_MERGE_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use serde_json::{json, Value};
@@ -27,6 +32,52 @@ async fn test_service() -> Result<(Arc<NodeService>, TempDir)> {
     let temp_dir = TempDir::new()?;
     let service = open(&temp_dir.path().join("test.db")).await?;
     Ok((service, temp_dir))
+}
+
+/// One of the four task-level lists core no longer seeds, built as an
+/// ordinary saved query with the title it had. Returns its node id.
+pub(crate) async fn define_removed_queue(service: &NodeService, title: &str) -> String {
+    let definitions: Value =
+        serde_json::from_str(include_str!("../fixtures/removed_task_queues.json")).unwrap();
+    let definition = &definitions[title];
+    assert!(definition.is_object(), "no removed list titled {title}");
+    let template = NodeTemplate {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: title.to_string(),
+        markdown_content: String::new(),
+        root_node_type: "query".to_string(),
+        root_properties: json!({
+            "target_type": definition["target_type"],
+            "filters": definition["filters"],
+            "sorting": definition["sorting"],
+            "limit": null,
+            "generated_by": "user",
+            "view_config": null,
+        }),
+        child_node_type: None,
+        tier: SeedTier::System,
+    };
+    let id = template.id.clone();
+    let nodes = prepare_nodes_from_template(&template).unwrap();
+    service
+        .seed_nodes_from_templates(vec![nodes])
+        .await
+        .unwrap();
+    id
+}
+
+/// A service holding the four removed lists beside the seeded queries.
+async fn test_service_with_removed_queues() -> Result<(Arc<NodeService>, TempDir)> {
+    let (service, tmp) = test_service().await?;
+    for title in [
+        "Ready tasks",
+        "In progress",
+        "Needs shaping",
+        "Waiting on you",
+    ] {
+        define_removed_queue(&service, title).await;
+    }
+    Ok((service, tmp))
 }
 
 async fn create(service: &NodeService, node_type: &str, content: &str, props: Value) -> String {
@@ -113,7 +164,7 @@ async fn run(service: &Arc<NodeService>, query: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn every_database_is_seeded_with_the_ten_queries_under_their_fixed_ids() -> Result<()> {
+async fn every_database_is_seeded_with_the_six_queries_under_their_fixed_ids() -> Result<()> {
     let (service, _tmp) = test_service().await?;
 
     let mut titles = Vec::new();
@@ -133,15 +184,22 @@ async fn every_database_is_seeded_with_the_ten_queries_under_their_fixed_ids() -
             "Specs by status",
             "Plans by status",
             "Decisions by status",
-            "Ready tasks",
-            "In progress",
             "Awaiting review",
             "Changes requested",
-            "Ready to merge",
-            "Needs shaping",
-            "Waiting on you"
+            "Ready to merge"
         ]
     );
+
+    // Nothing task-level is seeded: those lists are filters a procedure carries.
+    assert_eq!(CORE_QUERY_IDS.len(), 6);
+    for title in [
+        "Ready tasks",
+        "In progress",
+        "Needs shaping",
+        "Waiting on you",
+    ] {
+        assert!(!titles.iter().any(|t| t == title), "{title} is seeded");
+    }
 
     // They are what a listing of saved queries returns, and nothing else is.
     let mut listed: Vec<String> = service
@@ -162,7 +220,7 @@ async fn every_database_is_seeded_with_the_ten_queries_under_their_fixed_ids() -
 #[tokio::test]
 async fn ready_tasks_keeps_an_open_unblocked_task_with_a_checklist_and_no_unapproved_plan(
 ) -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
 
     // Ready: a checklist, no blocker, no plan.
     ready_task(&service, "ready", json!({})).await;
@@ -202,7 +260,7 @@ async fn ready_tasks_keeps_an_open_unblocked_task_with_a_checklist_and_no_unappr
 
 #[tokio::test]
 async fn ready_tasks_are_ordered_by_priority_then_by_creation_time() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
 
     ready_task(&service, "low", json!({ "priority": "low" })).await;
     ready_task(&service, "first high", json!({ "priority": "high" })).await;
@@ -210,7 +268,7 @@ async fn ready_tasks_are_ordered_by_priority_then_by_creation_time() -> Result<(
     ready_task(&service, "second high", json!({ "priority": "high" })).await;
 
     assert_eq!(
-        run(&service, READY_TASKS_QUERY_ID).await,
+        run(&service, "Ready tasks").await,
         ["highest", "first high", "second high", "low"]
     );
     Ok(())
@@ -219,13 +277,13 @@ async fn ready_tasks_are_ordered_by_priority_then_by_creation_time() -> Result<(
 /// A task is in exactly the queue of the stage it is in.
 #[tokio::test]
 async fn a_task_moves_from_queue_to_queue_with_its_status() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
     let task = ready_task(&service, "the task", json!({})).await;
-    let queues = [READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID];
+    let queues = ["Ready tasks", "In progress"];
 
     for (status, queue) in [
-        ("open", Some(READY_TASKS_QUERY_ID)),
-        ("in_progress", Some(IN_PROGRESS_QUERY_ID)),
+        ("open", Some("Ready tasks")),
+        ("in_progress", Some("In progress")),
         // A plain task in review is in no queue: Awaiting review lists issues.
         ("in_review", None),
         ("cancelled", None),
@@ -250,18 +308,18 @@ async fn a_task_moves_from_queue_to_queue_with_its_status() -> Result<()> {
 /// stored value to leave the issue to "Changes requested" alone.
 #[tokio::test]
 async fn an_issue_is_in_the_review_queue_of_the_status_it_stores() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
     let issue = create(&service, "issue", "the issue", json!({})).await;
     create_child(&service, &issue, "checkbox", "- [x] It works").await;
     let queues = [
-        IN_PROGRESS_QUERY_ID,
+        "In progress",
         AWAITING_REVIEW_QUERY_ID,
         CHANGES_REQUESTED_QUERY_ID,
         READY_TO_MERGE_QUERY_ID,
     ];
 
     for (status, queue) in [
-        ("in_progress", Some(IN_PROGRESS_QUERY_ID)),
+        ("in_progress", Some("In progress")),
         ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
         ("changes_requested", Some(CHANGES_REQUESTED_QUERY_ID)),
         ("in_review", Some(AWAITING_REVIEW_QUERY_ID)),
@@ -323,7 +381,7 @@ async fn another_person(service: &NodeService) -> String {
 /// in by hand, and leaves out a task that has a checklist or has moved on.
 #[tokio::test]
 async fn needs_shaping_lists_an_open_task_with_no_checklist() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
 
     create(&service, "task", "typed by hand", json!({})).await;
     let notes_only = create(&service, "task", "notes only", json!({})).await;
@@ -365,7 +423,7 @@ async fn needs_shaping_lists_an_open_task_with_no_checklist() -> Result<()> {
 /// the question for the person it is assigned to and for nobody else.
 #[tokio::test]
 async fn a_question_task_stops_the_task_it_blocks_and_waits_on_you() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
     let me = service.get_local_person().await?.unwrap().id;
     let teammate = another_person(&service).await;
 
@@ -400,7 +458,7 @@ async fn a_question_task_stops_the_task_it_blocks_and_waits_on_you() -> Result<(
     let ready = run(&service, "Ready tasks").await;
     assert!(!ready.contains(&"the work".to_string()), "{ready:?}");
     assert_eq!(
-        run(&service, WAITING_ON_YOU_QUERY_ID).await,
+        run(&service, "Waiting on you").await,
         ["Which provider do we use?"]
     );
 
@@ -408,7 +466,7 @@ async fn a_question_task_stops_the_task_it_blocks_and_waits_on_you() -> Result<(
     // is completed. The other question still blocks.
     create_child(&service, &question, "text", "Use the hosted one.").await;
     set(&service, &question, json!({ "status": "done" })).await;
-    assert!(run(&service, WAITING_ON_YOU_QUERY_ID).await.is_empty());
+    assert!(run(&service, "Waiting on you").await.is_empty());
     assert!(!run(&service, "Ready tasks")
         .await
         .contains(&"the work".to_string()));
@@ -428,7 +486,7 @@ async fn a_question_task_stops_the_task_it_blocks_and_waits_on_you() -> Result<(
 /// cancelled blocker no longer blocks, so the stopped task is ready again.
 #[tokio::test]
 async fn a_cancelled_question_no_longer_blocks() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
     let me = service.get_local_person().await?.unwrap().id;
 
     let work = ready_task(&service, "the work", json!({})).await;
@@ -441,7 +499,7 @@ async fn a_cancelled_question_no_longer_blocks() -> Result<()> {
         .all(|t| t != "the work"));
 
     set(&service, &question, json!({ "status": "cancelled" })).await;
-    assert!(run(&service, WAITING_ON_YOU_QUERY_ID).await.is_empty());
+    assert!(run(&service, "Waiting on you").await.is_empty());
     assert!(run(&service, "Ready tasks")
         .await
         .contains(&"the work".to_string()));
@@ -452,12 +510,12 @@ async fn a_cancelled_question_no_longer_blocks() -> Result<()> {
 /// a question: "Waiting on you" is for what is holding something up.
 #[tokio::test]
 async fn waiting_on_you_leaves_out_a_task_that_blocks_nothing() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
+    let (service, _tmp) = test_service_with_removed_queues().await?;
     let me = service.get_local_person().await?.unwrap().id;
 
     let mine = ready_task(&service, "my own work", json!({})).await;
     assign(&service, &me, &mine).await;
-    assert!(run(&service, WAITING_ON_YOU_QUERY_ID).await.is_empty());
+    assert!(run(&service, "Waiting on you").await.is_empty());
     Ok(())
 }
 
@@ -471,21 +529,21 @@ async fn an_edited_query_survives_a_reopen_and_a_reset_restores_it() -> Result<(
 
     {
         let service = open(&path).await?;
-        set(&service, READY_TASKS_QUERY_ID, json!({ "limit": 3 })).await;
+        set(&service, AWAITING_REVIEW_QUERY_ID, json!({ "limit": 3 })).await;
     }
 
     let service = open(&path).await?;
-    let edited = service.get_node(READY_TASKS_QUERY_ID).await?.unwrap();
+    let edited = service.get_node(AWAITING_REVIEW_QUERY_ID).await?.unwrap();
     assert_eq!(limit(&edited), Some(3));
 
     let template = core_query_templates()
         .into_iter()
-        .find(|template| template.id == READY_TASKS_QUERY_ID)
+        .find(|template| template.id == AWAITING_REVIEW_QUERY_ID)
         .unwrap();
     service
         .reset_seed_node(&prepare_nodes_from_template(&template)?, true, false)
         .await?;
-    let reset = service.get_node(READY_TASKS_QUERY_ID).await?.unwrap();
+    let reset = service.get_node(AWAITING_REVIEW_QUERY_ID).await?.unwrap();
     assert_eq!(limit(&reset), None);
     assert_eq!(
         QueryFields::from_node(&reset)?.filters,

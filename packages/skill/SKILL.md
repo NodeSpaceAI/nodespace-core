@@ -127,11 +127,11 @@ NODESPACE_DATABASE=work nodespace search "meeting notes"
 ```
 
 **Running a saved query.** A saved query is a view or a queue of work someone
-defined once ("Ready tasks"). Run it by its id or title; do not copy its filters:
+defined once ("Awaiting review"). Run it by its id or title; do not copy its filters:
 
 ```bash
-nodespace query run "Ready tasks"
-nodespace query run "Ready tasks" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]'
+nodespace query run "Awaiting review"
+nodespace query run "Awaiting review" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]'
 ```
 
 `--filters` narrows that one run: the filters are ANDed with the stored ones and
@@ -147,7 +147,7 @@ It follows the context paths the node's type declares (`context_paths` in
 ```bash
 nodespace node context <task-id>
 nodespace node context <task-id> --path project
-nodespace query run "Ready tasks" --with-context --limit 1   # the next item, read the same way
+nodespace query run "Awaiting review" --with-context --limit 1   # the next item, read the same way
 ```
 
 `query run --with-context` returns each item that way, with every skill printed

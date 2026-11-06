@@ -102,17 +102,40 @@ describe('NavigationSidebar — saved queries under Types and Views', () => {
     ]);
   });
 
-  it('does not list the seeded agent-helper queries but lists a user query on the same type', async () => {
+  it('lists every seeded query under its type, with a user query beside them', async () => {
     setBackendQueries([
-      ['138b68c6-9a67-4fed-8fa5-993953158f59', 'Ready tasks', 'task'],
-      ['bb611c45-2b82-47dd-ad53-560ec9b5447f', 'Needs shaping', 'task'],
-      ['user-q', 'My tasks', 'task']
+      ['3b9c304f-f480-4f1d-8653-5876bb005f7c', 'Specs by status', 'spec'],
+      ['ae79002e-913c-448d-8cc1-95912f2ab2f8', 'Plans by status', 'plan'],
+      ['d0200c59-7df9-4bc0-bc78-b06d205b085c', 'Decisions by status', 'decision'],
+      ['3eff80e8-9672-4896-ac0b-76a169062511', 'Awaiting review', 'issue'],
+      ['6a1f0c52-8b47-4d3e-9a15-c2e07d4b8f13', 'Changes requested', 'issue'],
+      ['e47b9d20-35a6-4c81-b0f2-91d8a65c3e74', 'Ready to merge', 'issue'],
+      ['user-q', 'My issues', 'issue']
     ]);
-    backend.schemas = [makeSchema('task', 'Task', true)];
+    backend.schemas = [
+      makeSchema('spec', 'Spec', true),
+      makeSchema('plan', 'Plan', true),
+      makeSchema('decision', 'Decision', true),
+      makeSchema('issue', 'Issue', true)
+    ];
 
     const { container } = render(NavigationSidebar);
 
-    await waitFor(() => expect(rows(container)).toEqual(['Task', 'My tasks']));
+    await waitFor(() =>
+      expect(rows(container)).toEqual([
+        'Spec',
+        'Specs by status',
+        'Plan',
+        'Plans by status',
+        'Decision',
+        'Decisions by status',
+        'Issue',
+        'Awaiting review',
+        'Changes requested',
+        'My issues',
+        'Ready to merge'
+      ])
+    );
   });
 
   it('opens the query when a saved query is clicked, and the type Default view when the type is clicked', async () => {
