@@ -1038,6 +1038,99 @@ mod tests {
         }
     }
 
+    /// The rules whose shipped-skill form puts a whole markdown document into
+    /// `--content` of `node create`.
+    const DOCUMENT_CREATE_RULES: &[&str] = &[
+        "node-creation-steps",
+        "task-create-whole",
+        "decision-create",
+        "task-breakdown-create",
+        "section-create",
+        "checkbox-item-create",
+        "bulk-import-steps",
+    ];
+
+    /// A rule of either kind, as `(imperative, prose)`.
+    fn forms_of(id: &str) -> (&'static str, &'static str) {
+        PROCEDURE_RULES
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| (r.imperative, r.prose))
+            .or_else(|| {
+                INTERACTION_RULES
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| (r.imperative, r.prose))
+            })
+            .unwrap_or_else(|| panic!("rule {id} is registered"))
+    }
+
+    /// A document create names the command for its form: the shipped skill
+    /// says `nodespace node create --type <type> --content "<document>"`,
+    /// and the in-app agent keeps its own tools and never sees the command.
+    #[test]
+    fn a_document_create_names_the_command_for_each_form() {
+        for id in DOCUMENT_CREATE_RULES {
+            let (imperative, prose) = forms_of(id);
+            assert!(
+                prose.contains("--content \"<document>\"")
+                    || prose.contains("`--content` as a markdown document")
+                    || prose.contains("markdown document of `--content`")
+                    || prose.contains("markdown document in `--content`"),
+                "cli {id} does not name the document form of --content"
+            );
+            assert!(
+                !imperative.contains("nodespace ") && !imperative.contains("--content"),
+                "local {id} names a CLI command"
+            );
+            assert!(
+                !prose.contains("create_nodes_from_markdown"),
+                "cli {id} names an in-app tool"
+            );
+        }
+        assert!(
+            forms_of("bulk-import-steps")
+                .0
+                .contains("create_nodes_from_markdown"),
+            "the in-app import keeps its own tool"
+        );
+        let call = forms_of("node-creation-steps").1;
+        assert!(call.contains("nodespace node create --type <type> --content \"<document>\""));
+    }
+
+    /// No CLI-form body tells an agent to store a whole document in
+    /// `--content` without saying the first line is the title, that a bad one
+    /// is refused, and what to do when the daemon is older than the CLI.
+    #[test]
+    fn a_cli_document_create_carries_the_title_rule_and_the_skew_rule() {
+        for (id, text) in PROCEDURE_RULES
+            .iter()
+            .map(|r| (r.id, r.prose))
+            .chain(INTERACTION_RULES.iter().map(|r| (r.id, r.prose)))
+        {
+            let stores_a_document = text.contains("<document>")
+                || text.contains("markdown document in `--content`")
+                || text.contains("markdown document of `--content`");
+            if !stores_a_document {
+                continue;
+            }
+            for needle in ["first line", "update NodeSpace", "unimplemented"] {
+                assert!(
+                    text.contains(needle),
+                    "cli {} stores a document in --content without {needle:?}",
+                    id
+                );
+            }
+            if !matches!(id, "section-create" | "checkbox-item-create") {
+                assert!(
+                    text.contains("code fence") && text.contains("nothing created"),
+                    "cli {} does not say a bad first line is refused",
+                    id
+                );
+            }
+        }
+    }
+
     /// Every form of every rule, of every kind, as `(id, text)`.
     fn every_rule_form() -> impl Iterator<Item = (&'static str, &'static str)> {
         anchored_rules()
