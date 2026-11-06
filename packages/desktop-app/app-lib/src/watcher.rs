@@ -405,6 +405,9 @@ fn emit_relationship<R: Runtime>(
     emit_routed(app, name, &payload, target);
 }
 
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod held_start_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
