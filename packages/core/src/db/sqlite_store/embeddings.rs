@@ -319,6 +319,42 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// One page of tree roots that hold no embedding row at all: not
+    /// embedded, and not queued either (a queued root has a stale marker, a
+    /// root that used up its retries keeps its rows). Archived nodes are left
+    /// out. Ordered by id; pass the last id of the previous page as `after`
+    /// to read the next one.
+    pub async fn get_unembedded_root_ids(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT n.id FROM node n \
+             WHERE n.id > ?1 AND {} \
+               AND NOT EXISTS (SELECT 1 FROM relationship r \
+                   WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
+               AND NOT EXISTS (SELECT 1 FROM embedding e WHERE e.node_id = n.id) \
+             ORDER BY n.id LIMIT ?2",
+            crate::governance::participates_sql("n")
+        );
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![after.unwrap_or("").to_string(), limit as i64],
+            )
+            .await
+            .context("Failed to get unembedded root IDs")?;
+
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get(0)?);
+        }
+        Ok(ids)
+    }
+
     pub async fn get_stale_embedding_root_ids(
         &self,
         limit: Option<i64>,

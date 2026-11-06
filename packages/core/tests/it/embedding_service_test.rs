@@ -2964,3 +2964,91 @@ async fn test_search_semantic_enumerate_lists_the_newest_first() -> Result<()> {
     assert_eq!(listed, vec![newer.id.as_str(), older.id.as_str()]);
     Ok(())
 }
+
+// =========================================================================
+// Startup sweep: queue roots that were never embedded
+// =========================================================================
+
+/// Roots of embeddable types with no embedding and no stale marker are
+/// queued once; nothing else is, and a second run queues nothing again.
+#[tokio::test]
+async fn test_queue_unembedded_roots_queues_each_once() -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let mut expected = Vec::new();
+    for node_type in ["decision", "spec", "plan"] {
+        expected.push(
+            create_root_node(&node_service, node_type, "Storage choice")
+                .await?
+                .id,
+        );
+    }
+
+    // Not queued: a child of an embeddable root, a non-embeddable root, and a
+    // root that is already queued.
+    let child = create_child_node(&node_service, &expected[0], "text", "Rationale").await?;
+    let task = create_root_node(&node_service, "task", "Do something").await?;
+    let already = create_root_node(&node_service, "text", "Already queued").await?;
+
+    // The decision, spec and plan are in the database with no embedding row,
+    // whatever created them.
+    for id in &expected {
+        store.delete_embeddings(id).await?;
+    }
+    store.delete_embeddings(&child.id).await?;
+    store.delete_embeddings(&task.id).await?;
+    store.delete_embeddings(&already.id).await?;
+    embedding_service.queue_for_embedding(&already.id).await?;
+    let marker_before = store.get_embeddings(&already.id).await?;
+    assert_eq!(marker_before.len(), 1);
+
+    let queued = embedding_service.queue_unembedded_roots().await?;
+    assert_eq!(queued, 3, "exactly the three unembedded roots are queued");
+
+    let stale = store.get_stale_embedding_root_ids(None, 0, 3).await?;
+    for id in expected.iter().chain([&already.id]) {
+        assert!(stale.contains(id), "{id} should be queued");
+    }
+    assert!(!store.has_embeddings(&child.id).await?);
+    assert!(!store.has_embeddings(&task.id).await?);
+
+    // A second start finds every root already accounted for.
+    let again = embedding_service.queue_unembedded_roots().await?;
+    assert_eq!(again, 0, "roots already queued are not queued again");
+    let marker_after = store.get_embeddings(&already.id).await?;
+    assert_eq!(marker_after[0].id, marker_before[0].id);
+    Ok(())
+}
+
+/// A root that is already embedded is left alone.
+#[tokio::test]
+async fn test_queue_unembedded_roots_skips_embedded_roots() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+    let root = create_root_node(&node_service, "decision", "Embedded already").await?;
+    store.delete_embeddings(&root.id).await?;
+    store
+        .upsert_embeddings(
+            &root.id,
+            vec![NewEmbedding::chunk(
+                &root.id,
+                vec![0.1; 768],
+                nodespace_core::models::ChunkInfo {
+                    chunk_index: 0,
+                    chunk_start: 0,
+                    chunk_end: 10,
+                    total_chunks: 1,
+                },
+                "hash",
+                3,
+            )],
+            chrono::Utc::now(),
+        )
+        .await?;
+
+    assert_eq!(embedding_service.queue_unembedded_roots().await?, 0);
+    let stale = store.get_stale_embedding_root_ids(None, 0, 3).await?;
+    assert!(!stale.contains(&root.id));
+    Ok(())
+}

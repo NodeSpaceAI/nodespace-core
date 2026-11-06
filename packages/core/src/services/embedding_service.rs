@@ -715,6 +715,61 @@ impl NodeEmbeddingService {
         Ok(())
     }
 
+    /// Queue every root of an embeddable type that has no embedding and no
+    /// stale marker, and return how many were queued.
+    ///
+    /// Run when the model becomes ready. It heals every way a root can miss
+    /// embedding (an interrupted run, a model that was not ready, a type that
+    /// became embeddable) without any version check. A root that is queued
+    /// gets a stale marker, so a second run finds it already accounted for.
+    /// Reads the database in id-ordered pages, one query and one batched node
+    /// read per page, and writes one batched insert per page.
+    pub async fn queue_unembedded_roots(&self) -> Result<usize, NodeServiceError> {
+        const PAGE: usize = 500;
+        let mut after: Option<String> = None;
+        let mut queued = 0usize;
+
+        loop {
+            let ids = self
+                .store
+                .get_unembedded_root_ids(after.as_deref(), PAGE)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to list unembedded roots: {}",
+                        e
+                    ))
+                })?;
+            let Some(last) = ids.last() else { break };
+            after = Some(last.clone());
+
+            let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let mut to_queue = Vec::new();
+            for node in self.node_accessor.get_nodes(&id_refs).await? {
+                let behavior = self.behavior_for(&node.node_type).await;
+                if behavior.get_embeddable_content(&node).is_some() {
+                    to_queue.push(node.id);
+                }
+            }
+            queued += self
+                .store
+                .create_stale_embedding_markers_bulk(&to_queue)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to create stale markers: {}", e))
+                })?;
+
+            if ids.len() < PAGE {
+                break;
+            }
+        }
+
+        if queued > 0 {
+            tracing::info!("Queued {} unembedded roots for embedding", queued);
+        }
+        Ok(queued)
+    }
+
     /// Queue multiple nodes for embedding
     ///
     /// Efficiently handles multiple nodes by deduplicating roots.
