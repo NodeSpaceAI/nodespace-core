@@ -773,7 +773,6 @@ async fn open_pipe_when_free(
 #[cfg(windows)]
 fn pipe_channel_lazy(pipe: &str, hold: StartupHold) -> Channel {
     use hyper_util::rt::TokioIo;
-    use tokio::net::windows::named_pipe::ClientOptions;
     use tonic::transport::{Endpoint, Uri};
     use tower::service_fn;
 
@@ -782,12 +781,20 @@ fn pipe_channel_lazy(pipe: &str, hold: StartupHold) -> Channel {
         move |_: Uri| {
             let pipe = pipe.clone();
             let hold = hold.clone();
-            async move {
-                hold.wait().await?;
-                ClientOptions::new().open(&pipe).map(TokioIo::new)
-            }
+            async move { open_pipe_after_hold(&pipe, &hold).await.map(TokioIo::new) }
         },
     ))
+}
+
+/// Waits for `hold` to release, then opens `pipe`, waiting out a busy pipe
+/// ([`open_pipe_when_free`]) like the eager channel does.
+#[cfg(windows)]
+async fn open_pipe_after_hold(
+    pipe: &str,
+    hold: &StartupHold,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    hold.wait().await?;
+    open_pipe_when_free(pipe).await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -884,8 +891,11 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{resolve_pipe_name, resolve_socket_path};
+    use super::StartupHold;
+    use super::{open_pipe_after_hold, resolve_pipe_name, resolve_socket_path, ERROR_PIPE_BUSY};
     use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
 
     /// Both tests below mutate `NODESPACED_SOCKET`, which is process-global, so
     /// serialize them — unlike the unix module's pair, these two genuinely race
@@ -925,6 +935,43 @@ mod windows_tests {
             Some(v) => std::env::set_var("NODESPACED_SOCKET", v),
             None => std::env::remove_var("NODESPACED_SOCKET"),
         }
+    }
+
+    /// The lazy channel's connector must wait out a busy pipe: with the only
+    /// instance taken, a dial fails with `ERROR_PIPE_BUSY`, and the connector
+    /// succeeds once the daemon's next instance appears.
+    #[tokio::test]
+    async fn lazy_pipe_open_retries_a_busy_pipe() {
+        let pipe = format!(r"\\.\pipe\ns-busy-test-{}", std::process::id());
+
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&pipe)
+            .expect("create first instance");
+        let _taken = ClientOptions::new().open(&pipe).expect("take the instance");
+        first.connect().await.expect("accept");
+
+        let busy = ClientOptions::new()
+            .open(&pipe)
+            .err()
+            .expect("pipe is busy");
+        assert_eq!(busy.raw_os_error(), Some(ERROR_PIPE_BUSY));
+
+        let next_pipe = pipe.clone();
+        let next = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            ServerOptions::new()
+                .create(&next_pipe)
+                .expect("create next instance")
+        });
+
+        let client = open_pipe_after_hold(&pipe, &StartupHold::released()).await;
+        assert!(
+            client.is_ok(),
+            "lazy open must outlast a busy pipe: {:?}",
+            client.err()
+        );
+        drop(next.await.expect("next instance task"));
     }
 
     #[test]
