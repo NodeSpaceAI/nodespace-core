@@ -4265,9 +4265,11 @@ mod launch_agent_label_tests {
 /// instead of shipping silently, the way it did the first time.
 #[cfg(test)]
 mod sidecar_path_tests {
+    #[cfg(unix)]
+    use super::daemon_program_paths;
     use super::{
-        bundled_sidecar_name, daemon_install, daemon_install_for, daemon_program_paths,
-        sidecar_install_path, sidecar_path_from_exe,
+        bundled_sidecar_name, daemon_install, daemon_install_for, sidecar_install_path,
+        sidecar_path_from_exe,
     };
     use std::path::Path;
 
@@ -6049,6 +6051,7 @@ mod bundle_marker_tests {
         assert!(record_bundle_marker(dir.path(), &wrong_dir).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_recorded_path_is_canonicalized() {
         let dir = tempfile::tempdir().unwrap();
