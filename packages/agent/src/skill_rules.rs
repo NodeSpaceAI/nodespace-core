@@ -1038,6 +1038,143 @@ mod tests {
         }
     }
 
+    /// The rules whose shipped-skill form puts a whole markdown document into
+    /// `--content` of `node create`.
+    const DOCUMENT_CREATE_RULES: &[&str] = &[
+        "node-creation-steps",
+        "task-create-whole",
+        "decision-create",
+        "task-breakdown-create",
+        "section-create",
+        "checkbox-item-create",
+        "bulk-import-steps",
+    ];
+
+    /// A rule of either kind, as `(imperative, prose)`.
+    fn forms_of(id: &str) -> (&'static str, &'static str) {
+        PROCEDURE_RULES
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| (r.imperative, r.prose))
+            .or_else(|| {
+                INTERACTION_RULES
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| (r.imperative, r.prose))
+            })
+            .unwrap_or_else(|| panic!("rule {id} is registered"))
+    }
+
+    /// A document create names the command for its form: the shipped skill
+    /// says `nodespace node create --type <type> --content '<document>'`
+    /// (or, for the two rules that add to a create, the single-quoted
+    /// document of `--content`), and the in-app agent keeps its own tools and
+    /// never sees the command.
+    #[test]
+    fn a_document_create_names_the_command_for_each_form() {
+        const PHRASING: &[(&str, &str)] = &[
+            ("node-creation-steps", "--content '<document>'"),
+            ("task-create-whole", "--content '<document>'"),
+            ("decision-create", "--content '<document>'"),
+            ("task-breakdown-create", "--content '<document>'"),
+            ("bulk-import-steps", "--content '<document>'"),
+            ("section-create", "markdown document in `--content`"),
+            ("checkbox-item-create", "markdown document of `--content`"),
+        ];
+        assert_eq!(PHRASING.len(), DOCUMENT_CREATE_RULES.len());
+        for (id, phrase) in PHRASING {
+            let (imperative, prose) = forms_of(id);
+            assert!(
+                prose.contains(phrase),
+                "cli {id} does not name the document form {phrase:?}"
+            );
+            assert!(
+                !prose.contains("--content \"<document>\""),
+                "cli {id} double-quotes the document"
+            );
+            assert!(
+                !imperative.contains("nodespace ") && !imperative.contains("--content"),
+                "local {id} names a CLI command"
+            );
+            assert!(
+                !prose.contains("create_nodes_from_markdown"),
+                "cli {id} names an in-app tool"
+            );
+        }
+        assert!(
+            forms_of("bulk-import-steps")
+                .0
+                .contains("create_nodes_from_markdown"),
+            "the in-app import keeps its own tool"
+        );
+        let call = forms_of("node-creation-steps").1;
+        assert!(call.contains("nodespace node create --type <type> --content '<document>'"));
+    }
+
+    /// No CLI-form body, nor the shipped skill files, tells an agent to store
+    /// a whole document in `--content` without the title rule, the quoting
+    /// rule and the version-skew rule.
+    #[test]
+    fn a_cli_document_create_carries_the_title_rule_and_the_skew_rule() {
+        // The one paragraph of each shipped file that teaches the document
+        // create, so a rule stated elsewhere in the file cannot stand in.
+        let paragraph = |file: &'static str, marker: &str| -> &'static str {
+            file.lines()
+                .find(|l| l.contains(marker))
+                .unwrap_or_else(|| panic!("no paragraph has {marker:?}"))
+        };
+        let skill_files = [
+            (
+                "SKILL.md",
+                paragraph(
+                    include_str!("../../skill/SKILL.md"),
+                    "A multi-block markdown `--content` is a document",
+                ),
+            ),
+            (
+                "references/cli.md",
+                paragraph(
+                    include_str!("../../skill/references/cli.md"),
+                    "One call is enough for a document",
+                ),
+            ),
+        ];
+        let mut checked = 0;
+        for (id, text) in PROCEDURE_RULES
+            .iter()
+            .map(|r| (r.id, r.prose))
+            .chain(INTERACTION_RULES.iter().map(|r| (r.id, r.prose)))
+            .chain(skill_files)
+        {
+            let stores_a_document = text.contains("<document>")
+                || text.contains("markdown document in `--content`")
+                || text.contains("markdown document of `--content`")
+                || text.contains("A multi-block markdown `--content` is a document");
+            if !stores_a_document {
+                continue;
+            }
+            checked += 1;
+            for needle in [
+                "first line",
+                "update NodeSpace",
+                "nimplemented",
+                "ingle-quote",
+            ] {
+                assert!(
+                    text.contains(needle),
+                    "{id} stores a document in --content without {needle:?}"
+                );
+            }
+            if !matches!(id, "section-create" | "checkbox-item-create" | "SKILL.md") {
+                assert!(
+                    text.contains("code fence") && text.contains("nothing created"),
+                    "{id} does not say a bad first line is refused"
+                );
+            }
+        }
+        assert!(checked >= DOCUMENT_CREATE_RULES.len() + 2, "{checked}");
+    }
+
     /// Every form of every rule, of every kind, as `(id, text)`.
     fn every_rule_form() -> impl Iterator<Item = (&'static str, &'static str)> {
         anchored_rules()
