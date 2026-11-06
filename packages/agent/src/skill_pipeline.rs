@@ -57,12 +57,12 @@ pub const ASKING_THE_USER_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c15
 /// The Explaining skill's fixed id: Asking the User names it.
 pub const EXPLAINING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c16";
 
-/// The Creating a Task skill's fixed id: the procedure of the "Needs
-/// shaping" queue, and of any task created outside a spec.
+/// The Creating a Task skill's fixed id: the procedure for any task
+/// created outside a spec.
 pub const CREATING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c17";
 
-/// The Answering a Question skill's fixed id: the procedure of the "Waiting
-/// on you" queue.
+/// The Answering a Question skill's fixed id: the procedure for a question
+/// put to the user.
 pub const ANSWERING_A_QUESTION_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c18";
 
 /// The Building and Changing a View skill's fixed id. A chat opened on a saved
@@ -1027,8 +1027,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         //
         // Adapted from the triage procedure of `mattpocock/skills` (MIT
         // licensed). Found by the skill match whenever work that did not
-        // come from a spec is about to be recorded. Shaping happens here, at creation: nothing is
-        // triaged later.
+        // come from a spec is about to be recorded. Shaping happens here, at
+        // creation: nothing is triaged later.
         id: CREATING_A_TASK_SKILL_ID,
         title: "Creating a Task",
         use_for: "Record newly found work that has no spec: a bug report, a chore, or a follow-up found in the middle of other work. Check it is not already built or declined, reproduce the bug, and write its brief and checklist so it is ready the moment it exists.",

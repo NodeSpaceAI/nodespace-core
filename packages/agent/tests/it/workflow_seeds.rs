@@ -2142,6 +2142,8 @@ async fn the_waiting_search_returns_what_the_removed_list_returned() {
 /// Seeded skills whose text names a tool their `tools` list does not hold,
 /// as they shipped before this check: each is a pair of skill title and tool.
 /// A skill is not added here; one that is fixed is taken off.
+/// Some entries are negative mentions (a prohibition such as "do NOT use
+/// update_node"), not calls.
 const NAMED_WITHOUT_BEING_LISTED: &[(&str, &str)] = &[
     ("Node Creation", "create_schema"),
     ("Node Creation", "update_schema"),
