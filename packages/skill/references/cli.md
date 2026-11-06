@@ -139,14 +139,26 @@ A collection is identified by its name (case-insensitive): `node create --type c
 
 **If it has headings, it is a tree, not a node.** NodeSpace is one-node-per-block, with hierarchy as first-class edges — a document with sections (an ADR, a spec, a plan) decomposes into a root node plus one child per section, not one node whose `content` holds the whole document:
 
-One call is enough for a document: `node create --type decision --content "# Title\n\n## Context\n..."` creates the decision with `Title` as its content and the sections as its children. A front matter block at the top sets properties: a key that is a declared field of the type (`decision_status: accepted`) is set as that field and validated; any other key is stored as `custom:<key>`; a key already namespaced (`custom:x`) is stored as given and a key starting with `_` is ignored. Write the document with real line breaks, not the two characters `\n`. The first line must be a plain line or a heading: a list item, a quote or a code fence there, or a `---` block that is not a YAML mapping, is refused with nothing created, so fix the document and run it again. A CLI newer than the daemon answers `Unimplemented` for this call: tell the user to update NodeSpace and stop rather than rebuilding the document node by node. The multi-call form below does the same by hand:
+One call is enough for a document: `node create --type decision --content '<document>'` (example below) creates the decision with `Title` as its content and the sections as its children. A front matter block at the top sets properties: a key that is a declared field of the type (`decision_status: accepted`) is set as that field and validated; any other key is stored as `custom:<key>`; a key already namespaced (`custom:x`) is stored as given and a key starting with `_` is ignored. Write the document with real line breaks, not the two characters `\n` (the CLI does not unescape them). Single-quote it: a shell expands `$` and backticks and breaks on `"` inside double quotes, and a literal apostrophe is written `'\''` (there is no stdin or file form of `--content`). The first line must be a plain line or a heading: a list item (numbered too), a table row, a horizontal rule, a checklist item, a quote or a code fence there, a `---` block that is not a YAML mapping, or a declared field given an invalid value, is refused with nothing created, so fix the document and run it again. A document that is a single block with no front matter, such as a lone `- x`, is stored as given, not refused. A CLI newer than the daemon answers `Unimplemented` for this call: tell the user to update NodeSpace and stop rather than rebuilding the document node by node. The multi-call form below does the same by hand:
 
 ```bash
-# Multi-call: root, then one child per section
-nodespace node create --type text --content "# ADR-071: Use collections for tagging"
+# One call: the first line is the title, the rest become its children
+nodespace node create --type decision --content '---
+decision_status: accepted
+---
+# ADR-071: Use collections for tagging
+
+## Context
+Tags drifted; we don'\''t want a second grouping mechanism.
+
+## Decision
+Group with collections.'
+
+# Multi-call by hand: root, then one child per section (single block each)
+nodespace node create --type text --content '# ADR-071: Use collections for tagging'
 # → returns {"id": "root-id", ...}
-nodespace node create --type text --content "## Context\n..." --parent root-id
-nodespace node create --type text --content "## Decision\n..." --parent root-id
+nodespace node create --type text --content '## Context' --parent root-id
+nodespace node create --type text --content '## Decision' --parent root-id
 
 # Or write it to a file and import it — see `nodespace import` below. An
 # import always makes text roots: use it for files and directories, and use the
