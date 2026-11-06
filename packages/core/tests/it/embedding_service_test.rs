@@ -3052,3 +3052,52 @@ async fn test_queue_unembedded_roots_skips_embedded_roots() -> Result<()> {
     assert!(!stale.contains(&root.id));
     Ok(())
 }
+
+/// The sweep reads in pages: every root past the first page boundary is
+/// queued, once.
+#[tokio::test]
+async fn test_queue_unembedded_roots_crosses_page_boundaries() -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let mut ids = Vec::new();
+    for i in 0..5 {
+        ids.push(
+            create_root_node(&node_service, "decision", &format!("Choice {i}"))
+                .await?
+                .id,
+        );
+    }
+    for id in &ids {
+        store.delete_embeddings(id).await?;
+    }
+
+    let queued = embedding_service.queue_unembedded_roots_paged(2).await?;
+    assert_eq!(queued, 5, "roots on every page are queued");
+    let stale = store.get_stale_embedding_root_ids(None, 0, 3).await?;
+    for id in &ids {
+        assert!(stale.contains(id), "{id} should be queued");
+    }
+    assert_eq!(embedding_service.queue_unembedded_roots_paged(2).await?, 0);
+    Ok(())
+}
+
+/// An archived root has no place in the vector index and is not queued.
+#[tokio::test]
+async fn test_queue_unembedded_roots_skips_archived_roots() -> Result<()> {
+    use nodespace_core::models::NodeUpdate;
+
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+    let root = create_root_node(&node_service, "decision", "Archived choice").await?;
+    node_service
+        .update_node(
+            &root.id,
+            root.version,
+            NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )
+        .await?;
+    store.delete_embeddings(&root.id).await?;
+
+    assert_eq!(embedding_service.queue_unembedded_roots().await?, 0);
+    assert!(!store.has_embeddings(&root.id).await?);
+    Ok(())
+}

@@ -4661,6 +4661,129 @@ mod tests {
         assert_eq!(root_of(person).await, r, "(d')");
     }
 
+    /// The startup sweep finds the same embedding roots `embedding_root_id`
+    /// resolves to: tree roots, filed descendants and children of a chat, but
+    /// not a filed person, an ordinary child, or an archived node.
+    #[tokio::test]
+    async fn unembedded_root_sweep_covers_every_kind_of_embedding_root() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        let svc = &svc;
+        let mut seq = 0u32;
+        let mut next_id = || {
+            seq += 1;
+            format!("44444444-4444-4444-4444-{:012}", seq)
+        };
+        let create = |id: String, node_type: &'static str, parent: Option<String>| async move {
+            svc.create_node_with_parent(CreateNodeParams {
+                id: Some(id.clone()),
+                node_type: node_type.into(),
+                content: if node_type == "person" {
+                    String::new()
+                } else {
+                    format!("{node_type} {id}")
+                },
+                parent_id: parent,
+                position: InsertPositionOwned::End,
+                properties: if node_type == "ai-chat-native" {
+                    json!({ "agent": "nodespace" })
+                } else {
+                    json!({})
+                },
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+            id
+        };
+        let file = |member: String, collection: String| async move {
+            svc.store()
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                     VALUES (?1, ?2, ?3, 'member_of', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    libsql::params![uuid::Uuid::new_v4().to_string(), member, collection],
+                )
+                .await
+                .unwrap();
+        };
+
+        let shelf = create(next_id(), "collection", None).await;
+        let tree_root = create(next_id(), "text", None).await;
+        let plain_child = create(next_id(), "text", Some(tree_root.clone())).await;
+        let filed = create(next_id(), "text", Some(tree_root.clone())).await;
+        file(filed.clone(), shelf.clone()).await;
+        let person = create(next_id(), "person", Some(tree_root.clone())).await;
+        file(person.clone(), shelf.clone()).await;
+        let chat = create(next_id(), "ai-chat-native", None).await;
+        let chat_child = create(next_id(), "text", Some(chat.clone())).await;
+        let archived = create(next_id(), "text", None).await;
+        svc.store()
+            .write()
+            .await
+            .execute(
+                "UPDATE node SET lifecycle_status = 'archived' WHERE id = ?1",
+                libsql::params![archived.clone()],
+            )
+            .await
+            .unwrap();
+
+        // Nothing created here has an embedding row, whatever seeded the rest.
+        svc.store()
+            .write()
+            .await
+            .execute(
+                "DELETE FROM embedding WHERE node_id IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                libsql::params![
+                    shelf.clone(),
+                    tree_root.clone(),
+                    plain_child.clone(),
+                    filed.clone(),
+                    person.clone(),
+                    chat.clone(),
+                    chat_child.clone(),
+                    archived.clone()
+                ],
+            )
+            .await
+            .unwrap();
+
+        let mut swept = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = svc
+                .store()
+                .get_unembedded_root_ids(after.as_deref(), 7)
+                .await
+                .unwrap();
+            let Some(last) = page.last() else { break };
+            after = Some(last.clone());
+            swept.extend(page);
+        }
+
+        for (id, what) in [
+            (&tree_root, "tree root"),
+            (&filed, "filed descendant"),
+            (&chat_child, "child of a chat"),
+        ] {
+            assert!(swept.contains(id), "{what} is swept");
+            assert_eq!(&svc.get_embedding_root_id(id).await.unwrap(), id, "{what}");
+        }
+        for (id, what) in [
+            (&plain_child, "ordinary child"),
+            (&person, "filed person"),
+            (&archived, "archived root"),
+        ] {
+            assert!(!swept.contains(id), "{what} is not swept");
+        }
+        let mut sorted = swept.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), swept.len(), "no root appears on two pages");
+    }
+
     /// A schema added to `get_core_schemas()` after a database's first run
     /// must still reach that database on the next start — the same
     /// per-node-not-per-type reconciliation guarantee `06a94eee` established

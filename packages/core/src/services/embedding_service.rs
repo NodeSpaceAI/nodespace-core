@@ -715,24 +715,43 @@ impl NodeEmbeddingService {
         Ok(())
     }
 
-    /// Queue every root of an embeddable type that has no embedding and no
-    /// stale marker, and return how many were queued.
+    /// Queue every embedding root of an embeddable type that has no embedding
+    /// and no stale marker, and return how many were queued.
     ///
-    /// Run when the model becomes ready. It heals every way a root can miss
-    /// embedding (an interrupted run, a model that was not ready, a type that
-    /// became embeddable) without any version check. A root that is queued
-    /// gets a stale marker, so a second run finds it already accounted for.
-    /// Reads the database in id-ordered pages, one query and one batched node
-    /// read per page, and writes one batched insert per page.
+    /// Embedding roots are the ones [`SqliteStore::embedding_root_id`]
+    /// resolves to: tree roots, filed descendants, and children of a chat.
+    /// Run when the model becomes ready. It heals every way such a root can
+    /// miss embedding (an interrupted run, a model that was not ready, a type
+    /// that became embeddable) without any version check. A queued root has a
+    /// stale marker, so a second run finds it already accounted for.
+    ///
+    /// Cost per run: the database is read in id-ordered pages, one query and
+    /// one batched node read per page, and one batched insert per page that
+    /// has anything to queue. A root that is not embeddable (a task, empty
+    /// content) gets no marker, so it is read again on every run; whether a
+    /// type is embeddable is a behaviour decision, resolved once per type per
+    /// run, not a column the query can filter on.
     pub async fn queue_unembedded_roots(&self) -> Result<usize, NodeServiceError> {
-        const PAGE: usize = 500;
+        self.queue_unembedded_roots_paged(Self::SWEEP_PAGE).await
+    }
+
+    /// Roots read per page by [`Self::queue_unembedded_roots`].
+    const SWEEP_PAGE: usize = 500;
+
+    /// [`Self::queue_unembedded_roots`] with a chosen page size.
+    pub async fn queue_unembedded_roots_paged(
+        &self,
+        page: usize,
+    ) -> Result<usize, NodeServiceError> {
+        let page = page.max(1);
         let mut after: Option<String> = None;
         let mut queued = 0usize;
+        let mut behaviors: HashMap<String, Arc<dyn NodeBehavior>> = HashMap::new();
 
         loop {
             let ids = self
                 .store
-                .get_unembedded_root_ids(after.as_deref(), PAGE)
+                .get_unembedded_root_ids(after.as_deref(), page)
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!(
@@ -746,8 +765,14 @@ impl NodeEmbeddingService {
             let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
             let mut to_queue = Vec::new();
             for node in self.node_accessor.get_nodes(&id_refs).await? {
-                let behavior = self.behavior_for(&node.node_type).await;
-                if behavior.get_embeddable_content(&node).is_some() {
+                if !behaviors.contains_key(&node.node_type) {
+                    let behavior = self.behavior_for(&node.node_type).await;
+                    behaviors.insert(node.node_type.clone(), behavior);
+                }
+                if behaviors[&node.node_type]
+                    .get_embeddable_content(&node)
+                    .is_some()
+                {
                     to_queue.push(node.id);
                 }
             }
@@ -759,7 +784,7 @@ impl NodeEmbeddingService {
                     NodeServiceError::query_failed(format!("Failed to create stale markers: {}", e))
                 })?;
 
-            if ids.len() < PAGE {
+            if ids.len() < page {
                 break;
             }
         }
