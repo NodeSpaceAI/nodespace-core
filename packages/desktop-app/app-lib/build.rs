@@ -62,6 +62,7 @@ fn embed_common_controls_manifest() {
     let object = Path::new(&out_dir).join("common-controls.o");
     let manifest_for_rc = manifest.display().to_string().replace('\\', "/");
     std::fs::write(&rc, format!("1 24 \"{manifest_for_rc}\"\n")).expect("write rc into OUT_DIR");
+    println!("cargo:rerun-if-env-changed=WINDRES");
     let windres = env::var("WINDRES").unwrap_or_else(|_| "windres".to_string());
     let status = Command::new(&windres)
         .arg("--input")
@@ -73,8 +74,9 @@ fn embed_common_controls_manifest() {
     match status {
         Ok(s) if s.success() => println!("cargo:rustc-link-arg={}", object.display()),
         _ => println!(
-            "cargo:warning=`{windres}` failed or was not found; test executables will not start \
-             on Windows without a Common Controls 6 manifest (set WINDRES)"
+            "cargo:warning=WARNING: `{windres}` failed or was not found, so no Common Controls 6 \
+             manifest is embedded: the app-lib test executables will abort at start with \
+             STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139). Install MinGW-w64 or set WINDRES."
         ),
     }
 }
