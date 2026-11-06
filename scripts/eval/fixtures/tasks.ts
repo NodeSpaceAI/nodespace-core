@@ -466,10 +466,10 @@ function scoreReadyTask(diff: GraphDiff, ids: SeededIds): Verdict {
   }
   const status = task.properties.status;
   if (status !== undefined && String(status).toLowerCase() !== "open") {
-    return fail(`the task is not open, so it is not in Ready tasks: status=${String(status)}`);
+    return fail(`the task is not open, so it is not ready: status=${String(status)}`);
   }
   if (linksAny(diff, task, "blocked_by")) {
-    return fail("the task is blocked, so it is not in Ready tasks");
+    return fail("the task is blocked, so it is not ready");
   }
   return { passed: true };
 }

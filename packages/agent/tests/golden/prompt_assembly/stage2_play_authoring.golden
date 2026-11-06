@@ -37,8 +37,23 @@ parameters_schema:
       "description": "Optional typed-property filters. Use for status/due_date/amount and any custom schema field, with operators. Omit for plain title/type listing.",
       "items": {
         "properties": {
+          "anchor": {
+            "description": "For 'relationship' filters, in place of 'node_id': \"current_person\" is the user of this app.",
+            "enum": [
+              "current_person"
+            ],
+            "type": "string"
+          },
           "case_sensitive": {
             "description": "For 'contains' operator: case sensitivity (default: true)",
+            "type": "boolean"
+          },
+          "filter": {
+            "description": "For 'related' filters: the filter, with these same fields, that a node reached by 'path' must match.",
+            "type": "object"
+          },
+          "negate": {
+            "description": "Set true to keep the nodes this filter does NOT hold for. On a 'related' filter, keep the nodes whose path reaches no node matching the nested 'filter'.",
             "type": "boolean"
           },
           "node_id": {
@@ -70,13 +85,19 @@ parameters_schema:
             "description": "Property key. Example: {\"type\": \"property\", \"property\": \"status\", \"operator\": \"equals\", \"value\": \"open\"} — status is a property filter, not metadata.",
             "type": "string"
           },
+          "stored": {
+            "description": "Property filters only. Set true to compare the value each node stores, not the value it reads as at the queried type.",
+            "type": "boolean"
+          },
           "type": {
-            "description": "Filter category: 'property' for ANY schema/node field (status, due_date, priority, and all custom schema fields) — use this for status. 'content' for node text. 'metadata' ONLY for the 4 built-in fields created_at, modified_at, node_type, content — NEVER use 'metadata' for status or any schema field, it will fail with 'Invalid metadata field'. 'relationship' for graph edges.",
+            "description": "Filter category: 'property' for ANY schema/node field (status, due_date, priority, and all custom schema fields) — use this for status. 'content' for node text. 'metadata' ONLY for the 4 built-in fields created_at, modified_at, node_type, content — NEVER use 'metadata' for status or any schema field, it will fail with 'Invalid metadata field'. 'relationship' for graph edges. 'related' for the nodes a path reaches: it needs a 'path' and a nested 'filter'. 'permitted' keeps the nodes for which setting 'property' to 'value' would not be refused by a rule.",
             "enum": [
               "property",
               "content",
               "metadata",
-              "relationship"
+              "relationship",
+              "related",
+              "permitted"
             ],
             "type": "string"
           },

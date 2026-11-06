@@ -13,16 +13,16 @@ use std::time::Duration;
 use nodespace_agent::local_agent::tools::GraphToolExecutor;
 use nodespace_agent::skill_pipeline::{
     link_seeded_skills, seed_skill_nodes, seed_tool_nodes, shipped_attached_to_for,
-    IMPLEMENTING_A_TASK_SKILL_ID, SKILL_SEEDS,
+    ASKING_THE_USER_SKILL_ID, IMPLEMENTING_A_TASK_SKILL_ID, SKILL_SEEDS,
 };
+use nodespace_agent::skill_rules::{rule_text, RuleForm};
 use nodespace_agent::{AgentToolExecutor, ToolResult};
 use nodespace_core::db::SqliteStore;
-use nodespace_core::markdown::prepare_nodes_from_template;
+use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
 use nodespace_core::models::{Node, NodeUpdate, SkillFields, SKILL_APPLIES_TO, SKILL_ATTACHED_TO};
 use nodespace_core::services::query_service::core_queries::{
     AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID, DECISIONS_BY_STATUS_QUERY_ID,
-    IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID,
-    READY_TO_MERGE_QUERY_ID, SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+    PLANS_BY_STATUS_QUERY_ID, READY_TO_MERGE_QUERY_ID, SPECS_BY_STATUS_QUERY_ID,
 };
 use nodespace_core::services::{CreateNodeParams, InsertPositionOwned, NodeService};
 use nodespace_core::PlaybookEngine;
@@ -175,6 +175,55 @@ impl Harness {
         self.ok("get_node_context", json!({ "id": uri(id) })).await
     }
 
+    /// The ready tasks, listed by the search the rule for listing them
+    /// carries, run as the rule says to run it.
+    async fn ready_tasks(&self, limit: usize) -> Value {
+        let mut args = recipe("task-implement-list");
+        args["limit"] = json!(limit);
+        self.ok("search_nodes", args).await
+    }
+
+    /// The questions waiting on the user, found by the search the rule for
+    /// taking one carries.
+    async fn waiting_questions(&self, limit: usize) -> Value {
+        let mut args = recipe("task-question-take");
+        args["limit"] = json!(limit);
+        self.ok("search_nodes", args).await
+    }
+
+    /// Each node of a search result read as `get_node_context` reads it, in
+    /// the shape a run of a saved query with context had: the node's fields
+    /// with its `paths`, `skills` and `version`, and every skill once.
+    async fn with_context(&self, listed: &Value) -> Value {
+        self.with_context_paths(listed, json!([])).await
+    }
+
+    /// [`Harness::with_context`], following `paths` beside the ones the type
+    /// declares.
+    async fn with_context_paths(&self, listed: &Value, paths: Value) -> Value {
+        let mut items = Vec::new();
+        let mut skills: Vec<Value> = Vec::new();
+        for node in listed["nodes"].as_array().expect("nodes") {
+            let read = self
+                .ok(
+                    "get_node_context",
+                    json!({ "id": node["id"], "paths": paths }),
+                )
+                .await;
+            let mut row = read["node"].clone();
+            row["paths"] = read["paths"].clone();
+            row["skills"] = read["skills"].clone();
+            row["version"] = read["version"].clone();
+            for skill in read["skills"].as_array().expect("skills") {
+                if !skills.iter().any(|seen| seen["name"] == skill["name"]) {
+                    skills.push(skill.clone());
+                }
+            }
+            items.push(row);
+        }
+        json!({ "count": items.len(), "items": items, "skills": skills })
+    }
+
     /// The stored status of a task or an issue. An issue keeps its status in
     /// its own bucket, since it declares the field again to add statuses.
     async fn status(&self, task: &str) -> String {
@@ -185,6 +234,28 @@ impl Harness {
             .unwrap()
             .to_string()
     }
+}
+
+/// The arguments of the search a rule carries: the first JSON object in the
+/// rule's text for the in-app agent.
+fn recipe(rule: &str) -> Value {
+    let text = rule_text(rule, RuleForm::Agent).unwrap_or_else(|| panic!("no rule {rule}"));
+    let start = text.find('{').expect("the rule carries a search");
+    let mut depth = 0;
+    for (offset, c) in text[start..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return serde_json::from_str(&text[start..start + offset + 1])
+                        .unwrap_or_else(|e| panic!("{rule}: the search is not JSON: {e}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{rule}: the search is not closed")
 }
 
 struct Work {
@@ -352,10 +423,9 @@ async fn the_procedures_are_seeded_with_their_links() {
             .unwrap()
             .attached_to
     };
-    assert_eq!(
-        attached(IMPLEMENTING),
-        [READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID]
-    );
+    // The procedures of work that is not a node of its own are attached to
+    // nothing: they are found by what they are for.
+    assert!(attached(IMPLEMENTING).is_empty());
     assert_eq!(attached(REVIEWING), [AWAITING_REVIEW_QUERY_ID]);
     assert_eq!(attached(ADDRESSING), [CHANGES_REQUESTED_QUERY_ID]);
     assert_eq!(attached("Writing a Spec"), [SPECS_BY_STATUS_QUERY_ID]);
@@ -368,41 +438,34 @@ async fn the_procedures_are_seeded_with_their_links() {
         attached("Asking the User"),
         [SPECS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID]
     );
-    assert_eq!(attached(CREATING), [NEEDS_SHAPING_QUERY_ID]);
-    assert_eq!(attached(ANSWERING), [WAITING_ON_YOU_QUERY_ID]);
-    // Each uncertain-start procedure arrives where that work does: a defect
-    // typed in by hand is in Needs shaping, a design question comes up while
-    // a spec is written, and a proposed decision waits on the facts that
-    // settle it.
-    assert_eq!(attached("Diagnosing a Bug"), [NEEDS_SHAPING_QUERY_ID]);
+    assert!(attached(CREATING).is_empty());
+    assert!(attached(ANSWERING).is_empty());
+    // A design question comes up while a spec is written, and a proposed
+    // decision waits on the facts that settle it; a defect typed in by hand
+    // is diagnosed by what the procedure is for.
+    assert!(attached("Diagnosing a Bug").is_empty());
     assert_eq!(attached("Prototyping"), [SPECS_BY_STATUS_QUERY_ID]);
     assert_eq!(attached("Researching"), [DECISIONS_BY_STATUS_QUERY_ID]);
     // Deprecating hands its sequence to the plan, where Splitting a Plan into
-    // Tasks slices it; Shipping starts where the review ends; and what a
-    // change logs and measures is written as criteria while it is shaped.
+    // Tasks slices it, and Shipping starts where the review ends.
     assert_eq!(
         attached("Deprecating and Migrating"),
         [PLANS_BY_STATUS_QUERY_ID]
     );
     assert_eq!(attached("Shipping a Change"), [READY_TO_MERGE_QUERY_ID]);
-    assert_eq!(attached("Instrumenting a Change"), [NEEDS_SHAPING_QUERY_ID]);
+    assert!(attached("Instrumenting a Change").is_empty());
     // No other built-in is attached to anything.
     let attached_titles = [
-        IMPLEMENTING,
         REVIEWING,
         ADDRESSING,
-        CREATING,
-        ANSWERING,
         "Writing a Spec",
         "Reviewing a Plan",
         "Splitting a Plan into Tasks",
         "Asking the User",
-        "Diagnosing a Bug",
         "Prototyping",
         "Researching",
         "Deprecating and Migrating",
         "Shipping a Change",
-        "Instrumenting a Change",
     ];
     for seed in SKILL_SEEDS {
         if !attached_titles.contains(&seed.title) {
@@ -412,8 +475,8 @@ async fn the_procedures_are_seeded_with_their_links() {
 }
 
 /// Every procedure the planning skills depend on reaches an agent with the
-/// work: it is attached to a queue, or a skill that is names it, and so on
-/// down the chain. None depends on the agent searching for it.
+/// work, or is named by a skill that does: attached to a board or a queue,
+/// and so on down the chain.
 #[test]
 fn every_planning_skill_arrives_with_the_work() {
     let body = |title: &str| {
@@ -435,7 +498,6 @@ fn every_planning_skill_arrives_with_the_work() {
         "Writing a Spec",
         "Reviewing a Plan",
         "Splitting a Plan into Tasks",
-        "Diagnosing a Bug",
         "Prototyping",
         "Researching",
     ] {
@@ -445,10 +507,15 @@ fn every_planning_skill_arrives_with_the_work() {
             "{title} does not name Asking the User"
         );
     }
-    // The delivery procedures reach an agent with the work: each is attached
-    // to the queue of its stage, and the implementing one names the one that
-    // takes over when a review sends findings back.
-    for title in [IMPLEMENTING, REVIEWING, ADDRESSING] {
+    // The review and fix procedures reach an agent with the work: each is
+    // attached to the queue of its stage. Diagnosing a Bug asks the user the
+    // same way, and the implementing one names the one that takes over when
+    // a review sends findings back.
+    assert!(
+        body("Diagnosing a Bug").contains("Asking the User"),
+        "Diagnosing a Bug does not name Asking the User"
+    );
+    for title in [REVIEWING, ADDRESSING] {
         assert!(attached(title), "{title} is attached to no queue");
     }
     assert!(
@@ -671,13 +738,8 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
         );
     }
 
-    // Readiness is the queue, not a mark: only the unblocked issue is listed.
-    let run = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true }),
-        )
-        .await;
+    // Readiness is the search, not a mark: only the unblocked issue is listed.
+    let run = h.with_context(&h.ready_tasks(10).await).await;
     let listed: Vec<&str> = run["items"]
         .as_array()
         .unwrap()
@@ -687,19 +749,15 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
     assert_eq!(listed, [uri(&issues[0])], "{run}");
 }
 
-/// A run of "Ready tasks" with context hands over the top task whole, and
-/// the task carries the procedure of the stage it is in from then on.
+/// The search for ready tasks, read with context, hands over the top task
+/// whole. Implementing a Task is attached to nothing, so no stage of the task
+/// carries it; the review stage still does.
 #[tokio::test]
-async fn a_task_carries_the_procedure_of_the_stage_it_is_in() {
+async fn a_ready_task_is_read_whole_and_no_stage_carries_the_implementing_procedure() {
     let h = start().await;
     let work = planned_task(&h).await;
 
-    let run = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true, "limit": 1 }),
-        )
-        .await;
+    let run = h.with_context(&h.ready_tasks(1).await).await;
     assert_eq!(run["count"], 1, "{run}");
     let item = &run["items"][0];
     assert_eq!(item["id"], uri(&work.task));
@@ -720,28 +778,19 @@ async fn a_task_carries_the_procedure_of_the_stage_it_is_in() {
         item["paths"][0]["nodes"][0]["checkboxes"][0]["content"],
         "- [ ] Exports finish in a second"
     );
-    // And the implementing procedure, with its instructions.
-    assert_eq!(skill_names(&run), [IMPLEMENTING]);
-    assert!(
-        run["skills"][0]["instructions"]
-            .as_str()
-            .unwrap()
-            .contains("STEP 1, THE USER CHOOSES THE WORK"),
-        "{run}"
-    );
+    // The implementing procedure is not handed over with it: it is found by
+    // what it is for.
+    assert!(skill_names(&run).is_empty(), "{run}");
 
-    // Started: it left "Ready tasks", and still carries the procedure.
+    // Started: it leaves the search, and still carries no procedure.
     h.ok(
         "update_task_status",
         json!({ "id": uri(&work.task), "status": "in_progress", "version": item["node_version"] }),
     )
     .await;
+    assert_eq!(h.ready_tasks(10).await["count"], 0);
     let started = h.context(&work.task).await;
-    assert_eq!(skill_names(&started), [IMPLEMENTING]);
-    assert_eq!(
-        started["skills"][0]["matched_queries"][0]["title"],
-        "In progress"
-    );
+    assert!(skill_names(&started).is_empty(), "{started}");
 
     // In review, a plain task is in no queue: Awaiting review lists issues,
     // so it carries no procedure and is reviewed when the user names it.
@@ -777,13 +826,13 @@ async fn a_skill_attached_to_a_project_comes_with_each_of_its_tasks() {
 
     for task in [&work.task, &second] {
         let read = h.ok("get_node_context", json!({ "id": uri(task) })).await;
-        assert_eq!(skill_names(&read), [IMPLEMENTING, "Apollo Naming"]);
+        assert_eq!(skill_names(&read), ["Apollo Naming"]);
     }
     // A task of no project does not.
     let other = h.create("task", "Unrelated", json!({})).await;
     h.child(&other, "checkbox", "- [ ] Done").await;
     let read = h.ok("get_node_context", json!({ "id": uri(&other) })).await;
-    assert_eq!(skill_names(&read), [IMPLEMENTING]);
+    assert!(skill_names(&read).is_empty(), "{read}");
 }
 
 /// "Implementing a Task" and then "Reviewing a Task", each step made as its
@@ -799,17 +848,10 @@ async fn the_two_procedures_can_be_followed_step_by_step_through_the_tools() {
     // -- Implementing --
     // Step 1: list what is ready, take nothing; the user chooses, and the
     // chosen task is read with what governs it.
-    let listed = h
-        .ok("run_query", json!({ "query": "Ready tasks", "limit": 10 }))
-        .await;
+    let listed = h.ready_tasks(10).await;
     assert_eq!(listed["nodes"][0]["id"], task, "{listed}");
     assert_eq!(h.status(&work.task).await, "open", "listing starts nothing");
-    let run = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true, "limit": 1 }),
-        )
-        .await;
+    let run = h.with_context(&h.ready_tasks(1).await).await;
     let item = &run["items"][0];
     assert_eq!(item["id"], task);
 
@@ -1074,25 +1116,15 @@ async fn a_checkbox_beneath_a_section_is_not_a_checklist_item() {
     let hidden = h.create("issue", "Hidden checklist", json!({})).await;
     let section = h.section(&hidden, "Acceptance", &[]).await;
     h.child(&section, "checkbox", "- [ ] Not a criterion").await;
-    let run = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true }),
-        )
-        .await;
+    let run = h.ready_tasks(10).await;
     assert_eq!(run["count"], 0, "{run}");
 
     // With a direct checklist it is ready, and the nested gap does not stop
     // it being closed once the direct item is ticked.
     h.child(&hidden, "checkbox", "- [x] The change landed")
         .await;
-    let run = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true }),
-        )
-        .await;
-    assert_eq!(run["items"][0]["id"], uri(&hidden), "{run}");
+    let run = h.ready_tasks(10).await;
+    assert_eq!(run["nodes"][0]["id"], uri(&hidden), "{run}");
     for status in ["in_progress", "in_review", "done"] {
         h.ok(
             "update_task_status",
@@ -1315,7 +1347,7 @@ async fn a_review_that_fails_sends_the_task_back_to_the_implementer() {
 
     assert_eq!(h.status(&work.task).await, "in_progress");
     let back = h.ok("get_node_context", json!({ "id": task })).await;
-    assert_eq!(skill_names(&back), [IMPLEMENTING]);
+    assert!(skill_names(&back).is_empty(), "{back}");
     // And it cannot be finished while the item is unticked.
     let done = h
         .refused(
@@ -1374,7 +1406,7 @@ async fn an_edited_procedure_survives_an_open_and_a_reset_restores_it() {
     assert_eq!(body(&h).await, shipped);
 }
 
-/// ADR-072: a procedure the user detached from a queue stays detached across
+/// ADR-072: a procedure the user detached from a board stays detached across
 /// an open, including one that replaces the skill's config, and a reset of
 /// its links restores it.
 #[tokio::test]
@@ -1383,25 +1415,22 @@ async fn a_detached_procedure_stays_detached_and_a_reset_restores_it() {
     let attached = |h: &Harness| {
         let ns = h.ns.clone();
         async move {
-            let mut targets = ns
-                .current_links(IMPLEMENTING_A_TASK_SKILL_ID)
-                .await
-                .unwrap();
+            let mut targets = ns.current_links(ASKING_THE_USER_SKILL_ID).await.unwrap();
             targets.sort();
             targets
         }
     };
     let mut shipped = vec![
-        READY_TASKS_QUERY_ID.to_string(),
-        IN_PROGRESS_QUERY_ID.to_string(),
+        SPECS_BY_STATUS_QUERY_ID.to_string(),
+        PLANS_BY_STATUS_QUERY_ID.to_string(),
     ];
     shipped.sort();
     assert_eq!(attached(&h).await, shipped);
 
     h.ns.delete_relationship(
-        IMPLEMENTING_A_TASK_SKILL_ID,
+        ASKING_THE_USER_SKILL_ID,
         SKILL_ATTACHED_TO,
-        READY_TASKS_QUERY_ID,
+        SPECS_BY_STATUS_QUERY_ID,
     )
     .await
     .unwrap();
@@ -1410,7 +1439,7 @@ async fn a_detached_procedure_stays_detached_and_a_reset_restores_it() {
     seed_agent_tables(&h.ns).await;
     let template = seed_skill_nodes()
         .into_iter()
-        .find(|template| template.id == IMPLEMENTING_A_TASK_SKILL_ID)
+        .find(|template| template.id == ASKING_THE_USER_SKILL_ID)
         .unwrap();
     h.ns.reset_seed_node(
         &prepare_nodes_from_template(&template).unwrap(),
@@ -1420,9 +1449,9 @@ async fn a_detached_procedure_stays_detached_and_a_reset_restores_it() {
     .await
     .unwrap();
     seed_agent_tables(&h.ns).await;
-    assert_eq!(attached(&h).await, [IN_PROGRESS_QUERY_ID]);
+    assert_eq!(attached(&h).await, [PLANS_BY_STATUS_QUERY_ID]);
 
-    let links = shipped_attached_to_for(IMPLEMENTING_A_TASK_SKILL_ID).unwrap();
+    let links = shipped_attached_to_for(ASKING_THE_USER_SKILL_ID).unwrap();
     assert!(h.ns.reset_links(links).await.unwrap());
     assert_eq!(attached(&h).await, shipped);
     seed_agent_tables(&h.ns).await;
@@ -1431,9 +1460,9 @@ async fn a_detached_procedure_stays_detached_and_a_reset_restores_it() {
 
 /// "Creating a Task" and "Answering a Question", each step made as its body
 /// says, through the tools: a task created outside a spec is ready as it is
-/// created, a task with no checklist is in Needs shaping with its procedure,
-/// and a question that blocks a task is the person's to answer, which
-/// releases it with its status and assignee as they were (ADR-099).
+/// created, a task with no checklist is not, and a question that blocks a
+/// task is the person's to answer, which releases it with its status and
+/// assignee as they were (ADR-099).
 #[tokio::test]
 async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_tools() {
     let h = start().await;
@@ -1479,35 +1508,17 @@ async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_to
     )
     .await;
 
-    // It is ready the moment it exists, and not in Needs shaping.
-    let ready = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true, "limit": 1 }),
-        )
-        .await;
-    assert_eq!(ready["items"][0]["id"], uri(&issue), "{ready}");
-    let shaping = h.ok("run_query", json!({ "query": "Needs shaping" })).await;
-    assert_eq!(shaping["count"], 0, "{shaping}");
+    // It is ready the moment it exists.
+    let ready = h.ready_tasks(1).await;
+    assert_eq!(ready["nodes"][0]["id"], uri(&issue), "{ready}");
 
-    // A task typed by hand has no checklist: Needs shaping lists it, with
-    // Creating a Task attached.
+    // A task typed by hand has no checklist, so it is not ready.
     let by_hand = h
         .create("task", "Look at the export timeout", json!({}))
         .await;
-    let shaping = h
-        .ok(
-            "run_query",
-            json!({ "query": "Needs shaping", "with_context": true, "limit": 1 }),
-        )
-        .await;
-    assert_eq!(shaping["items"][0]["id"], uri(&by_hand), "{shaping}");
-    let mut on_shaping = skill_names(&shaping);
-    on_shaping.sort_unstable();
-    assert_eq!(
-        on_shaping,
-        [CREATING, "Diagnosing a Bug", "Instrumenting a Change"]
-    );
+    let ready = h.ready_tasks(10).await;
+    assert_eq!(ready["count"], 1, "{ready}");
+    assert!(!ready.to_string().contains(&by_hand), "{ready}");
 
     // A question the issue's owner needs answered by the user: a task
     // assigned to them that blocks the issue.
@@ -1532,30 +1543,25 @@ async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_to
     )
     .await;
 
-    // The question has no checklist, and is not offered for shaping: it
-    // blocks a task, so it is answered from Waiting on you.
-    let shaping = h.ok("run_query", json!({ "query": "Needs shaping" })).await;
-    assert_eq!(
-        shaping["count"], 1,
-        "only the task typed by hand is shaped: {shaping}"
-    );
-
     // The stopped issue is no longer ready and has not changed.
     assert_eq!(h.status(&issue).await, "open");
-    let ready = h.ok("run_query", json!({ "query": "Ready tasks" })).await;
+    let ready = h.ready_tasks(10).await;
     assert_eq!(ready["count"], 0, "{ready}");
 
-    // Answering, steps 1 to 3: the question is the user's, with its own
-    // procedure; the answer is recorded under it and it is completed.
-    let waiting = h
-        .ok(
-            "run_query",
-            json!({ "query": "Waiting on you", "with_context": true, "limit": 1 }),
-        )
-        .await;
+    // Answering, steps 1 to 3: the question is the user's; the search finds
+    // it and a context read of it brings back the task it blocks. The answer
+    // is recorded under it and it is completed.
+    let found = h.waiting_questions(1).await;
+    assert_eq!(found["nodes"][0]["id"], uri(&question), "{found}");
+    let waiting = h.with_context_paths(&found, json!([["blocks"]])).await;
     let item = &waiting["items"][0];
     assert_eq!(item["id"], uri(&question), "{waiting}");
-    assert_eq!(skill_names(&waiting), [ANSWERING], "{waiting}");
+    assert!(
+        reached(&item["paths"])
+            .iter()
+            .any(|(path, ids)| path == "blocks" && ids.contains(&uri(&issue))),
+        "the task it blocks comes back: {waiting}"
+    );
     h.ok(
         "create_node",
         json!({ "node_type": "text", "parent_id": question, "content": "Five." }),
@@ -1569,16 +1575,9 @@ async fn creating_a_task_and_answering_a_question_can_be_followed_through_the_to
 
     // The issue is ready again, with nothing else changed on it.
     assert_eq!(h.status(&issue).await, "open");
-    let ready = h
-        .ok(
-            "run_query",
-            json!({ "query": "Ready tasks", "with_context": true, "limit": 1 }),
-        )
-        .await;
-    assert_eq!(ready["items"][0]["id"], uri(&issue), "{ready}");
-    let waiting = h
-        .ok("run_query", json!({ "query": "Waiting on you" }))
-        .await;
+    let ready = h.ready_tasks(1).await;
+    assert_eq!(ready["nodes"][0]["id"], uri(&issue), "{ready}");
+    let waiting = h.waiting_questions(10).await;
     assert_eq!(waiting["count"], 0, "{waiting}");
 }
 
@@ -1685,11 +1684,10 @@ async fn an_issue_moves_through_review_by_its_findings() {
         )
         .await;
     assert_eq!(back["items"][0]["id"], issue, "{back}");
-    // It carries the addressing procedure alone: "In progress" compares the
-    // stored status, so a sent-back issue is not in it.
+    // It carries the addressing procedure alone, and a sent-back issue is
+    // not ready to be started again.
     assert_eq!(skill_names(&back), [ADDRESSING], "{back}");
-    let in_progress = h.ok("run_query", json!({ "query": "In progress" })).await;
-    assert_eq!(in_progress["count"], 0, "{in_progress}");
+    assert_eq!(h.ready_tasks(10).await["count"], 0);
     for queue in ["Awaiting review", "Ready to merge"] {
         let run = h.ok("run_query", json!({ "query": queue })).await;
         assert_eq!(run["count"], 0, "{queue}: {run}");
@@ -1886,5 +1884,314 @@ fn the_delivery_procedures_state_what_they_are_held_to() {
             "{text}"
         );
         assert!(text.contains("`in_review`"), "{text}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The lists a procedure carries as filters
+// ---------------------------------------------------------------------------
+
+/// The removed saved queries, as they were defined.
+const REMOVED_QUEUES: &str = include_str!("../../../core/tests/fixtures/removed_task_queues.json");
+
+/// One of the lists core no longer seeds, saved as an ordinary query with the
+/// title it had, so what it returned can be compared with the search a rule
+/// carries in its place.
+async fn save_removed_queue(h: &Harness, title: &str) -> String {
+    let definitions: Value = serde_json::from_str(REMOVED_QUEUES).unwrap();
+    let definition = &definitions[title];
+    let template = NodeTemplate {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: title.to_string(),
+        markdown_content: String::new(),
+        root_node_type: "query".to_string(),
+        root_properties: json!({
+            "target_type": definition["target_type"],
+            "filters": definition["filters"],
+            "sorting": definition["sorting"],
+            "limit": null,
+            "generated_by": "user",
+            "view_config": null,
+        }),
+        child_node_type: None,
+        tier: SeedTier::System,
+    };
+    let id = template.id.clone();
+    let nodes = prepare_nodes_from_template(&template).unwrap();
+    h.ns.seed_nodes_from_templates(vec![nodes]).await.unwrap();
+    id
+}
+
+/// The ids a saved query returns, in order, and the ids a search returns.
+async fn ids_of_saved(h: &Harness, query: &str) -> Vec<String> {
+    let run = h
+        .ok("run_query", json!({ "query": query, "limit": 50 }))
+        .await;
+    ids_of(&run)
+}
+
+fn ids_of(result: &Value) -> Vec<String> {
+    result["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .map(|node| node["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The `--filters` and `--sorting` arguments of the command a rule gives an
+/// agent outside the app.
+fn cli_recipe(rule: &str) -> (Value, Value) {
+    let text = rule_text(rule, RuleForm::SkillMd).unwrap_or_else(|| panic!("no rule {rule}"));
+    let argument = |flag: &str| -> Value {
+        let start = text
+            .find(flag)
+            .unwrap_or_else(|| panic!("{rule} has no {flag}"))
+            + flag.len();
+        let end = start + text[start..].find('\'').expect("the argument is quoted");
+        serde_json::from_str(&text[start..end])
+            .unwrap_or_else(|e| panic!("{rule}: {flag} is not JSON: {e}"))
+    };
+    (argument("--filters '"), argument("--sorting '"))
+}
+
+/// Both forms of a rule carry the definition the removed list had: the same
+/// target type, filters and sort, as exact JSON.
+#[test]
+fn the_rules_carry_the_removed_lists_as_exact_json() {
+    let removed: Value = serde_json::from_str(REMOVED_QUEUES).unwrap();
+    for (rule, title, limit) in [
+        ("task-implement-list", "Ready tasks", 10),
+        ("task-question-take", "Waiting on you", 1),
+    ] {
+        let definition = &removed[title];
+        let args = recipe(rule);
+        assert_eq!(args["node_type"], definition["target_type"], "{rule}");
+        assert_eq!(args["filters"], definition["filters"], "{rule}");
+        assert_eq!(args["sorting"], definition["sorting"], "{rule}");
+        assert_eq!(args["limit"], limit, "{rule}");
+
+        let (filters, sorting) = cli_recipe(rule);
+        assert_eq!(filters, definition["filters"], "{rule} (command)");
+        assert_eq!(sorting, definition["sorting"], "{rule} (command)");
+        let command = rule_text(rule, RuleForm::SkillMd).unwrap();
+        assert!(command.contains("nodespace query --type task"), "{command}");
+        assert!(command.contains(&format!("--limit {limit}")), "{command}");
+    }
+    // A question is read with its context in a second step.
+    assert!(rule_text("task-question-take", RuleForm::Agent)
+        .unwrap()
+        .contains("get_node_context"));
+    assert!(rule_text("task-question-take", RuleForm::SkillMd)
+        .unwrap()
+        .contains("nodespace node context"));
+}
+
+/// On a seeded fixture the search the rule carries returns the nodes the
+/// removed "Ready tasks" returned, in the same order: a blocked task, a task
+/// with an unapproved plan and a task the rules would refuse are left out.
+#[tokio::test]
+async fn the_ready_tasks_search_returns_what_the_removed_list_returned() {
+    let h = start().await;
+    let saved = save_removed_queue(&h, "Ready tasks").await;
+    let ready = |name: &'static str, props: Value| {
+        let h = &h;
+        async move {
+            let id = h.create("task", name, props).await;
+            h.child(&id, "checkbox", "- [ ] It works").await;
+            id
+        }
+    };
+
+    // Ready, in priority order and then by age.
+    let low = ready("low", json!({ "priority": "low" })).await;
+    let first_high = ready("first high", json!({ "priority": "high" })).await;
+    let highest = ready("highest", json!({ "priority": "highest" })).await;
+    let second_high = ready("second high", json!({ "priority": "high" })).await;
+    // Ready: its only blocker is finished, and its plan is approved.
+    let finished = ready("finished blocker", json!({ "priority": "low" })).await;
+    let freed = ready("freed", json!({ "priority": "low" })).await;
+    h.link(&finished, "blocks", &freed).await;
+    h.set(&finished, json!({ "status": "cancelled" })).await;
+    let planned = ready("planned", json!({ "priority": "low" })).await;
+    let approved_spec = h.create("spec", "Approved", json!({})).await;
+    h.child(&approved_spec, "checkbox", "- [ ] It works").await;
+    let approved_plan = h.create("plan", "Approved plan", json!({})).await;
+    h.link(&approved_plan, "spec", &approved_spec).await;
+    h.link(&approved_plan, "tasks", &planned).await;
+    h.link(&approved_spec, "tasks", &planned).await;
+    h.set(&approved_spec, json!({ "spec_status": "approved" }))
+        .await;
+    h.set(&approved_plan, json!({ "plan_status": "approved" }))
+        .await;
+
+    // Not ready: a blocker that is unfinished.
+    let blocker = ready("blocker", json!({ "priority": "low" })).await;
+    let blocked = ready("blocked", json!({ "priority": "highest" })).await;
+    h.link(&blocker, "blocks", &blocked).await;
+    // Not ready: a plan that is not approved.
+    let drafted = ready("drafted plan", json!({ "priority": "highest" })).await;
+    let draft_spec = h.create("spec", "Draft", json!({})).await;
+    h.child(&draft_spec, "checkbox", "- [ ] It works").await;
+    let draft_plan = h.create("plan", "Draft plan", json!({})).await;
+    h.link(&draft_plan, "spec", &draft_spec).await;
+    h.link(&draft_plan, "tasks", &drafted).await;
+    // Not ready: the rules would refuse the start, because the task links a
+    // spec that is only a draft.
+    let refused = ready("refused by a rule", json!({ "priority": "highest" })).await;
+    let refusing_spec = h.create("spec", "Not approved", json!({})).await;
+    h.link(&refusing_spec, "tasks", &refused).await;
+    // Not ready: started, and with no checklist.
+    let started = ready("started", json!({ "priority": "highest" })).await;
+    h.set(&started, json!({ "status": "in_progress" })).await;
+    let bare_task = h.create("task", "no checklist", json!({})).await;
+    h.child(&bare_task, "text", "Notes").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let by_search = ids_of(&h.ready_tasks(50).await);
+    let by_query = ids_of_saved(&h, &saved).await;
+    assert_eq!(
+        by_search, by_query,
+        "the search and the removed list differ"
+    );
+
+    // Most urgent first, and within one priority the oldest first. A task
+    // that blocks another is itself ready, and one whose blocker was
+    // cancelled is ready; the cancelled blocker is not.
+    let expected: Vec<String> = [
+        &highest,
+        &first_high,
+        &second_high,
+        &low,
+        &freed,
+        &planned,
+        &blocker,
+    ]
+    .iter()
+    .map(|id| uri(id))
+    .collect();
+    assert_eq!(by_search, expected);
+    for left_out in [
+        &finished, &blocked, &drafted, &refused, &started, &bare_task,
+    ] {
+        assert!(!by_search.contains(&uri(left_out)), "{left_out} is listed");
+    }
+}
+
+/// The same for "Waiting on you": the open questions assigned to the user
+/// that block another task, most urgent first, and the second step reads the
+/// task a question blocks.
+#[tokio::test]
+async fn the_waiting_search_returns_what_the_removed_list_returned() {
+    let h = start().await;
+    let saved = save_removed_queue(&h, "Waiting on you").await;
+    let me = h.ns.get_local_person().await.unwrap().unwrap().id;
+    let teammate = h
+        .create(
+            "person",
+            "",
+            json!({ "first_name": "Sam", "last_name": "Other" }),
+        )
+        .await;
+    let work = h.create("task", "The work", json!({})).await;
+
+    let question = |name: &'static str, props: Value, owner: String| {
+        let h = &h;
+        let work = work.clone();
+        async move {
+            let id = h.create("task", name, props).await;
+            h.link(&owner, "tasks", &id).await;
+            h.link(&id, "blocks", &work).await;
+            id
+        }
+    };
+    let later = question("later", json!({ "priority": "low" }), me.clone()).await;
+    let urgent = question("urgent", json!({ "priority": "highest" }), me.clone()).await;
+    // Not mine, finished, and not a question at all.
+    let theirs = question("theirs", json!({}), teammate.clone()).await;
+    let answered = question("answered", json!({}), me.clone()).await;
+    h.set(&answered, json!({ "status": "done" })).await;
+    let plain = h.create("task", "my own work", json!({})).await;
+    h.link(&me, "tasks", &plain).await;
+
+    let by_search = ids_of(&h.waiting_questions(50).await);
+    let by_query = ids_of_saved(&h, &saved).await;
+    assert_eq!(
+        by_search, by_query,
+        "the search and the removed list differ"
+    );
+    assert_eq!(by_search, [uri(&urgent), uri(&later)]);
+    for left_out in [&theirs, &answered, &plain] {
+        assert!(!by_search.contains(&uri(left_out)), "{left_out} is listed");
+    }
+
+    // The second step: the question read with its context brings back the
+    // task it blocks.
+    let read = h
+        .with_context_paths(&h.waiting_questions(1).await, json!([["blocks"]]))
+        .await;
+    assert_eq!(read["items"][0]["id"], uri(&urgent), "{read}");
+    assert!(
+        reached(&read["items"][0]["paths"])
+            .iter()
+            .any(|(path, ids)| path == "blocks" && ids.contains(&uri(&work))),
+        "{read}"
+    );
+}
+
+/// Seeded skills whose text names a tool their `tools` list does not hold,
+/// as they shipped before this check: each is a pair of skill title and tool.
+/// A skill is not added here; one that is fixed is taken off.
+const NAMED_WITHOUT_BEING_LISTED: &[(&str, &str)] = &[
+    ("Node Creation", "create_schema"),
+    ("Node Creation", "update_schema"),
+    ("Schema Creation", "create_node"),
+    ("Schema Creation", "delete_node"),
+    ("Play Authoring", "update_node"),
+    ("Organization", "create_node"),
+    ("Organization", "update_node"),
+    ("Answering a Question", "update_node"),
+    ("Authoring a Skill", "update_task_status"),
+];
+
+/// Each tool a seeded skill's text names is in its `tools` list, so a recipe
+/// a skill carries cannot name a tool the skill is not allowed to call.
+#[test]
+fn a_skill_names_only_tools_in_its_list() {
+    use nodespace_agent::local_agent::tools::Tool;
+    use nodespace_core::ops::skill_ops::names_identifier;
+
+    let mut lacking = Vec::new();
+    let mut still_lacking = Vec::new();
+    for seed in SKILL_SEEDS {
+        let body = seed.template().markdown_content;
+        for tool in Tool::ALL {
+            if names_identifier(&body, tool.name()) && !seed.tools.contains(&tool.name()) {
+                if NAMED_WITHOUT_BEING_LISTED.contains(&(seed.title, tool.name())) {
+                    still_lacking.push((seed.title, tool.name()));
+                } else {
+                    lacking.push(format!("{} / {}", seed.title, tool.name()));
+                }
+            }
+        }
+    }
+    assert!(
+        lacking.is_empty(),
+        "these skills name a tool in their text that their `tools` list lacks: {lacking:#?}"
+    );
+    for pair in NAMED_WITHOUT_BEING_LISTED {
+        assert!(
+            still_lacking.contains(pair),
+            "{pair:?} no longer lacks the tool: take it off the list above"
+        );
+    }
+    // The two skills that run a recipe list the search tool it calls.
+    for title in [IMPLEMENTING, ANSWERING] {
+        let seed = SKILL_SEEDS.iter().find(|seed| seed.title == title).unwrap();
+        assert!(seed.tools.contains(&"search_nodes"), "{title}");
+        assert!(
+            seed.template().markdown_content.contains("search_nodes"),
+            "{title}"
+        );
     }
 }

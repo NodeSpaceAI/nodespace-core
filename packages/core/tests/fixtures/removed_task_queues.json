@@ -1,0 +1,79 @@
+{
+  "_comment": "The four task-level saved queries core no longer seeds, as they were defined. Tests build each as an ordinary saved query to prove that the filter a rule or skill now carries returns the same nodes in the same order.",
+  "Ready tasks": {
+    "target_type": "task",
+    "filters": [
+      { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+      {
+        "type": "related", "operator": "exists", "path": ["has_child"],
+        "filter": { "type": "property", "operator": "exists", "property": "checked" }
+      },
+      {
+        "type": "related", "operator": "exists", "path": ["blocked_by"], "negate": true,
+        "filter": {
+          "type": "property", "operator": "in", "property": "status",
+          "value": ["done", "cancelled"], "negate": true
+        }
+      },
+      {
+        "type": "related", "operator": "exists", "path": ["plan"], "negate": true,
+        "filter": {
+          "type": "property", "operator": "equals", "property": "plan_status",
+          "value": "approved", "negate": true
+        }
+      },
+      { "type": "permitted", "operator": "equals", "property": "status", "value": "in_progress" }
+    ],
+    "sorting": [
+      { "field": "priority", "direction": "asc" },
+      { "field": "created_at", "direction": "asc" }
+    ]
+  },
+  "In progress": {
+    "target_type": "task",
+    "filters": [
+      { "type": "property", "operator": "equals", "property": "status", "value": "in_progress" },
+      {
+        "type": "property", "operator": "equals", "property": "status",
+        "value": "changes_requested", "stored": true, "negate": true
+      }
+    ],
+    "sorting": [
+      { "field": "priority", "direction": "asc" },
+      { "field": "created_at", "direction": "asc" }
+    ]
+  },
+  "Needs shaping": {
+    "target_type": "task",
+    "filters": [
+      { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+      {
+        "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
+        "filter": { "type": "property", "operator": "exists", "property": "checked" }
+      },
+      {
+        "type": "related", "operator": "exists", "path": ["blocks"], "negate": true,
+        "filter": { "type": "property", "operator": "exists", "property": "status" }
+      }
+    ],
+    "sorting": [
+      { "field": "priority", "direction": "asc" },
+      { "field": "created_at", "direction": "asc" }
+    ]
+  },
+  "Waiting on you": {
+    "target_type": "task",
+    "filters": [
+      { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+      { "type": "relationship", "operator": "equals", "path": ["assignee"], "anchor": "current_person" },
+      {
+        "type": "related", "operator": "exists", "path": ["blocks"],
+        "filter": { "type": "property", "operator": "exists", "property": "status" }
+      }
+    ],
+    "sorting": [
+      { "field": "priority", "direction": "asc" },
+      { "field": "created_at", "direction": "asc" }
+    ]
+  }
+}

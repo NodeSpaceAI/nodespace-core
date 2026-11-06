@@ -2292,13 +2292,6 @@
     }
   },
   "seeded": {
-    "138b68c6-9a67-4fed-8fa5-993953158f59": {
-      "configVersion": "2d65c1ea7fd2d770af0a9cf473ebcf6de055c862670224ac103be7bf0cccfe2b",
-      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "key": "Ready tasks",
-      "nodeType": "query",
-      "tier": "system"
-    },
     "3b9c304f-f480-4f1d-8653-5876bb005f7c": {
       "configVersion": "88a13762df5b76fb668d3b21ae59f568b0bae764e45e4670366b9d27b5fd6c8e",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -2332,13 +2325,6 @@
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "key": "Complete a parent task when all its sub-tasks are done",
       "nodeType": "play",
-      "tier": "system"
-    },
-    "62d6346f-0d71-4f36-bab3-94c2f98ed8ba": {
-      "configVersion": "4bcd343389b047bf6b5fcef6e7ed6284f5e9922f13ea452bfcf25183a271dbf9",
-      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "key": "Waiting on you",
-      "nodeType": "query",
       "tier": "system"
     },
     "6a1f0c52-8b47-4d3e-9a15-c2e07d4b8f13": {
@@ -2383,13 +2369,6 @@
       "nodeType": "play",
       "tier": "system"
     },
-    "bb611c45-2b82-47dd-ad53-560ec9b5447f": {
-      "configVersion": "c4a629fa340ae6918f5bd0ecd05102ece4de1af7776682df0bc5a1ffea28b049",
-      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "key": "Needs shaping",
-      "nodeType": "query",
-      "tier": "system"
-    },
     "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4": {
       "configVersion": "28acb66b8531bae24eecb2b60a486c49164e47485a6f67ff0643da46602734f7",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -2401,13 +2380,6 @@
       "configVersion": "ebde7968eda14f38617d892871f40c15c1711fd2145a5ec1dad645f0d627a95a",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "key": "Decisions by status",
-      "nodeType": "query",
-      "tier": "system"
-    },
-    "d1e5c9a8-d19c-401b-9277-40fd873fb205": {
-      "configVersion": "9a594783e532f4210dea7e2fa26af8d49dc8faef98d6c957a4a22c5796c70f2f",
-      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "key": "In progress",
       "nodeType": "query",
       "tier": "system"
     },

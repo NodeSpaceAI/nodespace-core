@@ -1,12 +1,16 @@
 //! Saved queries that ship with the product (ADR-092 §8, ADR-094).
 //!
-//! Three list specs, plans and decisions by status, and seven are queues of
-//! work: "Ready tasks", "In progress", "Awaiting review", "Changes requested",
-//! "Ready to merge", "Needs shaping" and "Waiting on you". The three that
-//! follow an issue through review are written against `issue`, which is the
-//! only scope that sees its own statuses (ADR-098 §6). A queue is not a type: it is an ordinary saved query, and
-//! the procedure for working it is a skill attached to the query node
-//! (ADR-094 §1 and §3).
+//! Three list specs, plans and decisions by status, and three are queues of
+//! work: "Awaiting review", "Changes requested" and "Ready to merge". They
+//! follow an issue through review and are written against `issue`, which is
+//! the only scope that sees its own statuses (ADR-098 §6). A queue is not a
+//! type: it is an ordinary saved query, and the procedure for working it is a
+//! skill attached to the query node (ADR-094 §1 and §3).
+//!
+//! Every seeded query is a view a person works from. A list only a procedure
+//! reads ("what is ready?", "what is waiting on me?") is not seeded: the rule
+//! or skill that needs it carries its filter and runs it as an ordinary
+//! filtered search (ADR-094, amendment of 2026-11-03).
 //!
 //! Core queries are one of the seed tables (ADR-086 §10): each is a
 //! [`NodeTemplate`] reconciled by its fixed id on every open, like a core
@@ -28,10 +32,6 @@ pub const SPECS_BY_STATUS_QUERY_ID: &str = "3b9c304f-f480-4f1d-8653-5876bb005f7c
 pub const PLANS_BY_STATUS_QUERY_ID: &str = "ae79002e-913c-448d-8cc1-95912f2ab2f8";
 /// Node id of the "Decisions by status" saved query.
 pub const DECISIONS_BY_STATUS_QUERY_ID: &str = "d0200c59-7df9-4bc0-bc78-b06d205b085c";
-/// Node id of the "Ready tasks" queue.
-pub const READY_TASKS_QUERY_ID: &str = "138b68c6-9a67-4fed-8fa5-993953158f59";
-/// Node id of the "In progress" queue.
-pub const IN_PROGRESS_QUERY_ID: &str = "d1e5c9a8-d19c-401b-9277-40fd873fb205";
 /// Node id of the "Awaiting review" queue.
 pub const AWAITING_REVIEW_QUERY_ID: &str = "3eff80e8-9672-4896-ac0b-76a169062511";
 /// Node id of the "Changes requested" queue.
@@ -39,24 +39,15 @@ pub const CHANGES_REQUESTED_QUERY_ID: &str = "6a1f0c52-8b47-4d3e-9a15-c2e07d4b8f
 /// Node id of the "Ready to merge" queue.
 pub const READY_TO_MERGE_QUERY_ID: &str = "e47b9d20-35a6-4c81-b0f2-91d8a65c3e74";
 
-/// Node id of the "Needs shaping" queue.
-pub const NEEDS_SHAPING_QUERY_ID: &str = "bb611c45-2b82-47dd-ad53-560ec9b5447f";
-/// Node id of the "Waiting on you" queue.
-pub const WAITING_ON_YOU_QUERY_ID: &str = "62d6346f-0d71-4f36-bab3-94c2f98ed8ba";
-
 /// The id of every saved query that ships with the product: the core query
 /// table, in the order the queries are seeded.
 pub const CORE_QUERY_IDS: &[&str] = &[
     SPECS_BY_STATUS_QUERY_ID,
     PLANS_BY_STATUS_QUERY_ID,
     DECISIONS_BY_STATUS_QUERY_ID,
-    READY_TASKS_QUERY_ID,
-    IN_PROGRESS_QUERY_ID,
     AWAITING_REVIEW_QUERY_ID,
     CHANGES_REQUESTED_QUERY_ID,
     READY_TO_MERGE_QUERY_ID,
-    NEEDS_SHAPING_QUERY_ID,
-    WAITING_ON_YOU_QUERY_ID,
 ];
 
 /// A saved query as shipped: `fields` over a definition with nothing set.
@@ -121,35 +112,6 @@ fn in_status(id: &str, title: &str, target_type: CoreNodeType, status: &str) -> 
     )
 }
 
-/// "In progress": the tasks that are being worked, and not the issues that
-/// were sent back from review.
-///
-/// Written against `task`, so a plain task and an issue are both listed, and
-/// the status reads as the core status it maps to. That reads an issue's
-/// `changes_requested` as `in_progress`, and the issue belongs to "Changes
-/// requested" alone. The second filter compares the stored value (`stored`),
-/// the one condition that tells the two apart at this scope, and a negated
-/// filter keeps every row it does not hold for, plain tasks included.
-fn in_progress_query() -> NodeTemplate {
-    let mut template = in_status(
-        IN_PROGRESS_QUERY_ID,
-        "In progress",
-        CoreNodeType::Task,
-        "in_progress",
-    );
-    if let Some(filters) = template
-        .root_properties
-        .get_mut("filters")
-        .and_then(Value::as_array_mut)
-    {
-        filters.push(json!({
-            "type": "property", "operator": "equals", "property": "status",
-            "value": "changes_requested", "stored": true, "negate": true
-        }));
-    }
-    template
-}
-
 /// Most urgent first, then oldest first. `priority` ascending is urgency
 /// order, not alphabetical, and a task with no priority sorts ahead of the
 /// scale (`Priority::ABSENT_RANK`).
@@ -157,95 +119,6 @@ fn by_priority_then_age() -> Value {
     json!([
         { "field": "priority", "direction": "asc" },
         { "field": "created_at", "direction": "asc" }
-    ])
-}
-
-/// The filters of "Ready tasks" (ADR-092 §7): an open task with at least one
-/// checkbox child, no unfinished `blocked_by` task and no plan that is not
-/// approved.
-///
-/// A task the Plays would refuse to start is not ready: the last filter asks
-/// whether the change to `in_progress` would be allowed (ADR-094 §9), so a
-/// task that links a spec, none of them approved (ADR-097 §1), is left out
-/// however its checklist looks. The conditions before it are statements, not
-/// a second rule: a checklist is not a Play's concern, and the blocker and
-/// plan conditions are kept as cheap prefilters that bound the dry runs, one
-/// per candidate. Switching off a
-/// gate Play therefore loosens the dry run and not these. Each of the three
-/// relationship conditions is a negation or an existence over the nodes a
-/// path reaches:
-///
-/// - A checkbox is the only type that derives `checked`, and on any other
-///   child it reads as absent, so a child whose `checked` exists is a
-///   checkbox, ticked or not. Only direct children count.
-/// - "No unfinished blocker" keeps a task with no blocker at all.
-/// - "No plan that is not approved" keeps a task with no plan.
-pub fn ready_tasks_filters() -> Value {
-    json!([
-        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
-        {
-            "type": "related", "operator": "exists", "path": ["has_child"],
-            "filter": { "type": "property", "operator": "exists", "property": "checked" }
-        },
-        {
-            "type": "related", "operator": "exists", "path": ["blocked_by"], "negate": true,
-            "filter": {
-                "type": "property", "operator": "in", "property": "status",
-                "value": ["done", "cancelled"], "negate": true
-            }
-        },
-        {
-            "type": "related", "operator": "exists", "path": ["plan"], "negate": true,
-            "filter": {
-                "type": "property", "operator": "equals", "property": "plan_status",
-                "value": "approved", "negate": true
-            }
-        },
-        { "type": "permitted", "operator": "equals", "property": "status", "value": "in_progress" }
-    ])
-}
-
-/// The filters of "Needs shaping": an open task with no checkbox child that
-/// blocks no other task, one typed into the app by hand and not yet given a
-/// checklist.
-///
-/// The checklist condition is the complement of the one in
-/// [`ready_tasks_filters`], stated the same way: a child whose `checked`
-/// exists is a checkbox. A task that blocks another is left out: a question
-/// task is one (ADR-099), and it is answered, not shaped, from "Waiting on
-/// you". A task that only groups sub-tasks has no checklist of its own and is
-/// listed; shaping it means deciding that, not writing one.
-pub fn needs_shaping_filters() -> Value {
-    json!([
-        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
-        {
-            "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
-            "filter": { "type": "property", "operator": "exists", "property": "checked" }
-        },
-        {
-            "type": "related", "operator": "exists", "path": ["blocks"], "negate": true,
-            "filter": { "type": "property", "operator": "exists", "property": "status" }
-        }
-    ])
-}
-
-/// The filters of "Waiting on you" (ADR-099 §4): an open task assigned to the
-/// reader that blocks another task, which is a question put to them. The
-/// reader is the `current_person` anchor, resolved to the local person each
-/// time the query runs, so the seed is the same in every database.
-///
-/// The blocked task is not filtered by status: a question blocks the task it
-/// stopped for as long as the question is open, and a finished question leaves
-/// the queue by its own status. The nested `status` existence only asks that
-/// the blocked node is a task: `status` is the one field every task has.
-pub fn waiting_on_you_filters() -> Value {
-    json!([
-        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
-        { "type": "relationship", "operator": "equals", "path": ["assignee"], "anchor": "current_person" },
-        {
-            "type": "related", "operator": "exists", "path": ["blocks"],
-            "filter": { "type": "property", "operator": "exists", "property": "status" }
-        }
     ])
 }
 
@@ -270,16 +143,6 @@ pub fn core_query_templates() -> Vec<NodeTemplate> {
             CoreNodeType::Decision,
             "decision_status",
         ),
-        seeded_query(
-            READY_TASKS_QUERY_ID,
-            "Ready tasks",
-            json!({
-                "target_type": CoreNodeType::Task.as_str(),
-                "filters": ready_tasks_filters(),
-                "sorting": by_priority_then_age(),
-            }),
-        ),
-        in_progress_query(),
         in_status(
             AWAITING_REVIEW_QUERY_ID,
             "Awaiting review",
@@ -297,24 +160,6 @@ pub fn core_query_templates() -> Vec<NodeTemplate> {
             "Ready to merge",
             CoreNodeType::Issue,
             "ready_to_merge",
-        ),
-        seeded_query(
-            NEEDS_SHAPING_QUERY_ID,
-            "Needs shaping",
-            json!({
-                "target_type": CoreNodeType::Task.as_str(),
-                "filters": needs_shaping_filters(),
-                "sorting": by_priority_then_age(),
-            }),
-        ),
-        seeded_query(
-            WAITING_ON_YOU_QUERY_ID,
-            "Waiting on you",
-            json!({
-                "target_type": CoreNodeType::Task.as_str(),
-                "filters": waiting_on_you_filters(),
-                "sorting": by_priority_then_age(),
-            }),
         ),
     ]
 }
@@ -354,6 +199,32 @@ mod tests {
             assert_ne!(fields.target_type, "*", "{}", template.title);
             assert!(template.markdown_content.is_empty(), "{}", template.title);
         }
+    }
+
+    #[test]
+    fn the_seeded_set_is_the_three_boards_and_the_three_issue_queues() {
+        let seeded: Vec<(String, String)> = core_query_templates()
+            .into_iter()
+            .map(|t| {
+                let target = QueryFields::from_properties(&t.root_properties)
+                    .expect("decodes")
+                    .target_type;
+                (t.title, target)
+            })
+            .collect();
+        let expected: Vec<(String, String)> = [
+            ("Specs by status", "spec"),
+            ("Plans by status", "plan"),
+            ("Decisions by status", "decision"),
+            ("Awaiting review", "issue"),
+            ("Changes requested", "issue"),
+            ("Ready to merge", "issue"),
+        ]
+        .iter()
+        .map(|(title, target)| (title.to_string(), target.to_string()))
+        .collect();
+        assert_eq!(seeded, expected);
+        assert_eq!(CORE_QUERY_IDS.len(), 6);
     }
 
     #[test]

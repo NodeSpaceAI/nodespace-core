@@ -9,7 +9,7 @@ describe("the Antigravity scenario approver", () => {
     for (const line of [
       "nodespace skill guidance",
       "nodespace node context 3e9a7c14-5d28 --json 2>&1",
-      "nodespace query run 'Ready tasks' --filters '[{\"type\":\"relationship\"}]'",
+      "nodespace query run 'Awaiting review' --filters '[{\"type\":\"relationship\"}]'",
       "node test.js",
       "git add slug.js test.js && git commit -m \"widget: collapse repeated dashes\"",
       // A multi-line message inside quotes is one word, not three commands.

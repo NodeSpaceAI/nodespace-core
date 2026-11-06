@@ -391,14 +391,14 @@ async fn a_candidate_whose_rules_cannot_be_resolved_is_excluded_and_counted() ->
     Ok(())
 }
 
-/// The seeded "Ready tasks" queue follows the spec Play: a task with a
+/// The "Ready tasks" list, as it was defined, follows the spec Play: a task with a
 /// checklist and no spec is offered, and one whose spec is a draft is not
 /// until that spec is approved (ADR-097 §3, §6).
 #[tokio::test]
-async fn the_seeded_ready_queue_leaves_out_a_task_the_spec_play_would_refuse() -> Result<()> {
-    use nodespace_core::services::query_service::core_queries::READY_TASKS_QUERY_ID;
-
+async fn the_ready_tasks_list_leaves_out_a_task_the_spec_play_would_refuse() -> Result<()> {
     let h = Harness::start().await?;
+    let ready_tasks =
+        crate::core_queries_test::define_removed_queue(&h.service, "Ready tasks").await;
     let gated = h.task().await?;
     h.child(&gated, "checkbox", "- [ ] It works").await?;
     let draft = h.create("spec", json!({})).await?;
@@ -411,12 +411,12 @@ async fn the_seeded_ready_queue_leaves_out_a_task_the_spec_play_would_refuse() -
     h.link(&spec, "tasks", &specced).await?;
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    let ids = run_ids_in_order(&h, json!({ "query": READY_TASKS_QUERY_ID })).await?;
+    let ids = run_ids_in_order(&h, json!({ "query": ready_tasks })).await?;
     assert_eq!(sorted(ids), sorted([plain.clone(), specced.clone()]));
 
     h.child(&draft, "checkbox", "- [ ] It works").await?;
     h.set(&draft, json!({ "spec_status": "approved" })).await?;
-    let ids = run_ids_in_order(&h, json!({ "query": READY_TASKS_QUERY_ID })).await?;
+    let ids = run_ids_in_order(&h, json!({ "query": ready_tasks })).await?;
     assert_eq!(sorted(ids), sorted([gated, plain, specced]));
     h.stop().await;
     Ok(())

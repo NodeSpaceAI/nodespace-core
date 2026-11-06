@@ -23,7 +23,7 @@ STEP 8, MOVE IT TO REVIEW: when the suite passes, move the task to `in_review`. 
 
 STEP 9, HAND IT OVER: the review is another session's work and its outcome is the task's status. <!-- include: task-implement-wait --> An issue that passed is `ready_to_merge`, and `done` is set when the change lands, not by you. An issue with findings is `changes_requested`: keep this session, because it holds the context, and follow Addressing Review Findings, which came with the task from the Changes requested queue. A plain task that passed is `done`.
 
-SEVERAL TASKS OF ONE SPEC IN PARALLEL: each is a session of its own. The frontier is the Ready tasks list, and the claim is the start in STEP 2: a session that is refused takes another from the list. Nothing else is tracked.
+SEVERAL TASKS OF ONE SPEC IN PARALLEL: each is a session of its own. The frontier is the list of ready tasks in STEP 1, and the claim is the start in STEP 2: a session that is refused takes another from the list. Nothing else is tracked.
 
 <!-- include: delivery-gates -->
 

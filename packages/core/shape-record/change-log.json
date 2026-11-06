@@ -16,6 +16,29 @@
         "affectedData": "The embedding rows of every existing decision, spec and plan root: none exist, and no normal path creates one until the root or a line of its body is edited.",
         "transformation": "Queue each existing decision, spec and plan root for embedding."
       }
+    },
+    {
+      "id": "task-level-agent-queries-no-longer-seeded",
+      "after": "0.3.11",
+      "covers": [
+        "seeded.138b68c6-9a67-4fed-8fa5-993953158f59",
+        "seeded.62d6346f-0d71-4f36-bab3-94c2f98ed8ba",
+        "seeded.bb611c45-2b82-47dd-ad53-560ec9b5447f",
+        "seeded.d1e5c9a8-d19c-401b-9277-40fd873fb205"
+      ],
+      "area": "seeded_content",
+      "class": "migrate",
+      "summary": "The saved queries \"Ready tasks\", \"Waiting on you\", \"Needs shaping\" and \"In progress\" stop shipping: the rules and skills that read them carry the filter and run it as an ordinary search, and the skills that were attached to them are attached to nothing.",
+      "userProducible": true,
+      "seeded": {
+        "aspect": "config",
+        "editedUsersAffected": true,
+        "mustNotWaitForDecision": false
+      },
+      "migrate": {
+        "affectedData": "The four query nodes under their fixed ids in every database created by an earlier build. Opening a database does not remove them: they stay, run, and are listed in the navigation as saved queries. The attached_to links from the five skills (Implementing a Task, Creating a Task, Answering a Question, Diagnosing a Bug, Instrumenting a Change) to them are removed on open where the user left the links alone, and kept and recorded as pending where the user changed them.",
+        "transformation": "Delete each of the four query nodes whose definition the user did not edit; keep an edited one as the user's own query and record the shipped removal as pending for them to decide."
+      }
     }
   ]
 }

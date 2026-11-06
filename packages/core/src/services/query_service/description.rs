@@ -333,9 +333,8 @@ mod tests {
     use super::*;
     use crate::services::query_service::core_queries::{
         core_query_templates, AWAITING_REVIEW_QUERY_ID, CHANGES_REQUESTED_QUERY_ID,
-        DECISIONS_BY_STATUS_QUERY_ID, IN_PROGRESS_QUERY_ID, NEEDS_SHAPING_QUERY_ID,
-        PLANS_BY_STATUS_QUERY_ID, READY_TASKS_QUERY_ID, READY_TO_MERGE_QUERY_ID,
-        SPECS_BY_STATUS_QUERY_ID, WAITING_ON_YOU_QUERY_ID,
+        DECISIONS_BY_STATUS_QUERY_ID, PLANS_BY_STATUS_QUERY_ID, READY_TO_MERGE_QUERY_ID,
+        SPECS_BY_STATUS_QUERY_ID,
     };
     use serde_json::json;
 
@@ -648,13 +647,6 @@ mod tests {
             "Lists decisions. Shown as a board with a column per decision_status."
         );
         assert_eq!(
-            sentence(IN_PROGRESS_QUERY_ID),
-            format!(
-                "Lists tasks whose status is in_progress, \
-                 and whose stored status is not changes_requested. {by_priority}"
-            )
-        );
-        assert_eq!(
             sentence(AWAITING_REVIEW_QUERY_ID),
             format!("Lists issues whose status is in_review. {by_priority}")
         );
@@ -666,8 +658,32 @@ mod tests {
             sentence(READY_TO_MERGE_QUERY_ID),
             format!("Lists issues whose status is ready_to_merge. {by_priority}")
         );
+    }
+
+    /// The four lists a procedure carries as filters read as they did when
+    /// they were saved queries: the fixtures are their definitions.
+    #[test]
+    fn the_filters_a_procedure_carries_read_correctly() {
+        let removed: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/removed_task_queues.json"
+        ))
+        .expect("the fixture parses");
+        let sentence = |title: &str| {
+            let mut properties = removed[title].clone();
+            properties["generated_by"] = json!("user");
+            described(properties)
+        };
+        let by_priority = "Sorted by priority, then created_at.";
+
         assert_eq!(
-            sentence(READY_TASKS_QUERY_ID),
+            sentence("In progress"),
+            format!(
+                "Lists tasks whose status is in_progress, \
+                 and whose stored status is not changes_requested. {by_priority}"
+            )
+        );
+        assert_eq!(
+            sentence("Ready tasks"),
             format!(
                 "Lists tasks whose status is open, \
                  that have a node through child where checked is set, \
@@ -678,7 +694,7 @@ mod tests {
             )
         );
         assert_eq!(
-            sentence(NEEDS_SHAPING_QUERY_ID),
+            sentence("Needs shaping"),
             format!(
                 "Lists tasks whose status is open, \
                  that have no node through child where checked is set, \
@@ -686,7 +702,7 @@ mod tests {
             )
         );
         assert_eq!(
-            sentence(WAITING_ON_YOU_QUERY_ID),
+            sentence("Waiting on you"),
             format!(
                 "Lists tasks whose status is open, \
                  that are connected through assignee to the current person, \
