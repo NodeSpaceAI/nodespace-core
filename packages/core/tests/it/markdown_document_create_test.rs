@@ -532,3 +532,63 @@ async fn a_body_that_cannot_be_written_leaves_no_root() {
     assert!(result.is_err(), "the body write fails the call");
     assert_eq!(node_count(&svc).await, 0, "no root is left behind");
 }
+
+/// What an agent that creates a document from a markdown source must end up
+/// with: headings as header nodes that keep their prefix, numbered steps as
+/// ordered-list nodes that keep theirs, and plain list items as text children
+/// with no marker in front of them.
+#[tokio::test]
+async fn a_document_stores_headers_ordered_lists_and_unmarked_list_items() {
+    let (svc, _tmp) = test_service().await;
+    let doc = "# Leave policy\n\n## Entitlements\n\n- 11 public holidays\n- 20 days of annual leave\n\n## Applying\n\n1. Log in to the portal\n2. Pick the dates\n";
+    let out = create_document_node(&svc, input("text", doc))
+        .await
+        .unwrap();
+
+    let root = svc.get_node(&out.node_id).await.unwrap().unwrap();
+    assert_eq!(root.content, "Leave policy");
+
+    let nodes = svc.get_descendants(&out.node_id).await.unwrap();
+    let mut headers: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n.node_type == "header")
+        .map(|n| n.content.as_str())
+        .collect();
+    headers.sort_unstable();
+    assert_eq!(headers, vec!["## Applying", "## Entitlements"]);
+
+    // A header's list items hang under it as text nodes with the marker gone.
+    let entitlements = nodes
+        .iter()
+        .find(|n| n.content == "## Entitlements")
+        .unwrap();
+    let items = children(&svc, &entitlements.id).await;
+    assert_eq!(
+        items,
+        vec![
+            ("text".to_string(), "11 public holidays".to_string()),
+            ("text".to_string(), "20 days of annual leave".to_string()),
+        ]
+    );
+
+    // The numbered steps are ordered-list nodes carrying their prefix.
+    let applying = nodes.iter().find(|n| n.content == "## Applying").unwrap();
+    let steps = children(&svc, &applying.id).await;
+    assert!(!steps.is_empty());
+    assert!(steps
+        .iter()
+        .all(|(t, c)| t == "ordered-list" && c.starts_with("1. ")));
+
+    // No text node anywhere carries typed markdown syntax.
+    for n in nodes.iter().filter(|n| n.node_type == "text") {
+        let c = n.content.trim_start();
+        assert!(
+            !(c.starts_with("- ")
+                || c.starts_with("* ")
+                || c.starts_with('#')
+                || c.starts_with("1. ")),
+            "typed syntax in text node: {:?}",
+            n.content
+        );
+    }
+}
