@@ -1040,12 +1040,14 @@ mod data_plane_round_trip_tests {
         GrpcClient::from_channel(channel, super::StartupHold::released())
     }
 
-    /// Windows does not refuse a connection to a closed port at once: it
-    /// retransmits the SYN for about two seconds before reporting the refusal,
-    /// where unix answers with an immediate reset. The bound must outlast that
-    /// retry window (it is only ever reached on a platform that retries), or a
-    /// refusal reads as a timeout.
-    const REFUSAL_BOUND: Duration = Duration::from_secs(10);
+    /// Unix answers a closed port with an immediate reset, so 2 s is generous.
+    /// Windows retransmits the SYN for about two seconds before reporting the
+    /// refusal, so only there does the bound need to be looser.
+    const REFUSAL_BOUND: Duration = if cfg!(windows) {
+        Duration::from_secs(10)
+    } else {
+        Duration::from_secs(2)
+    };
 
     #[tokio::test]
     async fn a_refused_endpoint_fails_without_timing_out() {
