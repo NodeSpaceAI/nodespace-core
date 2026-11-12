@@ -304,6 +304,8 @@ const CASES: &[Case] = &[
     first("bring in this markdown file as a document", "Bulk Import"),
     first("create nodes from this markdown outline", "Bulk Import"),
     first("import the README into the knowledge base", "Bulk Import"),
+    first("put this document into NodeSpace", "Bulk Import"),
+    first("copy this Google Doc here", "Bulk Import"),
     // Writing a Spec: what is being built and how done is judged.
     first("write a spec for the CSV export feature", "Writing a Spec"),
     first(
