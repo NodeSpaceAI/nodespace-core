@@ -13,6 +13,7 @@ mod ai_chat_send_to_idle_test;
 mod commits_per_edit_test;
 mod cross_window_hierarchy_sync_test;
 mod daemon_binary_freshness_test;
+#[cfg(unix)]
 mod daemon_custom_socket_test;
 mod daemon_extensions_check_test;
 mod daemon_readiness_test;

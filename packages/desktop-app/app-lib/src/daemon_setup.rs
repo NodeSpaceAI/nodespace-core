@@ -67,7 +67,9 @@
 //! The hold covers that one channel only: the CLI, the skill and agent sessions
 //! dial the socket themselves.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -99,6 +101,8 @@ struct DaemonInstall {
     /// The installed daemon executable inside `bin_dir`.
     binary: PathBuf,
     /// The source stamp recording which bundled file `binary` was copied from.
+    /// Read only by the unix stale-daemon check; a test pins its location everywhere.
+    #[cfg_attr(not(unix), allow(dead_code))]
     stamp: PathBuf,
 }
 
@@ -151,6 +155,7 @@ fn daemon_binary_name() -> &'static str {
 ///
 /// grpc_client::resolve_socket_path() calls this function for its fallback, so
 /// the GUI app always dials the same socket the plist points the daemon to.
+#[cfg(unix)]
 pub(crate) fn daemon_socket_relative() -> &'static str {
     nodespace_proto::socket::daemon_socket_relative(cfg!(debug_assertions))
 }
@@ -536,6 +541,7 @@ fn current_exe_canonical() -> Result<PathBuf> {
         .context("Cannot canonicalize current executable path for NODESPACE_UI_BINARY")
 }
 
+#[cfg(unix)]
 fn resolve_sidecar_path_sync() -> Option<PathBuf> {
     sidecar_path_from_exe(
         &std::env::current_exe().ok()?,
@@ -666,6 +672,7 @@ pub fn product_check(reported: Option<&[String]>, profile: &DaemonProfile) -> Pr
 /// daemon binary, by file name with any `.exe` suffix removed. Only the final
 /// `.exe` is dropped, so a name such as `nodespaced.old` does not pass for
 /// `nodespaced`.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn runs_profile_binary(program: &str, profile: &DaemonProfile) -> bool {
     Path::new(program)
         .file_name()
@@ -2250,7 +2257,7 @@ fn account_home_dir() -> Option<PathBuf> {
 /// `~/.nodespace` while the app, resolving the scratch home, looked in another
 /// registry. Each is written only when it differs from what the job would get
 /// anyway, so an ordinary install's registration is unchanged.
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 fn home_redirect_env(
     home: &Path,
     account_home: Option<&Path>,

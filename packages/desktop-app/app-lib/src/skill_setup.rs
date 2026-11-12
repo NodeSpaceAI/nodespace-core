@@ -1277,8 +1277,10 @@ mod tests {
 
     #[test]
     fn build_augmented_path_preserves_existing_path_entries() {
-        let existing = OsStr::new("/custom/bin:/another/bin");
-        let result = build_augmented_path(existing, None, None);
+        // Joined with the platform separator: a literal `:` list is one entry on Windows.
+        let existing =
+            std::env::join_paths(["/custom/bin", "/another/bin"]).expect("joinable entries");
+        let result = build_augmented_path(&existing, None, None);
         let paths: Vec<PathBuf> = std::env::split_paths(&result).collect();
 
         assert!(paths.contains(&PathBuf::from("/custom/bin")));
@@ -1350,6 +1352,10 @@ mod tests {
     /// `bun run build:skill` (staged before this test runs — see
     /// scripts/gate-stage.ts and CLAUDE.md's Rust test instructions).
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn resolve_installer_path_falls_back_to_source_checkout_dist() {
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
@@ -1373,6 +1379,10 @@ mod tests {
     /// silently produce a `Compiled` variant pointing at a binary that
     /// doesn't exist.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn resolve_installer_falls_back_to_script_when_no_compiled_binary_is_bundled() {
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
@@ -1537,6 +1547,10 @@ mod tests {
     /// Requires `bun` on $PATH to run the compile step (this repo is
     /// Bun-only, so the test/pre-push environment always has it).
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn run_skill_installer_compiled_variant_actually_installs_with_zero_runtime_on_path() {
         let skill_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -1643,6 +1657,10 @@ mod tests {
     /// some other reason), without touching the process's real `$PATH` (see
     /// the mutation-safety note on `run_installer_with_runtimes`).
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn run_installer_with_runtimes_falls_back_past_a_missing_first_runtime() {
         let fake_dir = tempfile::tempdir().expect("create scratch dir");
         let missing_runtime = fake_dir.path().join("definitely-does-not-exist-xyz");
@@ -1772,6 +1790,10 @@ mod tests {
     /// `packages/skill` already built (`bun run build:skill`, staged by
     /// scripts/gate-stage.ts's skill-installer tier before this runs).
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn run_skill_installer_actually_installs_into_an_isolated_home() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
@@ -1827,6 +1849,10 @@ mod tests {
     /// `fake_output`'s synthetic stdout and a hand-trace covered this exact
     /// line format.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn run_skill_installer_reports_agents_skipped_for_a_genuinely_incomplete_package() {
         let app = tauri::test::mock_app();
         let real_resource_root = resolve_installer_path(&app.handle().clone())
@@ -1961,6 +1987,10 @@ mod tests {
     /// "persisted list says installed, filesystem says otherwise" scenario;
     /// closes the gap where only synthetic fixtures exercised this shape.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn status_subcommand_stops_reporting_an_agent_whose_skill_dir_was_deleted_by_hand() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
@@ -2014,6 +2044,10 @@ mod tests {
     /// Runs the real installer against an isolated `$HOME`, via the same
     /// `installer_command` + `parse_installer_output` path production uses.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn detect_subcommand_reports_present_agents_before_anything_is_installed() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())
@@ -2084,6 +2118,10 @@ mod tests {
     /// gap `remove_skill`'s old hand-rolled `~/.claude/skills/nodespace`-only
     /// deletion left behind for every non-Claude-Code harness.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "needs bun and a built packages/skill/dist/install.js, neither on the Windows test machine; the unix fake-shell shim also cannot run there"
+    )]
     fn uninstall_subcommand_removes_the_skill_from_every_installed_agent() {
         let app = tauri::test::mock_app();
         let installer_path = resolve_installer_path(&app.handle().clone())

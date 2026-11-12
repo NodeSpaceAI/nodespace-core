@@ -1040,15 +1040,22 @@ mod data_plane_round_trip_tests {
         GrpcClient::from_channel(channel, super::StartupHold::released())
     }
 
+    /// Unix answers a closed port with an immediate reset, so 2 s is generous.
+    /// Windows retransmits the SYN for about two seconds before reporting the
+    /// refusal, so only there does the bound need to be looser.
+    const REFUSAL_BOUND: Duration = if cfg!(windows) {
+        Duration::from_secs(10)
+    } else {
+        Duration::from_secs(2)
+    };
+
     #[tokio::test]
     async fn a_refused_endpoint_fails_without_timing_out() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let port = listener.local_addr().expect("local addr").port();
         drop(listener);
 
-        let outcome = client_for(port)
-            .data_plane_round_trip(Duration::from_secs(2))
-            .await;
+        let outcome = client_for(port).data_plane_round_trip(REFUSAL_BOUND).await;
 
         assert!(
             matches!(outcome, DataPlaneRoundTrip::Failed(_)),
