@@ -20,9 +20,12 @@ pub const FORCE_CPU_ENV: &str = "NODESPACE_FORCE_CPU";
 
 /// Whether [`FORCE_CPU_ENV`] asks for CPU-only inference.
 pub fn cpu_only_requested() -> bool {
-    std::env::var(FORCE_CPU_ENV)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false)
+    is_enabled(std::env::var(FORCE_CPU_ENV).ok().as_deref())
+}
+
+/// Whether an environment switch's value turns it on: set, not empty, not `0`.
+fn is_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0")
 }
 
 /// SHA-256 of the pinned embedding model `nomic-embed-text-v1.5.Q8_0.gguf`
@@ -661,6 +664,16 @@ fn sanitize_model_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::is_enabled;
+
+    #[test]
+    fn a_switch_is_on_only_for_a_set_value_that_is_not_empty_or_zero() {
+        assert!(!is_enabled(None));
+        assert!(!is_enabled(Some("")));
+        assert!(!is_enabled(Some("0")));
+        assert!(is_enabled(Some("1")));
+        assert!(is_enabled(Some("true")));
+    }
     use super::*;
 
     #[test]

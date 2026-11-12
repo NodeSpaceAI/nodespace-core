@@ -266,17 +266,42 @@ async fn typed_question(
     }
 }
 
-/// The tools a rendered prompt declares to the model.
+/// The Stage-1 decision tool; a generation that declares it is a route
+/// decision, whatever else its prose says.
+const STAGE_1_TOOL: &str = "route_query";
+
+/// The read tool the pinned type skill keeps on the lookup route.
+const LOOKUP_READ_TOOL: &str = "get_node";
+
+/// Whether a rendered prompt declares `tool` to the model. The one place the
+/// declaration forms of the chat template are written down: the write-tool
+/// check, the Stage-1 check and the self-check below all go through it.
+fn declares(prompt: &str, tool: &str) -> bool {
+    prompt.contains(&format!("declaration:{tool}"))
+        || prompt.contains(&format!("\"name\": \"{tool}\""))
+        || prompt.contains(&format!("\"name\":\"{tool}\""))
+}
+
 fn declared_tools(prompt: &str) -> Vec<&'static str> {
     WRITE_TOOLS
         .iter()
         .copied()
-        .filter(|tool| {
-            prompt.contains(&format!("declaration:{tool}"))
-                || prompt.contains(&format!("\"name\": \"{tool}\""))
-                || prompt.contains(&format!("\"name\":\"{tool}\""))
-        })
+        .filter(|tool| declares(prompt, tool))
         .collect()
+}
+
+/// Checks the matcher against the prompt it is reading, so a template whose
+/// declaration form it does not know fails loudly instead of passing as
+/// "no write tool declared". Every lookup generation must declare the read
+/// tool the route keeps.
+fn matcher_sees_the_tools(question: &str, i: usize, prompt: &str) -> Option<String> {
+    (!declares(prompt, LOOKUP_READ_TOOL)).then(|| {
+        format!(
+            "{question}: generation {i} does not declare {LOOKUP_READ_TOOL}: either the \
+             lookup route dropped it or the declaration matcher does not know this \
+             template's form (read the dump)"
+        )
+    })
 }
 
 fn check_lookup_route(question: &str, turn: &Turn) -> Vec<String> {
@@ -285,18 +310,86 @@ fn check_lookup_route(question: &str, turn: &Turn) -> Vec<String> {
         failures.push(format!("{question}: no prompt was captured"));
     }
     for (i, prompt) in turn.prompts.iter().enumerate() {
-        if prompt.contains("route_query") && prompt.contains("route_clarify") {
-            failures.push(format!("{question}: generation {i} is a Stage-1 route decision"));
+        failures.extend(matcher_sees_the_tools(question, i, prompt));
+        if declares(prompt, STAGE_1_TOOL) {
+            failures.push(format!(
+                "{question}: generation {i} is a Stage-1 route decision"
+            ));
         }
         let writes = declared_tools(prompt);
         if !writes.is_empty() {
-            failures.push(format!("{question}: generation {i} declares write tools {writes:?}"));
+            failures.push(format!(
+                "{question}: generation {i} declares write tools {writes:?}"
+            ));
         }
     }
-    if let Some(write) = turn.calls.iter().find(|c| WRITE_TOOLS.contains(&c.as_str())) {
+    if let Some(write) = turn
+        .calls
+        .iter()
+        .find(|c| WRITE_TOOLS.contains(&c.as_str()))
+    {
         failures.push(format!("{question}: executed the write tool {write}"));
     }
     failures
+}
+
+/// Whether a reply says the type extends `Project`: the parent's name next to
+/// extends or parent wording, with the type's own name removed first so
+/// "Software Project" does not count as the parent. A denial is a reply that
+/// says so in the common phrasings. Phrase lists can be evaded by paraphrase,
+/// so a pass here is a weak signal and a failure is a prompt to read the reply.
+fn names_the_parent(reply: &str) -> bool {
+    let reply = reply.to_lowercase().replace("software project", "");
+    ["extends", "parent", "inherits", "based on", "built on"]
+        .iter()
+        .any(|w| {
+            reply.match_indices(w).any(|(at, _)| {
+                let near: String = reply[at..].chars().take(60).collect();
+                near.contains("project")
+            })
+        })
+}
+
+fn denies_the_parent(reply: &str) -> bool {
+    let reply = reply.to_lowercase();
+    [
+        "does not extend",
+        "doesn't extend",
+        "extends nothing",
+        "no parent",
+        "not extend any",
+        "does not inherit",
+        "doesn't inherit",
+        "standalone",
+    ]
+    .iter()
+    .any(|p| reply.contains(p))
+}
+
+#[test]
+fn the_parent_check_ignores_the_types_own_name() {
+    assert!(!names_the_parent(
+        "The Software Project type has a repository field."
+    ));
+    assert!(names_the_parent("Yes, Software Project extends Project."));
+    assert!(names_the_parent(
+        "Its parent type is [Project](nodespace://project)."
+    ));
+    assert!(!names_the_parent("No other type."));
+    assert!(denies_the_parent("It extends nothing."));
+    assert!(!denies_the_parent("Yes, it extends Project."));
+}
+
+#[test]
+fn the_matcher_reads_the_declaration_forms_and_ignores_prose() {
+    let declared = "<|tool|>declaration:get_node{} declaration:update_schema{}";
+    assert!(declares(declared, "get_node"));
+    assert_eq!(declared_tools(declared), ["update_schema"]);
+    let prose = "Stage 1 decides with route_query or route_clarify; use update_schema later.";
+    assert!(!declares(prose, STAGE_1_TOOL));
+    assert!(declared_tools(prose).is_empty());
+    assert!(matcher_sees_the_tools("q", 0, prose).is_some());
+    assert!(matcher_sees_the_tools("q", 0, declared).is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -332,11 +425,12 @@ async fn typed_questions_in_the_software_project_chat_take_the_read_only_lookup_
         t1.reply
     );
     failures.extend(check_lookup_route(q1, &t1));
-    let r1 = t1.reply.to_lowercase();
-    if !r1.contains("project") {
-        failures.push(format!("{q1}: the reply does not name the parent, Project"));
+    if !names_the_parent(&t1.reply) {
+        failures.push(format!(
+            "{q1}: the reply does not name Project as the parent"
+        ));
     }
-    if r1.contains("does not extend") || r1.contains("doesn't extend") || r1.contains("extends nothing") {
+    if denies_the_parent(&t1.reply) {
         failures.push(format!("{q1}: the reply denies the parent"));
     }
 
@@ -350,11 +444,15 @@ async fn typed_questions_in_the_software_project_chat_take_the_read_only_lookup_
     );
     failures.extend(check_lookup_route(q2, &t2));
     let r2 = t2.reply.to_lowercase();
-    if r2.contains("does not extend") || r2.contains("doesn't extend") || r2.contains("extends nothing") || r2.contains("no parent") {
-        failures.push(format!("{q2}: the reply contradicts the opening: it denies the parent"));
+    if denies_the_parent(&t2.reply) {
+        failures.push(format!(
+            "{q2}: the reply contradicts the opening: it denies the parent"
+        ));
     }
     if !r2.contains("repository") {
-        failures.push(format!("{q2}: the reply leaves out the type's own field, repository"));
+        failures.push(format!(
+            "{q2}: the reply leaves out the type's own field, repository"
+        ));
     }
 
     assert!(failures.is_empty(), "{failures:#?}");

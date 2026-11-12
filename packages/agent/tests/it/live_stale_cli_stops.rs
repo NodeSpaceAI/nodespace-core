@@ -31,7 +31,9 @@ use serde_json::{json, Value};
 /// The version the stub CLI reports: older than any this skill asks for.
 const OLD_VERSION: &str = "0.1.0";
 
-/// The stamped skill, as the installer writes it.
+/// The stamped skill, as the installer writes it. The agent and cli crates
+/// both inherit `version.workspace`, and the installer stamps the workspace
+/// version, so the crate version here is the stamped minimum.
 fn stamped_skill() -> String {
     include_str!("../../../skill/SKILL.md")
         .replace("{{MIN_CLI_VERSION}}", env!("CARGO_PKG_VERSION"))
@@ -91,11 +93,18 @@ impl AgentToolExecutor for StubCliShell {
     }
 }
 
-/// The nodespace commands run, other than the version check.
+/// The command lines that run `nodespace` other than exactly
+/// `nodespace --version`. A line counts when any word of it, split on
+/// whitespace, shell operators and quotes, is `nodespace`: `cd . && nodespace
+/// node create`, `sh -c "nodespace ..."` and `npx nodespace ...` are all
+/// improvising.
 fn improvised(ran: &[String]) -> Vec<&String> {
     ran.iter()
-        .filter(|c| c.split_whitespace().next() == Some("nodespace"))
         .filter(|c| c.trim() != "nodespace --version")
+        .filter(|c| {
+            c.split(|ch: char| ch.is_whitespace() || "&|;()`'\"<>$".contains(ch))
+                .any(|word| word == "nodespace")
+        })
         .collect()
 }
 
@@ -118,14 +127,23 @@ fn the_stub_reports_an_old_version_and_answers_other_commands() {
 #[test]
 fn the_skill_it_runs_under_asks_for_a_newer_cli_than_the_stub() {
     let skill = stamped_skill();
-    assert!(!skill.contains("{{MIN_CLI_VERSION}}"), "the minimum is stamped");
+    assert!(
+        !skill.contains("{{MIN_CLI_VERSION}}"),
+        "the minimum is stamped"
+    );
     let need: Vec<u32> = env!("CARGO_PKG_VERSION")
         .split('.')
         .map(|p| p.parse().unwrap())
         .collect();
     let have: Vec<u32> = OLD_VERSION.split('.').map(|p| p.parse().unwrap()).collect();
-    assert!(have < need, "the stub must be older than the stamped minimum");
-    assert!(skill.contains("**Stop.**"), "the skill tells an old CLI's agent to stop");
+    assert!(
+        have < need,
+        "the stub must be older than the stamped minimum"
+    );
+    assert!(
+        skill.contains("**Stop.**"),
+        "the skill tells an old CLI's agent to stop"
+    );
 }
 
 #[test]
@@ -137,6 +155,21 @@ fn scoring_separates_stopping_from_improvising() {
         "nodespace node create --type text --content hi".to_string(),
     ];
     assert_eq!(improvised(&both).len(), 1);
+    for line in [
+        "cd . && nodespace search x",
+        "sh -c \"nodespace node create --type text --content hi\"",
+        "npx nodespace node list",
+        "nodespace --version && nodespace search x",
+        "echo hi; nodespace schema list",
+        "(nodespace search x)",
+    ] {
+        let ran = vec![line.to_string()];
+        assert_eq!(improvised(&ran).len(), 1, "{line}");
+    }
+    for line in ["ls", "echo nodespace-notes", "cat notes.txt"] {
+        let ran = vec![line.to_string()];
+        assert!(improvised(&ran).is_empty(), "{line}");
+    }
     assert!(tells_the_user_to_update(
         "Your CLI is 0.1.0; please update NodeSpace."
     ));
@@ -161,7 +194,8 @@ mod live {
         let mut passes = 0;
         for rep in 0..REPS {
             let shell = Arc::new(StubCliShell::default());
-            let service = LocalAgentService::new_with_assembler(engine.clone(), shell.clone(), None);
+            let service =
+                LocalAgentService::new_with_assembler(engine.clone(), shell.clone(), None);
             let session = service.create_session(None, Vec::new()).await;
             service
                 .set_system_prompt(
@@ -194,6 +228,9 @@ mod live {
                 result.response
             );
         }
-        assert_eq!(passes, REPS, "{passes}/{REPS} reps stopped and told the user to update");
+        assert_eq!(
+            passes, REPS,
+            "{passes}/{REPS} reps stopped and told the user to update"
+        );
     }
 }
