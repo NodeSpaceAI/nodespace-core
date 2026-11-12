@@ -766,7 +766,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // no-followup-search success rule.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0a",
         title: "Bulk Import",
-        use_for: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
+        use_for: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document, or to put a document, a page or a Google Doc into NodeSpace, copy it here, or save it as nodes.",
         tools: &["create_nodes_from_markdown"],
         max_iterations: 2,
         not_for: None,
