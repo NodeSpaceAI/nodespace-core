@@ -891,6 +891,7 @@ pub async fn dismiss_identity_backfill_prompt() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     const POSIX_EXPORT: &str = "export PATH=\"$HOME/.nodespace/bin:$PATH\"";
     const POSIX_EXPORT_LINE: &str =
         "\n# NodeSpace CLI\nexport PATH=\"$HOME/.nodespace/bin:$PATH\"\n";

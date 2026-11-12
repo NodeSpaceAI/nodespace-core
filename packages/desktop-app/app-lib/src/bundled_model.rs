@@ -488,6 +488,11 @@ mod tests {
     /// real one. The environment is process-global: nextest runs each test in
     /// its own process, and every variable is restored before the asserts.
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows resolves the home from the account (known-folder API), \
+        so a scratch HOME cannot stand in for it; see the_home_ignores_nodespace_home"
+    )]
     fn the_copy_ignores_nodespace_home() {
         let (_resources, bundled) = bundle_with_model();
         let isolated = tempfile::tempdir().expect("isolated home");
@@ -516,6 +521,25 @@ mod tests {
             entries(isolated.path()).is_empty(),
             "the redirected home gets nothing"
         );
+    }
+
+    /// The platform-neutral half of the test above: with `NODESPACE_HOME` set
+    /// the home is still the user's own. On Windows `dirs` reads the account's
+    /// profile folder and never `HOME`, so this is the check that runs there.
+    #[test]
+    fn the_home_ignores_nodespace_home() {
+        let isolated = tempfile::tempdir().expect("isolated home");
+        let saved = std::env::var_os("NODESPACE_HOME");
+        std::env::set_var("NODESPACE_HOME", isolated.path());
+        let home = user_home();
+        match saved {
+            Some(value) => std::env::set_var("NODESPACE_HOME", value),
+            None => std::env::remove_var("NODESPACE_HOME"),
+        }
+
+        let home = home.expect("a home");
+        assert_ne!(home, isolated.path());
+        assert_eq!(Some(home), dirs::home_dir());
     }
 
     #[test]
