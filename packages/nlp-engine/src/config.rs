@@ -9,6 +9,25 @@ use std::time::UNIX_EPOCH;
 /// where any value >= total layers offloads everything.
 pub const GPU_OFFLOAD_ALL_LAYERS: u32 = 99;
 
+/// Environment variable that keeps a model off the GPU entirely when set to a
+/// non-empty value other than `0`.
+///
+/// Zero offloaded layers is not enough on a Metal build: llama.cpp still
+/// offers large-batch operations on CPU-resident weights to the GPU device.
+/// With this set, the model is loaded with an empty device list, so no GPU
+/// backend takes part in loading or in any decode.
+pub const FORCE_CPU_ENV: &str = "NODESPACE_FORCE_CPU";
+
+/// Whether [`FORCE_CPU_ENV`] asks for CPU-only inference.
+pub fn cpu_only_requested() -> bool {
+    is_enabled(std::env::var(FORCE_CPU_ENV).ok().as_deref())
+}
+
+/// Whether an environment switch's value turns it on: set, not empty, not `0`.
+fn is_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0")
+}
+
 /// SHA-256 of the pinned embedding model `nomic-embed-text-v1.5.Q8_0.gguf`
 /// (HuggingFace `nomic-ai/nomic-embed-text-v1.5-GGUF`, commit
 /// `0188c9bf409793f810680a5a431e7b899c46104c`), lowercase hex.
@@ -645,6 +664,16 @@ fn sanitize_model_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::is_enabled;
+
+    #[test]
+    fn a_switch_is_on_only_for_a_set_value_that_is_not_empty_or_zero() {
+        assert!(!is_enabled(None));
+        assert!(!is_enabled(Some("")));
+        assert!(!is_enabled(Some("0")));
+        assert!(is_enabled(Some("1")));
+        assert!(is_enabled(Some("true")));
+    }
     use super::*;
 
     #[test]

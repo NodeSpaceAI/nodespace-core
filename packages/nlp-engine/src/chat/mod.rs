@@ -253,8 +253,16 @@ impl ChatEngine {
             // Get global backend (shares with embedding service)
             let backend = backend()?;
 
-            let model_params =
-                LlamaModelParams::default().with_n_gpu_layers(self.config.n_gpu_layers);
+            let model_params = if crate::config::cpu_only_requested() {
+                LlamaModelParams::default()
+                    .with_n_gpu_layers(0)
+                    .with_devices(&[])
+                    .map_err(|e| {
+                        ChatError::ModelLoadError(format!("CPU-only device list refused: {}", e))
+                    })?
+            } else {
+                LlamaModelParams::default().with_n_gpu_layers(self.config.n_gpu_layers)
+            };
 
             let model = LlamaModel::load_from_file(&backend, path, &model_params)
                 .map_err(|e| ChatError::ModelLoadError(format!("Failed to load model: {}", e)))?;
