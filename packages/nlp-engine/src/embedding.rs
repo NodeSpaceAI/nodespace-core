@@ -247,7 +247,14 @@ fn load_model_with_timeout(
             let result = (|| {
                 // Holds the backend Mutex for the duration of the load.
                 let backend = get_or_init_backend()?;
-                let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
+                let model_params = if crate::config::cpu_only_requested() {
+                    LlamaModelParams::default()
+                        .with_n_gpu_layers(0)
+                        .with_devices(&[])
+                        .map_err(|e| format!("CPU-only device list refused: {}", e))?
+                } else {
+                    LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers)
+                };
                 LlamaModel::load_from_file(&backend, &model_path, &model_params)
                     .map_err(|e| format!("Model load failed: {}", e))
             })();

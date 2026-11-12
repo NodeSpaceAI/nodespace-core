@@ -9,6 +9,22 @@ use std::time::UNIX_EPOCH;
 /// where any value >= total layers offloads everything.
 pub const GPU_OFFLOAD_ALL_LAYERS: u32 = 99;
 
+/// Environment variable that keeps a model off the GPU entirely when set to a
+/// non-empty value other than `0`.
+///
+/// Zero offloaded layers is not enough on a Metal build: llama.cpp still
+/// offers large-batch operations on CPU-resident weights to the GPU device.
+/// With this set, the model is loaded with an empty device list, so no GPU
+/// backend takes part in loading or in any decode.
+pub const FORCE_CPU_ENV: &str = "NODESPACE_FORCE_CPU";
+
+/// Whether [`FORCE_CPU_ENV`] asks for CPU-only inference.
+pub fn cpu_only_requested() -> bool {
+    std::env::var(FORCE_CPU_ENV)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
 /// SHA-256 of the pinned embedding model `nomic-embed-text-v1.5.Q8_0.gguf`
 /// (HuggingFace `nomic-ai/nomic-embed-text-v1.5-GGUF`, commit
 /// `0188c9bf409793f810680a5a431e7b899c46104c`), lowercase hex.
