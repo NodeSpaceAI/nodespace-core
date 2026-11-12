@@ -1153,7 +1153,7 @@ export function withSetupFailure(
  * Throws `EnvironmentError` if the daemon dies mid-rep; the caller decides
  * whether that voids the whole run (it does — see `runEval`).
  */
-function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
+export function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
   const results: ScenarioResult[] = [];
 
   // Prove the graph capture sees the database before any turn is scored on it:
