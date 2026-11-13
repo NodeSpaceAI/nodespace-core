@@ -1994,6 +1994,9 @@ const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
     ("Diagnosing a Bug", &["skills_win_their_requests"]),
     ("Prototyping", &["skills_win_their_requests"]),
     ("Researching", &["skills_win_their_requests"]),
+    // Its `not_for` sends "continue the task I was working on" to Implementing
+    // a Task; the matrix ranks that request.
+    ("Completing a Task", &["skills_win_their_requests"]),
     ("Deprecating and Migrating", &["skills_win_their_requests"]),
     ("Shipping a Change", &["skills_win_their_requests"]),
     (

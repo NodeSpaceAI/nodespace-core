@@ -11,7 +11,7 @@ start keeping tabs on who owes me money	Schema Creation	Window	3	0.805	Answering
 set up something to log my freelance gigs	Schema Creation	Window	1	0.846	Schema Creation	0.846	Researching	+0.007	Schema Creation
 add a priority field to my invoices	Schema Creation	Window	2	0.824	Implementing a Task	0.841	Implementing a Task	-0.017	Schema Creation
 point rebuild task at the decision it has to respect	Recording a Decision	Window	1	0.908	Recording a Decision	0.908	Graph Editing	+0.042	Graph Editing
-link this invoice to the Acme account	Relationship Management	Window	1	0.788	Relationship Management	0.788	Addressing Review Findings	+0.051	Relationship Management
+link this invoice to the Acme account	Relationship Management	Window	1	0.774	Relationship Management	0.774	Addressing Review Findings	+0.037	Relationship Management
 Add a new task to follow up with the vendor next week	Node Creation	Window	2	0.862	Implementing a Task	0.981	Implementing a Task	-0.118	Node Creation
 put down Kind of Blue, it's by Miles Davis	Node Creation	Window	2	0.717	Node Deletion	0.717	Node Deletion	-0.000	Node Deletion
 add a task to call the roofer on Friday	Node Creation	Window	3	0.768	Creating a Task	0.833	Creating a Task	-0.065	Graph Editing
@@ -20,7 +20,7 @@ Add this note to my reading list collection	Organization	Window	4	0.810	Research
 file these under the Q3 folder	Organization	Window	2	0.831	Bulk Import	0.836	Bulk Import	-0.005	Bulk Import
 put the roofing notes in with the house stuff	Organization	Window	7	0.750	Node Creation	0.815	Node Creation	-0.065	Node Creation
 The incident Rowan was on call for — mark it resolved	Graph Editing	Window	3	0.787	Answering a Question	0.822	Answering a Question	-0.035	Conflict Journal
-mark the incident as resolved	Graph Editing	Window	2	0.891	Completing a Task	0.909	Completing a Task	-0.017	Graph Editing
+mark the incident as resolved	Graph Editing	Window	2	0.891	Completing a Task	0.908	Completing a Task	-0.017	Graph Editing
 mark incident resolved	Graph Editing	Window	3	0.825	Completing a Task	0.846	Completing a Task	-0.020	Conflict Journal
 set the incident's resolved field to true	Graph Editing	Window	1	0.882	Graph Editing	0.882	Addressing Review Findings	+0.001	Graph Editing
 mark the invoice as paid	Graph Editing	Window	2	0.814	Answering a Question	0.841	Answering a Question	-0.027	Graph Editing
@@ -43,9 +43,9 @@ delete the incident, it's resolved	Node Deletion	Window	1	0.927	Node Deletion	0.
 remove the resolved tickets	Node Deletion	Window	2	0.846	Building and Changing a View	0.847	Building and Changing a View	-0.001	Node Deletion
 remove the closed tickets	Node Deletion	Window	1	0.809	Node Deletion	0.809	Building and Changing a View	+0.001	Node Deletion
 remove the done tasks	Node Deletion	Window	2	0.917	Completing a Task	0.971	Completing a Task	-0.055	Node Deletion
-remove the completed items	Node Deletion	Window	1	0.932	Node Deletion	0.932	Completing a Task	+0.029	Node Deletion
+remove the completed items	Node Deletion	Window	1	0.932	Node Deletion	0.932	Completing a Task	+0.036	Node Deletion
 remove the paid invoices	Node Deletion	Window	1	0.802	Node Deletion	0.802	Addressing Review Findings	+0.047	Node Deletion
-get rid of the paid invoices	Node Deletion	Window	1	0.815	Node Deletion	0.815	Deprecating and Migrating	+0.026	Node Deletion
+get rid of the paid invoices	Node Deletion	Window	1	0.815	Node Deletion	0.815	Answering a Question	+0.027	Node Deletion
 get rid of the duplicate customer record	Node Deletion	Window	5	0.852	Graph Editing	0.896	Graph Editing	-0.045	Graph Editing
 what did I write about the Halvorsen meeting?	Research & Search	Window	3	0.736	Researching	0.790	Researching	-0.054	Conflict Journal
 what equipment is on the books?	Research & Search	Window	2	0.820	Researching	0.925	Researching	-0.105	Research & Search
@@ -80,12 +80,12 @@ set the due date on the roofing task to Friday	Graph Editing	First	2	0.783	Imple
 bump the priority on the login bug to high	Graph Editing	First	2	0.856	Diagnosing a Bug	0.871	Diagnosing a Bug	-0.015	Graph Editing
 the Camden invoice came in, mark it paid	Graph Editing	First	2	0.750	Shipping a Change	0.762	Shipping a Change	-0.011	Graph Editing
 change the amount on the Acme invoice to 2600	Graph Editing	First	3	0.687	Instrumenting a Change	0.717	Instrumenting a Change	-0.030	Play Authoring
-record an edge between the rebuild task and the storage decision	Relationship Management	Window	3	0.895	Recording a Decision	0.976	Recording a Decision	-0.080	Graph Editing
-connect the retro notes to the sprint they belong to	Relationship Management	First	1	0.806	Relationship Management	0.806	Node Merge	+0.006	Relationship Management
-this task depends on the API migration	Relationship Management	First	7	0.784	Deprecating and Migrating	0.908	Deprecating and Migrating	-0.124	Node Creation
-the launch task is blocked by the security review	Relationship Management	First	6	0.719	Reviewing a Task	0.947	Reviewing a Task	-0.228	Play Workflow State
-attach the contract to the Harbor Freight account	Relationship Management	First	2	0.722	Shipping a Change	0.738	Shipping a Change	-0.015	Relationship Management
-which tasks depend on the API migration?	Relationship Management	Window	5	0.779	Deprecating and Migrating	0.876	Deprecating and Migrating	-0.096	Node Creation
+record an edge between the rebuild task and the storage decision	Relationship Management	Window	2	0.900	Recording a Decision	0.976	Recording a Decision	-0.076	Relationship Management
+connect the retro notes to the sprint they belong to	Relationship Management	First	1	0.805	Relationship Management	0.805	Node Merge	+0.005	Relationship Management
+this task depends on the API migration	Relationship Management	First	6	0.810	Deprecating and Migrating	0.907	Deprecating and Migrating	-0.097	Node Creation
+the launch task is blocked by the security review	Relationship Management	First	3	0.765	Reviewing a Task	0.947	Reviewing a Task	-0.182	Play Workflow State
+attach the contract to the Harbor Freight account	Relationship Management	First	2	0.717	Shipping a Change	0.738	Shipping a Change	-0.021	Relationship Management
+which tasks depend on the API migration?	Relationship Management	Window	3	0.794	Creating a Task	0.873	Creating a Task	-0.079	Node Creation
 group these notes under Travel	Organization	First	1	0.864	Organization	0.864	Researching	+0.052	Organization
 move the recipe notes into the Cooking collection	Organization	First	1	0.838	Organization	0.838	Building and Changing a View	+0.001	Organization
 categorize these receipts as business expenses	Organization	First	1	0.787	Organization	0.787	Splitting a Plan into Tasks	+0.016	Organization
@@ -132,13 +132,13 @@ I don't follow what you mean	Explaining	Window	1	0.894	Explaining	0.894	Research
 pick up the next ready task	Implementing a Task	First	1	1.069	Implementing a Task	1.069	Graph Editing	+0.197	Graph Editing
 start working on the next task in the queue	Implementing a Task	First	1	1.076	Implementing a Task	1.076	Graph Editing	+0.197	Graph Editing
 implement the export task	Implementing a Task	First	1	0.993	Implementing a Task	0.993	Node Creation	+0.165	Node Creation
-continue the task I was working on	Implementing a Task	First	-	-	Completing a Task	0.984	Completing a Task	-	Graph Editing
+continue the task I was working on	Implementing a Task	First	1	0.982	Implementing a Task	0.982	Graph Editing	+0.056	Graph Editing
 review the task that is awaiting review	Reviewing a Task	First	1	1.139	Reviewing a Task	1.139	Graph Editing	+0.269	Graph Editing
 work the review queue	Reviewing a Task	First	1	1.056	Reviewing a Task	1.056	Research & Search	+0.207	Research & Search
 check the finished work on the export task	Reviewing a Task	First	1	1.032	Reviewing a Task	1.032	Play Workflow State	+0.186	Play Workflow State
 close out the export task	Completing a Task	First	1	1.022	Completing a Task	1.022	Graph Editing	+0.192	Graph Editing
 it won't let me mark this task done	Completing a Task	First	1	0.947	Completing a Task	0.947	Graph Editing	+0.083	Graph Editing
-mark the export task done	Completing a Task	Window	1	0.945	Completing a Task	0.945	Graph Editing	+0.086	Graph Editing
+mark the export task done	Completing a Task	Window	1	0.941	Completing a Task	0.941	Graph Editing	+0.082	Graph Editing
 record the decision to use Postgres for sessions	Recording a Decision	First	1	0.998	Recording a Decision	0.998	Graph Editing	+0.132	Graph Editing
 log an architecture decision: we are going with gRPC	Recording a Decision	First	1	0.995	Recording a Decision	0.995	Bulk Import	+0.194	Node Creation
 supersede the old caching decision with this one	Recording a Decision	First	1	0.916	Recording a Decision	0.916	Node Deletion	+0.074	Node Deletion
@@ -182,9 +182,9 @@ make a filter for tasks due this week	not Schema Creation	NotFirst	-	0.773	Imple
 set up a board of tickets by status	not Schema Creation	NotFirst	-	0.844	Graph Editing	0.846	-	-	Graph Editing
 I need a tracker for the venues I book	not Node Creation	NotFirst	-	0.792	Researching	0.894	-	-	Schema Creation
 start keeping tabs on who owes me money	not Node Creation	NotFirst	-	0.766	Answering a Question	0.883	-	-	Graph Editing
-link this invoice to the Acme account	not Graph Editing	NotFirst	-	0.685	Relationship Management	0.788	-	-	Relationship Management
+link this invoice to the Acme account	not Graph Editing	NotFirst	-	0.685	Relationship Management	0.774	-	-	Relationship Management
 attach the contract to the Harbor Freight account	not Graph Editing	NotFirst	-	0.676	Shipping a Change	0.738	-	-	Relationship Management
-Add this note to my reading list collection	not Relationship Management	NotFirst	-	0.786	Researching	0.884	-	-	Node Creation
+Add this note to my reading list collection	not Relationship Management	NotFirst	-	0.779	Researching	0.884	-	-	Node Creation
 move the recipe notes into the Cooking collection	not Relationship Management	NotFirst	-	-	Organization	0.838	-	-	Organization
 merge the two Sarah Chen records	not Conflict Journal	NotFirst	-	0.834	Node Merge	0.950	-	-	Node Merge
 combine these duplicate customer records into one	not Conflict Journal	NotFirst	-	0.897	Node Merge	0.981	-	-	Node Merge
