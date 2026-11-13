@@ -149,7 +149,15 @@ async fn seed_and_embed_exactly(
             .expect("node service must init"),
     );
 
-    let mut nlp = EmbeddingService::new(EmbeddingConfig::default()).expect("config must validate");
+    // `NODESPACE_LIVE_EMBED_MODEL` names the embedding model file and, with
+    // `NODESPACE_FORCE_CPU`, keeps the run off the GPU (see `live_small`).
+    let mut config = EmbeddingConfig::default();
+    if let Ok(path) = std::env::var("NODESPACE_LIVE_EMBED_MODEL") {
+        config.model_path = Some(path.into());
+        config.n_gpu_layers = 0;
+        config.n_threads = crate::live_small::threads();
+    }
+    let mut nlp = EmbeddingService::new(config).expect("config must validate");
     if nlp.initialize().is_err() || !nlp.is_initialized() {
         eprintln!(
             "SKIP live_skill_retrieval_stability: nomic-embed-text-v1.5 model not found on disk"
