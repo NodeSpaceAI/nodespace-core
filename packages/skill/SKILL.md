@@ -2,7 +2,7 @@
 
 ## First: Check the CLI Version
 
-**Your first action in any session that uses NodeSpace is to run `nodespace --version`. Run no other `nodespace` command, and do not save or search anything, until you have done it and the version is {{MIN_CLI_VERSION}} or newer.**
+**From a shell, your first action in any session that uses NodeSpace is to run `nodespace --version`. Run no other `nodespace` command, and do not save or search anything, until you have done it and the version is {{MIN_CLI_VERSION}} or newer.** Through the `nodespace` tool, which refuses `--version`, skip this check: the preflight table below catches an old CLI by its error.
 
 This file needs a `nodespace` CLI of version **{{MIN_CLI_VERSION}} or newer**. An older CLI lacks commands this file and the instructions it points to rely on (`nodespace skill guidance` is one), and an agent that improvises with whatever the old CLI has records things wrongly.
 
@@ -11,8 +11,6 @@ Compare the version it prints. If the version is older than {{MIN_CLI_VERSION}}:
 - **Stop.** Run no other `nodespace` command and write nothing to NodeSpace.
 - **Tell the user to update NodeSpace** (the desktop app, or `brew upgrade --cask nodespaceai/nodespace/nodespace`), saying which version is installed, that {{MIN_CLI_VERSION}} or newer is needed, and which command or behaviour this file describes that the old CLI is missing.
 - **Do not fall back** to older commands or to the basic commands that still work, and **do not upgrade the CLI yourself**: updating software is the user's call, the same as running the installer.
-
-Through the `nodespace` tool there is no `--version` (it refuses it); the preflight table below catches an old CLI by its error instead.
 
 NodeSpace is context infrastructure for AI-native development — a local-first knowledge graph running on this machine.
 
@@ -44,7 +42,7 @@ It persists across sessions — what you save today is searchable tomorrow, and 
 Use NodeSpace as a working memory across sessions:
 
 1. **Search at session start** — search for prior context before you begin. (`nodespace search "topic"`)
-2. **Save as you go** — once the version check above has passed, save discoveries, decisions, and summaries during the session. Don't wait until the end. (`nodespace node create --type text --content "…"`) A multi-block markdown `--content` is a document: its first line is the node's content and the rest becomes child nodes (details in `references/cli.md`: write it with real line breaks, single-quoted; the first line must be a plain line or a heading, and if the call fails as unimplemented, tell the user to update NodeSpace).
+2. **Save as you go** — once the version check above has passed (through the `nodespace` tool: once the preflight table has not reported an old CLI), save discoveries, decisions, and summaries during the session. Don't wait until the end. (`nodespace node create --type text --content "…"`) A multi-block markdown `--content` is a document: its first line is the node's content and the rest becomes child nodes (details in `references/cli.md`: write it with real line breaks, single-quoted; the first line must be a plain line or a heading, and if the call fails as unimplemented, tell the user to update NodeSpace).
 3. **It persists across sessions** — your context window does not. Anything worth remembering next time should be stored.
 
 Date nodes make temporal retrieval reliable: if a finding is time-bound, attach it under today's date node so future searches can scope by day.
