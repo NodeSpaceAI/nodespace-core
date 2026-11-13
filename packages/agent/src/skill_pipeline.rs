@@ -537,7 +537,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // 0.895) and on "connect the retro notes to the sprint they
         // belong to" to Node Merge (0.799 against 0.801), and leaves the
         // candidates of "which tasks depend on the API migration?".
-        use_for: "Link, connect or attach one record to another, or record an edge between two nodes: say that a task or note depends on, is blocked by, belongs to, must respect, or points at another record. Show which records depend on or are linked to one.",
+        use_for: "Link, connect or attach one record to another, or record an edge between two nodes: say that a task or note depends on, is blocked by, belongs to, must respect, or points at another record. Ask which tasks or other records depend on, are blocked by or are linked to a given one.",
         tools: &["create_relationship", "delete_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
         not_for: Some("Start keeping track of a kind of thing. Mark it done, resolved or paid."),
@@ -1076,7 +1076,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         use_for: "Close out a task whose checklist is complete, and resolve a task that cannot be marked done because its checklist, its plan or a blocker stops it. Use when the user wants a task closed out, or says it won't let them mark a task done.",
         tools: &["get_node_context", "update_task_status", "get_node", "search_nodes"],
         max_iterations: 4,
-        not_for: None,
+        not_for: Some("Continue, resume or pick up work on a task."),
         applies_to: &[CoreNodeType::Task.as_str()],
         attached_to: &[],
         role: SkillRole::Procedure,
@@ -1197,7 +1197,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         use_for: "Deprecate, phase out or sunset an old API, data format or feature in software that has users: find who still uses it, move them to its replacement in stages, then remove it, with a rollback for every step.",
         tools: &["search_nodes", "get_node", "create_node", "create_relationship", "route_clarify"],
         max_iterations: 16,
-        not_for: Some("Supersede a recorded decision, or merge or delete a record."),
+        not_for: Some("Supersede a recorded decision, or merge or delete a record. Ask which tasks or records depend on something."),
         applies_to: &[
             CoreNodeType::Decision.as_str(),
             CoreNodeType::Plan.as_str(),

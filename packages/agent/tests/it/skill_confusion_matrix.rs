@@ -640,13 +640,6 @@ const NOT_YET_WON: &[&str] = &[
     // whose path reaches a given node, and `get_node_context`.
     "this task depends on the API migration",
     "the launch task is blocked by the security review",
-    // Near-ties the CPU recording orders against them. "which tasks depend ..."
-    // scores 0.779 against Deprecating and Migrating's 0.876. "continue the
-    // task ..." scores 0.984 for Completing a Task where the GPU recording had
-    // Implementing a Task at 0.985. The golden is recorded on CPU, and the same
-    // two miss on a CPU re-record of the seeds before the Bulk Import wording.
-    "which tasks depend on the API migration?",
-    "continue the task I was working on",
     // Filing with no word for a collection, or by a proper noun.
     "put the roofing notes in with the house stuff",
     "add the roofing quote to the House collection",
