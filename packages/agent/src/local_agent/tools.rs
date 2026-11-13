@@ -1579,13 +1579,19 @@ fn def_create_node() -> ToolDefinition {
             option, and say it already exists. Only 'MENTIONED ENTITIES: none found', or a search_nodes \
             lookup that finds no record by that name, means this tool is right — a name merely missing \
             from a MENTIONED ENTITIES list may still exist. Pass 'content' as the record's title and \
-            nothing else — facts about it belong in 'field_values', never appended to the title. The one \
+            nothing else (a markdown document is the one exception, below) — facts about it belong in 'field_values', never appended to the title. The one \
             exception is a type whose schema has a title_template (shown in EXISTING SCHEMAS): omit \
             'content' entirely and put the name in the template's fields in 'field_values' — the service \
             composes the title from them and rejects content for that type. Always pass 'field_values' \
             with every particular the user supplied, checked against the type's own field list — it is \
             the only way those values are stored, and a call without them creates an empty record that \
-            still reports as saved. The example's user said: \"open a ticket for \
+            still reports as saved. For a text, task, project, spec, plan or decision record, a markdown document \
+            with more than one block (or front matter) in 'content' is split, exactly as \
+            `nodespace node create` does: its first line is the title, its front matter becomes its \
+            fields, and the rest becomes child nodes in order (the result's child_count says how \
+            many), so do not create them again. A single line is just the title, and any other type \
+            keeps 'content' as given. To import an existing document or page, prefer \
+            create_nodes_from_markdown. The example's user said: \"open a ticket for \
             dana to rotate the signing keys on deploy in S-24, it's in dev, and it depends on the vault \
             migration\". Note depends_on: the type lists no field for it, so it is carried under a key \
             named after the user's own wording rather than dropped. Example call: {\"node_type\": \
@@ -5565,6 +5571,9 @@ impl GraphToolExecutor {
         // - title_template + properties for schema types that define one
         // - strip_markdown(content) for root nodes (all custom schema instances)
         let content = params.content.unwrap_or_default();
+        // Content on one line cannot be split into a body, so only content with
+        // a line break can have children to report.
+        let may_have_body = content.contains('\n');
 
         // `content` is optional only because a templated type rejects it. For
         // every other type it is the record's title, and omitting it would
@@ -5607,7 +5616,12 @@ impl GraphToolExecutor {
             lifecycle_status: None,
         };
 
-        let output = node_ops::create_node(&ns, input)
+        // The same entry point as the CLI's `node create`: for a document type
+        // (text, task, project, spec, plan, decision and what extends them) a
+        // content of more than one block, or with front matter, is a markdown
+        // document (first line the title, the rest its children). Any other
+        // type, and single-block content, is stored as given.
+        let output = node_ops::create_document_node(&ns, input)
             .await
             .map_err(|e| ops_error_to_tool(e, "create_node"))?;
 
@@ -5649,6 +5663,29 @@ impl GraphToolExecutor {
                 .as_object_mut()
                 .expect("literal is an object")
                 .insert("content_only".into(), json!(true));
+        }
+        // A document's body was written as children of the record; say so, so
+        // the model does not write them again.
+        if may_have_body {
+            let child_count = ns
+                .get_descendants(&output.node_id)
+                .await
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!(
+                        "create_node created {} but could not count its child nodes: {e}. Read \
+                         it with get_node before writing anything under it.",
+                        node_uri(&output.node_id)
+                    ))
+                })?
+                .iter()
+                .filter(|n| n.id != output.node_id)
+                .count();
+            if child_count > 0 {
+                result
+                    .as_object_mut()
+                    .expect("literal is an object")
+                    .insert("child_count".into(), json!(child_count));
+            }
         }
 
         let result = with_stored_as_note(result, &node_type, &stored_as, false);
@@ -11154,6 +11191,159 @@ mod tests {
                 Err(_) => true,
             };
             assert!(refused, "the bare key must not overwrite the prefixed one");
+        }
+    }
+
+    /// The agent's `create_node` takes document markdown the way the CLI's
+    /// `node create` does: both go through `node_ops::create_document_node`.
+    mod create_node_document_parity {
+        use super::update_node_noop_gate::{make_test_service, plain_executor};
+        use super::*;
+
+        const DOC: &str = "---\nstatus: open\nowner: dana\n---\n# Pick a store\n\nSome text.\n\n## Steps\n\n1. one\n2. two\n\n- [ ] ship it\n\n```rust\nfn main() {}\n```";
+
+        fn input(node_type: &str, content: &str) -> node_ops::CreateNodeInput {
+            node_ops::CreateNodeInput {
+                id: None,
+                node_type: node_type.to_string(),
+                content: content.to_string(),
+                parent_id: None,
+                position: nodespace_core::services::InsertPositionOwned::End,
+                properties: json!({}),
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+            }
+        }
+
+        /// The root's (type, content, properties) and its children's
+        /// (type, content) in order, recursively.
+        async fn tree(ns: &Arc<NodeService>, id: &str) -> Value {
+            let node = ns.get_node(id).await.unwrap().unwrap();
+            let mut kids = Vec::new();
+            for child in ns.get_children(id).await.unwrap() {
+                kids.push(Box::pin(tree(ns, &child.id)).await);
+            }
+            let mut props = node.properties.clone();
+            if let Some(o) = props.as_object_mut() {
+                o.retain(|k, _| !k.starts_with('_'));
+            }
+            json!({
+                "type": node.node_type,
+                "content": node.content,
+                "properties": props,
+                "children": kids,
+            })
+        }
+
+        async fn ns_descendants(executor: &GraphToolExecutor, id: &str) -> usize {
+            let ns = executor.node_service.as_ref().unwrap();
+            ns.get_descendants(id)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|n| n.id != id)
+                .count()
+        }
+
+        async fn via_tool(ns: Arc<NodeService>, node_type: &str, content: &str) -> String {
+            let executor = plain_executor(ns);
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": node_type, "content": content }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            let id = result.result["id"].as_str().unwrap();
+            let id = strip_node_uri(id).to_string();
+            let created = ns_descendants(&executor, &id).await;
+            // The result says how many nodes the body became, and only then.
+            assert_eq!(
+                result.result.get("child_count").and_then(Value::as_u64),
+                (created > 0).then_some(created as u64),
+                "{result:?}"
+            );
+            id
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn the_tool_and_the_cli_path_give_the_same_tree() {
+            for node_type in ["text", "task", "decision"] {
+                let (ns, _tmp) = make_test_service().await;
+                let cli = node_ops::create_document_node(&ns, input(node_type, DOC))
+                    .await
+                    .unwrap();
+                let tool_id = via_tool(ns.clone(), node_type, DOC).await;
+
+                let expected = tree(&ns, &cli.node_id).await;
+                let got = tree(&ns, &tool_id).await;
+                assert!(
+                    expected["children"].as_array().unwrap().len() > 1,
+                    "the document must split: {expected}"
+                );
+                assert_eq!(got, expected, "{node_type}");
+            }
+        }
+
+        /// A type outside the document allow-list keeps its multi-line
+        /// content whole, through the tool as through the CLI.
+        /// The result's child_count is the number of nodes under the record.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn the_result_counts_the_children_written() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": "text", "content": "Title\n\nOne\n\nTwo" }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.result["child_count"], json!(2), "{result:?}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_block_type_keeps_multi_line_content_whole() {
+            let (ns, _tmp) = make_test_service().await;
+            let content = "> a quote\n\nand a paragraph";
+            let id = via_tool(ns.clone(), "quote-block", content).await;
+            let node = ns.get_node(&id).await.unwrap().unwrap();
+            assert_eq!(node.content, content);
+            assert!(ns.get_children(&id).await.unwrap().is_empty());
+        }
+
+        /// A first line that cannot be a title is refused with the CLI's
+        /// message and nothing is created.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_bad_first_line_is_refused_with_the_cli_message() {
+            let (ns, _tmp) = make_test_service().await;
+            let bad = "- a list item\n\nbody";
+            let cli_err = node_ops::create_document_node(&ns, input("text", bad))
+                .await
+                .unwrap_err()
+                .to_string();
+            let executor = plain_executor(ns.clone());
+            let err = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": "text", "content": bad }),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&cli_err), "{err} vs {cli_err}");
+        }
+
+        /// A single plain line is still the node's own content.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_single_line_is_stored_as_given() {
+            let (ns, _tmp) = make_test_service().await;
+            let id = via_tool(ns.clone(), "task", "Buy milk").await;
+            let node = ns.get_node(&id).await.unwrap().unwrap();
+            assert_eq!(node.content, "Buy milk");
+            assert!(ns.get_children(&id).await.unwrap().is_empty());
         }
     }
 
