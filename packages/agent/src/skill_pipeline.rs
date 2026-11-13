@@ -530,8 +530,11 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `add_shaped_requests_for_another_skill_keep_their_leader` and
         // `relationship_management_not_for_leaves_linking_scores_unchanged`.
         //
-        // The last sentence of the `use_for` ("Show which records depend
-        // on or are linked to one.") is measured too. Without it this
+        // The last sentence of the `use_for` ("Ask which tasks or other
+        // records depend on, are blocked by or are linked to a given
+        // one.") is measured too; the scores below are those of the
+        // earlier sentence, "Show which records depend on or are linked
+        // to one.", and are kept as the evidence for having a sentence. Without it this
         // skill loses the lead on "record an edge between the rebuild
         // task and the storage decision" to Graph Editing (0.890 against
         // 0.895) and on "connect the retro notes to the sprint they
