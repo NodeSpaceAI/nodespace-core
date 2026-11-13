@@ -181,6 +181,28 @@ async fn opening_message(node_service: &NodeService) -> String {
     )
 }
 
+/// The history the app seeds a type chat's session with: the opening message,
+/// then the record of the nodes the chat is pinned to. The daemon appends that
+/// record (`chat_pins::pinned_nodes_message`, a `Role::System` message) to the
+/// history of every turn; it is what grounds the chat's own node id, so a reply
+/// that links the type is not stripped as a fabricated id. The daemon crate
+/// depends on this one, so the record is written here in the same form; the
+/// ids it grounds are what `the_chats_own_type_is_grounded` pins.
+fn chat_history(opening: &str) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::text(Role::Assistant, opening),
+        ChatMessage::text(
+            Role::System,
+            format!(
+                "Nodes pinned to this conversation. The conversation is about them: \
+                 if the user's message refers to one by pronoun or description \
+                 (\"it\", \"this\", \"the play\"), use the matching id below:\n\
+                 - nodespace://{TYPE_ID} \"{TYPE_TITLE}\" (schema)"
+            ),
+        ),
+    ]
+}
+
 /// What one typed question did.
 struct Turn {
     calls: Vec<String>,
@@ -215,9 +237,7 @@ async fn typed_question(
         fx.executor.clone(),
         Some(Arc::new(PromptAssembler::new(fx.node_service.clone()))),
     );
-    let session = service
-        .create_session(None, vec![ChatMessage::text(Role::Assistant, opening)])
-        .await;
+    let session = service.create_session(None, chat_history(opening)).await;
     let ctx = build_workspace_context(
         &fx.node_service,
         Some(&fx.embedding_service),
@@ -378,6 +398,62 @@ fn the_parent_check_ignores_the_types_own_name() {
     assert!(!names_the_parent("No other type."));
     assert!(denies_the_parent("It extends nothing."));
     assert!(!denies_the_parent("Yes, it extends Project."));
+}
+
+/// An engine that is never asked to generate: the session is only created.
+struct NoEngine;
+
+#[async_trait::async_trait]
+impl nodespace_nlp_engine::ChatInferenceEngine for NoEngine {
+    async fn generate(
+        &self,
+        _request: nodespace_nlp_engine::InferenceRequest,
+        _on_chunk: Box<dyn Fn(nodespace_nlp_engine::StreamingChunk) + Send>,
+    ) -> Result<nodespace_nlp_engine::InferenceUsage, nodespace_nlp_engine::InferenceError> {
+        unreachable!("no generation")
+    }
+
+    async fn model_info(
+        &self,
+    ) -> Result<Option<nodespace_nlp_engine::ChatModelSpec>, nodespace_nlp_engine::InferenceError>
+    {
+        Ok(None)
+    }
+
+    async fn token_count(&self, _text: &str) -> Result<u32, nodespace_nlp_engine::InferenceError> {
+        Ok(0)
+    }
+}
+
+/// The session the harness builds grounds the chat's own type, as the app's
+/// does, so a reply linking `nodespace://software-project` is kept. Without the
+/// pinned-nodes record the opening message (an assistant message) grounds
+/// nothing.
+#[tokio::test]
+async fn the_chats_own_type_is_grounded() {
+    let service = LocalAgentService::new(
+        Arc::new(NoEngine),
+        Arc::new(GraphToolExecutor {
+            node_service: None,
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        }),
+    );
+    let opening =
+        format!("[{TYPE_TITLE}](nodespace://{TYPE_ID}) extends [Project](nodespace://project).");
+    let uri = format!("nodespace://{TYPE_ID}");
+
+    let bare = service
+        .create_session(None, vec![ChatMessage::text(Role::Assistant, &opening)])
+        .await;
+    let bare = service.get_session(&bare).await.unwrap();
+    assert!(!bare.grounded_node_uris.contains(&uri));
+
+    let seeded = service.create_session(None, chat_history(&opening)).await;
+    let seeded = service.get_session(&seeded).await.unwrap();
+    assert!(seeded.grounded_node_uris.contains(&uri));
+    assert!(!seeded.grounded_node_uris.contains("nodespace://project"));
 }
 
 #[test]
