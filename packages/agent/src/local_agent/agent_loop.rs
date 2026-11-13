@@ -3259,6 +3259,18 @@ impl AgentSession {
         self.mentioned_entities = entities;
     }
 
+    /// Ground every id in `text` the application itself wrote into the
+    /// conversation, which is not a tool result or a system record: the
+    /// message a bound chat is opened with. It reaches the model as an
+    /// assistant message, so [`system_written_node_uris`] cannot tell it from
+    /// the model's own text; the caller, which knows where the text came from,
+    /// says so. Never call this with model-written text: it would let an id
+    /// the model invented ground itself.
+    pub fn ground_app_written_text(&mut self, text: &str) {
+        self.grounded_node_uris
+            .extend(extract_node_uris(text).into_iter().map(str::to_string));
+    }
+
     /// Append a system message whose text the system wrote, grounding every id
     /// in it, by the same rule a starting history is read with (so text that
     /// opens as the conversation summary, which is the model's, grounds
@@ -6946,6 +6958,17 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.offered_options = options;
+        }
+    }
+
+    /// Ground the ids in the message the application opened a chat with, for a
+    /// session whose reply may link what that message linked (the node the
+    /// chat is about). `text` must be application-written; see
+    /// [`AgentSession::ground_app_written_text`].
+    pub async fn ground_session_opening_message(&self, session_id: &str, text: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.ground_app_written_text(text);
         }
     }
 
@@ -11152,6 +11175,86 @@ mod tests {
             r#"{"query":"invoice"}"#,
             json!({"count": 1, "results": [{"id": "nodespace://real-a"}]}),
             "Your [invoice](nodespace://schema:invoice) is nodespace://invented-id.",
+        )
+        .await;
+        assert_eq!(response, CONFIRMATION_REQUEST);
+    }
+
+    /// The reply of a bound chat's first turn, run over a history that opens
+    /// with `opening` as the assistant's message. `ground_opening` says whether
+    /// the caller vouches for that message as application-written.
+    async fn run_turn_after_opening(
+        opening: &str,
+        ground_opening: bool,
+        final_text: &'static str,
+    ) -> String {
+        let engine = Arc::new(MockEngine::tool_then_text(
+            "search_nodes",
+            r#"{"query":"extends"}"#,
+            final_text,
+        ));
+        let agent_loop = LocalAgentLoop::new(
+            engine,
+            Arc::new(FixedResultExecutor {
+                tool: "search_nodes",
+                result: json!({"count": 0, "results": []}),
+            }),
+        );
+        let mut session = session_with_history(vec![ChatMessage::text(
+            Role::Assistant,
+            opening.to_string(),
+        )]);
+        if ground_opening {
+            session.ground_app_written_text(opening);
+        }
+        agent_loop
+            .run_turn(
+                &mut session,
+                "Does this type extend another type?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .response
+    }
+
+    const TYPE_OPENING: &str = "Here is [Software Project](nodespace://software-project), a type.\n\nWhat would you like to change?";
+
+    /// A correct reply that links the id the application's own opening message
+    /// linked is kept: the id is real, the application wrote it. Observed live:
+    /// the reply was replaced by the confirmation request.
+    #[tokio::test]
+    async fn a_reply_linking_the_id_the_opening_message_linked_is_kept() {
+        let reply =
+            "The [Software Project](nodespace://software-project) type extends the built-in type.";
+        let response = run_turn_after_opening(TYPE_OPENING, true, reply).await;
+        assert_eq!(response, reply);
+    }
+
+    /// Grounding the opening grounds only the ids in it: an invented id in the
+    /// same reply is still refused.
+    #[tokio::test]
+    async fn a_fabricated_id_is_still_refused_after_the_opening_is_grounded() {
+        let response = run_turn_after_opening(
+            TYPE_OPENING,
+            true,
+            "See [Software Project](nodespace://software-project) and nodespace://invented-id.",
+        )
+        .await;
+        assert_eq!(response, CONFIRMATION_REQUEST);
+    }
+
+    /// An assistant message in the starting history is not grounded by being
+    /// there: an id the model wrote earlier, which no tool or record produced,
+    /// is still refused when the caller has not vouched for that message.
+    #[tokio::test]
+    async fn an_id_the_model_wrote_earlier_is_not_grounded_by_the_history() {
+        let response = run_turn_after_opening(
+            "Created it as nodespace://model-made-up-id.",
+            false,
+            "Here it is again: [it](nodespace://model-made-up-id).",
         )
         .await;
         assert_eq!(response, CONFIRMATION_REQUEST);

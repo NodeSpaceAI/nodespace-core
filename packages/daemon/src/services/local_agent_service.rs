@@ -910,6 +910,7 @@ impl LocalAgentServiceImpl {
         let prior_writes = prior_writes_from_history(&messages);
         let prior_turns = prior_turns_from_history(&messages);
         let offered_options = opening_options_on_offer(&messages);
+        let opening_text = application_opening_text(&messages);
         let history = node_history_from_messages(messages);
         if history.is_empty() {
             tracing::warn!(node_id, "ai-chat history empty — skipping turn");
@@ -1014,6 +1015,13 @@ impl LocalAgentServiceImpl {
         if !offered_options.is_empty() {
             service
                 .set_session_offered_options(&session_id, offered_options)
+                .await;
+        }
+        // The ids the application wrote into the opening message are real: a
+        // reply may link the node the chat is about.
+        if !opening_text.is_empty() {
+            service
+                .ground_session_opening_message(&session_id, &opening_text)
                 .await;
         }
 
@@ -3085,6 +3093,22 @@ fn opening_options_on_offer(messages: &[StoredMessage]) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+/// The text of the message or messages the application opened the chat with:
+/// the assistant messages that come before the user's first. A model reply
+/// answers a user message, so none can precede it, and what precedes it is
+/// written by the application (ADR-090 §3), the same rule
+/// [`prior_turns_from_history`] leaves it out by. Anything after the user's
+/// first message, assistant or not, is not read: it is the model's.
+fn application_opening_text(messages: &[StoredMessage]) -> String {
+    messages
+        .iter()
+        .take_while(|m| m.role != AiChatMessageRole::User)
+        .filter(|m| m.role == AiChatMessageRole::Assistant)
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
@@ -5203,6 +5227,67 @@ mod tests {
         assert_eq!(answered.role, AiChatMessageRole::Assistant);
         let user_opened = [asked.clone(), answered, asked];
         assert!(opening_options_on_offer(&user_opened).is_empty());
+    }
+
+    /// The opening message is the application's, and its links are real: a
+    /// type's opens by linking the type it extends. The reply to the first user
+    /// message may link that parent, whose hyphenated name is its id: no tool
+    /// result or system record carries it (the pinned-nodes record grounds
+    /// only the chat's own node), and it is not a plain type name the
+    /// unlinking repair covers. Without grounding the opening, the correct
+    /// reply is replaced by the confirmation request.
+    #[tokio::test]
+    async fn a_type_chats_reply_may_link_the_parent_its_opening_message_linked() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        handle_create_schema(
+            &node_service,
+            serde_json::json!({ "name": "Mobile App Project", "extends": "software-project", "fields": [] }),
+        )
+        .await
+        .expect("create the type");
+        let chat =
+            bound_chat::open_bound_chat(&node_service, "mobile-app-project", ChatModel::default())
+                .await
+                .expect("open the type's chat");
+        let opened = load_chat_messages(&node_service, &chat).await;
+        assert!(
+            opened[0].content.contains("nodespace://software-project"),
+            "the opening links the parent type: {}",
+            opened[0].content
+        );
+        let reply = "[Mobile App Project](nodespace://mobile-app-project) extends [Software Project](nodespace://software-project).";
+        svc.replace_engine(Arc::new(StubEngine::new(reply))).await;
+
+        send_user_message(&node_service, &chat, "Does this type extend another type?").await;
+        svc.maybe_handle_ai_chat_node(&chat).await;
+
+        let after = load_chat_messages(&node_service, &chat).await;
+        assert_eq!(after.last().unwrap().content, reply);
+    }
+
+    #[test]
+    fn only_messages_before_the_users_first_are_the_applications_opening() {
+        let message = |role, text: &str| StoredMessage::text(role, text);
+        let opened = [message(
+            AiChatMessageRole::Assistant,
+            "Opening nodespace://a",
+        )];
+        assert_eq!(application_opening_text(&opened), "Opening nodespace://a");
+
+        // What the model said after the user spoke is not the application's.
+        let later = [
+            message(AiChatMessageRole::Assistant, "Opening nodespace://a"),
+            message(AiChatMessageRole::User, "hi"),
+            message(AiChatMessageRole::Assistant, "Made nodespace://invented"),
+        ];
+        assert_eq!(application_opening_text(&later), "Opening nodespace://a");
+
+        // A chat the user opened has no application opening.
+        let user_opened = [
+            message(AiChatMessageRole::User, "hi"),
+            message(AiChatMessageRole::Assistant, "Made nodespace://invented"),
+        ];
+        assert_eq!(application_opening_text(&user_opened), "");
     }
 
     /// A chat's pinned skill reaches the turn: read from the chat's `pins`
