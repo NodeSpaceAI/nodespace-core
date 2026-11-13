@@ -7267,6 +7267,140 @@ mod tests {
         // `rx.recv()` returned None above, so no sender clone outlived the call.
     }
 
+    /// Serve the file at `path` over HTTP on a local port as fast as the disk
+    /// reads it, so a multi-gigabyte model download finishes in seconds.
+    async fn spawn_file_server(path: std::path::PathBuf) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let size = std::fs::metadata(&path).expect("model file").len();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let path = path.clone();
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        match stream.read(&mut byte).await {
+                            Ok(1) => head.push(byte[0]),
+                            _ => return,
+                        }
+                    }
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+                    );
+                    if stream.write_all(header.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let Ok(mut file) = tokio::fs::File::open(&path).await else {
+                        return;
+                    };
+                    let mut buf = vec![0u8; 1 << 20];
+                    loop {
+                        match file.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                if stream.write_all(&buf[..n]).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}/model.gguf")
+    }
+
+    /// The whole load of a catalog model that is not on disk, with the real
+    /// weights: the download (served from a local copy of the catalog's own
+    /// file), its byte progress on the live sender, the checksum check, and
+    /// the load into an engine, ending in "ready".
+    ///
+    /// Set `NODESPACE_LIVE_CATALOG_MODEL_FILE` to a local copy of the
+    /// `gemma-4-e4b-q4km` GGUF (about 5 GB; it is copied into a temporary
+    /// models directory) and `NODESPACE_FORCE_CPU=1` on a machine without GPU
+    /// use. Run with `--ignored --nocapture --test-threads=1`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "downloads and loads the real gemma-4-E4B model"]
+    async fn live_download_of_the_catalog_model_reports_progress_and_loads() {
+        let source = std::env::var("NODESPACE_LIVE_CATALOG_MODEL_FILE")
+            .expect("NODESPACE_LIVE_CATALOG_MODEL_FILE must name the gemma-4-E4B GGUF");
+        let size = std::fs::metadata(&source).expect("model file").len() as i64;
+        let url = spawn_file_server(source.into()).await;
+        let models = tempfile::TempDir::new().expect("models dir");
+        let manager = GgufModelManager::with_dir(models.path().to_path_buf())
+            .expect("manager")
+            .with_download_source(url, size as u64, std::time::Duration::from_millis(250));
+        let shared = SharedLocalAgent::from_model_manager(
+            Some(Arc::new(manager)),
+            MODEL_SPEC_SNAPSHOT_TIMEOUT,
+        );
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
+        let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
+        let svc = LocalAgentServiceImpl::new(shared, node_service, embedding);
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8192);
+        let events = svc
+            .load_model_and_collect_events("gemma-4-e4b-q4km", Some(&tx))
+            .await;
+        drop(tx);
+        let mut live = Vec::new();
+        while let Some(item) = rx.recv().await {
+            live.push(item.expect("ok event"));
+        }
+
+        let kinds: Vec<&str> = live.iter().map(|e| e.event_type.as_str()).collect();
+        let progress: Vec<i64> = live
+            .iter()
+            .filter(|e| e.event_type == "downloading")
+            .filter_map(|e| e.bytes_downloaded)
+            .collect();
+        eprintln!(
+            "live event kinds (collapsed): {:?}; {} downloading events, last bytes {:?} of {size}",
+            {
+                let mut k = kinds.clone();
+                k.dedup();
+                k
+            },
+            progress.len(),
+            progress.last()
+        );
+        assert!(
+            !events.iter().any(|e| e.event_type == "error"),
+            "no error event: {events:?}"
+        );
+        assert!(
+            progress.windows(2).all(|w| w[0] <= w[1]) && progress.last().is_some_and(|b| *b >= size * 9 / 10),
+            "byte progress rises toward the file size (reports are throttled, so the last one stops short of it): {} events, last {:?}",
+            progress.len(),
+            progress.last()
+        );
+        assert!(
+            progress.iter().any(|b| *b > 0 && *b < size),
+            "progress is reported while the transfer runs, not only at its end"
+        );
+        let last = live.last().expect("events");
+        assert_eq!(last.event_type, "ready", "the load ends ready: {kinds:?}");
+        assert_eq!(last.engine_swapped, Some(true));
+        let loading = kinds
+            .iter()
+            .rposition(|k| *k == "loading")
+            .expect("loading");
+        let last_download = kinds
+            .iter()
+            .rposition(|k| *k == "downloading")
+            .expect("downloading");
+        assert!(
+            last_download < loading,
+            "download finishes before loading: {kinds:?}"
+        );
+    }
+
     /// Unloading waits for the swap lock, so the catalog unload and the engine
     /// reset cannot straddle another load's install.
     #[tokio::test]
