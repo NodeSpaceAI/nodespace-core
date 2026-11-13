@@ -1579,18 +1579,19 @@ fn def_create_node() -> ToolDefinition {
             option, and say it already exists. Only 'MENTIONED ENTITIES: none found', or a search_nodes \
             lookup that finds no record by that name, means this tool is right — a name merely missing \
             from a MENTIONED ENTITIES list may still exist. Pass 'content' as the record's title and \
-            nothing else — facts about it belong in 'field_values', never appended to the title. The one \
+            nothing else (a markdown document is the one exception, below) — facts about it belong in 'field_values', never appended to the title. The one \
             exception is a type whose schema has a title_template (shown in EXISTING SCHEMAS): omit \
             'content' entirely and put the name in the template's fields in 'field_values' — the service \
             composes the title from them and rejects content for that type. Always pass 'field_values' \
             with every particular the user supplied, checked against the type's own field list — it is \
             the only way those values are stored, and a call without them creates an empty record that \
-            still reports as saved. A text, task, project, spec, plan or decision record may instead \
-            take a whole markdown document as 'content', exactly as `nodespace node create` does: \
-            its first line is the title, its front matter becomes its fields, and the rest is parsed \
-            into child nodes in order (the result's child_count says how many), so do not create \
-            them again. A single line is just the title, and any other type keeps 'content' as given. \
-            The example's user said: \"open a ticket for \
+            still reports as saved. For a text, task, project, spec, plan or decision record, a markdown document \
+            with more than one block (or front matter) in 'content' is split, exactly as \
+            `nodespace node create` does: its first line is the title, its front matter becomes its \
+            fields, and the rest becomes child nodes in order (the result's child_count says how \
+            many), so do not create them again. A single line is just the title, and any other type \
+            keeps 'content' as given. To import an existing document or page, prefer \
+            create_nodes_from_markdown. The example's user said: \"open a ticket for \
             dana to rotate the signing keys on deploy in S-24, it's in dev, and it depends on the vault \
             migration\". Note depends_on: the type lists no field for it, so it is carried under a key \
             named after the user's own wording rather than dropped. Example call: {\"node_type\": \
@@ -5570,6 +5571,9 @@ impl GraphToolExecutor {
         // - title_template + properties for schema types that define one
         // - strip_markdown(content) for root nodes (all custom schema instances)
         let content = params.content.unwrap_or_default();
+        // Content on one line cannot be split into a body, so only content with
+        // a line break can have children to report.
+        let may_have_body = content.contains('\n');
 
         // `content` is optional only because a templated type rejects it. For
         // every other type it is the record's title, and omitting it would
@@ -5662,16 +5666,26 @@ impl GraphToolExecutor {
         }
         // A document's body was written as children of the record; say so, so
         // the model does not write them again.
-        let child_count = ns
-            .get_descendants(&output.node_id)
-            .await
-            .map(|d| d.iter().filter(|n| n.id != output.node_id).count())
-            .unwrap_or(0);
-        if child_count > 0 {
-            result
-                .as_object_mut()
-                .expect("literal is an object")
-                .insert("child_count".into(), json!(child_count));
+        if may_have_body {
+            let child_count = ns
+                .get_descendants(&output.node_id)
+                .await
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!(
+                        "create_node created {} but could not count its child nodes: {e}. Read \
+                         it with get_node before writing anything under it.",
+                        node_uri(&output.node_id)
+                    ))
+                })?
+                .iter()
+                .filter(|n| n.id != output.node_id)
+                .count();
+            if child_count > 0 {
+                result
+                    .as_object_mut()
+                    .expect("literal is an object")
+                    .insert("child_count".into(), json!(child_count));
+            }
         }
 
         let result = with_stored_as_note(result, &node_type, &stored_as, false);
@@ -11275,6 +11289,21 @@ mod tests {
 
         /// A type outside the document allow-list keeps its multi-line
         /// content whole, through the tool as through the CLI.
+        /// The result's child_count is the number of nodes under the record.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn the_result_counts_the_children_written() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": "text", "content": "Title\n\nOne\n\nTwo" }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.result["child_count"], json!(2), "{result:?}");
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn a_block_type_keeps_multi_line_content_whole() {
             let (ns, _tmp) = make_test_service().await;
