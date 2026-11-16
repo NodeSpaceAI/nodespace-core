@@ -22,7 +22,7 @@ put the roofing notes in with the house stuff	Organization	Window	7	0.750	Node C
 The incident Rowan was on call for — mark it resolved	Graph Editing	Window	3	0.787	Answering a Question	0.822	Answering a Question	-0.035	Conflict Journal
 mark the incident as resolved	Graph Editing	Window	2	0.891	Completing a Task	0.908	Completing a Task	-0.017	Graph Editing
 mark incident resolved	Graph Editing	Window	3	0.825	Completing a Task	0.846	Completing a Task	-0.020	Conflict Journal
-set the incident's resolved field to true	Graph Editing	Window	1	0.882	Graph Editing	0.882	Addressing Review Findings	+0.001	Graph Editing
+set the incident's resolved field to true	Graph Editing	Window	1	0.882	Graph Editing	0.882	Addressing Review Findings	+0.029	Graph Editing
 mark the invoice as paid	Graph Editing	Window	2	0.814	Answering a Question	0.841	Answering a Question	-0.027	Graph Editing
 close out the support ticket	Graph Editing	Window	2	0.836	Completing a Task	0.918	Completing a Task	-0.082	Graph Editing
 mark the outage report done	Graph Editing	Window	2	0.837	Instrumenting a Change	0.885	Instrumenting a Change	-0.048	Graph Editing
@@ -44,7 +44,7 @@ remove the resolved tickets	Node Deletion	Window	2	0.846	Building and Changing a
 remove the closed tickets	Node Deletion	Window	1	0.809	Node Deletion	0.809	Building and Changing a View	+0.001	Node Deletion
 remove the done tasks	Node Deletion	Window	2	0.917	Completing a Task	0.971	Completing a Task	-0.055	Node Deletion
 remove the completed items	Node Deletion	Window	1	0.932	Node Deletion	0.932	Completing a Task	+0.036	Node Deletion
-remove the paid invoices	Node Deletion	Window	1	0.802	Node Deletion	0.802	Addressing Review Findings	+0.047	Node Deletion
+remove the paid invoices	Node Deletion	Window	1	0.802	Node Deletion	0.802	Answering a Question	+0.048	Node Deletion
 get rid of the paid invoices	Node Deletion	Window	1	0.815	Node Deletion	0.815	Answering a Question	+0.027	Node Deletion
 get rid of the duplicate customer record	Node Deletion	Window	5	0.852	Graph Editing	0.896	Graph Editing	-0.045	Graph Editing
 what did I write about the Halvorsen meeting?	Research & Search	Window	3	0.736	Researching	0.790	Researching	-0.054	Conflict Journal
@@ -170,6 +170,10 @@ create a task for Anoop regarding v1 export format or only v2 coverage of the mi
 create a task for Priya to confirm the API rate limit before finishing SDK docs	Creating a Task	Window	1	0.914	Creating a Task	0.914	Node Creation	+0.049	Node Creation
 create a task for Marcus about which database region we picked that is blocking the deploy checklist	Creating a Task	Window	1	0.924	Creating a Task	0.924	Play Workflow State	+0.049	Play Workflow State
 create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies	Creating a Task	Window	-	-	Reviewing a Task	0.937	Reviewing a Task	-	Play Authoring
+mark the checklist item for Query engine rewrite release branch as work to be tracked	Creating a Task	First	-	-	Instrumenting a Change	0.928	Instrumenting a Change	-	Graph Editing
+find out why a checklist box on the release branch is unticked after being marked done and write up what was found as work in Query engine rewrite	Creating a Task	First	1	0.955	Creating a Task	0.955	Play Workflow State	+0.004	Play Workflow State
+raise the unticked checklist box on the release branch as a task in Query engine rewrite	Creating a Task	First	1	0.942	Creating a Task	0.942	Graph Editing	+0.016	Graph Editing
+investigate why a task can be done with an unticked checklist box and record the cause and a regression check as a task under Query engine rewrite	Creating a Task	First	-	-	Reviewing a Task	0.984	Reviewing a Task	-	Play Workflow State
 what is waiting on me?	Answering a Question	Window	1	0.861	Answering a Question	0.861	Research & Search	+0.078	Research & Search
 show me the questions I still have to answer	Answering a Question	Window	1	0.966	Answering a Question	0.966	Research & Search	+0.133	Research & Search
 create a ticket for the login bug	not Schema Creation	NotFirst	-	0.869	Node Creation	0.924	-	-	Node Creation

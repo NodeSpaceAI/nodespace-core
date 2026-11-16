@@ -1015,7 +1015,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["run_query", "get_node_context", "get_node", "update_node", "create_node", "update_task_status", "route_clarify"],
         // The reads, and per finding a test, its tick and its evidence.
         max_iterations: 40,
-        not_for: None,
+        not_for: Some("Find out why something happened, or write up what was found as a new task or bug."),
         applies_to: &[
             CoreNodeType::Issue.as_str(),
             CoreNodeType::Checkbox.as_str(),

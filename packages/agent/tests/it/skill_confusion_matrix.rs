@@ -509,6 +509,26 @@ const CASES: &[Case] = &[
         "create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies",
         "Creating a Task",
     ),
+    // Work to be tracked, or found out and written up as work, as Stage 1
+    // words it. The first two are what Stage 1 made of two requests an agent
+    // evaluation sends. Addressing Review Findings led the second by a hair
+    // until its `not_for` named finding out why and writing it up as a task.
+    first(
+        "mark the checklist item for Query engine rewrite release branch as work to be tracked",
+        "Creating a Task",
+    ),
+    first(
+        "find out why a checklist box on the release branch is unticked after being marked done and write up what was found as work in Query engine rewrite",
+        "Creating a Task",
+    ),
+    first(
+        "raise the unticked checklist box on the release branch as a task in Query engine rewrite",
+        "Creating a Task",
+    ),
+    first(
+        "investigate why a task can be done with an unticked checklist box and record the cause and a regression check as a task under Query engine rewrite",
+        "Creating a Task",
+    ),
     window("what is waiting on me?", "Answering a Question"),
     window(
         "show me the questions I still have to answer",
@@ -619,6 +639,15 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
 /// miss and nothing else: a request listed here that is also in
 /// [`REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD`] still fails if that skill leads it.
 const NOT_YET_WON: &[&str] = &[
+    // Work to be tracked, which a neighbour leads by a hair. Stage 1 turns
+    // "get that tracked as work" into "mark ... as work to be tracked", and
+    // Instrumenting a Change (0.928 against 0.926) leads it. No wording of
+    // Creating a Task's `use_for` won it without losing the requests that
+    // name a task to that skill's neighbours: it moves the tie, it does not
+    // break it.
+    "mark the checklist item for Query engine rewrite release branch as work to be tracked",
+    // Reviewing a Task leads by 0.010 (0.984 against 0.974).
+    "investigate why a task can be done with an unticked checklist box and record the cause and a regression check as a task under Query engine rewrite",
     // A task for a person whose query also carries the thing it waits on:
     // "press release ... until she replies" leads Reviewing a Task.
     "create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies",
