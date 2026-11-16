@@ -121,13 +121,28 @@ describe('NavigationSidebar — moving and renaming collections', () => {
   describe('dragging a collection onto another', () => {
     it('adds the target as a parent and opens it', async () => {
       const { container } = await renderSidebar();
-      expect(collectionsState.state.expandedCollectionIds.has('design')).toBe(false);
+      // Onboarding is not open to start with (the others are).
+      expect(collectionsState.state.expandedCollectionIds.has('onboarding')).toBe(false);
 
-      await drag(container, 'Design', 'HR');
+      await drag(container, 'Design', 'Onboarding');
 
-      await waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith('design', 'hr'));
-      expect(collectionsState.state.expandedCollectionIds.has('hr')).toBe(true);
+      await waitFor(() => expect(add).toHaveBeenCalledExactlyOnceWith('design', 'onboarding'));
+      await waitFor(() =>
+        expect(collectionsState.state.expandedCollectionIds.has('onboarding')).toBe(true)
+      );
       expect(container.querySelector('[role="alert"]')).toBeNull();
+    });
+
+    it('accepts the drop of a dragged collection, and only then', async () => {
+      const { container } = await renderSidebar();
+      const target = row(container, 'HR');
+
+      // Nothing dragged: the row does not take the drop.
+      expect(await fireEvent.dragOver(target)).toBe(true);
+      await fireEvent.dragStart(row(container, 'Design'));
+      // A collection dragged from the list: the drop is accepted (the event is cancelled).
+      expect(await fireEvent.dragOver(target)).toBe(false);
+      await fireEvent.dragEnd(row(container, 'Design'));
     });
 
     it('refuses DeutNet onto Company Policies with the reason, and calls nothing', async () => {
@@ -180,9 +195,11 @@ describe('NavigationSidebar — moving and renaming collections', () => {
     it('does nothing for a drop of something that is not a collection from this list', async () => {
       const { container } = await renderSidebar();
 
-      await fireEvent.drop(row(container, 'HR'));
+      // Not handled (the event is not cancelled), nothing called, nothing said.
+      expect(await fireEvent.drop(row(container, 'HR'))).toBe(true);
 
       expect(add).not.toHaveBeenCalled();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
     });
 
     it('can dismiss the message', async () => {
@@ -347,6 +364,39 @@ describe('NavigationSidebar — moving and renaming collections', () => {
       await fireEvent.keyDown(field, { key: 'Enter' });
 
       await waitFor(() => expect(row(container, 'People')).toBeTruthy());
+    });
+
+    it('keeps the row menu in place, hidden, while the field is open', async () => {
+      const { container } = await renderSidebar();
+
+      await fireEvent.dblClick(within(row(container, 'HR')).getByText('HR'));
+
+      // Unmounting the menu would return focus to its trigger and end the rename.
+      const renamingRow = container
+        .querySelector('.collection-rename-input')
+        ?.closest<HTMLElement>('.collection-item');
+      const trigger = within(renamingRow!).getByLabelText('Actions for HR');
+      expect(trigger.closest('.collection-menu')?.classList.contains('hidden')).toBe(true);
+    });
+  });
+
+  describe('a collection that is still being created', () => {
+    it('cannot be renamed, moved or dragged yet', async () => {
+      const { container } = await renderSidebar();
+      collectionsData.state = {
+        ...collectionsData.state,
+        collections: [...collectionsData.state.collections, collection('pending-collection-1', 'Draft')],
+        locallyCreatedIds: new Set(['pending-collection-1']),
+        pendingIds: new Set(['pending-collection-1'])
+      };
+      await waitFor(() => expect(row(container, 'Draft')).toBeTruthy());
+      const draft = row(container, 'Draft');
+
+      await fireEvent.dblClick(within(draft).getByText('Draft'));
+
+      expect(container.querySelector('.collection-rename-input')).toBeNull();
+      expect(within(draft).queryByLabelText('Actions for Draft')).toBeNull();
+      expect(draft.getAttribute('draggable')).toBe('false');
     });
   });
 });
