@@ -86,8 +86,9 @@
     font-size: 0.875rem;
   }
 
+  /* Painted only: a focus style may change colour, never the space or the edge. */
   .collection-move-select:focus-visible {
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 1px;
+    outline: none;
+    border-color: hsl(var(--ring));
   }
 </style>
