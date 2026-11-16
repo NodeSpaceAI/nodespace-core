@@ -149,18 +149,6 @@
   let collectionActionNotice = $state('');
   let collectionTreeEl = $state<HTMLElement | null>(null);
   let selectedCollectionId = $derived(collectionsState.state.selectedCollectionId);
-  // Each collection's parents and whether it can be moved, worked out once per
-  // change of the list instead of once per rendered row.
-  let collectionRowInfo = $derived.by(() => {
-    const info = new Map<string, { parents: { id: string; name: string }[]; canMove: boolean }>();
-    for (const c of collectionsData.state.collections) {
-      info.set(c.id, {
-        parents: collectionsData.parentsOf(c.id),
-        canMove: collectionsData.canMove(c.id)
-      });
-    }
-    return info;
-  });
   // The collection being renamed in place, and the name typed so far.
   let renamingId = $state<string | null>(null);
   let renameValue = $state('');
@@ -1113,7 +1101,6 @@
     {@const hasChildren = item.children && item.children.length > 0}
     {@const isExpanded = isCollectionExpanded(item.id)}
     {@const isRenaming = renamingId === item.id}
-    {@const rowInfo = collectionRowInfo.get(item.id)}
     <div
       class="collection-item"
       role="treeitem"
@@ -1185,8 +1172,8 @@
         <CollectionRowMenu
           hidden={isRenaming}
           name={item.name}
-          parents={rowInfo?.parents ?? []}
-          canMove={rowInfo?.canMove ?? false}
+          parents={collectionsData.parentsOf(item.id)}
+          canMove={collectionsData.canMove(item.id)}
           onRename={() => startRename(item)}
           onMove={() => openMoveDialog(item)}
           onRemoveFrom={(parentId) => void removeFromParent(item.id, parentId)}

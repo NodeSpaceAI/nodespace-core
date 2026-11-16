@@ -471,6 +471,27 @@ describe('NavigationSidebar — moving and renaming collections', () => {
       expect(rowsNamed(container, 'HR')).toHaveLength(1);
     });
 
+    it('names only the parents that sit inside the new parent', async () => {
+      const { container } = await renderSidebar();
+      // HR is in Company Policies (inside DeutNet) and in Design (not): moving it into
+      // DeutNet leaves it listed under both, but only Company Policies holds it through DeutNet.
+      vi.mocked(collectionService.getAllCollections).mockResolvedValue(
+        COLLECTIONS.map((c) =>
+          c.id === 'hr' ? { ...c, parentCollectionIds: ['company-policies', 'design', 'deutnet'] } : c
+        )
+      );
+
+      await drag(container, 'HR', 'DeutNet');
+
+      const notice = await waitFor(() => {
+        const found = container.querySelector('[role="status"]');
+        expect(found).toBeTruthy();
+        return found as HTMLElement;
+      });
+      expect(notice.textContent).toContain('It stays listed under “Company Policies”, which is inside “DeutNet”.');
+      expect(notice.textContent).not.toContain('Design');
+    });
+
     it('says so when a collection is taken out of a parent it was not listed under', async () => {
       const both = COLLECTIONS.map((c) =>
         c.id === 'hr' ? { ...c, parentCollectionIds: ['company-policies', 'deutnet'] } : c
@@ -558,6 +579,34 @@ describe('NavigationSidebar — moving and renaming collections', () => {
       await waitFor(() => expect(rename).toHaveBeenCalledTimes(2));
       expect(rename).toHaveBeenNthCalledWith(1, 'hr', 7, 'People');
       expect(rename).toHaveBeenNthCalledWith(2, 'hr', 8, 'People');
+    });
+  });
+
+  describe('a failed rename after the field lost focus mid-save', () => {
+    it('puts focus back in the field that stayed open', async () => {
+      let reject!: (reason: unknown) => void;
+      rename.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, rejectFn) => {
+            reject = rejectFn;
+          })
+      );
+      const { container } = await renderSidebar();
+      await fireEvent.dblClick(within(row(container, 'HR')).getByText('HR'));
+      const field = container.querySelector<HTMLInputElement>('.collection-rename-input')!;
+      await fireEvent.input(field, { target: { value: 'People' } });
+      await fireEvent.keyDown(field, { key: 'Enter' });
+      await waitFor(() => expect(rename).toHaveBeenCalledTimes(1));
+
+      // Focus leaves while the save is running: the blur is ignored, the field stays.
+      field.blur();
+      expect(document.activeElement).not.toBe(field);
+      reject({ message: 'Failed to rename collection: disk full', code: 'UPDATE_ERROR' });
+
+      await waitFor(() => expect(container.querySelector('[role="alert"]')).toBeTruthy());
+      await waitFor(() =>
+        expect(document.activeElement).toBe(container.querySelector('.collection-rename-input'))
+      );
     });
   });
 
@@ -653,8 +702,16 @@ describe('NavigationSidebar — moving and renaming collections', () => {
       expect(document.activeElement).toBe(nameOf('Company Policies'));
       await fireEvent.keyDown(nameOf('Company Policies'), { key: 'ArrowLeft' }); // open: closes it
       await waitFor(() => expect(rowsNamed(container, 'HR')).toHaveLength(0));
+      await fireEvent.keyDown(nameOf('Company Policies'), { key: 'ArrowRight' }); // closed: opens it
+      await waitFor(() => expect(rowsNamed(container, 'HR')).toHaveLength(1));
+      expect(document.activeElement).toBe(nameOf('Company Policies'));
+      await fireEvent.keyDown(nameOf('Company Policies'), { key: 'ArrowLeft' });
+      await waitFor(() => expect(rowsNamed(container, 'HR')).toHaveLength(0));
       await fireEvent.keyDown(nameOf('Company Policies'), { key: 'ArrowLeft' }); // closed: goes to parent
       expect(document.activeElement).toBe(nameOf('DeutNet'));
+      await fireEvent.keyDown(nameOf('DeutNet'), { key: 'ArrowUp' });
+      expect(document.activeElement).toBe(nameOf('Design'));
+      await fireEvent.keyDown(nameOf('Design'), { key: 'ArrowDown' });
       await fireEvent.keyDown(nameOf('DeutNet'), { key: 'End' });
       expect(document.activeElement).toBe(nameOf('Company Policies'));
       await fireEvent.keyDown(nameOf('Company Policies'), { key: 'Home' });
@@ -679,18 +736,24 @@ describe('NavigationSidebar — moving and renaming collections', () => {
   });
 
   describe('work per render', () => {
-    it("works out each collection's parents once per change of the list, not once per render", async () => {
+    it("works out a row's menu entries only when that row's menu is opened, and without building its list of places", async () => {
       const parentsOf = vi.spyOn(collectionsData, 'parentsOf');
+      const canMove = vi.spyOn(collectionsData, 'canMove');
+      const moveTargetsFor = vi.spyOn(collectionsData, 'moveTargetsFor');
       const { container } = await renderSidebar();
-      const afterFirstRender = parentsOf.mock.calls.length;
-      expect(afterFirstRender).toBeLessThanOrEqual(COLLECTIONS.length * 2);
 
-      // Opening and closing rows re-renders the tree but does not change the list.
-      collectionsState.toggleCollectionExpanded('deutnet');
-      collectionsState.toggleCollectionExpanded('deutnet');
-      await waitFor(() => expect(row(container, 'DeutNet')).toBeTruthy());
+      // Drawing the list works nothing out for any menu.
+      expect(parentsOf).not.toHaveBeenCalled();
+      expect(canMove).not.toHaveBeenCalled();
 
-      expect(parentsOf.mock.calls.length).toBe(afterFirstRender);
+      const user = userEvent.setup();
+      await user.click(within(row(container, 'HR')).getByLabelText('Actions for HR'));
+      await screen.findByRole('menuitem', { name: 'Rename' });
+
+      // Opening one menu works out that one row's entries, with the early-exit check.
+      expect(new Set(parentsOf.mock.calls.map(([id]) => id))).toEqual(new Set(['hr']));
+      expect(new Set(canMove.mock.calls.map(([id]) => id))).toEqual(new Set(['hr']));
+      expect(moveTargetsFor).not.toHaveBeenCalled();
     });
   });
 
