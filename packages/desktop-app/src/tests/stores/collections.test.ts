@@ -8,6 +8,7 @@ import {
   collectionsData,
   findCollectionById,
   buildCollectionsTree,
+  MAX_TREE_DEPTH,
   isNonContentNodeType,
   type CollectionsState,
   type CollectionItem,
@@ -730,15 +731,59 @@ describe('Collections Store', () => {
       expect(smoke?.children?.map((c) => c.id)).toEqual(['arch']);
     });
 
-    it('keeps the first parent when the parents are unrelated', () => {
+    it('lists it under each parent when the parents are unrelated', () => {
       const tree = buildCollectionsTree([
         mk('a', 'Alpha', []),
         mk('b', 'Beta', []),
         mk('shared', 'Shared', ['b', 'a']),
       ]);
 
+      expect(tree.map((c) => c.id)).toEqual(['a', 'b']);
+      expect(tree.find((c) => c.id === 'a')?.children?.map((c) => c.id)).toEqual(['shared']);
       expect(tree.find((c) => c.id === 'b')?.children?.map((c) => c.id)).toEqual(['shared']);
-      expect(tree.find((c) => c.id === 'a')?.children).toEqual([]);
+    });
+
+    it('lists it under each unrelated parent and leaves out a parent that is an ancestor of one of them', () => {
+      const tree = buildCollectionsTree([
+        mk('top', 'Top', []),
+        mk('a', 'Alpha', ['top']),
+        mk('b', 'Beta', []),
+        mk('shared', 'Shared', ['top', 'a', 'b']),
+      ]);
+
+      // Not under Top: Alpha, which is inside Top, is more specific.
+      const top = tree.find((c) => c.id === 'top');
+      expect(top?.children?.map((c) => c.id)).toEqual(['a']);
+      expect(top?.children?.[0].children?.map((c) => c.id)).toEqual(['shared']);
+      expect(tree.find((c) => c.id === 'b')?.children?.map((c) => c.id)).toEqual(['shared']);
+    });
+
+    it('leaves out a parent edge that would close a cycle, so the tree is finite', () => {
+      const tree = buildCollectionsTree([
+        mk('a', 'Alpha', ['b']),
+        mk('b', 'Beta', ['a']),
+        mk('self', 'Self', ['self']),
+        mk('ok', 'Ok', ['a']),
+      ]);
+
+      // The cycle edges are dropped: no recursion, every collection still shown.
+      const ids = JSON.stringify(tree);
+      expect(ids.length).toBeLessThan(5000);
+      expect(tree.map((c) => c.id).sort()).toEqual(expect.arrayContaining(['self']));
+    });
+
+    it('stops nesting at the display depth', () => {
+      const chain: CollectionInfo[] = [mk('c0', 'C0', [])];
+      for (let i = 1; i < 40; i++) chain.push(mk(`c${i}`, `C${i}`, [`c${i - 1}`]));
+      const tree = buildCollectionsTree(chain);
+
+      let depth = 0;
+      let level = tree;
+      while (level.length > 0) {
+        depth++;
+        level = level[0].children ?? [];
+      }
+      expect(depth).toBe(MAX_TREE_DEPTH);
     });
 
     it('drops an ancestor candidate whichever position it has among three parents', () => {

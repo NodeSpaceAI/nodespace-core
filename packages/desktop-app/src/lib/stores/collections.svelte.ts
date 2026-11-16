@@ -6,6 +6,19 @@ import { onDaemonReconnect } from '$lib/services/daemon-status';
 import { stripMarkdown } from '$lib/services/markdown-utils';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import {
+  PENDING_COLLECTION_PREFIX,
+  ancestorIds,
+  describeRefusal,
+  hasMoveTarget,
+  moveFailureMessage,
+  moveTargets,
+  refusalForMove,
+  removeFailureMessage,
+  renameFailureMessage,
+  sameName,
+  type CollectionActionResult
+} from './collection-moves';
 
 const log = createLogger('CollectionsStore');
 
@@ -17,8 +30,12 @@ const log = createLogger('CollectionsStore');
  *
  * ## Architecture
  *
- * - Collections are flat (globally unique names, no parent-child hierarchy)
- * - Paths like "hr:policy:vacation" are navigation conventions, not structure
+ * - Collection names are globally unique
+ * - A collection can sit in other collections (a `member_of` edge to its parent),
+ *   in several at once, so collections form a graph, never a cycle; the tree view
+ *   shows each under every parent that is not an ancestor of another of its parents
+ *   (`buildCollectionsTree`)
+ * - Paths like "hr:policy:vacation" are navigation conventions for creating that nesting
  * - Nodes can belong to multiple collections (many-to-many via member_of edges)
  *
  * ## Data Flow
@@ -208,7 +225,7 @@ class CollectionsDataStore {
    */
   async createCollection(name: string, description?: string): Promise<string | null> {
     const generation = this.#generation;
-    const tempId = `pending-collection-${crypto.randomUUID()}`;
+    const tempId = `${PENDING_COLLECTION_PREFIX}${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const optimistic: CollectionInfo = {
       id: tempId,
@@ -294,6 +311,170 @@ class CollectionsDataStore {
       };
       return null;
     }
+  }
+
+  /** Whether `collectionId` can be put into at least one other collection. */
+  canMove(collectionId: string): boolean {
+    return hasMoveTarget(
+      this.state.collections,
+      collectionId,
+      uiExtensionRegistry.collectionTreeRoots()
+    );
+  }
+
+  /** The ids of the collections the tree lists `childId` directly under. */
+  shownUnderIds(childId: string): string[] {
+    const roots = uiExtensionRegistry.collectionTreeRoots();
+    const child = this.getCollectionById(childId);
+    const parentsById = new Map(
+      this.state.collections.map((c) => [c.id, c.parentCollectionIds ?? []] as const)
+    );
+    const candidates = (child?.parentCollectionIds ?? []).filter((p) => !roots.has(p));
+    return displayParentIds(candidates, parentsById);
+  }
+
+  /**
+   * Whether the tree lists `childId` directly under `parentId`. A collection is
+   * listed under its parents that are not ancestors of another of its parents, so
+   * a collection put into the ancestor of a parent it already has is not listed
+   * there; the sidebar says so when that happens.
+   */
+  isShownUnder(childId: string, parentId: string): boolean {
+    return this.shownUnderIds(childId).includes(parentId);
+  }
+
+  /** The names of the collections the tree lists `childId` under that sit inside `ancestorId`. */
+  shownUnderInside(childId: string, ancestorId: string): string[] {
+    return this.shownUnderIds(childId)
+      .filter((id) => ancestorIds(this.state.collections, id).has(ancestorId))
+      .map((id) => this.getCollectionById(id)?.content)
+      .filter((name): name is string => !!name);
+  }
+
+  /** The names of the collections the tree lists `childId` under. */
+  shownUnderNames(childId: string): string[] {
+    return this.shownUnderIds(childId)
+      .map((id) => this.getCollectionById(id)?.content)
+      .filter((name): name is string => !!name);
+  }
+
+  /** The collections `collectionId` can be put under (see `moveTargets`). */
+  moveTargetsFor(collectionId: string): CollectionInfo[] {
+    return moveTargets(
+      this.state.collections,
+      collectionId,
+      uiExtensionRegistry.collectionTreeRoots()
+    );
+  }
+
+  /**
+   * The collections `collectionId` sits directly in, for the "Remove from" actions:
+   * the root collections an extension keeps out of the tree are left out, since
+   * the sidebar never shows them.
+   */
+  parentsOf(collectionId: string): { id: string; name: string }[] {
+    const roots = uiExtensionRegistry.collectionTreeRoots();
+    const child = this.getCollectionById(collectionId);
+    const parents: { id: string; name: string }[] = [];
+    for (const parentId of child?.parentCollectionIds ?? []) {
+      const parent = this.getCollectionById(parentId);
+      if (parent && !roots.has(parentId)) parents.push({ id: parentId, name: parent.content });
+    }
+    return parents.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** The message for a database that was switched while a call was in flight. */
+  #movedOn(): CollectionActionResult {
+    return { ok: false, message: 'Nothing was changed: the database was switched.' };
+  }
+
+  /**
+   * Put a collection under another one. A collection can sit under several
+   * parents, so this adds a parent and keeps the others. A move that cannot
+   * work (into itself, into a collection it is already in, into one of its own
+   * descendants) is refused here, with the two names in the message, before any
+   * call; anything the backend refuses comes back as a message too.
+   */
+  async moveCollectionInto(childId: string, parentId: string): Promise<CollectionActionResult> {
+    const child = this.getCollectionById(childId);
+    const parent = this.getCollectionById(parentId);
+    if (!child || !parent) {
+      return { ok: false, message: 'That collection is no longer there. Refresh the list and try again.' };
+    }
+    const refusal = refusalForMove(this.state.collections, childId, parentId);
+    if (refusal) {
+      return { ok: false, message: describeRefusal(refusal, child.content, parent.content) };
+    }
+
+    const generation = this.#generation;
+    try {
+      await collectionService.addNodeToCollection(childId, parentId);
+    } catch (err) {
+      log.error('Failed to move collection', { childId, parentId, error: err });
+      if (generation !== this.#generation) return this.#movedOn();
+      return { ok: false, message: moveFailureMessage(err, child.content, parent.content) };
+    }
+    if (generation !== this.#generation) return this.#movedOn();
+    await this.loadCollections();
+    return { ok: true };
+  }
+
+  /** Take a collection out of one of its parents. Its other parents are kept. */
+  async removeCollectionFrom(childId: string, parentId: string): Promise<CollectionActionResult> {
+    const child = this.getCollectionById(childId);
+    const parent = this.getCollectionById(parentId);
+    if (!child || !parent) {
+      return { ok: false, message: 'That collection is no longer there. Refresh the list and try again.' };
+    }
+
+    const generation = this.#generation;
+    try {
+      await collectionService.removeNodeFromCollection(childId, parentId);
+    } catch (err) {
+      log.error('Failed to remove collection from its parent', { childId, parentId, error: err });
+      if (generation !== this.#generation) return this.#movedOn();
+      return { ok: false, message: removeFailureMessage(err, child.content, parent.content) };
+    }
+    if (generation !== this.#generation) return this.#movedOn();
+    await this.loadCollections();
+    return { ok: true };
+  }
+
+  /**
+   * Rename a collection. The name is trimmed; an empty name, and a name another
+   * collection already has (compared ignoring letter case), are refused with a
+   * message. Renaming to the name it already has changes nothing.
+   */
+  async renameCollection(collectionId: string, newName: string): Promise<CollectionActionResult> {
+    const collection = this.getCollectionById(collectionId);
+    if (!collection) {
+      return { ok: false, message: 'That collection is no longer there. Refresh the list and try again.' };
+    }
+    const name = newName.trim();
+    if (!name) return { ok: false, message: 'A collection needs a name.' };
+    if (name === collection.content) return { ok: true };
+    if (collectionId.startsWith(PENDING_COLLECTION_PREFIX)) {
+      return { ok: false, message: `“${collection.content}” is still being created. Try again in a moment.` };
+    }
+    const clash = this.state.collections.find(
+      (c) => c.id !== collectionId && sameName(c.content, name)
+    );
+    if (clash) return { ok: false, message: `A collection named “${clash.content}” already exists.` };
+
+    const generation = this.#generation;
+    try {
+      await collectionService.renameCollection(collectionId, collection.version, name);
+    } catch (err) {
+      log.error('Failed to rename collection', { collectionId, error: err });
+      if (generation !== this.#generation) return this.#movedOn();
+      // Refresh what the list holds, so a retry goes out with the collection's
+      // current version instead of failing the same way again.
+      await this.loadCollections();
+      return { ok: false, message: renameFailureMessage(err, collection.content, name) };
+    }
+    if (generation !== this.#generation) return this.#movedOn();
+    await this.loadCollections();
+    return { ok: true };
   }
 
   /** Load members for a specific collection (single query for full Node data) */
@@ -485,6 +666,15 @@ class CollectionsStore {
     };
   }
 
+  /** Expand a collection in the tree (it stays expanded if it already is). */
+  expandCollection(collectionId: string): void {
+    if (this.state.expandedCollectionIds.has(collectionId)) return;
+    this.state = {
+      ...this.state,
+      expandedCollectionIds: new Set(this.state.expandedCollectionIds).add(collectionId)
+    };
+  }
+
   /** Toggle a collection's expanded state in the tree */
   toggleCollectionExpanded(collectionId: string): void {
     const newExpanded = new Set(this.state.expandedCollectionIds);
@@ -533,12 +723,22 @@ export interface SelectedCollectionInfo {
  * collection because it is still empty is the bug this exemption exists to
  * prevent, not the leftover-emptiness case the filter is for.
  */
+/** The deepest nesting the sidebar shows. */
+export const MAX_TREE_DEPTH = 24;
+
 function pruneEmptyCollections(
   items: CollectionItem[],
-  exempt: ReadonlySet<string>
+  exempt: ReadonlySet<string>,
+  depth = 1
 ): CollectionItem[] {
   return items.reduce<CollectionItem[]>((kept, item) => {
-    const keptChildren = item.children ? pruneEmptyCollections(item.children, exempt) : [];
+    // Nesting is shown to a fixed depth: a collection can appear under several
+    // parents, so the tree is a graph unfolded, and the cap keeps an unusually
+    // tangled one from growing without bound.
+    const keptChildren =
+      item.children && depth < MAX_TREE_DEPTH
+        ? pruneEmptyCollections(item.children, exempt, depth + 1)
+        : [];
     if (item.memberCount > 0 || keptChildren.length > 0 || exempt.has(item.id)) {
       kept.push({ ...item, children: keptChildren });
     }
@@ -547,20 +747,20 @@ function pruneEmptyCollections(
 }
 
 /**
- * Choose the single parent a multi-parent collection is displayed under. A
- * collection can be `member_of` several collections at once, and a collection
- * and its sub-collection are often both parents of the same child (for example
- * a workspace-wide container the Sync app files every collection under, next to
- * the real parent). Displaying it under the broader one hides the real nesting,
- * so drop every candidate that is an ancestor of another candidate (reached
- * through that other one) and keep the first of what is left. With no such
- * relation the first parent wins, as before.
+ * The parents a multi-parent collection is displayed under. A collection can be
+ * `member_of` several collections at once, and a collection and its
+ * sub-collection are often both parents of the same child (for example a
+ * workspace-wide container that every collection is filed under, next to the
+ * real parent). Displaying it under the broader one too would list it twice
+ * with one inside the other, so every candidate that is an ancestor of another
+ * candidate (reached through that other one) is dropped, and the collection is
+ * shown under each of the rest: the parents that are unrelated to one another.
  */
-function pickDisplayParent(
+export function displayParentIds(
   parentIds: readonly string[],
   parentsById: ReadonlyMap<string, readonly string[]>
-): string {
-  if (parentIds.length === 1) return parentIds[0];
+): string[] {
+  if (parentIds.length <= 1) return [...parentIds];
   const ancestorsOf = (id: string): Set<string> => {
     const seen = new Set<string>();
     const stack = [...(parentsById.get(id) ?? [])];
@@ -572,13 +772,11 @@ function pickDisplayParent(
     }
     return seen;
   };
-  // Candidates that are not an ancestor of another candidate: the most specific
-  // ones. Unrelated candidates tie, and the first of them wins, as before.
   const ancestors = new Map(parentIds.map((id) => [id, ancestorsOf(id)]));
   const mostSpecific = parentIds.filter(
     (id) => !parentIds.some((other) => other !== id && ancestors.get(other)!.has(id))
   );
-  return mostSpecific[0] ?? parentIds[0];
+  return mostSpecific.length > 0 ? mostSpecific : [parentIds[0]];
 }
 
 /**
@@ -615,30 +813,36 @@ export function buildCollectionsTree(
     });
   }
 
-  // Build a set of all IDs that are children of some other collection
+  // Build a set of all IDs that are shown under some other collection
   const childIds = new Set<string>();
 
-  // For each collection, add it as a child to its parent(s)
-  // Note: A collection can have multiple parents, but for tree display
-  // we only show it under the first parent to avoid duplication
+  // For each collection, add it as a child under each parent it is displayed
+  // under (see `displayParentIds`): a collection in several unrelated
+  // collections is listed in each of them. A parent edge that would close a
+  // cycle in the data (the collection itself, or one of its own descendants)
+  // is left out, so the tree is finite whatever the data holds.
   const parentsById = new Map<string, readonly string[]>(
     collections.map((c) => [c.id, c.parentCollectionIds || []])
   );
   for (const c of collections) {
     // Root collections are never display parents: a collection whose only
     // parents are roots shows at the top level instead of nesting under one.
-    const parentIds = (c.parentCollectionIds || []).filter((p) => !rootCollectionIds.has(p));
-    if (parentIds.length > 0) {
-      // Show it under ONE parent only (to avoid showing the same collection
-      // multiple times): the most specific one, see `pickDisplayParent`.
-      const firstParentId = pickDisplayParent(parentIds, parentsById);
-      const parent = itemMap.get(firstParentId);
-      const child = itemMap.get(c.id);
-      if (parent && child) {
-        parent.children = parent.children || [];
-        parent.children.push(child);
-        childIds.add(c.id);
-      }
+    const parentIds = (c.parentCollectionIds || []).filter(
+      (p) =>
+        !rootCollectionIds.has(p) &&
+        p !== c.id &&
+        itemMap.has(p) &&
+        !ancestorIds(collections, p).has(c.id)
+    );
+    if (parentIds.length === 0) continue;
+    const child = itemMap.get(c.id);
+    if (!child) continue;
+    for (const parentId of displayParentIds(parentIds, parentsById)) {
+      const parent = itemMap.get(parentId);
+      if (!parent) continue;
+      parent.children = parent.children || [];
+      parent.children.push(child);
+      childIds.add(c.id);
     }
   }
 
