@@ -8,8 +8,9 @@
  *
  * - Collections use colon-separated paths (e.g., "hr:policy:vacation")
  * - Nodes can belong to multiple collections (many-to-many)
- * - Collections are flat (globally unique names)
- * - Path syntax is for navigation convenience, not structural hierarchy
+ * - Collection names are globally unique
+ * - A collection can sit in several other collections; a path creates that nesting,
+ *   and a cycle is refused
  */
 
 import type { Node, CollectionNode } from '$lib/types';

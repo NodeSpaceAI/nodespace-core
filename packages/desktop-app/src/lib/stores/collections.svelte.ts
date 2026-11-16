@@ -28,8 +28,11 @@ const log = createLogger('CollectionsStore');
  *
  * ## Architecture
  *
- * - Collections are flat (globally unique names, no parent-child hierarchy)
- * - Paths like "hr:policy:vacation" are navigation conventions, not structure
+ * - Collection names are globally unique
+ * - A collection can sit in other collections (a `member_of` edge to its parent),
+ *   in several at once, so collections form a graph, never a cycle; the tree view
+ *   shows each under one parent (`buildCollectionsTree`)
+ * - Paths like "hr:policy:vacation" are navigation conventions for creating that nesting
  * - Nodes can belong to multiple collections (many-to-many via member_of edges)
  *
  * ## Data Flow
