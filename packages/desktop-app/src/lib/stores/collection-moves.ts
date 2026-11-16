@@ -93,6 +93,20 @@ export function moveTargets(
     .sort((a, b) => a.content.localeCompare(b.content));
 }
 
+/** Whether `childId` can be put into at least one collection (cheaper than `moveTargets(...).length > 0`). */
+export function hasMoveTarget(
+  collections: readonly CollectionInfo[],
+  childId: string,
+  rootCollectionIds: ReadonlySet<string> = new Set()
+): boolean {
+  return collections.some(
+    (c) =>
+      !rootCollectionIds.has(c.id) &&
+      !c.id.startsWith(PENDING_COLLECTION_PREFIX) &&
+      refusalForMove(collections, childId, c.id) === null
+  );
+}
+
 /** The message for a refused move, naming both collections. */
 export function describeRefusal(
   refusal: MoveRefusal,
@@ -148,14 +162,26 @@ export function removeFailureMessage(err: unknown, childName: string, parentName
     : `Couldn't remove “${childName}” from “${parentName}”.`;
 }
 
+/**
+ * Whether a failed rename was refused because the collection changed since the
+ * list was read. The rename command reports that as an update error whose
+ * status is "Aborted" (the daemon's version-conflict status), with the
+ * conflict in the message.
+ */
+function isStaleVersion(err: unknown, text: string): boolean {
+  if (isCommandError(err) && err.details === 'Aborted') return true;
+  return /version conflict/i.test(text);
+}
+
 /** The message for a rename the backend refused or could not complete. */
 export function renameFailureMessage(err: unknown, name: string, newName: string): string {
   const code = isCommandError(err) ? err.code : undefined;
   if (code === 'COLLECTION_EXISTS') return `A collection named “${newName}” already exists.`;
-  if (code === 'VERSION_CONFLICT') {
-    return `“${name}” was changed somewhere else. Try renaming it again.`;
+  const text = failureText(err);
+  if (isStaleVersion(err, text)) {
+    return `“${name}” was changed somewhere else. The list is up to date now: try renaming it again.`;
   }
-  const detail = withoutBackendPrefix(failureText(err));
+  const detail = withoutBackendPrefix(text);
   return detail ? `Couldn't rename “${name}”: ${detail}` : `Couldn't rename “${name}”.`;
 }
 

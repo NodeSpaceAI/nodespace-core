@@ -7,6 +7,7 @@ import {
   ancestorIds,
   describeRefusal,
   descendantIds,
+  hasMoveTarget,
   moveFailureMessage,
   moveTargets,
   refusalForMove,
@@ -152,20 +153,46 @@ describe('messages', () => {
     ).toBe('Couldn\'t remove “HR” from “DeutNet”: nope');
   });
 
-  it('say a name is taken, or that the collection changed, when a rename is refused', () => {
+  it('say a name is taken when a rename is refused for that', () => {
     expect(renameFailureMessage({ message: 'x', code: 'COLLECTION_EXISTS' }, 'HR', 'People')).toBe(
       'A collection named “People” already exists.'
     );
+  });
+
+  it('say the collection changed when a rename is refused for a stale version', () => {
+    const stale = 'The list is up to date now: try renaming it again.';
+    // As the rename command reports it: an update error with the daemon's Aborted status.
     expect(
       renameFailureMessage(
-        { message: 'x', code: 'VERSION_CONFLICT', conflictData: { node_id: 'hr' } },
+        {
+          message: 'Failed to rename collection: Version conflict on hr: expected 7, got 8',
+          code: 'UPDATE_ERROR',
+          details: 'Aborted'
+        },
         'HR',
         'People'
       )
-    ).toBe('“HR” was changed somewhere else. Try renaming it again.');
-    expect(renameFailureMessage({ message: 'Failed to rename collection: disk full' }, 'HR', 'People')).toBe(
-      'Couldn\'t rename “HR”: disk full'
-    );
+    ).toBe(`“HR” was changed somewhere else. ${stale}`);
+    // By the status alone, and by the message alone.
+    expect(
+      renameFailureMessage({ message: 'x', code: 'UPDATE_ERROR', details: 'Aborted' }, 'HR', 'People')
+    ).toBe(`“HR” was changed somewhere else. ${stale}`);
+    expect(
+      renameFailureMessage(new Error('Version conflict on hr: expected 7, got 8'), 'HR', 'People')
+    ).toBe(`“HR” was changed somewhere else. ${stale}`);
+  });
+
+  it('carry the reason for any other failed rename', () => {
+    expect(
+      renameFailureMessage({ message: 'Failed to rename collection: disk full' }, 'HR', 'People')
+    ).toBe('Couldn\'t rename “HR”: disk full');
+    expect(renameFailureMessage(undefined, 'HR', 'People')).toBe('Couldn\'t rename “HR”.');
+  });
+
+  it('say whether a collection can go anywhere without building the list', () => {
+    expect(hasMoveTarget(COLLECTIONS, 'design')).toBe(true);
+    expect(hasMoveTarget([collection('only', 'Only')], 'only')).toBe(false);
+    expect(hasMoveTarget(COLLECTIONS, 'design', new Set(['company-policies', 'deutnet', 'hr']))).toBe(false);
   });
 
   it('compare names without letter case or surrounding space', () => {

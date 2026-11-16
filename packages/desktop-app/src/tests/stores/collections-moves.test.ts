@@ -204,14 +204,33 @@ describe('collectionsData — moving and renaming collections', () => {
       });
 
       rename.mockRejectedValueOnce({
-        message: 'x',
-        code: 'VERSION_CONFLICT',
-        conflictData: { node_id: 'hr' }
+        message: 'Failed to rename collection: Version conflict on hr: expected 7, got 8',
+        code: 'UPDATE_ERROR',
+        details: 'Aborted'
       });
       expect(await collectionsData.renameCollection('hr', 'People')).toEqual({
         ok: false,
-        message: '“HR” was changed somewhere else. Try renaming it again.'
+        message:
+          '“HR” was changed somewhere else. The list is up to date now: try renaming it again.'
       });
+    });
+
+    it('refreshes the list after a failed rename, so the retry goes out with the current version', async () => {
+      rename.mockRejectedValueOnce({
+        message: 'Failed to rename collection: Version conflict on hr: expected 7, got 8',
+        code: 'UPDATE_ERROR',
+        details: 'Aborted'
+      });
+      load.mockResolvedValue(COLLECTIONS.map((c) => (c.id === 'hr' ? { ...c, version: 8 } : c)));
+
+      const first = await collectionsData.renameCollection('hr', 'People');
+      const retry = await collectionsData.renameCollection('hr', 'People');
+
+      expect(first.ok).toBe(false);
+      expect(load).toHaveBeenCalledTimes(2); // after the failure, and after the retry succeeded
+      expect(retry).toEqual({ ok: true });
+      expect(rename).toHaveBeenNthCalledWith(1, 'hr', 7, 'People');
+      expect(rename).toHaveBeenNthCalledWith(2, 'hr', 8, 'People');
     });
 
     it('does not rename a collection whose create has not finished', async () => {
@@ -235,6 +254,31 @@ describe('collectionsData — moving and renaming collections', () => {
         { id: 'company-policies', name: 'Company Policies' }
       ]);
       expect(collectionsData.parentsOf('design')).toEqual([]);
+    });
+  });
+
+  describe('where the tree lists a collection', () => {
+    it('lists a collection under each unrelated parent, and not under an ancestor of one of them', () => {
+      collectionsData._setTestData(
+        [
+          collection('top', 'Top'),
+          collection('mid', 'Mid', ['top']),
+          collection('other', 'Other'),
+          collection('leaf', 'Leaf', ['top', 'mid', 'other'])
+        ],
+        new Map()
+      );
+
+      expect(collectionsData.shownUnderIds('leaf').sort()).toEqual(['mid', 'other']);
+      expect(collectionsData.isShownUnder('leaf', 'mid')).toBe(true);
+      expect(collectionsData.isShownUnder('leaf', 'top')).toBe(false);
+      expect(collectionsData.shownUnderNames('leaf').sort()).toEqual(['Mid', 'Other']);
+    });
+
+    it('says whether a collection can be moved anywhere', () => {
+      expect(collectionsData.canMove('design')).toBe(true);
+      collectionsData._setTestData([collection('only', 'Only')], new Map());
+      expect(collectionsData.canMove('only')).toBe(false);
     });
   });
 

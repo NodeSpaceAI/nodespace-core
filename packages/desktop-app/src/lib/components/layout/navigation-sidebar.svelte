@@ -25,7 +25,7 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { databaseStore } from '$lib/stores/database.svelte';
   import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
   import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
@@ -145,6 +145,22 @@
   // them: a refused move (a cycle, a collection it is already in, no rights on
   // the target) or a failed rename says why instead of silently doing nothing.
   let collectionActionError = $state('');
+  // What a move or un-nest changed when the list looks the same afterwards.
+  let collectionActionNotice = $state('');
+  let collectionTreeEl = $state<HTMLElement | null>(null);
+  let selectedCollectionId = $derived(collectionsState.state.selectedCollectionId);
+  // Each collection's parents and whether it can be moved, worked out once per
+  // change of the list instead of once per rendered row.
+  let collectionRowInfo = $derived.by(() => {
+    const info = new Map<string, { parents: { id: string; name: string }[]; canMove: boolean }>();
+    for (const c of collectionsData.state.collections) {
+      info.set(c.id, {
+        parents: collectionsData.parentsOf(c.id),
+        canMove: collectionsData.canMove(c.id)
+      });
+    }
+    return info;
+  });
   // The collection being renamed in place, and the name typed so far.
   let renamingId = $state<string | null>(null);
   let renameValue = $state('');
@@ -171,6 +187,7 @@
   function startRename(item: CollectionItem) {
     if (item.pending) return;
     collectionActionError = '';
+    collectionActionNotice = '';
     renamingId = item.id;
     renameValue = item.name;
   }
@@ -180,6 +197,40 @@
     renameValue = '';
   }
 
+  /** The tree row for a collection, preferring the one listed under `underParentId`. */
+  function findCollectionRow(id: string, underParentId?: string): HTMLElement | null {
+    const rows = [
+      ...(collectionTreeEl?.querySelectorAll<HTMLElement>('[role="treeitem"]') ?? [])
+    ];
+    const matches = rows.filter((row) => row.dataset.collectionId === id);
+    if (underParentId) {
+      for (const row of matches) {
+        const level = Number(row.getAttribute('aria-level'));
+        for (let i = rows.indexOf(row) - 1; i >= 0; i--) {
+          if (Number(rows[i].getAttribute('aria-level')) === level - 1) {
+            if (rows[i].dataset.collectionId === underParentId) return row;
+            break;
+          }
+        }
+      }
+    }
+    return matches[0] ?? null;
+  }
+
+  /** Put focus on a collection's name once the list has re-rendered, never leave it on the page. */
+  async function focusCollectionRow(id: string, underParentId?: string, fallbackId?: string) {
+    await tick();
+    const row =
+      findCollectionRow(id, underParentId) ?? (fallbackId ? findCollectionRow(fallbackId) : null);
+    row?.querySelector<HTMLElement>('.collection-name-btn')?.focus();
+  }
+
+  async function refocusRenameField() {
+    await tick();
+    const field = collectionTreeEl?.querySelector<HTMLInputElement>('.collection-rename-input');
+    field?.focus();
+  }
+
   async function submitRename(item: CollectionItem) {
     if (renameBusy || renamingId !== item.id) return;
     renameBusy = true;
@@ -187,24 +238,42 @@
     renameBusy = false;
     if (result.ok) {
       cancelRename();
+      void focusCollectionRow(item.id);
     } else {
-      // Keep the field open with what was typed, so the name can be corrected.
+      // Keep the field open with what was typed, so the name can be corrected,
+      // and keep focus in it (a blur that came while the save was running was
+      // ignored, so the field is still there).
       collectionActionError = result.message;
+      void refocusRenameField();
     }
   }
 
   function openMoveDialog(item: CollectionItem) {
     collectionActionError = '';
+    collectionActionNotice = '';
     moveDialogFor = item;
     moveDialogOpen = true;
   }
 
   async function moveCollection(childId: string, parentId: string) {
     collectionActionError = '';
+    collectionActionNotice = '';
     const result = await collectionsData.moveCollectionInto(childId, parentId);
     if (result.ok) {
       // Open the new parent so the moved collection shows under it.
       collectionsState.expandCollection(parentId);
+      // A collection put into the ancestor of a parent it already has is listed
+      // only under that parent: say so, so the move is not mistaken for nothing.
+      if (!collectionsData.isShownUnder(childId, parentId)) {
+        const child = collectionsData.getCollectionById(childId)?.content ?? '';
+        const parent = collectionsData.getCollectionById(parentId)?.content ?? '';
+        const inside = collectionsData.shownUnderInside(childId, parentId);
+        collectionActionNotice =
+          `“${child}” is now also in “${parent}”. It stays listed under ` +
+          `${inside.map((name) => `“${name}”`).join(' and ')}, ` +
+          `which ${inside.length === 1 ? 'is' : 'are'} inside “${parent}”.`;
+      }
+      void focusCollectionRow(childId, parentId);
     } else {
       collectionActionError = result.message;
     }
@@ -212,8 +281,96 @@
 
   async function removeFromParent(childId: string, parentId: string) {
     collectionActionError = '';
+    collectionActionNotice = '';
+    const child = collectionsData.getCollectionById(childId)?.content ?? '';
+    const parent = collectionsData.getCollectionById(parentId)?.content ?? '';
+    const wasShown = collectionsData.isShownUnder(childId, parentId);
+    const inside = collectionsData.shownUnderInside(childId, parentId);
     const result = await collectionsData.removeCollectionFrom(childId, parentId);
-    if (!result.ok) collectionActionError = result.message;
+    if (!result.ok) {
+      collectionActionError = result.message;
+      void focusCollectionRow(childId, undefined, parentId);
+      return;
+    }
+    // Taking a collection out of a parent it was not listed under changes nothing
+    // on screen: say what happened.
+    if (!wasShown && inside.length > 0) {
+      collectionActionNotice =
+        `“${child}” is no longer in “${parent}”. It was listed under ` +
+        `${inside.map((name) => `“${name}”`).join(' and ')}, ` +
+        `which ${inside.length === 1 ? 'is' : 'are'} inside “${parent}”, so the list looks the same.`;
+    }
+    void focusCollectionRow(childId, undefined, parentId);
+  }
+
+  /**
+   * Arrow-key navigation of the Collections tree: Up and Down move between the
+   * visible rows, Right opens a collapsed collection and then enters it, Left
+   * closes an open one and then goes to its parent, Home and End go to the first
+   * and last row. It acts only on a row's name button, so typing in the rename
+   * field and the menus keep their own keys.
+   */
+  function collectionTreeKeys(node: HTMLElement) {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.classList.contains('collection-name-btn')) return;
+      const rows = [...node.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+      const row = target.closest<HTMLElement>('[role="treeitem"]');
+      const index = row ? rows.indexOf(row) : -1;
+      if (!row || index < 0) return;
+      const focusRow = (next: HTMLElement | undefined) =>
+        next?.querySelector<HTMLElement>('.collection-name-btn')?.focus();
+      const id = row.dataset.collectionId ?? '';
+      const expanded = row.getAttribute('aria-expanded');
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          focusRow(rows[index + 1]);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          focusRow(rows[index - 1]);
+          break;
+        case 'Home':
+          event.preventDefault();
+          focusRow(rows[0]);
+          break;
+        case 'End':
+          event.preventDefault();
+          focusRow(rows[rows.length - 1]);
+          break;
+        case 'ArrowRight':
+          if (expanded === 'false') {
+            event.preventDefault();
+            collectionsState.toggleCollectionExpanded(id);
+          } else if (expanded === 'true') {
+            event.preventDefault();
+            focusRow(rows[index + 1]);
+          }
+          break;
+        case 'ArrowLeft':
+          if (expanded === 'true') {
+            event.preventDefault();
+            collectionsState.toggleCollectionExpanded(id);
+          } else {
+            const level = Number(row.getAttribute('aria-level'));
+            for (let i = index - 1; i >= 0; i--) {
+              if (Number(rows[i].getAttribute('aria-level')) === level - 1) {
+                event.preventDefault();
+                focusRow(rows[i]);
+                break;
+              }
+            }
+          }
+          break;
+      }
+    };
+    node.addEventListener('keydown', onKeyDown);
+    return {
+      destroy() {
+        node.removeEventListener('keydown', onKeyDown);
+      }
+    };
   }
 
   const COLLECTION_DRAG_TYPE = 'application/x-nodespace-collection';
@@ -271,6 +428,12 @@
         item = next;
       },
       destroy() {
+        // A row removed from the list while it is being dragged (the list reloaded
+        // under it) never gets its dragend: clear the state here.
+        if (draggingId === item.id) {
+          draggingId = null;
+          dropTargetId = null;
+        }
         node.removeEventListener('dragstart', onDragStart);
         node.removeEventListener('dragover', onDragOver);
         node.removeEventListener('dragleave', onDragLeave);
@@ -564,17 +727,43 @@
 
         <Collapsible.Content>
           <div class="collection-list">
-            {@render collectionRows(collections, 1)}
+            <div
+              class="collection-tree"
+              role="tree"
+              aria-label="Collections"
+              bind:this={collectionTreeEl}
+              use:collectionTreeKeys
+            >
+              {@render collectionRows(collections, 1)}
+            </div>
 
             <!-- A refused move, un-nest or rename says why -->
             {#if collectionActionError}
               <div class="collection-item new-collection-error" role="alert">
                 <div class="expand-area"></div>
                 <span>{collectionActionError}</span>
+                <!-- Pressing it must not take focus from a rename field the message left open -->
                 <button
                   class="collection-error-dismiss"
                   aria-label="Dismiss message"
+                  onmousedown={(e) => e.preventDefault()}
                   onclick={() => (collectionActionError = '')}
+                >
+                  ×
+                </button>
+              </div>
+            {/if}
+
+            <!-- A move or un-nest that left the list looking the same says what it did -->
+            {#if collectionActionNotice}
+              <div class="collection-item collection-notice" role="status">
+                <div class="expand-area"></div>
+                <span>{collectionActionNotice}</span>
+                <button
+                  class="collection-error-dismiss"
+                  aria-label="Dismiss notice"
+                  onmousedown={(e) => e.preventDefault()}
+                  onclick={() => (collectionActionNotice = '')}
                 >
                   ×
                 </button>
@@ -924,8 +1113,15 @@
     {@const hasChildren = item.children && item.children.length > 0}
     {@const isExpanded = isCollectionExpanded(item.id)}
     {@const isRenaming = renamingId === item.id}
+    {@const rowInfo = collectionRowInfo.get(item.id)}
     <div
       class="collection-item"
+      role="treeitem"
+      aria-level={depth}
+      aria-expanded={hasChildren ? isExpanded : undefined}
+      aria-selected={selectedCollectionId === item.id}
+      aria-label={item.name}
+      data-collection-id={item.id}
       class:level-2={depth === 2}
       class:level-3={depth >= 3}
       class:pending={item.pending}
@@ -989,8 +1185,8 @@
         <CollectionRowMenu
           hidden={isRenaming}
           name={item.name}
-          parents={collectionsData.parentsOf(item.id)}
-          canMove={collectionsData.moveTargetsFor(item.id).length > 0}
+          parents={rowInfo?.parents ?? []}
+          canMove={rowInfo?.canMove ?? false}
           onRename={() => startRename(item)}
           onMove={() => openMoveDialog(item)}
           onRemoveFrom={(parentId) => void removeFromParent(item.id, parentId)}
@@ -1398,6 +1594,34 @@
     color: hsl(var(--foreground));
     outline: 1px dashed hsl(var(--ring));
     outline-offset: -1px;
+  }
+
+  /* The tree keeps the list's horizontal scrolling: rows size to their content */
+  .collection-tree {
+    display: flex;
+    flex-direction: column;
+    min-width: 100%;
+    width: max-content;
+  }
+
+  /* What a move or un-nest did when the list looks the same: informative, not an error */
+  /* Message rows wrap inside the list instead of growing it sideways */
+  .collection-notice,
+  .new-collection-error {
+    width: auto;
+    min-width: 0;
+  }
+
+  .collection-notice {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+    white-space: normal;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .collection-notice:hover {
+    background: transparent;
+    color: hsl(var(--muted-foreground));
   }
 
   .collection-error-dismiss {

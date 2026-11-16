@@ -29,25 +29,30 @@
 
   let { name, parents, canMove, onRename, onMove, onRemoveFrom, hidden = false }: Props = $props();
 
-  // Choosing Rename opens a field that takes focus. The menu returns focus to its
-  // trigger as it closes, which would take the field's focus away again and end
-  // the rename, so the rename starts once the menu has closed and the menu's own
-  // focus return is cancelled. The menu reports the close more than once, so both
-  // reports are cancelled and the rename starts on the first.
+  // Choosing an action hands focus to what the action opens or acts on: the
+  // rename field, the move dialog, or the collection's row once a removal has
+  // gone through. The menu would otherwise return focus to its trigger as it
+  // closes, which takes it away again (and the trigger may be gone by then), so
+  // after a choice the menu's own focus return is cancelled. Dismissing the menu
+  // without a choice (Escape) still returns focus to the trigger. The menu
+  // reports the close more than once, so every report is cancelled; the rename,
+  // which has to wait for the menu to close, starts on the first.
+  let actionChosen = false;
   let renameRequested = false;
   let renameStarted = false;
 
   function handleOpenChange(open: boolean) {
     if (open) {
+      actionChosen = false;
       renameRequested = false;
       renameStarted = false;
     }
   }
 
   function handleCloseAutoFocus(event: Event) {
-    if (!renameRequested) return;
+    if (!actionChosen) return;
     event.preventDefault();
-    if (renameStarted) return;
+    if (!renameRequested || renameStarted) return;
     renameStarted = true;
     onRename();
   }
@@ -67,12 +72,27 @@
       </svg>
     </DropdownMenu.Trigger>
     <DropdownMenu.Content align="start" onCloseAutoFocus={handleCloseAutoFocus}>
-      <DropdownMenu.Item onSelect={() => (renameRequested = true)}>Rename</DropdownMenu.Item>
+      <DropdownMenu.Item
+        onSelect={() => {
+          actionChosen = true;
+          renameRequested = true;
+        }}>Rename</DropdownMenu.Item
+      >
       {#if canMove}
-        <DropdownMenu.Item onSelect={onMove}>Move to collection…</DropdownMenu.Item>
+        <DropdownMenu.Item
+          onSelect={() => {
+            actionChosen = true;
+            onMove();
+          }}>Move to collection…</DropdownMenu.Item
+        >
       {/if}
       {#each parents as parent (parent.id)}
-        <DropdownMenu.Item onSelect={() => onRemoveFrom(parent.id)}>
+        <DropdownMenu.Item
+          onSelect={() => {
+            actionChosen = true;
+            onRemoveFrom(parent.id);
+          }}
+        >
           Remove from {parent.name}
         </DropdownMenu.Item>
       {/each}
