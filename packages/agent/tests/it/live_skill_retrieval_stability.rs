@@ -1998,6 +1998,10 @@ const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
     // a Task; the matrix ranks that request.
     ("Completing a Task", &["skills_win_their_requests"]),
     ("Deprecating and Migrating", &["skills_win_their_requests"]),
+    // Names finding out why and writing it up as a task, so that it does not
+    // lead the procedure lane for the requests Creating a Task owns; the
+    // matrix ranks those.
+    ("Addressing Review Findings", &["skills_win_their_requests"]),
     ("Shipping a Change", &["skills_win_their_requests"]),
     (
         "Schema Creation",
