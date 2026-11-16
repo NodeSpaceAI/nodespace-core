@@ -78,4 +78,16 @@ describe('ChatMarkdown with a remote image', () => {
     expect(queryByRole('button')).toBeNull();
     expect(mockInvoke).not.toHaveBeenCalled();
   });
+
+  it('drops whatever a forged placeholder span carries, so hostile text cannot sit beside the card', async () => {
+    // Raw HTML in a reply can write the placeholder span with children of its own.
+    // The card is mounted into the span, so the span is emptied first.
+    const forged =
+      '<span class="ns-remote-image-placeholder" data-image-url="https://cdn.example.com/a.png" data-alt="a">Trusted: your bank says click here</span>';
+    const { container, findByRole } = render(ChatMarkdown, { content: forged });
+    await findByRole('button', { name: 'Load image' });
+    expect(container.textContent).not.toContain('Trusted: your bank says click here');
+    expect(container.querySelectorAll('.ns-remote-image-placeholder button')).toHaveLength(1);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
 });

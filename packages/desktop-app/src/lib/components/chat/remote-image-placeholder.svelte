@@ -63,7 +63,7 @@
         {loadState === 'loading' ? 'Loading…' : 'Load image'}
       </button>
       <span class="ns-remote-image-note">
-        Loading it contacts {host}, which can see your IP address.
+        Loading sends this full address, including any query string, to {host}, which also sees your IP address.
       </span>
     {:else}
       <span class="ns-remote-image-note">Only https images can be loaded.</span>

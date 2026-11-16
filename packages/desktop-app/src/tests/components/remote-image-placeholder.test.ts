@@ -48,7 +48,11 @@ describe('RemoteImagePlaceholder', () => {
     expect(text).toContain('A chart');
     expect(text).toContain(URL_A);
     expect(text).toContain('cdn.example.com');
-    expect(text).toContain('IP address');
+    // One sentence says what the press does: the whole address goes to that host, query string included, and the host sees the IP address.
+    const note = container.querySelector('.ns-remote-image-note')?.textContent ?? '';
+    expect(note).toBe(
+      'Loading sends this full address, including any query string, to cdn.example.com, which also sees your IP address.'
+    );
   });
 
   it('loads exactly that one address on the click and shows the image from the returned bytes', async () => {

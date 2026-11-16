@@ -117,6 +117,10 @@
         const url = el.getAttribute('data-image-url');
         if (url) {
           const alt = el.getAttribute('data-alt') ?? '';
+          // mount() adds to the target and keeps what is in it. A reply can write
+          // this span as raw HTML with text of its own, so empty it first: the
+          // card is the only thing the span shows.
+          el.replaceChildren();
           mountedByEl.set(el, mount(RemoteImagePlaceholder, { target: el, props: { url, alt } }));
         }
         continue;
