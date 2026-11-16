@@ -6,20 +6,27 @@
 //! `create_nodes_from_markdown`, `create_task`) over a real store. The
 //! assertion is on what the STORE holds afterwards, never on what the tool
 //! returned: the root's type, its title (the first line without the heading
-//! marker, on one line) and the child nodes it was split into.
+//! marker, on one line), the types of the child nodes it was split into and
+//! how many nodes sit below it.
 //!
-//! Three scenarios, `REPS` repetitions each, because a single run of a small
+//! Four scenarios, `REPS` repetitions each, because a single run of a small
 //! model is not decision-grade:
-//!   - a task given as a document with a checklist,
+//!   - a task given as a document with a checklist (the model may use
+//!     `create_task`, which makes a task or an issue),
+//!   - the same task with `create_task` withheld, so the document form of
+//!     `create_node` is the only route,
 //!   - a decision given as a document with its reasoning,
-//!   - a spec given as a document with three sections (a split issue).
+//!   - a spec given as a document with three sections.
+//!
+//! The run passes when every scenario creates the right record in at least
+//! `MIN_PASSES` of its `REPS` repetitions; each repetition is scored on the
+//! root's type and title, the child types and the nodes below it.
 //!
 //! The run is ignored by default and needs the CPU-only environment of
 //! `live_small`:
 //! ```text
 //! NODESPACE_FORCE_CPU=1 NODESPACE_LIVE_THREADS=4 \
 //! NODESPACE_LIVE_CHAT_MODEL=<scratch>/models/<chat>.gguf \
-//! NODESPACE_LIVE_EMBED_MODEL=<scratch>/models/<embed>.gguf \
 //! cargo test -p nodespace-agent --test it live_create_node_document:: -- --ignored --nocapture --test-threads=1
 //! ```
 
@@ -40,6 +47,9 @@ use tokio::sync::RwLock;
 use crate::live_small::{load_engine, require_cpu_only};
 
 const REPS: usize = 3;
+/// How many of the `REPS` repetitions of every scenario must create the right
+/// record: a small model on a CPU is not deterministic, so one miss is allowed.
+const MIN_PASSES: usize = 2;
 
 /// The system prompt carries the two things the production loop always
 /// supplies for a create: that the user's wording names no existing record,
@@ -58,6 +68,9 @@ struct Scenario {
     node_types: &'static [&'static str],
     /// The root's title: the first line of the document, heading marker removed.
     title: &'static str,
+    /// The types the root's direct children must include (each listed type as
+    /// many times as it appears here).
+    child_types: &'static [&'static str],
     /// The least number of nodes below the root that the rest of the document becomes.
     min_children: usize,
 }
@@ -77,6 +90,7 @@ const SCENARIOS: &[Scenario] = &[
                3. Add a regression test",
         node_types: &["task", "issue"],
         title: "Fix the login redirect loop",
+        child_types: &["text"],
         min_children: 2,
     },
     Scenario {
@@ -90,6 +104,7 @@ const SCENARIOS: &[Scenario] = &[
                3. Add a regression test",
         node_types: &["task"],
         title: "Fix the login redirect loop",
+        child_types: &["text"],
         min_children: 2,
     },
     Scenario {
@@ -104,10 +119,11 @@ const SCENARIOS: &[Scenario] = &[
                A separate database server was rejected because it adds an install step.",
         node_types: &["decision"],
         title: "Use SQLite for the local store",
+        child_types: &["text", "header", "header"],
         min_children: 3,
     },
     Scenario {
-        name: "split issue",
+        name: "spec with three sections",
         tools: ALL_CREATES,
         user: "Create a spec from this document:\n\n\
                # Offline mode for the mobile app\n\n\
@@ -119,9 +135,25 @@ const SCENARIOS: &[Scenario] = &[
                Syncing the changes while offline.",
         node_types: &["spec"],
         title: "Offline mode for the mobile app",
+        child_types: &["header", "header", "header"],
         min_children: 3,
     },
 ];
+
+/// Whether `children` holds every type of `wanted`, each as many times as it
+/// is listed there.
+fn holds_child_types(children: &[String], wanted: &[&str]) -> bool {
+    let mut left: Vec<&str> = children.iter().map(String::as_str).collect();
+    wanted
+        .iter()
+        .all(|w| match left.iter().position(|c| c == w) {
+            Some(at) => {
+                left.swap_remove(at);
+                true
+            }
+            None => false,
+        })
+}
 
 fn write_tools(names: &[&str]) -> Vec<ToolDefinition> {
     all_tool_definitions()
@@ -297,9 +329,10 @@ async fn a_document_given_to_create_node_becomes_a_titled_record_with_children()
             };
             let right_type = scenario.node_types.contains(&stored.node_type.as_str());
             let right_title = stored.title.trim() == scenario.title;
+            let right_child_types = holds_child_types(&stored.children, scenario.child_types);
             let enough_children = stored.descendants >= scenario.min_children;
             println!(
-                "LIVE[{} rep {rep}] stored type={} title={:?} children={:?} descendants={} -> type {} title {} nodes below {}",
+                "LIVE[{} rep {rep}] stored type={} title={:?} children={:?} descendants={} -> type {} title {} child types {} nodes below {}",
                 scenario.name,
                 stored.node_type,
                 stored.title,
@@ -307,9 +340,10 @@ async fn a_document_given_to_create_node_becomes_a_titled_record_with_children()
                 stored.descendants,
                 right_type,
                 right_title,
+                right_child_types,
                 enough_children
             );
-            if right_type && right_title && enough_children {
+            if right_type && right_title && right_child_types && enough_children {
                 passed[index] += 1;
             }
         }
@@ -321,10 +355,12 @@ async fn a_document_given_to_create_node_becomes_a_titled_record_with_children()
             scenario.name, passed[index]
         );
     }
-    // The run is a measurement: it fails only when no rep of any scenario
-    // produced a usable create, which would make the numbers vacuous.
-    assert!(
-        passed.iter().sum::<usize>() > 0,
-        "no rep produced a usable create_node call: the run proves nothing"
-    );
+    for (index, scenario) in SCENARIOS.iter().enumerate() {
+        assert!(
+            passed[index] >= MIN_PASSES,
+            "{}: only {}/{REPS} repetitions created the right record, at least {MIN_PASSES} are required",
+            scenario.name,
+            passed[index]
+        );
+    }
 }
