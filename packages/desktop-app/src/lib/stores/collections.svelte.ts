@@ -6,6 +6,17 @@ import { onDaemonReconnect } from '$lib/services/daemon-status';
 import { stripMarkdown } from '$lib/services/markdown-utils';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import {
+  PENDING_COLLECTION_PREFIX,
+  describeRefusal,
+  moveFailureMessage,
+  moveTargets,
+  refusalForMove,
+  removeFailureMessage,
+  renameFailureMessage,
+  sameName,
+  type CollectionActionResult
+} from './collection-moves';
 
 const log = createLogger('CollectionsStore');
 
@@ -208,7 +219,7 @@ class CollectionsDataStore {
    */
   async createCollection(name: string, description?: string): Promise<string | null> {
     const generation = this.#generation;
-    const tempId = `pending-collection-${crypto.randomUUID()}`;
+    const tempId = `${PENDING_COLLECTION_PREFIX}${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const optimistic: CollectionInfo = {
       id: tempId,
@@ -294,6 +305,122 @@ class CollectionsDataStore {
       };
       return null;
     }
+  }
+
+  /** The collections `collectionId` can be put under (see `moveTargets`). */
+  moveTargetsFor(collectionId: string): CollectionInfo[] {
+    return moveTargets(
+      this.state.collections,
+      collectionId,
+      uiExtensionRegistry.collectionTreeRoots()
+    );
+  }
+
+  /**
+   * The collections `collectionId` sits directly in, for the "Remove from" actions:
+   * the root collections an extension keeps out of the tree are left out, since
+   * the sidebar never shows them.
+   */
+  parentsOf(collectionId: string): { id: string; name: string }[] {
+    const roots = uiExtensionRegistry.collectionTreeRoots();
+    const child = this.getCollectionById(collectionId);
+    const parents: { id: string; name: string }[] = [];
+    for (const parentId of child?.parentCollectionIds ?? []) {
+      const parent = this.getCollectionById(parentId);
+      if (parent && !roots.has(parentId)) parents.push({ id: parentId, name: parent.content });
+    }
+    return parents.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** The message for a database that was switched while a call was in flight. */
+  #movedOn(): CollectionActionResult {
+    return { ok: false, message: 'Nothing was changed: the database was switched.' };
+  }
+
+  /**
+   * Put a collection under another one. A collection can sit under several
+   * parents, so this adds a parent and keeps the others. A move that cannot
+   * work (into itself, into a collection it is already in, into one of its own
+   * descendants) is refused here, with the two names in the message, before any
+   * call; anything the backend refuses comes back as a message too.
+   */
+  async moveCollectionInto(childId: string, parentId: string): Promise<CollectionActionResult> {
+    const child = this.getCollectionById(childId);
+    const parent = this.getCollectionById(parentId);
+    if (!child || !parent) {
+      return { ok: false, message: 'That collection is no longer there. Refresh the list and try again.' };
+    }
+    const refusal = refusalForMove(this.state.collections, childId, parentId);
+    if (refusal) {
+      return { ok: false, message: describeRefusal(refusal, child.content, parent.content) };
+    }
+
+    const generation = this.#generation;
+    try {
+      await collectionService.addNodeToCollection(childId, parentId);
+    } catch (err) {
+      log.error('Failed to move collection', { childId, parentId, error: err });
+      if (generation !== this.#generation) return this.#movedOn();
+      return { ok: false, message: moveFailureMessage(err, child.content, parent.content) };
+    }
+    if (generation !== this.#generation) return this.#movedOn();
+    await this.loadCollections();
+    return { ok: true };
+  }
+
+  /** Take a collection out of one of its parents. Its other parents are kept. */
+  async removeCollectionFrom(childId: string, parentId: string): Promise<CollectionActionResult> {
+    const child = this.getCollectionById(childId);
+    const parent = this.getCollectionById(parentId);
+    if (!child || !parent) {
+      return { ok: false, message: 'That collection is no longer there. Refresh the list and try again.' };
+    }
+
+    const generation = this.#generation;
+    try {
+      await collectionService.removeNodeFromCollection(childId, parentId);
+    } catch (err) {
+      log.error('Failed to remove collection from its parent', { childId, parentId, error: err });
+      if (generation !== this.#generation) return this.#movedOn();
+      return { ok: false, message: removeFailureMessage(err, child.content, parent.content) };
+    }
+    if (generation !== this.#generation) return this.#movedOn();
+    await this.loadCollections();
+    return { ok: true };
+  }
+
+  /**
+   * Rename a collection. The name is trimmed; an empty name, and a name another
+   * collection already has (compared ignoring letter case), are refused with a
+   * message. Renaming to the name it already has changes nothing.
+   */
+  async renameCollection(collectionId: string, newName: string): Promise<CollectionActionResult> {
+    const collection = this.getCollectionById(collectionId);
+    if (!collection) {
+      return { ok: false, message: 'That collection is no longer there. Refresh the list and try again.' };
+    }
+    const name = newName.trim();
+    if (!name) return { ok: false, message: 'A collection needs a name.' };
+    if (name === collection.content) return { ok: true };
+    if (collectionId.startsWith(PENDING_COLLECTION_PREFIX)) {
+      return { ok: false, message: `“${collection.content}” is still being created. Try again in a moment.` };
+    }
+    const clash = this.state.collections.find(
+      (c) => c.id !== collectionId && sameName(c.content, name)
+    );
+    if (clash) return { ok: false, message: `A collection named “${clash.content}” already exists.` };
+
+    const generation = this.#generation;
+    try {
+      await collectionService.renameCollection(collectionId, collection.version, name);
+    } catch (err) {
+      log.error('Failed to rename collection', { collectionId, error: err });
+      if (generation !== this.#generation) return this.#movedOn();
+      return { ok: false, message: renameFailureMessage(err, collection.content, name) };
+    }
+    if (generation !== this.#generation) return this.#movedOn();
+    await this.loadCollections();
+    return { ok: true };
   }
 
   /** Load members for a specific collection (single query for full Node data) */
@@ -482,6 +609,15 @@ class CollectionsStore {
       ...this.state,
       selectedCollectionId: null,
       subPanelOpen: false,
+    };
+  }
+
+  /** Expand a collection in the tree (it stays expanded if it already is). */
+  expandCollection(collectionId: string): void {
+    if (this.state.expandedCollectionIds.has(collectionId)) return;
+    this.state = {
+      ...this.state,
+      expandedCollectionIds: new Set(this.state.expandedCollectionIds).add(collectionId)
     };
   }
 

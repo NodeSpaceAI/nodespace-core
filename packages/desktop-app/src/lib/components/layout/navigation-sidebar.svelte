@@ -19,6 +19,8 @@
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { getNavigationService } from '$lib/services/navigation-service';
   import CollectionSubPanel from './collection-sub-panel.svelte';
+  import CollectionRowMenu from './collection-row-menu.svelte';
+  import CollectionMoveDialog from './collection-move-dialog.svelte';
   import TreeItemActionsOutlet from '$lib/plugins/tree-item-actions-outlet.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { databaseStore } from '$lib/stores/database.svelte';
@@ -137,6 +139,145 @@
     newCollectionName = '';
     creatingCollection = false;
     createError = '';
+  }
+
+  // Moving, un-nesting and renaming a collection. One message area serves all of
+  // them: a refused move (a cycle, a collection it is already in, no rights on
+  // the target) or a failed rename says why instead of silently doing nothing.
+  let collectionActionError = $state('');
+  // The collection being renamed in place, and the name typed so far.
+  let renamingId = $state<string | null>(null);
+  let renameValue = $state('');
+  let renameBusy = $state(false);
+  // The collection the "Move to collection…" dialog is open for.
+  let moveDialogFor = $state<CollectionItem | null>(null);
+  let moveDialogOpen = $state(false);
+  let moveDialogTargets = $derived(
+    moveDialogFor
+      ? collectionsData
+          .moveTargetsFor(moveDialogFor.id)
+          .map((c) => ({ id: c.id, name: c.content }))
+      : []
+  );
+  // Drag and drop: the collection being dragged and the row it is over.
+  let draggingId = $state<string | null>(null);
+  let dropTargetId = $state<string | null>(null);
+
+  function selectOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
+  function startRename(item: CollectionItem) {
+    if (item.pending) return;
+    collectionActionError = '';
+    renamingId = item.id;
+    renameValue = item.name;
+  }
+
+  function cancelRename() {
+    renamingId = null;
+    renameValue = '';
+  }
+
+  async function submitRename(item: CollectionItem) {
+    if (renameBusy || renamingId !== item.id) return;
+    renameBusy = true;
+    const result = await collectionsData.renameCollection(item.id, renameValue);
+    renameBusy = false;
+    if (result.ok) {
+      cancelRename();
+    } else {
+      // Keep the field open with what was typed, so the name can be corrected.
+      collectionActionError = result.message;
+    }
+  }
+
+  function openMoveDialog(item: CollectionItem) {
+    collectionActionError = '';
+    moveDialogFor = item;
+    moveDialogOpen = true;
+  }
+
+  async function moveCollection(childId: string, parentId: string) {
+    collectionActionError = '';
+    const result = await collectionsData.moveCollectionInto(childId, parentId);
+    if (result.ok) {
+      // Open the new parent so the moved collection shows under it.
+      collectionsState.expandCollection(parentId);
+    } else {
+      collectionActionError = result.message;
+    }
+  }
+
+  async function removeFromParent(childId: string, parentId: string) {
+    collectionActionError = '';
+    const result = await collectionsData.removeCollectionFrom(childId, parentId);
+    if (!result.ok) collectionActionError = result.message;
+  }
+
+  const COLLECTION_DRAG_TYPE = 'application/x-nodespace-collection';
+
+  /**
+   * Drag a collection row onto another to put it inside that one. The keyboard
+   * route to the same move is the row menu. A row that cannot take the drop
+   * (itself, a parent it is already in, one inside it) still accepts it, so the
+   * person gets the reason in words instead of a silent no-drop cursor.
+   */
+  function collectionDragAndDrop(node: HTMLElement, initial: CollectionItem) {
+    let item = initial;
+
+    const onDragStart = (event: DragEvent) => {
+      if (item.pending || renamingId === item.id) {
+        event.preventDefault();
+        return;
+      }
+      draggingId = item.id;
+      if (event.dataTransfer) {
+        event.dataTransfer.setData(COLLECTION_DRAG_TYPE, item.id);
+        event.dataTransfer.effectAllowed = 'move';
+      }
+    };
+    const onDragOver = (event: DragEvent) => {
+      // Only a collection dragged from this list is accepted.
+      if (!draggingId || item.pending) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      dropTargetId = item.id;
+    };
+    const onDragLeave = () => {
+      if (dropTargetId === item.id) dropTargetId = null;
+    };
+    const onDrop = (event: DragEvent) => {
+      if (!draggingId || item.pending) return;
+      event.preventDefault();
+      const childId = draggingId;
+      draggingId = null;
+      dropTargetId = null;
+      void moveCollection(childId, item.id);
+    };
+    const onDragEnd = () => {
+      draggingId = null;
+      dropTargetId = null;
+    };
+
+    node.addEventListener('dragstart', onDragStart);
+    node.addEventListener('dragover', onDragOver);
+    node.addEventListener('dragleave', onDragLeave);
+    node.addEventListener('drop', onDrop);
+    node.addEventListener('dragend', onDragEnd);
+    return {
+      update(next: CollectionItem) {
+        item = next;
+      },
+      destroy() {
+        node.removeEventListener('dragstart', onDragStart);
+        node.removeEventListener('dragover', onDragOver);
+        node.removeEventListener('dragleave', onDragLeave);
+        node.removeEventListener('drop', onDrop);
+        node.removeEventListener('dragend', onDragEnd);
+      }
+    };
   }
 
   // Node types from global store (reactive — updates when schemas are created/deleted externally)
@@ -423,92 +564,22 @@
 
         <Collapsible.Content>
           <div class="collection-list">
-            {#each collections as collection (collection.id)}
-              {@const hasChildren = collection.children && collection.children.length > 0}
-              {@const isExpanded = isCollectionExpanded(collection.id)}
-              <div class="collection-item" class:pending={collection.pending}>
-                <div class="expand-area">
-                  {#if hasChildren}
-                    <button
-                      class="expand-btn"
-                      onclick={() => collectionsState.toggleCollectionExpanded(collection.id)}
-                      aria-label={isExpanded ? 'Collapse' : 'Expand'}
-                    >
-                      <svg
-                        class="expand-chevron"
-                        class:rotate-90={isExpanded}
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                      >
-                        <path d="M9 18l6-6-6-6" />
-                      </svg>
-                    </button>
-                  {/if}
-                </div>
+            {@render collectionRows(collections, 1)}
+
+            <!-- A refused move, un-nest or rename says why -->
+            {#if collectionActionError}
+              <div class="collection-item new-collection-error" role="alert">
+                <div class="expand-area"></div>
+                <span>{collectionActionError}</span>
                 <button
-                  class="collection-name-btn"
-                  onclick={() => handleCollectionClick(collection.id)}
+                  class="collection-error-dismiss"
+                  aria-label="Dismiss message"
+                  onclick={() => (collectionActionError = '')}
                 >
-                  {collection.name}
+                  ×
                 </button>
-                {@render treeItemActions(collection)}
               </div>
-
-              <!-- Level 2 -->
-              {#if hasChildren && isExpanded && collection.children}
-                {#each collection.children as child (child.id)}
-                  {@const childHasChildren = child.children && child.children.length > 0}
-                  {@const childIsExpanded = isCollectionExpanded(child.id)}
-                  <div class="collection-item level-2">
-                    <div class="expand-area">
-                      {#if childHasChildren}
-                        <button
-                          class="expand-btn"
-                          onclick={() => collectionsState.toggleCollectionExpanded(child.id)}
-                          aria-label={childIsExpanded ? 'Collapse' : 'Expand'}
-                        >
-                          <svg
-                            class="expand-chevron"
-                            class:rotate-90={childIsExpanded}
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                          >
-                            <path d="M9 18l6-6-6-6" />
-                          </svg>
-                        </button>
-                      {/if}
-                    </div>
-                    <button
-                      class="collection-name-btn"
-                      onclick={() => handleCollectionClick(child.id)}
-                    >
-                      {child.name}
-                    </button>
-                    {@render treeItemActions(child)}
-                  </div>
-
-                  <!-- Level 3 -->
-                  {#if childHasChildren && childIsExpanded && child.children}
-                    {#each child.children as grandchild (grandchild.id)}
-                      <div class="collection-item level-3">
-                        <div class="expand-area"></div>
-                        <button
-                          class="collection-name-btn"
-                          onclick={() => handleCollectionClick(grandchild.id)}
-                        >
-                          {grandchild.name}
-                        </button>
-                        {@render treeItemActions(grandchild)}
-                      </div>
-                    {/each}
-                  {/if}
-                {/each}
-              {/if}
-            {/each}
+            {/if}
 
             <!-- Create a new collection -->
             {#if creatingCollection}
@@ -835,6 +906,104 @@
   </div>
 
 </nav>
+
+<CollectionMoveDialog
+  bind:open={moveDialogOpen}
+  name={moveDialogFor?.name ?? ''}
+  targets={moveDialogTargets}
+  onMove={(parentId) => {
+    if (moveDialogFor) void moveCollection(moveDialogFor.id, parentId);
+  }}
+/>
+
+<!-- One level of the Collections tree, nested as deep as the collections go. A
+     collection sits under one parent here even when it is in several (see
+     `buildCollectionsTree`); its row menu lists every parent it can be removed from. -->
+{#snippet collectionRows(items: CollectionItem[], depth: number)}
+  {#each items as item (item.id)}
+    {@const hasChildren = item.children && item.children.length > 0}
+    {@const isExpanded = isCollectionExpanded(item.id)}
+    {@const isRenaming = renamingId === item.id}
+    <div
+      class="collection-item"
+      class:level-2={depth === 2}
+      class:level-3={depth >= 3}
+      class:pending={item.pending}
+      class:dragging={draggingId === item.id}
+      class:drop-target={dropTargetId === item.id}
+      style={depth > 3 ? `padding-left: ${3.75 + (depth - 3) * 0.75}rem` : undefined}
+      draggable={!item.pending && !isRenaming}
+      use:collectionDragAndDrop={item}
+    >
+      <div class="expand-area">
+        {#if hasChildren}
+          <button
+            class="expand-btn"
+            onclick={() => collectionsState.toggleCollectionExpanded(item.id)}
+            aria-label={isExpanded ? 'Collapse' : 'Expand'}
+          >
+            <svg
+              class="expand-chevron"
+              class:rotate-90={isExpanded}
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M9 18l6-6-6-6" />
+            </svg>
+          </button>
+        {/if}
+      </div>
+      {#if isRenaming}
+        <input
+          class="collection-rename-input"
+          aria-label={`Rename ${item.name}`}
+          aria-invalid={collectionActionError ? 'true' : undefined}
+          bind:value={renameValue}
+          use:selectOnMount
+          onkeydown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void submitRename(item);
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              cancelRename();
+            }
+          }}
+          onblur={() => {
+            // Leaving the field abandons the rename; only Enter saves it.
+            if (!renameBusy) cancelRename();
+          }}
+        />
+      {:else}
+        <button
+          class="collection-name-btn"
+          onclick={() => handleCollectionClick(item.id)}
+          ondblclick={() => startRename(item)}
+        >
+          {item.name}
+        </button>
+      {/if}
+      {#if !item.pending}
+        <CollectionRowMenu
+          hidden={isRenaming}
+          name={item.name}
+          parents={collectionsData.parentsOf(item.id)}
+          canMove={collectionsData.moveTargetsFor(item.id).length > 0}
+          onRename={() => startRename(item)}
+          onMove={() => openMoveDialog(item)}
+          onRemoveFrom={(parentId) => void removeFromParent(item.id, parentId)}
+        />
+      {/if}
+      {@render treeItemActions(item)}
+    </div>
+
+    {#if hasChildren && isExpanded && item.children}
+      {@render collectionRows(item.children, depth + 1)}
+    {/if}
+  {/each}
+{/snippet}
 
 <!-- Extension actions on a collection-tree item (ADR-082 §3.2). An optimistic
      item has a temporary id, so it gets none until the database confirms it. -->
@@ -1200,6 +1369,46 @@
   .new-collection-error:hover {
     background: none;
     color: hsl(var(--destructive));
+  }
+
+  /* Renaming a collection in place: the field takes the name button's place */
+  .collection-rename-input {
+    flex: 1;
+    min-width: 6rem;
+    height: 1.5rem;
+    padding: 0 0.375rem;
+    border: 1px solid hsl(var(--ring));
+    border-radius: 0.25rem;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-size: 0.8125rem;
+  }
+
+  .collection-rename-input:focus-visible {
+    outline: none;
+  }
+
+  /* Dragging a collection onto another */
+  .collection-item.dragging {
+    opacity: 0.5;
+  }
+
+  .collection-item.drop-target {
+    background: hsl(var(--accent));
+    color: hsl(var(--foreground));
+    outline: 1px dashed hsl(var(--ring));
+    outline-offset: -1px;
+  }
+
+  .collection-error-dismiss {
+    margin-left: 0.5rem;
+    padding: 0 0.25rem;
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
   }
 
   /* Optimistically-inserted collection awaiting backend confirmation */
