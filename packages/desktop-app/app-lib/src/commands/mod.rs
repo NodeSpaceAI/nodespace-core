@@ -12,6 +12,7 @@ pub mod import;
 pub mod local_agent;
 pub mod nodes;
 pub mod onboarding;
+pub mod remote_image;
 pub mod schemas;
 pub mod seed_updates;
 pub mod settings;

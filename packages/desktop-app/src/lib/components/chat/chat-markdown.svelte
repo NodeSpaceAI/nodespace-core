@@ -15,7 +15,9 @@
   import { isSafeLinkHref } from '$lib/utils/safe-link';
   import { sanitizeChatHtml } from '$lib/utils/sanitize-chat-html';
   import { chatTaskCheckbox } from '$lib/utils/chat-task-checkbox';
+  import { REMOTE_IMAGE_PLACEHOLDER_CLASS, renderChatImage } from '$lib/utils/chat-remote-image';
   import NodeCardInline from './node-card-inline.svelte';
+  import RemoteImagePlaceholder from './remote-image-placeholder.svelte';
 
   let { content = '' }: { content: string } = $props();
 
@@ -54,6 +56,10 @@
   };
 
   chatRenderer.checkbox = chatTaskCheckbox;
+
+  // A remote image is never loaded by the reply itself: it becomes a
+  // placeholder with a "Load image" button (see chat-remote-image.ts).
+  chatRenderer.image = renderChatImage;
 
   const rendered = $derived(renderMarkdown(content));
 
@@ -96,15 +102,25 @@
   // equal a freshly-parsed placeholder even when nothing changed.
   let lastRenderedNodes: Node[] = [];
 
+  const PLACEHOLDER_SELECTOR = `.ns-node-card-placeholder, .${REMOTE_IMAGE_PLACEHOLDER_CLASS}`;
+
   function isPlaceholder(el: Element): boolean {
-    return el.classList.contains('ns-node-card-placeholder');
+    return el.matches(PLACEHOLDER_SELECTOR);
   }
 
   function hydratePlaceholders(root: Element): void {
     const placeholders: Element[] = isPlaceholder(root) ? [root] : [];
-    placeholders.push(...root.querySelectorAll('.ns-node-card-placeholder'));
+    placeholders.push(...root.querySelectorAll(PLACEHOLDER_SELECTOR));
     for (const el of placeholders) {
       if (mountedByEl.has(el)) continue;
+      if (el.classList.contains(REMOTE_IMAGE_PLACEHOLDER_CLASS)) {
+        const url = el.getAttribute('data-image-url');
+        if (url) {
+          const alt = el.getAttribute('data-alt') ?? '';
+          mountedByEl.set(el, mount(RemoteImagePlaceholder, { target: el, props: { url, alt } }));
+        }
+        continue;
+      }
       const nodeId = el.getAttribute('data-node-id');
       const displayText = el.getAttribute('data-display-text') || undefined;
       if (nodeId) {
@@ -116,7 +132,7 @@
 
   function unmountPlaceholders(root: Element): void {
     const placeholders: Element[] = isPlaceholder(root) ? [root] : [];
-    placeholders.push(...root.querySelectorAll('.ns-node-card-placeholder'));
+    placeholders.push(...root.querySelectorAll(PLACEHOLDER_SELECTOR));
     for (const el of placeholders) {
       const comp = mountedByEl.get(el);
       if (comp) {
@@ -283,6 +299,11 @@
 
   .chat-markdown :global(.ns-node-card-placeholder) {
     display: inline;
+  }
+
+  .chat-markdown :global(.ns-remote-image-placeholder) {
+    display: inline-block;
+    max-width: 100%;
   }
 
   .chat-markdown :global(hr) {

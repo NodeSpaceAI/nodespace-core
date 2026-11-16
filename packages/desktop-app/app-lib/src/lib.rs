@@ -898,6 +898,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             take_pending_tray_database_selection,
             window_routing::pin_window_database,
             update_check::check_for_update_command,
+            commands::remote_image::fetch_remote_image,
             commands::conflicts::list_conflicts,
             commands::conflicts::conflicts_for_node,
             commands::conflicts::resolve_conflict,

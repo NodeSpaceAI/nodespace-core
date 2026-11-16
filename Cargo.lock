@@ -3490,6 +3490,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "futures",
@@ -3520,6 +3521,7 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

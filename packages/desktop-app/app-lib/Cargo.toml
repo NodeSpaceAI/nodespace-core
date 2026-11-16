@@ -41,6 +41,10 @@ thiserror = { workspace = true }
 # compare versions with semver semantics.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 semver = "1"
+# Click-to-load of one remote image from a chat reply: the address is parsed and
+# vetted with `url`, and the fetched bytes are handed to the webview as base64.
+url = { workspace = true }
+base64 = "0.22"
 # SHA-256 check of the bundled embedding model before it is copied into place
 # (ADR-058's pinned digest).
 sha2 = "0.10"
