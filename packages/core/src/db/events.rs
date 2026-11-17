@@ -248,6 +248,15 @@ pub fn persisted_chain_depth(properties: &serde_json::Value, max_depth: u8) -> O
 /// `max_depth` even across devices and across nodes.
 ///
 /// The returned depth is bounded by `persisted_chain_depth`.
+///
+/// Relationship events carry no causal depth. Today a chain through
+/// relationship triggers cannot hop devices, because the apply layer applies
+/// replicated changes with playbook triggers skipped. If live remote changes
+/// were ever allowed to fire triggers, such a chain would restart at depth 0
+/// on each hop and would not be bounded by this mechanism, because edge
+/// properties do not cross the Sync wire (`has_child` keeps order only,
+/// `mentions` none, `member_of` permission only, custom relationships do not
+/// sync).
 pub fn chain_depth_of_write(
     event: &DomainEvent,
     properties: &serde_json::Value,

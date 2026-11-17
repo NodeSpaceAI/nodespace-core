@@ -28,7 +28,7 @@ use nodespace_core::db::events::{
 };
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskStatus};
-use nodespace_core::playbook::types::MAX_CHAIN_DEPTH;
+use nodespace_core::playbook::types::{PlayStatus, MAX_CHAIN_DEPTH};
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
@@ -4129,5 +4129,486 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
     relay_ba.abort();
     shutdown_engine(shutdown_a, task_a).await;
     shutdown_engine(shutdown_b, task_b).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Reactive chains across two devices (ADR-060 §5, ADR-073)
+// ---------------------------------------------------------------------------
+//
+// The invariant tests above prove the depth stamp bounds an exchange of
+// repairs. A reactive rule chain crosses devices the same way, but through
+// the live write context: a pulled apply that skips invariants and keeps the
+// playbook triggers on, so the receiving device's reactive rules fire on it.
+
+/// The write context a live pull applies with: reactive rules fire, invariant
+/// rules do not.
+fn live_apply(service: &NodeService) -> NodeService {
+    skipping_invariants_only(service)
+}
+
+/// A play node's id, shared by both devices so rule identity (and with it a
+/// derived node's id) is the same on each.
+const SHARED_PLAY_ID: &str = "7d6f0f0e-2b7e-4a39-8c0c-5f8a6a1d3e11";
+
+/// Activate `rules` as a play with `play_id` on `engine`'s device, without
+/// storing a play node (the suspension write for a play with no stored node
+/// is logged and dropped; the lifecycle status is what the tests read).
+fn activate_play_with_id(engine: &PlaybookEngine, play_id: &str, rules: serde_json::Value) {
+    let play = Node::new_with_id(
+        play_id.to_string(),
+        "play".to_string(),
+        format!("play-{play_id}"),
+        json!({ "play": { "rules": rules } }),
+    );
+    let lifecycle = engine.lifecycle();
+    let mut lm = lifecycle.write().unwrap();
+    lm.activate_play(&play)
+        .expect("play must parse and activate");
+}
+
+fn play_status(engine: &PlaybookEngine, play_id: &str) -> Option<PlayStatus> {
+    let lifecycle = engine.lifecycle();
+    let lm = lifecycle.read().unwrap();
+    lm.get_play(play_id).map(|play| play.status)
+}
+
+/// Forwards `from`'s local-origin node updates to `to` through the live
+/// apply, the way a pull applies them: the whole node, bookkeeping stamps
+/// included. Applies are never forwarded back (the echo guard).
+fn relay_node_updates_live(
+    from: &Arc<NodeService>,
+    to: &Arc<NodeService>,
+    node_type: &'static str,
+    field: &'static str,
+    only_id: Option<String>,
+) -> tokio::task::JoinHandle<()> {
+    let mut events = from.subscribe_to_events();
+    let to = Arc::clone(to);
+    tokio::spawn(async move {
+        while let Ok(envelope) = events.recv().await {
+            if envelope.metadata.source_client_id.as_deref() == Some(APPLY_CLIENT_ID) {
+                continue;
+            }
+            let DomainEvent::NodeUpdated { node_id, node, .. } = envelope.event else {
+                continue;
+            };
+            if node.node_type != node_type || only_id.as_deref().is_some_and(|id| id != node_id) {
+                continue;
+            }
+            let mut properties = json!({ field: node.properties[node_type][field].clone() });
+            for key in [PLAYBOOK_CHAIN_DEPTH_PROPERTY, PLAYBOOK_WRITE_ID_PROPERTY] {
+                if let Some(value) = node.properties.get(key) {
+                    properties[key] = value.clone();
+                }
+            }
+            let _ = update_via(live_apply, &to, &node_id, properties).await;
+        }
+    })
+}
+
+/// Waits up to 30 s for `check` to hold. The terminal state a test waits for
+/// is positive, so a slow machine only makes the test take longer.
+async fn wait_until_long<F, Fut>(mut check: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..600 {
+        if check().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// Asserts `snapshot` does not change over a short window after a test's
+/// terminal state is reached, to catch a runaway. It can only turn a failure
+/// into a pass on a slow machine, never a pass into a failure.
+async fn assert_no_more_writes<T, F, Fut>(mut snapshot: F, what: &str) -> Result<()>
+where
+    T: PartialEq + std::fmt::Debug,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let before = snapshot().await?;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let after = snapshot().await?;
+    assert_eq!(
+        before, after,
+        "{what}: writes continued after the terminal state"
+    );
+    Ok(())
+}
+
+/// A reactive rule chain that crosses two devices stops at `MAX_CHAIN_DEPTH`
+/// instead of running forever. Device A's rule turns `a` into `b`, device B's
+/// turns `b` into `a`, and a relay applies each device's local writes on the
+/// other with the playbook triggers on and invariants skipped. Nothing else
+/// bounds the exchange; the persisted depth must, and the play that would
+/// take the next hop is suspended with the cycle limit.
+#[tokio::test]
+async fn reactive_chain_across_two_devices_stops_at_the_cycle_limit() -> Result<()> {
+    const NODE_TYPE: &str = "rx-pingpong";
+    const NODE_ID: &str = "3b1c2a5e-9d47-5a3f-b1c6-0f2e8d7a4c91";
+    fn flip(from: &str, to: &str) -> serde_json::Value {
+        json!([{
+            "name": format!("{from}-to-{to}"),
+            "description": "Test rule",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "select": { "target_type": NODE_TYPE },
+                "property_key": format!("{NODE_TYPE}.f")
+            },
+            "conditions": [{ "expr": format!("node.f == '{from}'"), "description": "Test condition" }],
+            "actions": [{
+                "description": "Test action",
+                "action_type": "update_node",
+                "params": { "node_id": "{trigger.node.id}", "properties": { "f": to } }
+            }]
+        }])
+    }
+
+    let mut devices = Vec::new();
+    for (play_id, from, to) in [
+        ("0a0a0a0a-0000-4000-8000-00000000000a", "a", "b"),
+        ("0b0b0b0b-0000-4000-8000-00000000000b", "b", "a"),
+    ] {
+        let (service, tmp) = create_test_service().await?;
+        create_schema(
+            &service,
+            NODE_TYPE,
+            json!([{ "name": "f", "type": "text" }]),
+        )
+        .await?;
+        let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+        activate_play_with_id(&engine, play_id, flip(from, to));
+        create_via_sync(
+            &service,
+            Node::new_with_id(
+                NODE_ID.to_string(),
+                NODE_TYPE.to_string(),
+                "shared".to_string(),
+                json!({ "f": "none" }),
+            ),
+        )
+        .await?;
+        devices.push((service, tmp, engine, shutdown_tx, task, play_id));
+    }
+    let (a, b) = (Arc::clone(&devices[0].0), Arc::clone(&devices[1].0));
+    let relay_ab = relay_node_updates_live(&a, &b, NODE_TYPE, "f", Some(NODE_ID.to_string()));
+    let relay_ba = relay_node_updates_live(&b, &a, NODE_TYPE, "f", Some(NODE_ID.to_string()));
+
+    // A write from a device holding neither rule arrives at A.
+    update_via(live_apply, &a, NODE_ID, json!({ "f": "a" })).await?;
+
+    // The terminal state: both devices at the depth limit, and the play that
+    // would take the next hop suspended.
+    let at_the_limit = wait_until_long(|| {
+        let devices_view: Vec<_> = devices
+            .iter()
+            .map(|(service, _, engine, _, _, play_id)| {
+                (Arc::clone(service), play_status(engine, play_id))
+            })
+            .collect();
+        async move {
+            let mut depths_at_limit = true;
+            for (service, _) in &devices_view {
+                let node = service.get_node(NODE_ID).await.ok().flatten();
+                depths_at_limit &=
+                    node.is_some_and(|n| depth_of(&n) == Some(json!(MAX_CHAIN_DEPTH)));
+            }
+            depths_at_limit
+                && devices_view
+                    .iter()
+                    .any(|(_, status)| *status == Some(PlayStatus::Suspended))
+        }
+    })
+    .await;
+    let statuses: Vec<_> = devices
+        .iter()
+        .map(|(_, _, engine, _, _, play_id)| play_status(engine, play_id))
+        .collect();
+    assert!(
+        at_the_limit,
+        "the exchange must run to the depth limit and suspend the next hop's play: {statuses:?}"
+    );
+    assert_no_more_writes(
+        || {
+            let (a, b) = (Arc::clone(&a), Arc::clone(&b));
+            async move {
+                anyhow::Ok((
+                    a.get_node(NODE_ID).await?.unwrap().version,
+                    b.get_node(NODE_ID).await?.unwrap().version,
+                ))
+            }
+        },
+        "a reactive chain across two devices",
+    )
+    .await?;
+
+    relay_ab.abort();
+    relay_ba.abort();
+    for (_, _, _, shutdown_tx, task, _) in devices {
+        shutdown_engine(shutdown_tx, task).await;
+    }
+    Ok(())
+}
+
+/// Two devices that each run the same rule derive the same node id, and each
+/// stamps its own write nonce on it. The stamps differ, the id does not: the
+/// two writes converge by id. Applying each device's copy on the other, as a
+/// pull would, reads as a continuation of the same one-hop chain (depth 1)
+/// and moves nothing further: the nonce difference does not restart the
+/// count or keep the exchange going.
+#[tokio::test]
+async fn two_devices_deriving_the_same_node_converge_by_id_despite_different_stamps() -> Result<()>
+{
+    const SRC_TYPE: &str = "rx-src";
+    const DERIVED_TYPE: &str = "rx-derived";
+    const SRC_ID: &str = "5c1f0a52-1111-5a3f-b1c6-0f2e8d7a4c91";
+    let rules = json!([{
+        "name": "derive",
+        "description": "Test rule",
+        "trigger": {
+            "type": "graph_event",
+            "on": "node_created",
+            "select": { "target_type": SRC_TYPE }
+        },
+        "conditions": [],
+        "actions": [{
+            "description": "Test action",
+            "action_type": "create_node",
+            "params": { "node_type": DERIVED_TYPE, "content": "derived" }
+        }]
+    }]);
+
+    let mut devices = Vec::new();
+    // The same trigger node on both devices (it reached each by sync): the
+    // iteration path starts at the trigger node, so only then do the two
+    // derive the same id.
+    for src_id in [SRC_ID, SRC_ID] {
+        let (service, tmp) = create_test_service().await?;
+        create_schema(&service, SRC_TYPE, json!([])).await?;
+        create_schema(&service, DERIVED_TYPE, json!([])).await?;
+        let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+        activate_play_with_id(&engine, SHARED_PLAY_ID, rules.clone());
+        service
+            .create_node(Node::new_with_id(
+                src_id.to_string(),
+                SRC_TYPE.to_string(),
+                "src".to_string(),
+                json!({}),
+            ))
+            .await?;
+        devices.push((service, tmp, shutdown_tx, task));
+    }
+    let (a, b) = (Arc::clone(&devices[0].0), Arc::clone(&devices[1].0));
+
+    let derived_on = |service: Arc<NodeService>| async move {
+        let nodes = service.query_nodes_by_type(DERIVED_TYPE, true).await?;
+        anyhow::Ok(nodes)
+    };
+    let both_derived = wait_until_long(|| {
+        let (a, b) = (Arc::clone(&a), Arc::clone(&b));
+        async move {
+            matches!(
+                (derived_on(a).await, derived_on(b).await),
+                (Ok(x), Ok(y)) if x.len() == 1 && y.len() == 1
+            )
+        }
+    })
+    .await;
+    assert!(both_derived, "each device must derive one node");
+
+    let on_a = derived_on(Arc::clone(&a)).await?.remove(0);
+    let on_b = derived_on(Arc::clone(&b)).await?.remove(0);
+    assert_eq!(
+        on_a.id, on_b.id,
+        "the derived id must be the same on both devices"
+    );
+    assert_ne!(
+        on_a.properties[PLAYBOOK_WRITE_ID_PROPERTY], on_b.properties[PLAYBOOK_WRITE_ID_PROPERTY],
+        "each device mints its own write nonce"
+    );
+    assert_eq!(depth_of(&on_a), Some(json!(1)));
+    assert_eq!(depth_of(&on_b), Some(json!(1)));
+
+    // Pull each device's copy onto the other, triggers on.
+    for (from, to) in [(&on_a, &b), (&on_b, &a)] {
+        let stamps = json!({
+            PLAYBOOK_CHAIN_DEPTH_PROPERTY: from.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY].clone(),
+            PLAYBOOK_WRITE_ID_PROPERTY: from.properties[PLAYBOOK_WRITE_ID_PROPERTY].clone(),
+        });
+        update_via(live_apply, to, &from.id, stamps).await?;
+    }
+
+    assert_no_more_writes(
+        || {
+            let (a, b) = (Arc::clone(&a), Arc::clone(&b));
+            let id = on_a.id.clone();
+            async move {
+                let (x, y) = (
+                    derived_on(Arc::clone(&a)).await?,
+                    derived_on(Arc::clone(&b)).await?,
+                );
+                anyhow::Ok((
+                    x.len(),
+                    y.len(),
+                    a.get_node(&id).await?.unwrap().version,
+                    b.get_node(&id).await?.unwrap().version,
+                ))
+            }
+        },
+        "the derived node exchange",
+    )
+    .await?;
+    for service in [&a, &b] {
+        assert_eq!(
+            derived_on(Arc::clone(service)).await?.len(),
+            1,
+            "still one derived node per device"
+        );
+    }
+    for service in [&a, &b] {
+        let node = service.get_node(&on_a.id).await?.unwrap();
+        assert_eq!(
+            depth_of(&node),
+            Some(json!(1)),
+            "the exchange keeps the chain at depth 1"
+        );
+    }
+
+    for (_, _, shutdown_tx, task) in devices {
+        shutdown_engine(shutdown_tx, task).await;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The join-point contract (ADR-060 §5)
+// ---------------------------------------------------------------------------
+
+/// The contract an apply layer builds on, in one place. Which write context a
+/// pulled write is applied with is the apply layer's decision, made where it
+/// crosses from catching up on history to following live changes (the join
+/// point); core only honours the context a service was built with:
+///
+/// - the backlog context (both skips set) fires no reactive rule and runs no
+///   invariant rule: the write was already judged where it was made, and its
+///   effects arrive as writes of their own;
+/// - the live context (`skip_playbook_triggers: false`,
+///   `skip_invariant_rules: true`) fires reactive rules, which this device
+///   still owes, but runs no invariant rule in the write's transaction.
+///
+/// An ordinary write (the control) runs the invariant rule and refuses.
+/// Halves of this are covered by
+/// `skipping_invariants_only_repairs_and_still_fires_reactive_rules` and
+/// `skipping_playbook_triggers_alone_still_runs_invariant_rules`; this test reads the whole contract at once.
+#[tokio::test]
+async fn backlog_context_fires_nothing_and_live_context_fires_reactive_rules_only() -> Result<()> {
+    const NODE_TYPE: &str = "jp-task";
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        NODE_TYPE,
+        json!([
+            { "name": "status", "type": "text" },
+            { "name": "reacted", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+    let play_id = create_play(
+        &service,
+        "join-point-play",
+        json!([
+            {
+                "name": "invariant-refuses-blocked",
+                "class": "invariant",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": NODE_TYPE } },
+                "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
+                "actions": [{
+                    "description": "Test action",
+                    "action_type": "reject",
+                    "params": { "message": "blocked is refused" }
+                }]
+            },
+            {
+                "name": "reactive-marks-blocked",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": NODE_TYPE } },
+                "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
+                "actions": [{
+                    "description": "Test action",
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "reacted": true } }
+                }]
+            }
+        ]),
+    )
+    .await?;
+    let active = wait_until_long(|| {
+        let status = play_status(&engine, &play_id);
+        async move { status == Some(PlayStatus::Runnable) }
+    })
+    .await;
+    assert!(
+        active,
+        "the engine must activate the play before the writes"
+    );
+
+    let blocked = || {
+        Node::new(
+            NODE_TYPE.to_string(),
+            "blocked task".to_string(),
+            json!({ "status": "blocked" }),
+        )
+    };
+    let reacted = |service: Arc<NodeService>, id: String| async move {
+        matches!(
+            service.get_node(&id).await,
+            Ok(Some(n)) if user_field(&n, NODE_TYPE, "reacted") == Some(&json!(true))
+        )
+    };
+
+    // Control: an ordinary write runs the invariant rule and is refused.
+    let refused = service.create_node(blocked()).await;
+    assert!(
+        matches!(refused, Err(NodeServiceError::PlayRuleRejected { .. })),
+        "an ordinary write must run the invariant rule: {refused:?}"
+    );
+
+    // Backlog: nothing runs, in the transaction or after it.
+    let backlog = blocked();
+    let backlog_id = backlog.id.clone();
+    skipping_rules(&service).create_node(backlog).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !reacted(Arc::clone(&service), backlog_id.clone()).await,
+        "a backlog write must fire no reactive rule"
+    );
+    assert_eq!(
+        user_field(
+            &service.get_node(&backlog_id).await?.unwrap(),
+            NODE_TYPE,
+            "status"
+        ),
+        Some(&json!("blocked")),
+        "a backlog write must run no invariant rule, so the violating write is accepted as is"
+    );
+
+    // Live: the reactive rule fires; the invariant rule does not run in the
+    // write's transaction (the violating write is accepted).
+    let live = blocked();
+    let live_id = live.id.clone();
+    skipping_invariants_only(&service).create_node(live).await?;
+    let fired = wait_until_long(|| reacted(Arc::clone(&service), live_id.clone())).await;
+    assert!(fired, "a live write must fire the reactive rule");
+
+    shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }

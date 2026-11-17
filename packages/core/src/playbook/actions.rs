@@ -1958,6 +1958,14 @@ async fn execute_add_relationship(
     params: &Value,
     node_service: &Arc<NodeService>,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth. Today a chain through
+    // relationship triggers cannot hop devices, because the apply layer
+    // applies replicated changes with playbook triggers skipped. If live
+    // remote changes were ever allowed to fire triggers, such a chain would
+    // restart at depth 0 on each hop and would not be bounded by this
+    // mechanism, because edge properties do not cross the Sync wire
+    // (`has_child` keeps order only, `mentions` none, `member_of` permission
+    // only, custom relationships do not sync).
     let source_id =
         params
             .get("source_id")
@@ -2012,6 +2020,14 @@ async fn execute_remove_relationship(
     params: &Value,
     node_service: &Arc<NodeService>,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth. Today a chain through
+    // relationship triggers cannot hop devices, because the apply layer
+    // applies replicated changes with playbook triggers skipped. If live
+    // remote changes were ever allowed to fire triggers, such a chain would
+    // restart at depth 0 on each hop and would not be bounded by this
+    // mechanism, because edge properties do not cross the Sync wire
+    // (`has_child` keeps order only, `mentions` none, `member_of` permission
+    // only, custom relationships do not sync).
     let source_id =
         params
             .get("source_id")
@@ -2506,6 +2522,14 @@ async fn execute_add_relationship_in_tx(
     params: &Value,
     txc: &TxCtx<'_>,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth. Today a chain through
+    // relationship triggers cannot hop devices, because the apply layer
+    // applies replicated changes with playbook triggers skipped. If live
+    // remote changes were ever allowed to fire triggers, such a chain would
+    // restart at depth 0 on each hop and would not be bounded by this
+    // mechanism, because edge properties do not cross the Sync wire
+    // (`has_child` keeps order only, `mentions` none, `member_of` permission
+    // only, custom relationships do not sync).
     let source_id =
         params
             .get("source_id")
@@ -2569,6 +2593,14 @@ async fn execute_remove_relationship_in_tx(
     params: &Value,
     txc: &TxCtx<'_>,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth. Today a chain through
+    // relationship triggers cannot hop devices, because the apply layer
+    // applies replicated changes with playbook triggers skipped. If live
+    // remote changes were ever allowed to fire triggers, such a chain would
+    // restart at depth 0 on each hop and would not be bounded by this
+    // mechanism, because edge properties do not cross the Sync wire
+    // (`has_child` keeps order only, `mentions` none, `member_of` permission
+    // only, custom relationships do not sync).
     let source_id =
         params
             .get("source_id")
