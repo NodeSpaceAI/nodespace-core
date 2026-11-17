@@ -71,8 +71,8 @@ directory — it has no source-relative sibling directory to find
 
 Each install copies `SKILL.md` and every `references/*.md` file in the package,
 then the agent's harness plugin into the folder that harness loads code from,
-or, for a harness with no plugin, one marked block into its user-level
-instructions file. It writes `.nodespace-install.json` beside `SKILL.md`
+or, for a harness that gets hooks rather than a plugin, one marked block into
+its user-level instructions file. It writes `.nodespace-install.json` beside `SKILL.md`
 listing exactly what it wrote: the skill's files, the plugin's files where they
 sit in a folder of their own, and the instructions file. Uninstall removes what
 that record lists, and a reinstall removes any listed file the new skill no

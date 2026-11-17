@@ -2649,8 +2649,6 @@ mod tests {
         assert!(outcome.skipped.is_empty());
     }
 
-    /// An agent whose files an install left as they were is reported apart
-    /// from one it wrote to.
     /// The step Codex needs before it runs the installed hooks reaches the
     /// person who ran the install; file paths and the not-detected listing
     /// do not count as notices.
@@ -2666,6 +2664,8 @@ mod tests {
         );
     }
 
+    /// An agent whose files an install left as they were is reported apart
+    /// from one it wrote to.
     #[test]
     fn parse_installer_output_separates_agents_already_up_to_date() {
         let output = fake_output(

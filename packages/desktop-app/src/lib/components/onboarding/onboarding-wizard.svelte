@@ -535,8 +535,8 @@
             Installs a <code>SKILL.md</code> file into each agent's skills directory so
             {detectedAgentsLabel} know{detectedAgents.length === 1 ? 's' : ''} how to interact with
             your knowledge graph. Claude Code, Pi and OpenCode also get a NodeSpace plugin. Codex
-            and Antigravity get one marked block added to your own instructions file for that agent;
-            nothing else in that file is changed. This copy updates each time NodeSpace itself
+            and Antigravity get NodeSpace hooks and one marked block added to your own instructions
+            file for that agent; nothing else in that file is changed. This copy updates each time NodeSpace itself
             updates.
             {#if claudeCodeTargeted}
               If you already have the skill in Claude Code via

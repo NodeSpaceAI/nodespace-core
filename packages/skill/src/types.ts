@@ -64,7 +64,7 @@ export interface AgentConfig {
     };
   };
   /**
-   * The harness's user-level instructions file, for a harness with no plugin
+   * The harness's user-level instructions file, for a harness that gets hooks rather than a plugin
    * (ADR-093 §6). The installer writes one marked block into it, creating the
    * file when it is absent, and owns nothing else in it.
    */
