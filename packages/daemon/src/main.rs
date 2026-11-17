@@ -21,20 +21,20 @@
 //! socket/pipe permission is the entire authorization boundary**. Whoever can
 //! open the socket gets the whole graph.
 //!
-//! On Unix, [`bind_uds_owner_only`] enforces that boundary as `0o600` with no
-//! ambient-umask exposure window. There is currently no peer-credential check
-//! (`SO_PEERCRED` / `LOCAL_PEERCRED`) backstopping the file permission — every
-//! connection accepted by the listener is handed straight to the tonic
-//! server. On Windows, [`create_owner_only_pipe`] enforces the equivalent
-//! boundary: the Named Pipe is created with a DACL restricted to the current
-//! user's SID (see its doc comment for the exact SDDL and how it was
-//! verified on real hardware), and the instance that claims the pipe name
-//! uses `first_pipe_instance(true)` so startup fails loudly rather than
-//! silently serving on a name another local process pre-created/squatted.
-//! There is no equivalent of a peer-credential check on Windows either —
-//! every connection accepted by the listener is handed straight to the
-//! tonic server. Do not assume a peer-identity check exists anywhere in this
-//! file.
+//! On Unix two layers hold. [`bind_uds_owner_only`] makes the socket `0o600`
+//! with no ambient-umask exposure window, and every accepted connection then
+//! passes [`nodespace_daemon::peer_auth::owner_only_incoming`]: the peer's user
+//! id is read from the kernel (`SO_PEERCRED` / `LOCAL_PEERCRED`) and must equal
+//! the daemon's own effective uid, strictly (root is not special-cased), or the
+//! connection is closed before it reaches the gRPC layer. A peer whose
+//! credentials cannot be read is refused. A process running as the daemon's own
+//! user is inside the boundary and is served. On Windows there is no peer
+//! check in the daemon: [`create_owner_only_pipe`] creates the Named Pipe with a
+//! DACL restricted to the current user's SID (see its doc comment for the exact
+//! SDDL and how it was verified on real hardware), and the instance that claims
+//! the pipe name uses `first_pipe_instance(true)` so startup fails loudly
+//! rather than silently serving on a name another local process squatted. There
+//! the owner-only pipe DACL is the whole boundary.
 
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1710,7 +1710,7 @@ mod unrecognized_arg_tests {
 /// its watchdog even once its originally-suspected segment was cleared.
 #[cfg(unix)]
 async fn serve_headless() -> Result<()> {
-    use tokio_stream::wrappers::UnixListenerStream;
+    use nodespace_daemon::peer_auth::owner_only_incoming;
 
     let sock = socket_path();
     let db_path = resolve_db_path()?;
@@ -1770,7 +1770,7 @@ async fn serve_headless() -> Result<()> {
         Server::builder().layer(DbManagerLayer::new(manager)),
         base_services,
     )
-    .serve_with_incoming_shutdown(UnixListenerStream::new(listener), wrapped_shutdown)
+    .serve_with_incoming_shutdown(owner_only_incoming(listener), wrapped_shutdown)
     .await;
     // Defuse before propagating a possible `Err` below: the watchdog is armed
     // the instant shutdown is signaled, independent of how
@@ -1792,7 +1792,7 @@ async fn serve_headless() -> Result<()> {
 /// daemon without going through the menu.
 #[cfg(unix)]
 async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
-    use tokio_stream::wrappers::UnixListenerStream;
+    use nodespace_daemon::peer_auth::owner_only_incoming;
 
     let sock = socket_path();
     let db_path = resolve_db_path()?;
@@ -1866,7 +1866,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
             .layer(DbManagerLayer::new(manager)),
         base_services,
     )
-    .serve_with_incoming_shutdown(UnixListenerStream::new(listener), combined_shutdown)
+    .serve_with_incoming_shutdown(owner_only_incoming(listener), combined_shutdown)
     .await;
     // See the Unix `serve_headless` comment on the equivalent line: defuse
     // before propagating, so an `Err` here can't leave the watchdog armed.
@@ -2614,5 +2614,152 @@ mod log_ansi_tests {
             "a log file must be plain text"
         );
         assert!(!log_uses_ansi(true, true), "NO_COLOR wins");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod same_user_peer_tests {
+    use super::bind_uds_owner_only;
+    use hyper_util::rt::TokioIo;
+    use nodespace_daemon::peer_auth::owner_only_incoming;
+    use nodespace_proto::nodespace::database_service_server::DatabaseService;
+    use nodespace_proto::nodespace::{
+        CreateDatabaseRequest, DatabaseInfo, ListDatabasesRequest, ListDatabasesResponse,
+        RegisterDatabaseRequest, RemoveDatabaseRequest, RemoveDatabaseResponse,
+        RenameDatabaseRequest, SetDefaultDatabaseRequest,
+    };
+    use nodespace_proto::{DatabaseServiceClient, DatabaseServiceServer};
+    use tonic::transport::{Endpoint, Server, Uri};
+    use tonic::{Request, Response, Status};
+    use tower::service_fn;
+
+    struct ListOnly;
+
+    #[tonic::async_trait]
+    impl DatabaseService for ListOnly {
+        async fn list(
+            &self,
+            _: Request<ListDatabasesRequest>,
+        ) -> Result<Response<ListDatabasesResponse>, Status> {
+            Ok(Response::new(ListDatabasesResponse::default()))
+        }
+        async fn create(
+            &self,
+            _: Request<CreateDatabaseRequest>,
+        ) -> Result<Response<DatabaseInfo>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn register(
+            &self,
+            _: Request<RegisterDatabaseRequest>,
+        ) -> Result<Response<DatabaseInfo>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn remove(
+            &self,
+            _: Request<RemoveDatabaseRequest>,
+        ) -> Result<Response<RemoveDatabaseResponse>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn set_default(
+            &self,
+            _: Request<SetDefaultDatabaseRequest>,
+        ) -> Result<Response<DatabaseInfo>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+        async fn rename(
+            &self,
+            _: Request<RenameDatabaseRequest>,
+        ) -> Result<Response<DatabaseInfo>, Status> {
+            Err(Status::unimplemented("test stub"))
+        }
+    }
+
+    // The production path: the socket bound by `bind_uds_owner_only`, served
+    // through the real peer check. A same-user client is inside the boundary
+    // and must be served.
+    #[tokio::test]
+    async fn same_user_client_is_served_through_the_production_peer_check() {
+        let base = std::path::Path::new("/private/tmp");
+        let base = if base.is_dir() {
+            base
+        } else {
+            std::path::Path::new("/tmp")
+        };
+        let dir = tempfile::Builder::new()
+            .prefix("ns-su-")
+            .tempdir_in(base)
+            .expect("tempdir");
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let sock = dir.path().join("s.sock");
+        let listener = bind_uds_owner_only(&sock).expect("bind");
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(DatabaseServiceServer::new(ListOnly))
+                .serve_with_incoming(owner_only_incoming(listener))
+                .await
+        });
+
+        let path = sock.clone();
+        let channel = Endpoint::from_static("http://localhost")
+            .connect_with_connector(service_fn(move |_: Uri| {
+                let path = path.clone();
+                async move {
+                    tokio::net::UnixStream::connect(&path)
+                        .await
+                        .map(TokioIo::new)
+                }
+            }))
+            .await
+            .expect("same-user client connects");
+        DatabaseServiceClient::new(channel)
+            .list(ListDatabasesRequest {})
+            .await
+            .expect("same-user RPC succeeds");
+        server.abort();
+    }
+
+    // Both Unix serving paths must hand tonic the peer-checked stream. They
+    // build routers with different layers, so no single helper can serve both;
+    // this pins the source instead: no raw listener stream anywhere in the
+    // daemon, and exactly two serving call sites, each through the check.
+    // Needles are built from fragments so this test does not match itself.
+    #[test]
+    fn both_unix_serving_paths_use_the_peer_checked_stream() {
+        let raw = ["Unix", "ListenerStream"].concat();
+        let site = [
+            ".serve_with_incoming_shutdown(",
+            "owner_only_incoming(listener)",
+        ]
+        .concat();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![dir.clone()];
+        let mut seen = 0;
+        while let Some(d) = files.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let path = e.unwrap().path();
+                if path.is_dir() {
+                    files.push(path);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    let src = std::fs::read_to_string(&path).unwrap();
+                    assert!(
+                        !src.contains(&raw),
+                        "{} serves a raw listener stream",
+                        path.display()
+                    );
+                    if path.file_name().unwrap() == "main.rs" {
+                        seen = src.matches(&site).count();
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            seen, 2,
+            "serve_headless and serve_grpc must each serve through the peer check"
+        );
     }
 }

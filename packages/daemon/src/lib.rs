@@ -8,6 +8,8 @@
 pub mod db_routing;
 pub(crate) mod durable_write;
 pub mod incompatible_database;
+#[cfg(unix)]
+pub mod peer_auth;
 pub mod router;
 pub mod services;
 #[cfg(unix)]
