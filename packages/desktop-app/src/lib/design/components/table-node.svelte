@@ -32,8 +32,8 @@
 
   const dispatch = createEventDispatcher();
 
-  // Table nodes are multiline, don't accept merges
-  const editableConfig = { allowMultiline: true, allowMergeInto: false };
+  // Table nodes are multiline, merges into them are refused by the plugin's acceptsContentMerge: false
+  const editableConfig = { allowMultiline: true };
 
   // Metadata - disable markdown processing (we render our own HTML)
   let tableMetadata = $derived({

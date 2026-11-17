@@ -65,7 +65,7 @@ directory — it has no source-relative sibling directory to find
 |-------|-----------|-------|------------------|
 | Claude Code | `~/.claude/` exists (`CLAUDE_CONFIG_DIR` moves it) | `~/.claude/skills/nodespace/SKILL.md` | Plugin, in the skill folder |
 | Codex | `~/.codex/` exists (`CODEX_HOME` moves it) | `~/.codex/skills/nodespace/SKILL.md` | Hooks, in `~/.codex/nodespace/` and `~/.codex/hooks.json`, and the instructions block in `~/.codex/AGENTS.md` |
-| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/config/skills/nodespace/SKILL.md` | Instructions block in `~/.gemini/config/AGENTS.md` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/config/skills/nodespace/SKILL.md` | Hooks, in `~/.gemini/config/nodespace/` and `~/.gemini/config/hooks.json`, and the instructions block in `~/.gemini/config/AGENTS.md` |
 | OpenCode | `~/.config/opencode/` exists (`XDG_CONFIG_HOME` moves it) | `~/.config/opencode/skills/nodespace/SKILL.md` | Plugin, in `~/.config/opencode/plugins/` |
 | Pi | `~/.pi/agent/` exists (`PI_CODING_AGENT_DIR` moves it) | `~/.pi/agent/skills/nodespace/SKILL.md` | Extension, in `~/.pi/agent/extensions/nodespace/` |
 
@@ -94,9 +94,9 @@ whether the plugin or the instructions block is installed with it.
 
 ## The instructions block
 
-Antigravity gets no plugin, and Codex gets the block beside its hooks, because
-Codex runs a hook only once the user has trusted it (see below): a session
-whose hooks are not trusted still has the block. The installer writes one block
+Codex and Antigravity get the block beside their hooks. Codex runs a hook only
+once the user has trusted it (see below): a session whose hooks are not
+trusted still has the block. The installer writes one block
 into the harness's own user-level instructions file, between two HTML comment markers,
 creating the file when it is absent. The block holds the same orientation and
 confirmation rules the plugins add, and tells the agent to list the graph's

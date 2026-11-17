@@ -2,9 +2,9 @@
   QuoteBlockNode - Wraps BaseNode with quote block-specific functionality
 
   Responsibilities:
-  - Manages > prefix for quote lines
+  - Displays quote lines without their > prefix (edit mode keeps it)
   - Provides quote styling with left border accent and subtle background
-  - Handles multiline editing with auto > prefix on new lines
+  - Handles multiline editing (Shift+Enter inserts a newline)
   - Supports inline markdown formatting (bold, italic, code, links)
   - Forwards all other events to BaseNode
 
@@ -49,9 +49,9 @@ import { isA } from '$lib/types/core-node-types';
   // Track if we just added prefixes (for cursor adjustment)
   let pendingCursorAdjustment = $state<number | null>(null);
 
-  // Quote blocks use multiline editing (Shift+Enter for new lines with auto > prefix)
-  // Prevent merging into quote-blocks (structured content can't accept arbitrary merges)
-  const editableConfig = { allowMultiline: true, allowMergeInto: false };
+  // Quote blocks use multiline editing (Shift+Enter inserts a newline)
+  // Merging into quote-blocks is refused by the plugin's acceptsContentMerge: false
+  const editableConfig = { allowMultiline: true };
 
   // Quote metadata - enable markdown processing and block-level elements
   let quoteMetadata = $derived({
@@ -83,9 +83,9 @@ import { isA } from '$lib/types/core-node-types';
    * IMPORTANT: We pass through content as-is to allow TextareaController to detect
    * pattern changes for reversion (e.g., "> Hello" → ">Hello" should revert to text).
    *
-   * The "> " prefix is added to NEW lines via Shift+Enter (handled by handleKeyDown
-   * and the pattern's prefix-inheritance splitting strategy), not by transforming
-   * existing content.
+   * This component never adds the "> " prefix to content. The prefix comes from
+   * the "/quote" template, from typing "> ", and from the Enter seed in
+   * handleCreateNewNode; Shift+Enter inserts a bare newline.
    *
    * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
@@ -96,9 +96,9 @@ import { isA } from '$lib/types/core-node-types';
     // This allows TextareaController to detect when the pattern no longer matches
     // (e.g., ">Hello" doesn't match /^>\s/) and trigger reversion to text type.
     //
-    // The quote "> " prefix is handled by:
+    // The quote "> " prefix comes from:
     // 1. Initial conversion: User types "> " which triggers pattern detection
-    // 2. New lines: Shift+Enter uses prefix-inheritance strategy to add "> "
+    // 2. The "/quote" slash command's content template
     // 3. Enter key: Creates new quote-block node with "> " content (via handleCreateNewNode)
     content = userContent;
     dispatch('contentChanged', { content: userContent });
@@ -113,17 +113,17 @@ import { isA } from '$lib/types/core-node-types';
   }
 
   /**
-   * Handle Shift+Enter to position cursor after auto-added "> " prefix
+   * Handle Shift+Enter: record where the cursor should land once the
+   * content change arrives
    */
   function handleKeyDown(event: KeyboardEvent) {
     if (event.key === 'Enter' && event.shiftKey) {
-      // Let the default happen (inserts \n), but track cursor position
-      // After handleContentChange adds "> ", we'll reposition cursor
+      // Let the default happen (inserts \n), but track cursor position;
+      // handleContentChange repositions the cursor from it
       const textarea = event.target as HTMLTextAreaElement;
       const cursorPos = textarea.selectionStart;
 
-      // After the \n is inserted and "> " is added, cursor should be at:
-      // current position + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH
+      // Target position: current position + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH
       pendingCursorAdjustment = cursorPos + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH;
     }
   }

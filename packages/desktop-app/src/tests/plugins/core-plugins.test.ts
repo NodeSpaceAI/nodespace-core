@@ -652,6 +652,22 @@ describe('Core Plugins Integration', () => {
       }
     });
   });
+  // base-node-viewer's Backspace handlers (handleCombineWithPrevious,
+  // handleDeleteNode) refuse to merge a node into the node above it when
+  // pluginRegistry.acceptsContentMerge(previous node type) is false.
+  describe('Content merge guard', () => {
+    it.each(['code-block', 'quote-block', 'ordered-list', 'horizontal-line', 'table'])(
+      'text below a %s does not merge into it',
+      (structuredType) => {
+        registerCorePlugins(registry);
+
+        expect(registry.acceptsContentMerge(structuredType)).toBe(false);
+        // A text node above still accepts the merge.
+        expect(registry.acceptsContentMerge('text')).toBe(true);
+      }
+    );
+  });
+
   // Enter on a revertible prefixed node must carry the prefix into the new sibling.
   // Without it, the sibling's first keystroke fails the pattern and canRevert turns
   // it back into text — the node type appears to "reset" on Enter.

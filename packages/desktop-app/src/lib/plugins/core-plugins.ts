@@ -446,7 +446,9 @@ export const orderedListNodePlugin: PluginDefinition = {
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
-  }
+  },
+  // Structured content - cannot accept arbitrary merges
+  acceptsContentMerge: false
 };
 
 export const horizontalLineNodePlugin: PluginDefinition = {
