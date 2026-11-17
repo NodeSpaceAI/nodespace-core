@@ -1686,7 +1686,7 @@ async fn execute_single_action(
             execute_update_node(action_index, params, node_service, depth).await
         }
         ActionType::AddRelationship => {
-            execute_add_relationship(action_index, params, node_service, depth).await
+            execute_add_relationship(action_index, params, node_service).await
         }
         ActionType::RemoveRelationship => {
             execute_remove_relationship(action_index, params, node_service).await
@@ -1957,8 +1957,13 @@ async fn execute_add_relationship(
     action_index: usize,
     params: &Value,
     node_service: &Arc<NodeService>,
-    depth: u8,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth, so a chain that hops devices
+    // through relationship triggers is not bounded by the chain-depth
+    // mechanism (`db::events::chain_depth_of_write`). On the real Sync wire
+    // edge properties are not carried (`has_child` keeps its order only,
+    // `mentions` none, `member_of` permission only, and custom relationships
+    // do not sync), so such a chain cannot occur across devices today.
     let source_id =
         params
             .get("source_id")
@@ -1982,15 +1987,7 @@ async fn execute_add_relationship(
                 param: "target_id".to_string(),
                 action_index,
             })?;
-    // The edge carries the chain depth and write nonce in its properties:
-    // it has no node to stamp, and a chain that crosses a device boundary
-    // through a relationship trigger would otherwise restart at depth 0 on
-    // every hop. Edge ids are deterministic, so adding a stored edge again
-    // writes nothing and emits no event: a chain through edges that already
-    // exist ends there, and only a created edge (a new row) carries a stamp
-    // onward. An auto-ordered `has_child` add stores no caller properties, so
-    // it carries no stamp. See `db::events::chain_depth_of_write`.
-    let edge_data = stamp_chain(params.get("edge_data").cloned().unwrap_or(json!({})), depth);
+    let edge_data = params.get("edge_data").cloned().unwrap_or(json!({}));
 
     if has_archived_endpoint(node_service, source_id, target_id, action_index).await? {
         info!(
@@ -2021,6 +2018,12 @@ async fn execute_remove_relationship(
     params: &Value,
     node_service: &Arc<NodeService>,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth, so a chain that hops devices
+    // through relationship triggers is not bounded by the chain-depth
+    // mechanism (`db::events::chain_depth_of_write`). On the real Sync wire
+    // edge properties are not carried (`has_child` keeps its order only,
+    // `mentions` none, `member_of` permission only, and custom relationships
+    // do not sync), so such a chain cannot occur across devices today.
     let source_id =
         params
             .get("source_id")
@@ -2057,11 +2060,6 @@ async fn execute_remove_relationship(
         ));
     }
 
-    // A removal carries no chain depth: the edge it deletes leaves no row to
-    // hold a stamp, and the `RelationshipDeleted` event carries no properties.
-    // A cycle that hops devices only through removals is therefore not
-    // bounded by this mechanism (the depth stamps on node writes and on added
-    // edges are unaffected).
     node_service
         .delete_relationship(source_id, relationship_type, target_id)
         .await
@@ -2368,7 +2366,7 @@ async fn execute_single_action_in_tx(
         }
         ActionType::UpdateNode => execute_update_node_in_tx(action_index, params, txc, depth).await,
         ActionType::AddRelationship => {
-            execute_add_relationship_in_tx(action_index, params, txc, depth).await
+            execute_add_relationship_in_tx(action_index, params, txc).await
         }
         ActionType::RemoveRelationship => {
             execute_remove_relationship_in_tx(action_index, params, txc).await
@@ -2519,8 +2517,13 @@ async fn execute_add_relationship_in_tx(
     action_index: usize,
     params: &Value,
     txc: &TxCtx<'_>,
-    depth: u8,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth, so a chain that hops devices
+    // through relationship triggers is not bounded by the chain-depth
+    // mechanism (`db::events::chain_depth_of_write`). On the real Sync wire
+    // edge properties are not carried (`has_child` keeps its order only,
+    // `mentions` none, `member_of` permission only, and custom relationships
+    // do not sync), so such a chain cannot occur across devices today.
     let source_id =
         params
             .get("source_id")
@@ -2544,15 +2547,7 @@ async fn execute_add_relationship_in_tx(
                 param: "target_id".to_string(),
                 action_index,
             })?;
-    // The edge carries the chain depth and write nonce in its properties:
-    // it has no node to stamp, and a chain that crosses a device boundary
-    // through a relationship trigger would otherwise restart at depth 0 on
-    // every hop. Edge ids are deterministic, so adding a stored edge again
-    // writes nothing and emits no event: a chain through edges that already
-    // exist ends there, and only a created edge (a new row) carries a stamp
-    // onward. An auto-ordered `has_child` add stores no caller properties, so
-    // it carries no stamp. See `db::events::chain_depth_of_write`.
-    let edge_data = stamp_chain(params.get("edge_data").cloned().unwrap_or(json!({})), depth);
+    let edge_data = params.get("edge_data").cloned().unwrap_or(json!({}));
 
     if has_archived_endpoint_in_tx(txc, source_id, target_id, action_index).await? {
         info!(
@@ -2592,6 +2587,12 @@ async fn execute_remove_relationship_in_tx(
     params: &Value,
     txc: &TxCtx<'_>,
 ) -> Result<Value, ActionError> {
+    // Relationship events carry no causal depth, so a chain that hops devices
+    // through relationship triggers is not bounded by the chain-depth
+    // mechanism (`db::events::chain_depth_of_write`). On the real Sync wire
+    // edge properties are not carried (`has_child` keeps its order only,
+    // `mentions` none, `member_of` permission only, and custom relationships
+    // do not sync), so such a chain cannot occur across devices today.
     let source_id =
         params
             .get("source_id")
@@ -2628,7 +2629,6 @@ async fn execute_remove_relationship_in_tx(
         ));
     }
 
-    // No chain depth rides a removal; see `execute_remove_relationship`.
     txc.node_service
         .remove_relationship_in_tx_no_invariant_dispatch(
             txc.tx,
