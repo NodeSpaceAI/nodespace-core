@@ -2722,4 +2722,44 @@ mod same_user_peer_tests {
             .expect("same-user RPC succeeds");
         server.abort();
     }
+
+    // Both Unix serving paths must hand tonic the peer-checked stream. They
+    // build routers with different layers, so no single helper can serve both;
+    // this pins the source instead: no raw listener stream anywhere in the
+    // daemon, and exactly two serving call sites, each through the check.
+    // Needles are built from fragments so this test does not match itself.
+    #[test]
+    fn both_unix_serving_paths_use_the_peer_checked_stream() {
+        let raw = ["Unix", "ListenerStream"].concat();
+        let site = [
+            ".serve_with_incoming_shutdown(",
+            "owner_only_incoming(listener)",
+        ]
+        .concat();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![dir.clone()];
+        let mut seen = 0;
+        while let Some(d) = files.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let path = e.unwrap().path();
+                if path.is_dir() {
+                    files.push(path);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    let src = std::fs::read_to_string(&path).unwrap();
+                    assert!(
+                        !src.contains(&raw),
+                        "{} serves a raw listener stream",
+                        path.display()
+                    );
+                    if path.file_name().unwrap() == "main.rs" {
+                        seen = src.matches(&site).count();
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            seen, 2,
+            "serve_headless and serve_grpc must each serve through the peer check"
+        );
+    }
 }

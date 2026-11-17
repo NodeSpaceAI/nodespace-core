@@ -47,7 +47,14 @@ fn our_euid() -> u32 {
 /// Accept connections from `listener`, serving only peers with the daemon's
 /// own effective uid.
 pub fn owner_only_incoming(listener: UnixListener) -> IncomingStream {
-    let euid = our_euid();
+    owner_only_incoming_for_euid(listener, our_euid())
+}
+
+/// [`owner_only_incoming`] for a daemon running as `euid`. The production
+/// function calls this with the real effective uid; a test passes another uid
+/// to drive the real check (credential read, comparison, logging) against a
+/// real same-user connection, which must then be refused.
+pub fn owner_only_incoming_for_euid(listener: UnixListener, euid: u32) -> IncomingStream {
     owner_only_incoming_with(listener, move |stream| {
         let cred = stream.peer_cred();
         let (uid, pid) = match &cred {
@@ -262,5 +269,68 @@ mod tests {
         assert_eq!(lists.load(Ordering::SeqCst), 1);
         assert!(!server.is_finished(), "a refusal must not stop the server");
         server.abort();
+    }
+
+    // Drives the production closure (the real peer_cred read and comparison)
+    // with a daemon uid that is not ours: a real same-user connection is then a
+    // foreign one and must be refused; with the real euid it is served.
+    #[tokio::test]
+    async fn production_check_refuses_a_foreign_uid_and_serves_our_own() {
+        for (daemon_euid, expect_served) in
+            [(our_euid().wrapping_add(1), false), (our_euid(), true)]
+        {
+            let dir = short_tempdir();
+            let sock = dir.path().join("s.sock");
+            let listener = UnixListener::bind(&sock).unwrap();
+            let lists = Arc::new(AtomicUsize::new(0));
+            let svc = CountingDb {
+                lists: lists.clone(),
+            };
+            let incoming = owner_only_incoming_for_euid(listener, daemon_euid);
+            let server = tokio::spawn(async move {
+                Server::builder()
+                    .add_service(DatabaseServiceServer::new(svc))
+                    .serve_with_incoming(incoming)
+                    .await
+            });
+
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                match dial(sock.clone()).await {
+                    Err(e) => Err(e.to_string()),
+                    Ok(ch) => DatabaseServiceClient::new(ch)
+                        .list(ListDatabasesRequest {})
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string()),
+                }
+            })
+            .await
+            .expect("must resolve, not hang");
+
+            if expect_served {
+                outcome.expect("a peer with the daemon's own uid is served");
+                assert_eq!(lists.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(outcome.is_err(), "a foreign uid must get a transport error");
+                assert_eq!(
+                    lists.load(Ordering::SeqCst),
+                    0,
+                    "no RPC may reach the server"
+                );
+            }
+            server.abort();
+        }
+    }
+
+    // The daemon's identity is its effective uid. geteuid and getuid agree in
+    // every test process, so no behavioural test can tell them apart; pin the
+    // source instead. The needle is built from fragments to not match itself.
+    #[test]
+    fn our_identity_is_the_effective_uid() {
+        let src = include_str!("peer_auth.rs");
+        let real = ["libc::get", "euid()"].concat();
+        let wrong = ["libc::get", "uid()"].concat();
+        assert!(src.contains(&real));
+        assert!(!src.contains(&wrong));
     }
 }
