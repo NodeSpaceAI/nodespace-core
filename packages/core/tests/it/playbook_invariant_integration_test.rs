@@ -4207,25 +4207,39 @@ fn relay_node_updates_live(
     })
 }
 
-/// Waits until `snapshot` returns the same value for a sustained window.
-async fn wait_quiescent<T, F, Fut>(mut snapshot: F, what: &str) -> Result<T>
+/// Waits up to 30 s for `check` to hold. The terminal state a test waits for
+/// is positive, so a slow machine only makes the test take longer.
+async fn wait_until_long<F, Fut>(mut check: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..600 {
+        if check().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// Asserts `snapshot` does not change over a short window after a test's
+/// terminal state is reached, to catch a runaway. It can only turn a failure
+/// into a pass on a slow machine, never a pass into a failure.
+async fn assert_no_more_writes<T, F, Fut>(mut snapshot: F, what: &str) -> Result<()>
 where
     T: PartialEq + std::fmt::Debug,
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    let mut last = snapshot().await?;
-    let mut stable_polls = 0;
-    for _ in 0..300 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let now = snapshot().await?;
-        stable_polls = if now == last { stable_polls + 1 } else { 0 };
-        last = now;
-        if stable_polls >= 20 {
-            return Ok(last);
-        }
-    }
-    anyhow::bail!("{what} never went quiet (still moving: {last:?})")
+    let before = snapshot().await?;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let after = snapshot().await?;
+    assert_eq!(
+        before, after,
+        "{what}: writes continued after the terminal state"
+    );
+    Ok(())
 }
 
 /// A reactive rule chain that crosses two devices stops at `MAX_CHAIN_DEPTH`
@@ -4290,7 +4304,38 @@ async fn reactive_chain_across_two_devices_stops_at_the_cycle_limit() -> Result<
     // A write from a device holding neither rule arrives at A.
     update_via(live_apply, &a, NODE_ID, json!({ "f": "a" })).await?;
 
-    let versions = wait_quiescent(
+    // The terminal state: both devices at the depth limit, and the play that
+    // would take the next hop suspended.
+    let at_the_limit = wait_until_long(|| {
+        let devices_view: Vec<_> = devices
+            .iter()
+            .map(|(service, _, engine, _, _, play_id)| {
+                (Arc::clone(service), play_status(engine, play_id))
+            })
+            .collect();
+        async move {
+            let mut depths_at_limit = true;
+            for (service, _) in &devices_view {
+                let node = service.get_node(NODE_ID).await.ok().flatten();
+                depths_at_limit &=
+                    node.is_some_and(|n| depth_of(&n) == Some(json!(MAX_CHAIN_DEPTH)));
+            }
+            depths_at_limit
+                && devices_view
+                    .iter()
+                    .any(|(_, status)| *status == Some(PlayStatus::Suspended))
+        }
+    })
+    .await;
+    let statuses: Vec<_> = devices
+        .iter()
+        .map(|(_, _, engine, _, _, play_id)| play_status(engine, play_id))
+        .collect();
+    assert!(
+        at_the_limit,
+        "the exchange must run to the depth limit and suspend the next hop's play: {statuses:?}"
+    );
+    assert_no_more_writes(
         || {
             let (a, b) = (Arc::clone(&a), Arc::clone(&b));
             async move {
@@ -4303,24 +4348,6 @@ async fn reactive_chain_across_two_devices_stops_at_the_cycle_limit() -> Result<
         "a reactive chain across two devices",
     )
     .await?;
-    assert!(versions.0 > 1 && versions.1 > 1, "the chain must have run");
-
-    for service in [&a, &b] {
-        let node = service.get_node(NODE_ID).await?.unwrap();
-        assert_eq!(
-            depth_of(&node),
-            Some(json!(MAX_CHAIN_DEPTH)),
-            "the exchange must run to the depth limit and stop there, not stop early"
-        );
-    }
-    let suspended: Vec<_> = devices
-        .iter()
-        .map(|(_, _, engine, _, _, play_id)| play_status(engine, play_id))
-        .collect();
-    assert!(
-        suspended.contains(&Some(PlayStatus::Suspended)),
-        "the play that would take the next hop must be suspended by the cycle limit: {suspended:?}"
-    );
 
     relay_ab.abort();
     relay_ba.abort();
@@ -4384,7 +4411,7 @@ async fn two_devices_deriving_the_same_node_converge_by_id_despite_different_sta
         let nodes = service.query_nodes_by_type(DERIVED_TYPE, true).await?;
         anyhow::Ok(nodes)
     };
-    let both_derived = wait_until(|| {
+    let both_derived = wait_until_long(|| {
         let (a, b) = (Arc::clone(&a), Arc::clone(&b));
         async move {
             matches!(
@@ -4418,7 +4445,7 @@ async fn two_devices_deriving_the_same_node_converge_by_id_despite_different_sta
         update_via(live_apply, to, &from.id, stamps).await?;
     }
 
-    let settled = wait_quiescent(
+    assert_no_more_writes(
         || {
             let (a, b) = (Arc::clone(&a), Arc::clone(&b));
             let id = on_a.id.clone();
@@ -4438,11 +4465,13 @@ async fn two_devices_deriving_the_same_node_converge_by_id_despite_different_sta
         "the derived node exchange",
     )
     .await?;
-    assert_eq!(
-        (settled.0, settled.1),
-        (1, 1),
-        "still one derived node per device"
-    );
+    for service in [&a, &b] {
+        assert_eq!(
+            derived_on(Arc::clone(service)).await?.len(),
+            1,
+            "still one derived node per device"
+        );
+    }
     for service in [&a, &b] {
         let node = service.get_node(&on_a.id).await?.unwrap();
         assert_eq!(
@@ -4491,8 +4520,8 @@ async fn backlog_context_fires_nothing_and_live_context_fires_reactive_rules_onl
         ]),
     )
     .await?;
-    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
-    create_play(
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+    let play_id = create_play(
         &service,
         "join-point-play",
         json!([
@@ -4522,7 +4551,15 @@ async fn backlog_context_fires_nothing_and_live_context_fires_reactive_rules_onl
         ]),
     )
     .await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let active = wait_until_long(|| {
+        let status = play_status(&engine, &play_id);
+        async move { status == Some(PlayStatus::Runnable) }
+    })
+    .await;
+    assert!(
+        active,
+        "the engine must activate the play before the writes"
+    );
 
     let blocked = || {
         Node::new(
@@ -4569,7 +4606,7 @@ async fn backlog_context_fires_nothing_and_live_context_fires_reactive_rules_onl
     let live = blocked();
     let live_id = live.id.clone();
     skipping_invariants_only(&service).create_node(live).await?;
-    let fired = wait_until(|| reacted(Arc::clone(&service), live_id.clone())).await;
+    let fired = wait_until_long(|| reacted(Arc::clone(&service), live_id.clone())).await;
     assert!(fired, "a live write must fire the reactive rule");
 
     shutdown_engine(shutdown_tx, task).await;
