@@ -4655,3 +4655,121 @@ async fn relationship_add_cycle_across_two_devices_stops_at_the_cycle_limit() ->
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// The join-point contract (ADR-060 §5)
+// ---------------------------------------------------------------------------
+
+/// The contract an apply layer builds on, in one place. Which write context a
+/// pulled write is applied with is the apply layer's decision, made where it
+/// crosses from catching up on history to following live changes (the join
+/// point); core only honours the context a service was built with:
+///
+/// - the backlog context (both skips set) fires no reactive rule and runs no
+///   invariant rule: the write was already judged where it was made, and its
+///   effects arrive as writes of their own;
+/// - the live context (`skip_playbook_triggers: false`,
+///   `skip_invariant_rules: true`) fires reactive rules, which this device
+///   still owes, but runs no invariant rule in the write's transaction.
+///
+/// An ordinary write (the control) runs the invariant rule and refuses.
+/// Halves of this are covered by
+/// `skipping_invariants_only_repairs_and_still_fires_reactive_rules` and
+/// `skipping_playbook_triggers_alone_still_runs_invariant_rules`; this test reads the whole contract at once.
+#[tokio::test]
+async fn backlog_context_fires_nothing_and_live_context_fires_reactive_rules_only() -> Result<()> {
+    const NODE_TYPE: &str = "jp-task";
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        NODE_TYPE,
+        json!([
+            { "name": "status", "type": "text" },
+            { "name": "reacted", "type": "boolean" }
+        ]),
+    )
+    .await?;
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "join-point-play",
+        json!([
+            {
+                "name": "invariant-refuses-blocked",
+                "class": "invariant",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": NODE_TYPE } },
+                "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
+                "actions": [{
+                    "description": "Test action",
+                    "action_type": "reject",
+                    "params": { "message": "blocked is refused" }
+                }]
+            },
+            {
+                "name": "reactive-marks-blocked",
+                "description": "Test rule",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": NODE_TYPE } },
+                "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
+                "actions": [{
+                    "description": "Test action",
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "reacted": true } }
+                }]
+            }
+        ]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let blocked = || {
+        Node::new(
+            NODE_TYPE.to_string(),
+            "blocked task".to_string(),
+            json!({ "status": "blocked" }),
+        )
+    };
+    let reacted = |service: Arc<NodeService>, id: String| async move {
+        matches!(
+            service.get_node(&id).await,
+            Ok(Some(n)) if user_field(&n, NODE_TYPE, "reacted") == Some(&json!(true))
+        )
+    };
+
+    // Control: an ordinary write runs the invariant rule and is refused.
+    let refused = service.create_node(blocked()).await;
+    assert!(
+        matches!(refused, Err(NodeServiceError::PlayRuleRejected { .. })),
+        "an ordinary write must run the invariant rule: {refused:?}"
+    );
+
+    // Backlog: nothing runs, in the transaction or after it.
+    let backlog = blocked();
+    let backlog_id = backlog.id.clone();
+    skipping_rules(&service).create_node(backlog).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !reacted(Arc::clone(&service), backlog_id.clone()).await,
+        "a backlog write must fire no reactive rule"
+    );
+    assert_eq!(
+        user_field(
+            &service.get_node(&backlog_id).await?.unwrap(),
+            NODE_TYPE,
+            "status"
+        ),
+        Some(&json!("blocked")),
+        "a backlog write must run no invariant rule, so the violating write is accepted as is"
+    );
+
+    // Live: the reactive rule fires; the invariant rule does not run in the
+    // write's transaction (the violating write is accepted).
+    let live = blocked();
+    let live_id = live.id.clone();
+    skipping_invariants_only(&service).create_node(live).await?;
+    let fired = wait_until(|| reacted(Arc::clone(&service), live_id.clone())).await;
+    assert!(fired, "a live write must fire the reactive rule");
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
