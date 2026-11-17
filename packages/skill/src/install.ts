@@ -126,9 +126,10 @@ function main(): void {
 
 Commands:
   install [agent]        Install NodeSpace skill for detected (or specified) agents:
-                          the skill, the agent's harness plugin where it has
-                          one, and otherwise a marked block in the harness's
-                          own instructions file
+                          the skill, the agent's harness plugin or hooks, and a
+                          marked block in the instructions file of a harness
+                          that gets hooks rather than a plugin (Codex and
+                          Antigravity)
   uninstall [agent]      Remove all of that from detected (or specified) agents
   status [agent]         Report which (of the specified, or every configured) agents
                           actually have SKILL.md on disk right now, and whether

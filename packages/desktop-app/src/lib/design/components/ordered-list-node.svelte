@@ -48,8 +48,8 @@
   let pendingCursorAdjustment = $state<number | null>(null);
 
   // Ordered lists use multiline editing (Shift+Enter for new lines with auto "1. " prefix)
-  // Prevent merging into ordered-lists (structured content can't accept arbitrary merges)
-  const editableConfig = { allowMultiline: true, allowMergeInto: false };
+  // Merging into ordered-lists is refused by the plugin's acceptsContentMerge: false
+  const editableConfig = { allowMultiline: true };
 
   // Ordered list metadata - enable markdown for inline formatting (bold, italic, code)
   // Note: List structure (1. 2. 3.) is preserved as plain text by marked-config.ts

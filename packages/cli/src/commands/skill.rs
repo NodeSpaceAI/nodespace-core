@@ -49,10 +49,10 @@ use crate::NodeClient;
 pub enum SkillAction {
     /// Detect AI-agent harnesses and install the NodeSpace skill into them.
     /// A harness with a plugin system (Claude Code, Pi, OpenCode) also gets
-    /// the NodeSpace plugin, in the folder it loads plugins from. Any other
-    /// (Codex, Antigravity) gets one marked block in its own user-level
-    /// instructions file, which is created when absent; nothing else in that
-    /// file is touched. Safe to re-run: a harness whose files are already
+    /// the NodeSpace plugin, in the folder it loads plugins from. Codex and
+    /// Antigravity get hooks, and each also gets one marked block in its own
+    /// user-level instructions file, which is created when absent; nothing
+    /// else in that file is touched. Safe to re-run: a harness whose files are already
     /// current is left alone and reported as up to date, one holding an
     /// older skill is updated, and a harness installed since the last run is
     /// picked up.
@@ -1017,8 +1017,8 @@ fn confirm_install() -> Result<bool> {
 
     println!(
         "This installs the NodeSpace skill into each detected agent harness, with a plugin where \
-         the harness loads one (Claude Code, Pi, OpenCode) and otherwise one marked block in your \
-         own instructions file for that harness (Codex, Antigravity)."
+         the harness loads one (Claude Code, Pi, OpenCode), and with hooks plus one marked block \
+         in your own instructions file for that harness (Codex, Antigravity)."
     );
     print!("Install the NodeSpace skill into detected agent harnesses? [Y/n] ");
     use std::io::Write;
@@ -1109,6 +1109,9 @@ fn report_install_outcome(outcome: &InstallOutcome) {
     for skipped in &outcome.skipped {
         println!("⚠ {}: {}", skipped.agent, skipped.reason);
     }
+    for notice in &outcome.notices {
+        println!("{notice}");
+    }
 }
 
 /// One "agent: reason" pairing from a "⚠ agent: reason" installer line.
@@ -1144,6 +1147,9 @@ pub(crate) struct InstallOutcome {
     /// rewrote nothing for. Always empty for every other subcommand.
     pub(crate) unchanged: Vec<String>,
     pub(crate) skipped: Vec<SkippedAgent>,
+    /// Indented plain lines the installer printed beside the marked ones,
+    /// such as the step a harness needs before it runs the installed hooks.
+    pub(crate) notices: Vec<String>,
 }
 
 /// How to invoke the skill installer, resolved once by [`resolve_installer`].
@@ -1493,11 +1499,24 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
         })
         .collect();
 
+    // Indented lines that are neither a file path (`→`) nor the "not
+    // detected" listing carry what the person must do next.
+    let notices: Vec<String> = stdout
+        .lines()
+        .filter(|line| line.starts_with(char::is_whitespace))
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty() && !line.starts_with('→') && !line.ends_with(": not detected")
+        })
+        .map(str::to_string)
+        .collect();
+
     Ok(InstallOutcome {
         installed,
         details,
         unchanged,
         skipped,
+        notices,
     })
 }
 
@@ -2628,6 +2647,21 @@ mod tests {
         let outcome = parse_installer_output(output).expect("both agents installed cleanly");
         assert_eq!(outcome.installed, vec!["claude-code", "codex"]);
         assert!(outcome.skipped.is_empty());
+    }
+
+    /// The step Codex needs before it runs the installed hooks reaches the
+    /// person who ran the install; file paths and the not-detected listing
+    /// do not count as notices.
+    #[test]
+    fn parse_installer_output_keeps_the_installers_notices() {
+        let output = fake_output(
+            "'✓ codex: installed 2 file(s)' '  → /fake/hooks.json' '  codex runs these hooks only once you trust them: start codex and run /hooks to review and trust them.' '  pi: not detected'",
+        );
+        let outcome = parse_installer_output(output).expect("lines parse");
+        assert_eq!(
+            outcome.notices,
+            vec!["codex runs these hooks only once you trust them: start codex and run /hooks to review and trust them."]
+        );
     }
 
     /// An agent whose files an install left as they were is reported apart

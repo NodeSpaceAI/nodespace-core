@@ -29,8 +29,8 @@
 
   const dispatch = createEventDispatcher();
 
-  // HR nodes are single-line, don't accept merges
-  const editableConfig = { allowMultiline: false, allowMergeInto: false };
+  // HR nodes are single-line, merges into them are refused by the plugin's acceptsContentMerge: false
+  const editableConfig = { allowMultiline: false };
 
   // Check if this node is being edited
   let isEditing = $derived(focusManager.editingNodeId === nodeId);

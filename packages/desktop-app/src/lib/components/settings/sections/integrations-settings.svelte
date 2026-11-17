@@ -266,8 +266,8 @@
         {:else}
           NodeSpace tools available in {detectedAgentsLabel} sessions via a
           <code class="bg-muted text-foreground rounded px-1 py-0.5 text-[0.8125rem]">SKILL.md</code>
-          in each agent's skills directory, with a NodeSpace plugin where the agent loads one and
-          otherwise one marked block in your instructions file for that agent.
+          in each agent's skills directory, with a NodeSpace plugin or hooks where the agent loads
+          them, and one marked block in your instructions file for Codex and Antigravity.
         {/if}
       </p>
     </CardHeader>

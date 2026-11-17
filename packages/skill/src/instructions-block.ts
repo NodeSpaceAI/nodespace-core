@@ -1,4 +1,4 @@
-// The instructions block (ADR-093 §6): for a harness with no plugin, one
+// The instructions block (ADR-093 §6): for a harness that gets hooks rather than a plugin, one
 // marked block in that harness's user-level instructions file. The installer
 // owns the bytes from the begin marker to the end marker and nothing else in
 // the file.

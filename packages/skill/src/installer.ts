@@ -196,8 +196,9 @@ export function claudeCodePluginManagedSkillExists(claudeConfigDir: string): boo
 /**
  * Installs the skill at `packageRoot` into `targetAgents` (or every detected
  * agent): `SKILL.md`, every `references/*.md` the package root ships, the
- * agent's harness plugin where it has one (ADR-093 §5), and otherwise the
- * instructions block in the harness's instructions file (§6).
+ * agent's harness plugin or hooks where it has them (ADR-093 §5), and the
+ * instructions block in the harness's instructions file for a harness that
+ * gets hooks rather than a plugin (§6): Codex and Antigravity.
  *
  * Each agent's install directory gets a record (`INSTALL_RECORD`) of exactly
  * what was written, and a file an earlier install put there that this skill no

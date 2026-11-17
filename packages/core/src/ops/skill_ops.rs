@@ -1,7 +1,9 @@
 //! Skill discovery operations.
 //!
-//! Shared logic for skill search used by the local agent's `search_skills`
-//! tool and the MCP `find_skills` handler exposed to external agents.
+//! Shared logic for skill search: [`find_skills`] ranks the skills the local
+//! agent's routing renders into its prompt, and backs the `search_skills`
+//! tool, which the local agent's model is not offered.
+//! `nodespace skill guidance` is the surface for external agents.
 
 use crate::behaviors::ToolOrigin;
 use crate::models::{CoreNodeType, Node, SchemaNode, SkillFields, SkillRole, SKILL_APPLIES_TO};

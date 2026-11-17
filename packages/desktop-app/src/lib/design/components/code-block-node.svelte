@@ -87,8 +87,8 @@ import { isA } from '$lib/types/core-node-types';
   let language = $derived(parseLanguage(content));
 
   // Code blocks use multiline editing (Shift+Enter for new lines, Enter creates new node)
-  // Prevent merging into code-blocks (structured content can't accept arbitrary merges)
-  const editableConfig = { allowMultiline: true, allowMergeInto: false };
+  // Merging into code-blocks is refused by the plugin's acceptsContentMerge: false
+  const editableConfig = { allowMultiline: true };
 
   // Check if this node is being edited (from FocusManager)
   let isEditing = $derived(focusManager.editingNodeId === nodeId);
