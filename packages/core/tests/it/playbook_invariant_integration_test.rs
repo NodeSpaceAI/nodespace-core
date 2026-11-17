@@ -4457,3 +4457,201 @@ async fn two_devices_deriving_the_same_node_converge_by_id_despite_different_sta
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Relationship chains across two devices (ADR-060 §5)
+// ---------------------------------------------------------------------------
+//
+// A relationship has no node to carry the chain depth, so a `relationship_added`
+// rule that writes an edge stamps the depth and write nonce on the edge's own
+// properties, and the next device reads them from the `RelationshipCreated` it
+// receives. Without that every hop across a device boundary restarted at 0.
+
+/// Forwards `from`'s local-origin relationship writes to `to` through the live
+/// apply, the way a pull does: an edge's properties (stamps included) and its
+/// removal. Applies are never forwarded back.
+fn relay_relationships_live(
+    from: &Arc<NodeService>,
+    to: &Arc<NodeService>,
+) -> tokio::task::JoinHandle<()> {
+    fn bare_node_id(id: &str) -> &str {
+        id.strip_prefix("node:").unwrap_or(id)
+    }
+    let mut events = from.subscribe_to_events();
+    let to = Arc::clone(to);
+    tokio::spawn(async move {
+        while let Ok(envelope) = events.recv().await {
+            if envelope.metadata.source_client_id.as_deref() == Some(APPLY_CLIENT_ID) {
+                continue;
+            }
+            let applier = live_apply(&to);
+            match envelope.event {
+                DomainEvent::RelationshipCreated { relationship } => {
+                    let _ = applier
+                        .create_relationship(
+                            bare_node_id(&relationship.from_id),
+                            &relationship.relationship_type,
+                            bare_node_id(&relationship.to_id),
+                            relationship.properties,
+                        )
+                        .await;
+                }
+                DomainEvent::RelationshipDeleted {
+                    from_id,
+                    to_id,
+                    relationship_type,
+                    ..
+                } => {
+                    let _ = applier
+                        .delete_relationship(
+                            bare_node_id(&from_id),
+                            &relationship_type,
+                            bare_node_id(&to_id),
+                        )
+                        .await;
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
+/// A cycle that hops devices only through relationship triggers stops at
+/// `MAX_CHAIN_DEPTH`. Device A, on an edge from a `p` node, removes it and adds
+/// the edge back from the `q` node; device B does the reverse. Each edge is
+/// re-created on the other device by the relay, so nothing but the depth
+/// carried on the edge's properties can bound the exchange.
+#[tokio::test]
+async fn relationship_add_cycle_across_two_devices_stops_at_the_cycle_limit() -> Result<()> {
+    const P_TYPE: &str = "rr-p";
+    const Q_TYPE: &str = "rr-q";
+    const P_ID: &str = "9a1b0c2d-0000-5a3f-b1c6-0f2e8d7a4c91";
+    const Q_ID: &str = "9a1b0c2d-1111-5a3f-b1c6-0f2e8d7a4c91";
+    /// On an edge from `from_type`, remove it and add the edge back the other
+    /// way.
+    fn bounce(from_type: &str, from_id: &str, to_id: &str) -> serde_json::Value {
+        json!([{
+            "name": format!("bounce-from-{from_type}"),
+            "description": "Test rule",
+            "trigger": {
+                "type": "graph_event",
+                "on": "relationship_added",
+                "select": { "target_type": from_type }
+            },
+            "conditions": [],
+            "actions": [
+                {
+                    "description": "Remove the edge",
+                    "action_type": "remove_relationship",
+                    "params": { "source_id": from_id, "relationship_type": "mentions", "target_id": to_id }
+                },
+                {
+                    "description": "Add it back the other way",
+                    "action_type": "add_relationship",
+                    "params": { "source_id": to_id, "relationship_type": "mentions", "target_id": from_id }
+                }
+            ]
+        }])
+    }
+
+    let mut devices = Vec::new();
+    for (play_id, rules) in [
+        (
+            "0a0a0a0a-0000-4000-8000-0000000000a1",
+            bounce(P_TYPE, P_ID, Q_ID),
+        ),
+        (
+            "0b0b0b0b-0000-4000-8000-0000000000b1",
+            bounce(Q_TYPE, Q_ID, P_ID),
+        ),
+    ] {
+        let (service, tmp) = create_test_service().await?;
+        for node_type in [P_TYPE, Q_TYPE] {
+            create_schema(&service, node_type, json!([])).await?;
+        }
+        let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+        activate_play_with_id(&engine, play_id, rules);
+        for (id, node_type) in [(P_ID, P_TYPE), (Q_ID, Q_TYPE)] {
+            create_via_sync(
+                &service,
+                Node::new_with_id(
+                    id.to_string(),
+                    node_type.to_string(),
+                    id.to_string(),
+                    json!({}),
+                ),
+            )
+            .await?;
+        }
+        devices.push((service, tmp, engine, shutdown_tx, task, play_id));
+    }
+    let (a, b) = (Arc::clone(&devices[0].0), Arc::clone(&devices[1].0));
+
+    // The deepest stamp any edge write carried, on either device.
+    let deepest = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let writes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let watchers: Vec<_> = [&a, &b]
+        .into_iter()
+        .map(|service| {
+            let mut events = service.subscribe_to_events();
+            let (deepest, writes) = (Arc::clone(&deepest), Arc::clone(&writes));
+            tokio::spawn(async move {
+                while let Ok(envelope) = events.recv().await {
+                    if let DomainEvent::RelationshipCreated { relationship } = envelope.event {
+                        writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if let Some(depth) = relationship
+                            .properties
+                            .get(PLAYBOOK_CHAIN_DEPTH_PROPERTY)
+                            .and_then(|v| v.as_u64())
+                        {
+                            deepest.fetch_max(depth, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    let relay_ab = relay_relationships_live(&a, &b);
+    let relay_ba = relay_relationships_live(&b, &a);
+
+    // A user's link arrives at A from a third device.
+    live_apply(&a)
+        .create_relationship(P_ID, "mentions", Q_ID, json!({}))
+        .await?;
+
+    let writes_seen = wait_quiescent(
+        || {
+            let writes = Arc::clone(&writes);
+            async move { anyhow::Ok(writes.load(std::sync::atomic::Ordering::SeqCst)) }
+        },
+        "a relationship cycle across two devices",
+    )
+    .await?;
+    assert!(
+        writes_seen > 2,
+        "the cycle must have run: {writes_seen} edge writes"
+    );
+    assert_eq!(
+        deepest.load(std::sync::atomic::Ordering::SeqCst),
+        u64::from(MAX_CHAIN_DEPTH),
+        "the exchange must run to the depth limit and stop there, not stop early"
+    );
+    let statuses: Vec<_> = devices
+        .iter()
+        .map(|(_, _, engine, _, _, play_id)| play_status(engine, play_id))
+        .collect();
+    assert!(
+        statuses.contains(&Some(PlayStatus::Suspended)),
+        "the play that would take the next hop must be suspended by the cycle limit: {statuses:?}"
+    );
+
+    relay_ab.abort();
+    relay_ba.abort();
+    for watcher in watchers {
+        watcher.abort();
+    }
+    for (_, _, _, shutdown_tx, task, _) in devices {
+        shutdown_engine(shutdown_tx, task).await;
+    }
+    Ok(())
+}

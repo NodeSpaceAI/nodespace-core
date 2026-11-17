@@ -235,7 +235,12 @@ pub fn persisted_chain_depth(properties: &serde_json::Value, max_depth: u8) -> O
 ///   an empty `changed_properties` reads as a fresh chain. Every such emit
 ///   today is an in-tx engine write, whose event carries an in-process
 ///   context and never reaches this function.
-/// - Any other event carries no node write and starts fresh.
+/// - `RelationshipCreated`: the edge's own `properties` carry a write id.
+///   The depth is read from the edge, not from `properties`, the argument
+///   for the node writes above. Only a newly stored edge emits the event, so
+///   the stamp is the one the creating write put there.
+/// - Any other event (a removal included: a deleted edge leaves no row to
+///   carry a stamp) starts fresh.
 ///
 /// Reading the depth stamp without this check made a user's edit continue a
 /// chain from whatever depth a play last left on the node, so an ordinary
@@ -269,6 +274,15 @@ pub fn chain_depth_of_write(
                 .new_value
                 .as_ref()?;
             persisted_chain_depth(&node.properties, max_depth)
+        }
+        // An edge has no node to carry the stamp, so the edge's own
+        // properties do: a play's `add_relationship` writes them (see
+        // `playbook::actions`). A deleted edge leaves no row, so
+        // `RelationshipDeleted` carries no depth and a removal chain stays
+        // unbounded by this mechanism.
+        DomainEvent::RelationshipCreated { relationship } => {
+            relationship.properties.get(PLAYBOOK_WRITE_ID_PROPERTY)?;
+            persisted_chain_depth(&relationship.properties, max_depth)
         }
         _ => None,
     }
@@ -598,5 +612,54 @@ mod tests {
     fn persisted_chain_depth_none_one_past_max_depth() {
         let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 11 });
         assert_eq!(persisted_chain_depth(&props, 10), None);
+    }
+
+    fn edge_created(properties: serde_json::Value) -> DomainEvent {
+        DomainEvent::RelationshipCreated {
+            relationship: RelationshipEvent::new(
+                "relationship:e".to_string(),
+                "a",
+                "b",
+                "mentions",
+                properties,
+            ),
+        }
+    }
+
+    #[test]
+    fn an_edge_with_a_write_id_continues_the_chain_at_its_stamped_depth() {
+        let event = edge_created(serde_json::json!({
+            (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 4,
+            (PLAYBOOK_WRITE_ID_PROPERTY): "n"
+        }));
+        assert_eq!(
+            chain_depth_of_write(&event, &serde_json::json!({}), 10),
+            Some(4)
+        );
+    }
+
+    /// A stale depth with no write id is not a play write: it starts fresh.
+    #[test]
+    fn an_edge_without_a_write_id_starts_a_fresh_chain() {
+        let event = edge_created(serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 4 }));
+        assert_eq!(
+            chain_depth_of_write(&event, &serde_json::json!({}), 10),
+            None
+        );
+    }
+
+    /// A deleted edge leaves no row to carry a depth.
+    #[test]
+    fn an_edge_removal_carries_no_depth() {
+        let event = DomainEvent::RelationshipDeleted {
+            id: "relationship:e".to_string(),
+            from_id: "node:a".to_string(),
+            to_id: "node:b".to_string(),
+            relationship_type: "mentions".to_string(),
+        };
+        assert_eq!(
+            chain_depth_of_write(&event, &serde_json::json!({}), 10),
+            None
+        );
     }
 }

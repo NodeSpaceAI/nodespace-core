@@ -1595,7 +1595,8 @@ pub(crate) async fn rule_processor_loop(
 /// triggering event — present whenever this hop's mutation was produced by
 /// this same running process. Without it, the triggering write continues a
 /// chain only if it was itself a play write, which `chain_depth_of_write`
-/// decides from the per-write id the write stamped. A user's or MCP client's
+/// decides from the per-write id the write stamped (on the node, or on the
+/// edge's properties for a `RelationshipCreated`). A user's or MCP client's
 /// edit never changes that id, so it starts a fresh chain at 0 rather than
 /// continuing from whatever depth a play last left on the node — which
 /// would otherwise let a user's own edit trip the cycle limit and disable
