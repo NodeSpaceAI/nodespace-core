@@ -61,7 +61,36 @@ describe('QuoteBlockNode Shift+Enter', () => {
   });
 });
 
+describe('QuoteBlockNode Shift+Enter guards', () => {
+  afterEach(() => cleanup());
+
+  it('ignores Shift+Enter during IME composition', async () => {
+    const { getByTestId } = render(QuoteBlockNode, { props: { nodeId: 'q1', content: '> a' } });
+    const ta = getByTestId('fake-textarea') as HTMLTextAreaElement;
+    ta.setSelectionRange(3, 3);
+    const notCancelled = await fireEvent.keyDown(ta, { key: 'Enter', shiftKey: true, isComposing: true });
+    expect(notCancelled).toBe(true);
+    expect(ta.value).toBe('> a');
+  });
+
+  it('ignores Shift+Enter already handled (defaultPrevented) upstream', async () => {
+    const { getByTestId } = render(QuoteBlockNode, { props: { nodeId: 'q1', content: '> a' } });
+    const ta = getByTestId('fake-textarea') as HTMLTextAreaElement;
+    ta.setSelectionRange(3, 3);
+    ta.addEventListener('keydown', (e) => e.preventDefault());
+    await fireEvent.keyDown(ta, { key: 'Enter', shiftKey: true });
+    expect(ta.value).toBe('> a');
+  });
+});
+
 describe('insertQuoteLineBreak', () => {
+  it('bare ">" line followed by another line: caret stays on its own line', () => {
+    expect(insertQuoteLineBreak('>\n> b', 1, 1)).toEqual({ value: '>\n> \n> b', caret: 4 });
+    expect(insertQuoteLineBreak('> a\n>\n> c', 5, 5)).toEqual({ value: '> a\n>\n> \n> c', caret: 8 });
+  });
+  it('bare ">" as the last line', () => {
+    expect(insertQuoteLineBreak('> a\n>', 5, 5)).toEqual({ value: '> a\n>\n> ', caret: 8 });
+  });
   it('replaces a selection', () => {
     expect(insertQuoteLineBreak('> abcd', 3, 5)).toEqual({ value: '> a\n> d', caret: 6 });
   });

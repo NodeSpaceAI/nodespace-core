@@ -101,6 +101,7 @@ import { isA } from '$lib/types/core-node-types';
    */
   function handleKeyDown(event: KeyboardEvent) {
     if (event.key !== 'Enter' || !event.shiftKey) return;
+    if (event.isComposing || event.defaultPrevented) return;
     const textarea = event.target as HTMLTextAreaElement;
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     event.preventDefault();
