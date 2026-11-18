@@ -4,7 +4,7 @@
   Responsibilities:
   - Displays quote lines without their > prefix (edit mode keeps it)
   - Provides quote styling with left border accent and subtle background
-  - Handles multiline editing (Shift+Enter inserts a newline)
+  - Handles multiline editing (Shift+Enter inserts a newline plus the `> ` prefix)
   - Supports inline markdown formatting (bold, italic, code, links)
   - Forwards all other events to BaseNode
 
@@ -16,12 +16,9 @@
 
 <script lang="ts">
 import { isA } from '$lib/types/core-node-types';
-  import { createEventDispatcher, getContext } from 'svelte';
+  import { createEventDispatcher } from 'svelte';
   import BaseNode from './base-node.svelte';
-  import { DEFAULT_PANE_ID } from '$lib/stores/navigation.svelte';
-
-  // Get paneId from context (set by PaneContent)
-  const paneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
+  import { insertQuoteLineBreak } from '$lib/types/quote-block-node';
 
   // Props using Svelte 5 runes mode - same interface as BaseNode
   // Using $bindable() for content enables two-way binding with parent
@@ -42,14 +39,7 @@ import { isA } from '$lib/types/core-node-types';
 
   const dispatch = createEventDispatcher();
 
-  // Cursor positioning constants for Shift+Enter behavior
-  const NEWLINE_LENGTH = 1; // \n character
-  const QUOTE_PREFIX_LENGTH = 2; // "> " prefix
-
-  // Track if we just added prefixes (for cursor adjustment)
-  let pendingCursorAdjustment = $state<number | null>(null);
-
-  // Quote blocks use multiline editing (Shift+Enter inserts a newline)
+  // Quote blocks use multiline editing (Shift+Enter inserts a newline and the "> " prefix)
   // Merging into quote-blocks is refused by the plugin's acceptsContentMerge: false
   const editableConfig = { allowMultiline: true };
 
@@ -85,7 +75,7 @@ import { isA } from '$lib/types/core-node-types';
    *
    * This component never adds the "> " prefix to content. The prefix comes from
    * the "/quote" template, from typing "> ", and from the Enter seed in
-   * handleCreateNewNode; Shift+Enter inserts a bare newline.
+   * handleCreateNewNode and from Shift+Enter (handleKeyDown).
    *
    * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
@@ -102,30 +92,26 @@ import { isA } from '$lib/types/core-node-types';
     // 3. Enter key: Creates new quote-block node with "> " content (via handleCreateNewNode)
     content = userContent;
     dispatch('contentChanged', { content: userContent });
-
-    // If we have a pending cursor adjustment (from Shift+Enter), apply it
-    if (pendingCursorAdjustment !== null) {
-      import('$lib/services/focus-manager.svelte').then(({ focusManager }) => {
-        focusManager.focusNodeAtPosition(nodeId, pendingCursorAdjustment!, paneId);
-        pendingCursorAdjustment = null; // Clear after use
-      });
-    }
   }
 
   /**
-   * Handle Shift+Enter: record where the cursor should land once the
-   * content change arrives
+   * Handle Shift+Enter: insert a newline followed by the "> " prefix with the
+   * caret after it, then notify the controller through an input event.
+   * The browser default is cancelled so the bare newline is not inserted too.
    */
   function handleKeyDown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && event.shiftKey) {
-      // Let the default happen (inserts \n), but track cursor position;
-      // handleContentChange repositions the cursor from it
-      const textarea = event.target as HTMLTextAreaElement;
-      const cursorPos = textarea.selectionStart;
-
-      // Target position: current position + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH
-      pendingCursorAdjustment = cursorPos + NEWLINE_LENGTH + QUOTE_PREFIX_LENGTH;
-    }
+    if (event.key !== 'Enter' || !event.shiftKey) return;
+    const textarea = event.target as HTMLTextAreaElement;
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    event.preventDefault();
+    const result = insertQuoteLineBreak(
+      textarea.value,
+      textarea.selectionStart,
+      textarea.selectionEnd
+    );
+    textarea.value = result.value;
+    textarea.setSelectionRange(result.caret, result.caret);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   /**

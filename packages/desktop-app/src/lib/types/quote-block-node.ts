@@ -132,3 +132,34 @@ export const QuoteBlockNodeHelpers = {
     return node.content.split('\n').length;
   }
 };
+
+/** The prefix every line of a quote block's stored content carries. */
+export const QUOTE_LINE_PREFIX = '> ';
+
+/**
+ * Compute the result of Shift+Enter in a quote block: a newline followed by
+ * the `> ` prefix, with the caret after that prefix. A selection is replaced.
+ * A caret inside a line's own `>` / `> ` prefix is first moved past it, so the
+ * prefix is never split. Content without a prefix on its first line (an empty
+ * block, or older content) is left as is; only the new line gains one.
+ */
+export function insertQuoteLineBreak(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number
+): { value: string; caret: number } {
+  let start = selectionStart;
+  const end = Math.max(selectionEnd, selectionStart);
+  if (start === end) {
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const match = /^>\s?/.exec(value.slice(lineStart));
+    if (match && start < lineStart + match[0].length) {
+      start = lineStart + match[0].length;
+    }
+  }
+  const insert = `\n${QUOTE_LINE_PREFIX}`;
+  return {
+    value: value.slice(0, start) + insert + value.slice(Math.max(end, start)),
+    caret: start + insert.length
+  };
+}
