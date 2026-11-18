@@ -644,30 +644,37 @@ impl ReadCache {
     }
 }
 
-/// What `node_id` mentions, one hop: each target as id, title and type, in
-/// the order stored, up to [`MAX_NODES_PER_PATH`]; and whether there are more.
-/// An archived target is not listed. The targets are not read further.
+/// What `node_id` mentions, one hop: each target as id, title and type,
+/// sorted by title (none first) and then id, up to [`MAX_NODES_PER_PATH`] of
+/// them; and whether there are more. An archived target is not listed. The
+/// targets are not read further. The sort is applied before the cut, so which
+/// targets are kept does not depend on the order the store returns them in.
 async fn mentioned_by(
     node_service: &NodeService,
     node_id: &str,
 ) -> Result<(Vec<NodeReference>, bool), OpsError> {
-    let mut ids = node_service.get_mentions(node_id).await?;
-    let limit_reached = ids.len() > MAX_NODES_PER_PATH;
-    ids.truncate(MAX_NODES_PER_PATH);
+    let ids = node_service
+        .store()
+        .get_outgoing_mentions(node_id)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read mentions: {e}")))?;
     let targets = node_service
         .store()
         .get_nodes_by_ids(&ids)
         .await
         .map_err(|e| OpsError::Internal(format!("Failed to read mentioned nodes: {e}")))?;
-    let mentions = ids
-        .iter()
-        .filter_map(|id| targets.get(id))
+    let mut mentions: Vec<NodeReference> = targets
+        .values()
+        .filter(|target| governance::participates(target))
         .map(|target| NodeReference {
             id: target.id.clone(),
             title: target.title.clone(),
             node_type: target.node_type.clone(),
         })
         .collect();
+    mentions.sort_by(|a, b| (&a.title, &a.id).cmp(&(&b.title, &b.id)));
+    let limit_reached = mentions.len() > MAX_NODES_PER_PATH;
+    mentions.truncate(MAX_NODES_PER_PATH);
     Ok((mentions, limit_reached))
 }
 

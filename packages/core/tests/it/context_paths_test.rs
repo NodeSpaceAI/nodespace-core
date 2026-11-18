@@ -1038,6 +1038,44 @@ async fn a_read_lists_what_the_node_mentions_one_hop_without_content() -> Result
     let context = read(&service, &task, &[]).await;
     assert_eq!(context.mentions.len(), 2);
     assert_ne!(context.version, before);
+
+    // A change to a mentioned node's title, type or lifecycle changes it too.
+    let mut previous = context.version.clone();
+    update(
+        &service,
+        &spec,
+        NodeUpdate::new().with_content("Renamed spec".to_string()),
+    )
+    .await;
+    let renamed = read(&service, &task, &[]).await;
+    assert!(renamed
+        .mentions
+        .iter()
+        .any(|m| m.title.as_deref() == Some("Renamed spec")));
+    assert_ne!(renamed.version, previous);
+    previous = renamed.version.clone();
+    update(
+        &service,
+        &spec,
+        NodeUpdate::new().with_node_type("task".to_string()),
+    )
+    .await;
+    let retyped = read(&service, &task, &[]).await;
+    assert!(retyped
+        .mentions
+        .iter()
+        .any(|m| m.id == spec && m.node_type == "task"));
+    assert_ne!(retyped.version, previous);
+    previous = retyped.version.clone();
+    update(
+        &service,
+        &spec,
+        NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+    )
+    .await;
+    let archived_now = read(&service, &task, &[]).await;
+    assert_eq!(archived_now.mentions.len(), 1);
+    assert_ne!(archived_now.version, previous);
     Ok(())
 }
 
@@ -1055,5 +1093,18 @@ async fn a_reads_mention_list_stops_at_the_cap_and_says_so() -> Result<()> {
     let context = read(&service, &task, &[]).await;
     assert_eq!(context.mentions.len(), MAX_NODES_PER_PATH);
     assert!(context.mentions_limit_reached);
+    // Sorted by title, then id, before the cut: "Target 0".."Target 9",
+    // then "Target 10"...; the kept titles are the first 50 in that order.
+    let mut expected: Vec<String> = (0..=MAX_NODES_PER_PATH)
+        .map(|i| format!("Target {i}"))
+        .collect();
+    expected.sort();
+    expected.truncate(MAX_NODES_PER_PATH);
+    let titles: Vec<String> = context
+        .mentions
+        .iter()
+        .map(|m| m.title.clone().unwrap_or_default())
+        .collect();
+    assert_eq!(titles, expected);
     Ok(())
 }
