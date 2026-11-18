@@ -193,6 +193,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         AiChatTurnStatus,
         AiChatSessionStatus,
         AiChatBase,
+        AiChatAcpNode,
         AiChatNativeNode,
         AiChatPtyNode,
         // registry

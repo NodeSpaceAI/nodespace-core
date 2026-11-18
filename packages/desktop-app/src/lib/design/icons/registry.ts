@@ -124,9 +124,9 @@ class IconRegistry {
       });
     }
 
-    // AI Chat nodes (both subtypes; the `ai-chat` base is abstract) - square
+    // AI Chat nodes (every subtype; the `ai-chat` base is abstract) - square
     // design with "AI" text
-    for (const chatType of ['ai-chat-native', 'ai-chat-pty']) {
+    for (const chatType of ['ai-chat-native', 'ai-chat-pty', 'ai-chat-acp']) {
       this.register(chatType, {
         component: AIIcon,
         semanticClass: 'ai-icon',

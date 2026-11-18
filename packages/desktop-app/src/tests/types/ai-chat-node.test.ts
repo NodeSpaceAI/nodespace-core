@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  isAiChatAcpNode,
   isAiChatNode,
   isAiChatMessageNode,
   isAiChatNativeNode,
   isAiChatPtyNode,
+  nodeToAiChatAcpNode,
   nodeToAiChatMessageNode,
   nodeToAiChatNativeNode,
   nodeToAiChatPtyNode
@@ -192,6 +194,37 @@ describe('nodeToAiChatPtyNode', () => {
   it('carries no native fields', () => {
     const chat = nodeToAiChatPtyNode(makeNode({ messages: [{ role: 'user', content: 'x' }] }));
     expect('messages' in chat).toBe(false);
+    expect('turnStatus' in chat).toBe(false);
+  });
+});
+
+describe('nodeToAiChatAcpNode', () => {
+  it('reads the typed session fields', () => {
+    const chat = nodeToAiChatAcpNode(
+      makeNode({
+        nodeType: 'ai-chat-acp',
+        agent: 'opencode',
+        sessionStatus: 'ended',
+        sessionId: 's-1',
+        summary: 'did a thing'
+      })
+    );
+    expect(chat.nodeType).toBe('ai-chat-acp');
+    expect(chat.agent).toBe('opencode');
+    expect(chat.sessionStatus).toBe('ended');
+    expect(chat.sessionId).toBe('s-1');
+    expect(chat.summary).toBe('did a thing');
+    expect(isAiChatAcpNode(chat)).toBe(true);
+    expect(isAiChatNode(chat)).toBe(true);
+    expect(isAiChatPtyNode(chat)).toBe(false);
+  });
+
+  it('defaults sessionStatus to "active" and carries no terminal or native fields', () => {
+    const chat = nodeToAiChatAcpNode(makeNode({ transcript: 'x', turnStatus: 'idle' }));
+    expect(chat.sessionStatus).toBe('active');
+    expect(chat.sessionId).toBeUndefined();
+    expect('transcript' in chat).toBe(false);
+    expect('exitCode' in chat).toBe(false);
     expect('turnStatus' in chat).toBe(false);
   });
 });

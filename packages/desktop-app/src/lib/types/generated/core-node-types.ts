@@ -274,6 +274,16 @@ export const CORE_NODE_TYPES = [
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
   {
+    id: 'ai-chat-acp',
+    parent: 'ai-chat',
+    abstract: false,
+    category: 'flat',
+    mentionable: false,
+    excludedFromDefaultQueries: false,
+    typedUpdate: false,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
     id: 'ai-chat-message',
     parent: null,
     abstract: false,
@@ -283,7 +293,7 @@ export const CORE_NODE_TYPES = [
     typedUpdate: false,
     structure: {
       children: { rule: 'none' },
-      parent: { rule: 'must_have_parent_of', types: ['ai-chat-native'] }
+      parent: { rule: 'must_have_parent_of', types: ['ai-chat-acp', 'ai-chat-native'] }
     }
   },
   {

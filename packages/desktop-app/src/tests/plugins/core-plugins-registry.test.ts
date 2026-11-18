@@ -26,6 +26,8 @@ const CORE_TYPES_WITHOUT_PLUGIN: Record<string, string> = {
   'database-settings': 'a singleton edited through Settings; shown as an entity row',
   schema: 'edited through the schema surfaces, never as an outline node',
   'tool-native': 'seeded by the agent runtime, never typed in; shown as an entity row',
+  'ai-chat-acp':
+    'an ACP chat has no viewer yet: no code creates one until the agent session side lands, which brings its viewer and plugin',
   'ai-chat-message':
     'a message of a native chat, rendered only by the chat viewer through ChatMessage; never an outline row or a slash command'
 };

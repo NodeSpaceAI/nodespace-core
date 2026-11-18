@@ -10,15 +10,19 @@
  *
  * `ai-chat` is an abstract base (ADR-088): no node is ever of exactly that
  * type. A chat is an `ai-chat-native` (NodeSpace's own agent loop answers) or
- * an `ai-chat-pty` (an external agent harness in a terminal), and both carry
+ * an `ai-chat-pty` (an external agent harness in a terminal) or an
+ * `ai-chat-acp` (an external agent driven over the Agent Client Protocol; its
+ * messages are `ai-chat-message` children like a native chat's), and all carry
  * the base's fields (`AiChatBase`).
  *
- * Always use `nodeToAiChatNativeNode()` / `nodeToAiChatPtyNode()` to convert a
+ * Always use `nodeToAiChatNativeNode()` / `nodeToAiChatPtyNode()` /
+ * `nodeToAiChatAcpNode()` to convert a
  * generic Node from the store.
  */
 
 import type { Node } from './node';
 import type {
+  AiChatAcpNode,
   AiChatBase,
   AiChatMessageNode,
   AiChatNativeNode,
@@ -27,6 +31,7 @@ import type {
 import { isA, isExactly } from './core-node-types';
 
 export type {
+  AiChatAcpNode,
   AiChatBase,
   AiChatMessageNode,
   AiChatMessageRole,
@@ -39,7 +44,7 @@ export type {
 } from './generated';
 
 /** Any chat node. */
-export type AiChatNode = AiChatNativeNode | AiChatPtyNode;
+export type AiChatNode = AiChatNativeNode | AiChatPtyNode | AiChatAcpNode;
 
 export function isAiChatNativeNode(node: Node | AiChatNode): node is AiChatNativeNode {
   return isExactly(node.nodeType, 'ai-chat-native');
@@ -47,6 +52,10 @@ export function isAiChatNativeNode(node: Node | AiChatNode): node is AiChatNativ
 
 export function isAiChatPtyNode(node: Node | AiChatNode): node is AiChatPtyNode {
   return isExactly(node.nodeType, 'ai-chat-pty');
+}
+
+export function isAiChatAcpNode(node: Node | AiChatNode): node is AiChatAcpNode {
+  return isExactly(node.nodeType, 'ai-chat-acp');
 }
 
 export function isAiChatMessageNode(node: Node | AiChatMessageNode): node is AiChatMessageNode {
@@ -100,6 +109,17 @@ export function nodeToAiChatPtyNode(node: Node): AiChatPtyNode {
     sessionId: chat.sessionId,
     transcript: chat.transcript,
     exitCode: chat.exitCode
+  };
+}
+
+/** Convert a generic Node to AiChatAcpNode; see {@link nodeToAiChatNativeNode}. */
+export function nodeToAiChatAcpNode(node: Node): AiChatAcpNode {
+  const chat = node as Node & Partial<AiChatAcpNode>;
+  return {
+    ...envelope(node),
+    ...aiChatBase(node),
+    sessionStatus: chat.sessionStatus ?? 'active',
+    sessionId: chat.sessionId
   };
 }
 

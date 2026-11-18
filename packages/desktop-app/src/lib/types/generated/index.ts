@@ -2,6 +2,7 @@
 export type { Action } from './action';
 export type { ActionType } from './action-type';
 export type { AddRelationshipParams } from './add-relationship-params';
+export type { AiChatAcpNode } from './ai-chat-acp-node';
 export type { AiChatBase } from './ai-chat-base';
 export type { AiChatMessageNode } from './ai-chat-message-node';
 export type { AiChatMessageRole } from './ai-chat-message-role';

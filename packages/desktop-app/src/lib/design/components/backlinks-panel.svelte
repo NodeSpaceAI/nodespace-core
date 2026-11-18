@@ -27,6 +27,7 @@
       text: 'text',
       'ai-chat-native': 'aiSquare',
       'ai-chat-pty': 'aiSquare',
+      'ai-chat-acp': 'aiSquare',
       'ai-chat-message': 'aiSquare'
     };
     return iconMap[nodeType] || 'text';

@@ -1,12 +1,12 @@
 //! The AI-chat type family, end to end against a real store (ADR-088 §1–§2):
 //! `ai-chat` is an abstract base that is never instantiated, `ai-chat-native`
-//! and `ai-chat-pty` are core subtypes with their own fields and typed wire
+//! `ai-chat-pty` and `ai-chat-acp` are core subtypes with their own fields and typed wire
 //! structs, the base's rules reach both, and each type's bucket is closed.
 
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{
-    node_to_typed_value, AiChatNativeNode, AiChatProvider, AiChatPtyNode, AiChatSessionStatus,
-    AiChatTurnStatus, CoreNodeType, Node, NodeUpdate,
+    node_to_typed_value, AiChatAcpNode, AiChatNativeNode, AiChatProvider, AiChatPtyNode,
+    AiChatSessionStatus, AiChatTurnStatus, CoreNodeType, Node, NodeUpdate,
 };
 use nodespace_core::services::{
     CreateNodeParams, InsertPositionOwned, NodeService, NodeServiceError,
@@ -17,6 +17,7 @@ use tempfile::TempDir;
 
 const NATIVE: &str = "ai-chat-native";
 const PTY: &str = "ai-chat-pty";
+const ACP: &str = "ai-chat-acp";
 
 async fn test_service() -> (Arc<NodeService>, TempDir) {
     let temp_dir = TempDir::new().expect("tempdir creation failed");
@@ -58,6 +59,12 @@ async fn pty_chat(svc: &Arc<NodeService>) -> String {
     create(svc, PTY, "Untitled", json!({ "agent": "claude-code" }))
         .await
         .expect("a terminal chat is created")
+}
+
+async fn acp_chat(svc: &Arc<NodeService>) -> String {
+    create(svc, ACP, "Untitled", json!({ "agent": "opencode" }))
+        .await
+        .expect("an ACP chat is created")
 }
 
 async fn get(svc: &Arc<NodeService>, id: &str) -> Node {
@@ -141,7 +148,7 @@ async fn the_registry_and_the_store_agree_on_the_family() {
     let (svc, _tmp) = test_service().await;
 
     assert!(svc.store().is_abstract_type("ai-chat").await.unwrap());
-    for subtype in [NATIVE, PTY] {
+    for subtype in [NATIVE, PTY, ACP] {
         assert!(!svc.store().is_abstract_type(subtype).await.unwrap());
         assert_eq!(
             svc.store().type_chain(subtype).await.unwrap(),
@@ -154,6 +161,7 @@ async fn the_registry_and_the_store_agree_on_the_family() {
     let parents = svc.store().get_extends_parent_map().await.unwrap();
     assert_eq!(parents.get(NATIVE).map(String::as_str), Some("ai-chat"));
     assert_eq!(parents.get(PTY).map(String::as_str), Some("ai-chat"));
+    assert_eq!(parents.get(ACP).map(String::as_str), Some("ai-chat"));
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +223,43 @@ async fn a_terminal_chat_stores_each_field_in_its_declaring_bucket() {
     assert_eq!(chat.exit_code, None);
 }
 
+#[tokio::test]
+async fn an_acp_chat_stores_each_field_in_its_declaring_bucket() {
+    let (svc, _tmp) = test_service().await;
+    let id = acp_chat(&svc).await;
+
+    let node = get(&svc, &id).await;
+    assert_eq!(node.properties["ai-chat"], json!({ "agent": "opencode" }));
+    assert_eq!(node.properties[ACP], json!({ "session_status": "active" }));
+
+    let chat = AiChatAcpNode::from_node(node).unwrap();
+    assert_eq!(chat.base.agent, "opencode");
+    assert_eq!(chat.base.model, None);
+    assert_eq!(chat.session_status, AiChatSessionStatus::Active);
+    assert_eq!(chat.session_id, None);
+
+    // The session id is the agent's own, written once the session exists.
+    let version = get(&svc, &id).await.version;
+    svc.update_node(
+        &id,
+        version,
+        NodeUpdate::new().with_properties(json!({ "session_id": "s-1" })),
+    )
+    .await
+    .expect("session_id is a declared field");
+    let node = get(&svc, &id).await;
+    assert_eq!(node.properties[ACP]["session_id"], "s-1");
+    let wire = node_to_typed_value(node.clone()).unwrap();
+    assert_eq!(wire["sessionId"], "s-1");
+    assert_eq!(
+        AiChatAcpNode::from_node(node)
+            .unwrap()
+            .session_id
+            .as_deref(),
+        Some("s-1")
+    );
+}
+
 /// Each subtype travels as its own typed struct: its chain's fields at the
 /// top level, and `properties` holding extension fields only.
 #[tokio::test]
@@ -222,6 +267,7 @@ async fn each_subtype_travels_as_its_own_typed_struct() {
     let (svc, _tmp) = test_service().await;
     let native = native_chat(&svc).await;
     let pty = pty_chat(&svc).await;
+    let acp = acp_chat(&svc).await;
 
     let wire = |node: Node| node_to_typed_value(node).unwrap();
 
@@ -241,13 +287,22 @@ async fn each_subtype_travels_as_its_own_typed_struct() {
     assert!(pty.get("messages").is_none());
     assert!(pty.get("turnStatus").is_none());
     assert_eq!(pty["properties"], json!({}));
+
+    let acp = wire(get(&svc, &acp).await);
+    assert_eq!(acp["nodeType"], ACP);
+    assert_eq!(acp["agent"], "opencode");
+    assert_eq!(acp["sessionStatus"], "active");
+    assert!(acp.get("messages").is_none());
+    assert!(acp.get("turnStatus").is_none());
+    assert!(acp.get("transcript").is_none());
+    assert_eq!(acp["properties"], json!({}));
 }
 
 /// `agent` says who runs the conversation, and every chat states it.
 #[tokio::test]
 async fn a_chat_without_an_agent_is_refused() {
     let (svc, _tmp) = test_service().await;
-    for subtype in [NATIVE, PTY] {
+    for subtype in [NATIVE, PTY, ACP] {
         let error = message(create(&svc, subtype, "Untitled", json!({})).await);
         assert!(error.contains("agent"), "{subtype}: {error}");
     }
@@ -280,6 +335,13 @@ async fn a_chat_takes_only_its_own_declared_fields() {
         (PTY, "codex", json!({ "agent_type": "codex" })),
         (NATIVE, "nodespace", json!({ "created_nodes": [] })),
         (NATIVE, "nodespace", json!({ "anything": 1 })),
+        // An ACP chat has no terminal capture, no provider, no turn state.
+        (ACP, "opencode", json!({ "transcript": "$ ls" })),
+        (ACP, "opencode", json!({ "exit_code": 0 })),
+        (ACP, "opencode", json!({ "provider": "native" })),
+        (ACP, "opencode", json!({ "turn_status": "idle" })),
+        (ACP, "opencode", json!({ "messages": [] })),
+        (ACP, "opencode", json!({ "anything": 1 })),
     ] {
         let mut properties = foreign.clone();
         properties["agent"] = json!(agent);
@@ -315,6 +377,18 @@ async fn the_closed_enums_are_enforced_on_write() {
         .await,
     );
     assert!(error.contains("pty"), "{error}");
+
+    let id = acp_chat(&svc).await;
+    let version = get(&svc, &id).await.version;
+    let error = message(
+        svc.update_node(
+            &id,
+            version,
+            NodeUpdate::new().with_properties(json!({ "session_status": "archived" })),
+        )
+        .await,
+    );
+    assert!(error.contains("archived"), "acp: {error}");
 
     let id = pty_chat(&svc).await;
     let version = get(&svc, &id).await.version;
@@ -377,13 +451,14 @@ async fn a_flat_update_lands_each_field_in_its_declaring_bucket() {
 // The base's rules reach both subtypes
 // ---------------------------------------------------------------------------
 
-/// A query for the abstract base returns both subtypes' nodes, each under its
+/// A query for the abstract base returns every subtype's nodes, each under its
 /// own type.
 #[tokio::test]
-async fn a_query_for_ai_chat_returns_both_subtypes() {
+async fn a_query_for_ai_chat_returns_every_subtype() {
     let (svc, _tmp) = test_service().await;
     let native = native_chat(&svc).await;
     let pty = pty_chat(&svc).await;
+    let acp = acp_chat(&svc).await;
     create(&svc, "text", "Not a chat", json!({})).await.unwrap();
 
     let found = svc.query_nodes_by_type("ai-chat", false).await.unwrap();
@@ -392,11 +467,20 @@ async fn a_query_for_ai_chat_returns_both_subtypes() {
         .map(|n| (n.id.as_str(), n.node_type.as_str()))
         .collect();
     types.sort_unstable();
-    let mut expected = vec![(native.as_str(), NATIVE), (pty.as_str(), PTY)];
+    let mut expected = vec![
+        (native.as_str(), NATIVE),
+        (pty.as_str(), PTY),
+        (acp.as_str(), ACP),
+    ];
     expected.sort_unstable();
     assert_eq!(types, expected);
 
     // A query for one subtype returns only that subtype.
+    let only_acp = svc.query_nodes_by_type(ACP, false).await.unwrap();
+    assert_eq!(
+        only_acp.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        vec![acp.as_str()]
+    );
     let only_pty = svc.query_nodes_by_type(PTY, false).await.unwrap();
     assert_eq!(
         only_pty.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
@@ -410,7 +494,11 @@ async fn neither_subtype_can_be_referenced() {
     let (svc, _tmp) = test_service().await;
     let page = create(&svc, "text", "A page", json!({})).await.unwrap();
 
-    for chat in [native_chat(&svc).await, pty_chat(&svc).await] {
+    for chat in [
+        native_chat(&svc).await,
+        pty_chat(&svc).await,
+        acp_chat(&svc).await,
+    ] {
         let error = message(svc.create_mention(&page, &chat).await);
         assert!(error.contains("ai-chat"), "{error}");
     }
@@ -424,7 +512,7 @@ async fn a_chat_can_be_retyped_only_from_another_chat_type() {
 
     let page = create(&svc, "text", "A page", json!({})).await.unwrap();
     let version = get(&svc, &page).await.version;
-    for subtype in [NATIVE, PTY] {
+    for subtype in [NATIVE, PTY, ACP] {
         let error = message(
             svc.update_node(
                 &page,
@@ -467,13 +555,62 @@ async fn a_chat_can_be_retyped_only_from_another_chat_type() {
     assert_eq!(chat.base.agent, "codex");
     assert_eq!(chat.base.model, None);
     assert_eq!(chat.session_status, AiChatSessionStatus::Active);
+
+    // A native chat becomes an ACP chat with the same rebucketing, and back.
+    let id = create(
+        &svc,
+        NATIVE,
+        "Untitled",
+        json!({ "agent": "nodespace", "model": "gemma-4-e4b" }),
+    )
+    .await
+    .unwrap();
+    let version = get(&svc, &id).await.version;
+    svc.update_node(
+        &id,
+        version,
+        NodeUpdate::new()
+            .with_node_type(ACP.to_string())
+            .with_properties(json!({ "agent": "opencode", "model": null })),
+    )
+    .await
+    .expect("a native chat becomes an ACP chat");
+
+    let node = get(&svc, &id).await;
+    assert_eq!(node.node_type, ACP);
+    let chat = AiChatAcpNode::from_node(node).unwrap();
+    assert_eq!(chat.base.agent, "opencode");
+    assert_eq!(chat.base.model, None);
+    assert_eq!(chat.session_status, AiChatSessionStatus::Active);
+
+    let version = get(&svc, &id).await.version;
+    svc.update_node(
+        &id,
+        version,
+        NodeUpdate::new()
+            .with_node_type(NATIVE.to_string())
+            .with_properties(json!({ "agent": "nodespace" })),
+    )
+    .await
+    .expect("an ACP chat becomes a native chat");
+    let node = get(&svc, &id).await;
+    assert_eq!(node.node_type, NATIVE);
+    assert_eq!(node.properties["ai-chat"]["agent"], "nodespace");
+    assert_eq!(
+        AiChatNativeNode::from_node(node).unwrap().turn_status,
+        AiChatTurnStatus::Idle
+    );
 }
 
 /// A chat may hold children (ADR-088 §1), and both subtypes inherit that.
 #[tokio::test]
 async fn a_chat_may_hold_children() {
     let (svc, _tmp) = test_service().await;
-    for chat in [native_chat(&svc).await, pty_chat(&svc).await] {
+    for chat in [
+        native_chat(&svc).await,
+        pty_chat(&svc).await,
+        acp_chat(&svc).await,
+    ] {
         let child = svc
             .create_node_with_parent(CreateNodeParams {
                 id: None,
@@ -491,12 +628,12 @@ async fn a_chat_may_hold_children() {
     }
 }
 
-/// The title rule is the base's, and holds for both subtypes on create and
+/// The title rule is the base's, and holds for every subtype on create and
 /// on update.
 #[tokio::test]
-async fn both_subtypes_require_a_title() {
+async fn every_subtype_requires_a_title() {
     let (svc, _tmp) = test_service().await;
-    for (subtype, agent) in [(NATIVE, "nodespace"), (PTY, "codex")] {
+    for (subtype, agent) in [(NATIVE, "nodespace"), (PTY, "codex"), (ACP, "opencode")] {
         let error = message(create(&svc, subtype, "  ", json!({ "agent": agent })).await);
         assert!(error.contains("content"), "{subtype}: {error}");
 

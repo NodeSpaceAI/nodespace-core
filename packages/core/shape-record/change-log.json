@@ -39,6 +39,40 @@
         "affectedData": "The four query nodes under their fixed ids in every database created by an earlier build. Opening a database does not remove them: they stay, run, and are listed in the navigation as saved queries. The attached_to links from the five skills (Implementing a Task, Creating a Task, Answering a Question, Diagnosing a Bug, Instrumenting a Change) to them are removed on open where the user left the links alone, and kept and recorded as pending where the user changed them.",
         "transformation": "Delete each of the four query nodes whose definition the user did not edit; keep an edited one as the user's own query and record the shipped removal as pending for them to decide."
       }
+    },
+    {
+      "id": "ai-chat-acp-core-subtype",
+      "after": "0.3.11",
+      "covers": [
+        "registry.ai-chat-acp",
+        "schemas.ai-chat-acp"
+      ],
+      "area": "core_schema",
+      "class": "additive",
+      "summary": "A new core subtype of ai-chat, ai-chat-acp, with session_status and session_id (local_only); an older database lacks it and seeding creates its schema on open.",
+      "userProducible": false
+    },
+    {
+      "id": "ai-chat-message-parent-registry-rules",
+      "after": "0.3.11",
+      "covers": [
+        "registry.ai-chat-message.structure"
+      ],
+      "area": "core_schema",
+      "class": "rebuild",
+      "summary": "An ai-chat-message may also sit under an ai-chat-acp chat: the registry's must_have_parent_of list gains ai-chat-acp, and the derived rule rows are written from the registry on open.",
+      "userProducible": false
+    },
+    {
+      "id": "ai-chat-message-parent-schema-node",
+      "after": "0.3.11",
+      "covers": [
+        "schemas.ai-chat-message.parent"
+      ],
+      "area": "core_schema",
+      "class": "additive",
+      "summary": "The ai-chat-message schema's declared parent list gains ai-chat-acp; an older database's stored schema node keeps the old list and stays valid, because a core type's rules come from the registry rows (see the registry entry) and nothing reads the stored declaration.",
+      "userProducible": false
     }
   ]
 }
