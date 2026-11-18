@@ -382,6 +382,47 @@ impl AiChatPtyNode {
     }
 }
 
+/// An `ai-chat-acp` node: a conversation with an external agent driven over
+/// the Agent Client Protocol.
+///
+/// Its messages are `ai-chat-message` children, as a native chat's are.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatAcpNode {
+    /// The fields every node carries. `properties` holds extension fields
+    /// only; the chat's own fields are the typed ones below.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
+    #[serde(flatten)]
+    pub base: AiChatBase,
+    pub session_status: AiChatSessionStatus,
+    /// The id the agent gave its own session, which its resume call takes.
+    /// Names state on this machine, so it never leaves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+impl AiChatAcpNode {
+    /// Read an ACP chat from a node, in storage shape (bucketed per schema)
+    /// or already flattened.
+    ///
+    /// # Errors
+    ///
+    /// [`ValidationError::InvalidNodeType`] when the node is not exactly an
+    /// `ai-chat-acp` node.
+    pub fn from_node(node: Node) -> Result<Self, ValidationError> {
+        let (envelope, props) = typed_envelope(node, CoreNodeType::AiChatAcp)?;
+        Ok(Self {
+            envelope,
+            base: AiChatBase::from_flat(&props),
+            session_status: enum_prop(&props, "session_status"),
+            session_id: string_prop(&props, "session_id"),
+        })
+    }
+}
+
 /// An `ai-chat-message` node: one message of a native chat (ADR-088 §3).
 ///
 /// A `has_child` child of its chat, in conversation order. Its text is its

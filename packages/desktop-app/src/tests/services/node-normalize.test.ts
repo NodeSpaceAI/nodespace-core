@@ -19,6 +19,14 @@ function makeNode(overrides: Partial<Node> = {}): Node {
 }
 
 describe('normalizeNodeData', () => {
+  it('converts an ACP chat to its typed shape, defaulting the session status', () => {
+    const result = normalizeNodeData(
+      makeNode({ nodeType: 'ai-chat-acp', agent: 'opencode' } as Partial<Node>)
+    );
+    expect(result).toMatchObject({ nodeType: 'ai-chat-acp', agent: 'opencode' });
+    expect((result as unknown as { sessionStatus: string }).sessionStatus).toBe('active');
+  });
+
   it('returns non-task nodes unchanged', () => {
     const node = makeNode({ nodeType: 'text' });
     expect(normalizeNodeData(node)).toBe(node);
@@ -125,6 +133,14 @@ describe('promoteTypedFields', () => {
     const promoted = promoteTypedFields('ai-chat-pty', changes, changes);
     expect(promoted).toEqual({ sessionStatus: 'ended', sessionId: 's-1' });
     expect(promoteTypedFields('ai-chat-native', changes, changes)).toEqual({});
+  });
+
+  it('promotes an ACP chat\'s session fields and not the terminal ones', () => {
+    const changes = { session_status: 'ended', session_id: 's-1', transcript: 'x' };
+    expect(promoteTypedFields('ai-chat-acp', changes, changes)).toEqual({
+      sessionStatus: 'ended',
+      sessionId: 's-1'
+    });
   });
 
   it('never promotes a typed-update core type field from a properties write', () => {

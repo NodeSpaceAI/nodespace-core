@@ -1895,6 +1895,23 @@ impl NodeBehavior for AiChatPtyNodeBehavior {
     inherit_ai_chat_rules!();
 }
 
+/// Behavior for `ai-chat-acp` nodes: a conversation with an external agent
+/// driven over the Agent Client Protocol. Adds nothing to
+/// [`AiChatNodeBehavior`]: its fields are scalars the schema validates.
+pub struct AiChatAcpNodeBehavior;
+
+impl NodeBehavior for AiChatAcpNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "ai-chat-acp"
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    inherit_ai_chat_rules!();
+}
+
 /// Behavior for `ai-chat-message` nodes: one message of a native chat
 /// (ADR-088 §3).
 ///
@@ -2613,6 +2630,7 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(AiChatNodeBehavior));
         registry.register_core(Arc::new(AiChatNativeNodeBehavior));
         registry.register_core(Arc::new(AiChatPtyNodeBehavior));
+        registry.register_core(Arc::new(AiChatAcpNodeBehavior));
         registry.register_core(Arc::new(AiChatMessageNodeBehavior));
         registry.register_core(Arc::new(AgentGuidanceNodeBehavior));
         registry.register_core(Arc::new(SkillNodeBehavior));
@@ -4938,6 +4956,15 @@ mod tests {
         assert!(registry
             .validate_node(&pty, &chat_chain("ai-chat-pty"))
             .is_ok());
+
+        let acp = Node::new(
+            "ai-chat-acp".to_string(),
+            "Untitled".to_string(),
+            json!({ "agent": "opencode", "session_status": "active" }),
+        );
+        assert!(registry
+            .validate_node(&acp, &chat_chain("ai-chat-acp"))
+            .is_ok());
     }
 
     /// A chat must carry a title, whichever subtype it is: the rule is the
@@ -4949,7 +4976,7 @@ mod tests {
     fn test_every_ai_chat_subtype_rejects_empty_content() {
         let registry = NodeBehaviorRegistry::new();
 
-        for node_type in ["ai-chat-native", "ai-chat-pty"] {
+        for node_type in ["ai-chat-native", "ai-chat-pty", "ai-chat-acp"] {
             for blank in ["", "   ", "\t\n", "\u{200B}"] {
                 let node = Node::new(node_type.to_string(), blank.to_string(), json!({}));
                 let err = registry
@@ -5035,7 +5062,7 @@ mod tests {
     #[test]
     fn test_ai_chat_node_capabilities() {
         let registry = NodeBehaviorRegistry::new();
-        for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty"] {
+        for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty", "ai-chat-acp"] {
             let behavior = registry.get(node_type).expect("registered");
             assert_eq!(behavior.type_name(), node_type);
             assert!(!behavior.supports_markdown());
@@ -5046,7 +5073,7 @@ mod tests {
     fn test_ai_chat_node_never_embeddable() {
         let registry = NodeBehaviorRegistry::new();
 
-        for node_type in ["ai-chat-native", "ai-chat-pty"] {
+        for node_type in ["ai-chat-native", "ai-chat-pty", "ai-chat-acp"] {
             let behavior = registry.resolve(&chat_chain(node_type));
 
             // Not embeddable, with or without a summary.
@@ -5071,7 +5098,7 @@ mod tests {
     #[test]
     fn test_the_ai_chat_family_is_registered() {
         let registry = NodeBehaviorRegistry::new();
-        for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty"] {
+        for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty", "ai-chat-acp"] {
             let behavior = registry.get(node_type);
             assert!(behavior.is_some(), "{node_type} should be registered");
             assert_eq!(behavior.unwrap().type_name(), node_type);

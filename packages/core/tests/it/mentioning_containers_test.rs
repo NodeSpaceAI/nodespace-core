@@ -131,7 +131,11 @@ async fn task_source_is_its_own_container_even_when_nested() -> Result<()> {
 async fn ai_chat_source_is_its_own_container_even_when_nested() -> Result<()> {
     let (service, _t) = create_test_service().await?;
 
-    for (chat_type, agent) in [("ai-chat-native", "nodespace"), ("ai-chat-pty", "codex")] {
+    for (chat_type, agent) in [
+        ("ai-chat-native", "nodespace"),
+        ("ai-chat-pty", "codex"),
+        ("ai-chat-acp", "opencode"),
+    ] {
         let target = create_node(&service).await?;
         let root = create_node(&service).await?;
         let ai_chat =

@@ -107,6 +107,14 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'transcript', wire: 'transcript' },
     { storage: 'exit_code', wire: 'exitCode', structured: 'number' }
   ],
+  'ai-chat-acp': [
+    { storage: 'agent', wire: 'agent' },
+    { storage: 'model', wire: 'model' },
+    { storage: 'summary', wire: 'summary' },
+    { storage: 'last_active', wire: 'lastActive' },
+    { storage: 'session_status', wire: 'sessionStatus' },
+    { storage: 'session_id', wire: 'sessionId' }
+  ],
   'ai-chat-message': [
     { storage: 'role', wire: 'role' },
     { storage: 'timestamp', wire: 'timestamp' },
@@ -139,5 +147,6 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   play: { enabled: true, rules: [] },
   'ai-chat-native': { agent: '', contextTokens: 0, provider: 'native', turnStatus: 'idle' },
   'ai-chat-pty': { agent: '', sessionStatus: 'active' },
+  'ai-chat-acp': { agent: '', sessionStatus: 'active' },
   'ai-chat-message': { role: 'user' }
 };

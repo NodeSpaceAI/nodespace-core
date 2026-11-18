@@ -44,6 +44,7 @@ pub enum CoreNodeType {
     AiChat,
     AiChatNative,
     AiChatPty,
+    AiChatAcp,
     AiChatMessage,
     Tool,
     ToolNative,
@@ -273,7 +274,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 30] = [
+    pub const ALL: [CoreNodeType; 31] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -301,6 +302,7 @@ impl CoreNodeType {
         CoreNodeType::AiChat,
         CoreNodeType::AiChatNative,
         CoreNodeType::AiChatPty,
+        CoreNodeType::AiChatAcp,
         CoreNodeType::AiChatMessage,
         CoreNodeType::Tool,
         CoreNodeType::ToolNative,
@@ -501,12 +503,22 @@ impl CoreNodeType {
                     WireShape::Typed { update: false },
                 )
             },
+            Self::AiChatAcp => CoreTypeInfo {
+                parent: Some(Self::AiChat),
+                ..entry(
+                    "ai-chat-acp",
+                    Flat,
+                    Title,
+                    NOT_EMBEDDED,
+                    WireShape::Typed { update: false },
+                )
+            },
             // A message of a native chat (ADR-088 §3): a child of its chat,
             // in conversation order, and never a node on its own.
             Self::AiChatMessage => CoreTypeInfo {
                 structure: StructuralRules {
                     children: ChildrenRule::None,
-                    parent: ParentRule::MustHaveParentOf(&[Self::AiChatNative]),
+                    parent: ParentRule::MustHaveParentOf(&[Self::AiChatAcp, Self::AiChatNative]),
                 },
                 ..entry(
                     "ai-chat-message",
@@ -796,6 +808,7 @@ mod tests {
                 | CoreNodeType::AiChat
                 | CoreNodeType::AiChatNative
                 | CoreNodeType::AiChatPty
+                | CoreNodeType::AiChatAcp
                 | CoreNodeType::AiChatMessage
                 | CoreNodeType::Tool
                 | CoreNodeType::ToolNative => {}
@@ -959,7 +972,7 @@ mod tests {
         );
         assert_eq!(
             CoreNodeType::AiChatMessage.structure().parent,
-            ParentRule::MustHaveParentOf(&[CoreNodeType::AiChatNative])
+            ParentRule::MustHaveParentOf(&[CoreNodeType::AiChatAcp, CoreNodeType::AiChatNative])
         );
         // A chat holds its messages and may hold other nodes too.
         assert_eq!(CoreNodeType::AiChat.structure(), StructuralRules::ANY);
@@ -971,6 +984,7 @@ mod tests {
                 CoreNodeType::AiChat,
                 CoreNodeType::AiChatNative,
                 CoreNodeType::AiChatPty,
+                CoreNodeType::AiChatAcp,
                 CoreNodeType::AiChatMessage
             ]
         );
@@ -984,6 +998,7 @@ mod tests {
                 CoreNodeType::AiChat,
                 CoreNodeType::AiChatNative,
                 CoreNodeType::AiChatPty,
+                CoreNodeType::AiChatAcp,
                 CoreNodeType::AiChatMessage
             ]
         );
@@ -1017,9 +1032,13 @@ mod tests {
     }
 
     #[test]
-    fn the_chat_family_is_an_abstract_base_with_two_core_subtypes() {
+    fn the_chat_family_is_an_abstract_base_with_three_core_subtypes() {
         assert_eq!(CoreNodeType::AiChat.kind(), CoreTypeKind::AbstractBase);
-        for subtype in [CoreNodeType::AiChatNative, CoreNodeType::AiChatPty] {
+        for subtype in [
+            CoreNodeType::AiChatNative,
+            CoreNodeType::AiChatPty,
+            CoreNodeType::AiChatAcp,
+        ] {
             assert_eq!(subtype.kind(), CoreTypeKind::CoreSubtype);
             assert_eq!(subtype.parent(), Some(CoreNodeType::AiChat));
             assert!(subtype.is_a(CoreNodeType::AiChat));
@@ -1032,6 +1051,13 @@ mod tests {
             assert_eq!(subtype.content_role(), ContentRole::Title);
         }
         assert!(!CoreNodeType::AiChatNative.is_a(CoreNodeType::AiChatPty));
+        assert!(!CoreNodeType::AiChatAcp.is_a(CoreNodeType::AiChatNative));
+        assert!(!CoreNodeType::AiChatAcp.is_a(CoreNodeType::AiChatPty));
+        assert_eq!(
+            CoreNodeType::nearest(&["ai-chat-acp", "ai-chat"]),
+            Some(CoreNodeType::AiChatAcp)
+        );
+        assert_eq!(CoreNodeType::AiChatAcp.as_str(), "ai-chat-acp");
         assert_eq!(
             CoreNodeType::nearest(&["ai-chat-pty", "ai-chat"]),
             Some(CoreNodeType::AiChatPty)

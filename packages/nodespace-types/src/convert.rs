@@ -1,6 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::ai_chat::{AiChatMessageNode, AiChatNativeNode, AiChatPtyNode};
+use crate::ai_chat::{AiChatAcpNode, AiChatMessageNode, AiChatNativeNode, AiChatPtyNode};
 use crate::collection::CollectionNode;
 use crate::core_type::CoreNodeType;
 use crate::database_settings::{DatabaseSettingsFields, DatabaseSettingsNode};
@@ -66,6 +66,7 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::Issue) => issue_node_to_value(node),
         Some(CoreNodeType::AiChatNative) => ai_chat_native_node_to_value(node),
         Some(CoreNodeType::AiChatPty) => ai_chat_pty_node_to_value(node),
+        Some(CoreNodeType::AiChatAcp) => ai_chat_acp_node_to_value(node),
         Some(CoreNodeType::AiChatMessage) => ai_chat_message_node_to_value(node),
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
@@ -506,6 +507,18 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                 ]
             }
         }
+        CoreNodeType::AiChatAcp => {
+            const {
+                &[
+                    F::text("agent", "agent"),
+                    F::text("model", "model"),
+                    F::text("summary", "summary"),
+                    F::text("last_active", "lastActive"),
+                    F::text("session_status", "sessionStatus"),
+                    F::text("session_id", "sessionId"),
+                ]
+            }
+        }
         // A message's text is its `content`; these are its other fields.
         CoreNodeType::AiChatMessage => {
             const {
@@ -907,6 +920,11 @@ fn ai_chat_message_node_to_value(node: Node) -> Result<serde_json::Value, String
     let message = AiChatMessageNode::from_node(node).map_err(|e| e.to_string())?;
     serde_json::to_value(&message)
         .map_err(|e| format!("Failed to serialize ai-chat-message node: {e}"))
+}
+
+fn ai_chat_acp_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let chat = AiChatAcpNode::from_node(node).map_err(|e| e.to_string())?;
+    serde_json::to_value(&chat).map_err(|e| format!("Failed to serialize ai-chat-acp node: {e}"))
 }
 
 fn ai_chat_pty_node_to_value(node: Node) -> Result<serde_json::Value, String> {
@@ -1455,6 +1473,38 @@ mod wire_contract {
         ))
         .unwrap();
         assert_eq!(pty["sessionStatus"], "active");
+
+        let acp = node_to_typed_value(Node::new(
+            "ai-chat-acp".to_string(),
+            "Session".to_string(),
+            serde_json::json!({}),
+        ))
+        .unwrap();
+        assert_eq!(acp["sessionStatus"], "active");
+    }
+
+    #[test]
+    fn ai_chat_acp_promotes_its_chain_and_empties_properties() {
+        let node = Node::new(
+            "ai-chat-acp".to_string(),
+            "Session".to_string(),
+            serde_json::json!({
+                "ai-chat": { "agent": "opencode", "summary": "Fixed the build" },
+                "ai-chat-acp": { "session_status": "ended", "session_id": "s-1" }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["nodeType"], "ai-chat-acp");
+        assert_eq!(out["agent"], "opencode");
+        assert_eq!(out["summary"], "Fixed the build");
+        assert_eq!(out["sessionStatus"], "ended");
+        assert_eq!(out["sessionId"], "s-1");
+        // No terminal fields, turn state or provider.
+        for absent in ["transcript", "exitCode", "turnStatus", "provider"] {
+            assert!(out.get(absent).is_none(), "{absent} must be absent");
+        }
+        assert_eq!(out["properties"], serde_json::json!({}));
     }
 
     /// Only the declared snake_case names are read. Writes deep-merge onto
@@ -1527,9 +1577,15 @@ mod wire_contract {
             "last_active": "2026-01-01T00:00:00Z", "session_status": "active",
             "session_id": "s-1", "transcript": "t", "exit_code": 0
         });
+        let full_acp = serde_json::json!({
+            "agent": "opencode", "model": "m", "summary": "s",
+            "last_active": "2026-01-01T00:00:00Z", "session_status": "active",
+            "session_id": "s-1"
+        });
         for (core, props) in [
             (CoreNodeType::AiChatNative, full_native),
             (CoreNodeType::AiChatPty, full_pty),
+            (CoreNodeType::AiChatAcp, full_acp),
         ] {
             let node = Node::new(core.as_str().to_string(), "Chat".to_string(), props.clone());
             let out = node_to_typed_value(node).unwrap();

@@ -9,6 +9,7 @@ import { nodeToPlanNode } from '$lib/types/plan-node';
 import { nodeToDecisionNode } from '$lib/types/decision-node';
 import { nodeToQueryNode } from '$lib/types/query';
 import {
+  nodeToAiChatAcpNode,
   nodeToAiChatMessageNode,
   nodeToAiChatNativeNode,
   nodeToAiChatPtyNode
@@ -28,6 +29,7 @@ const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map
   ['query', (node) => nodeToQueryNode(node) as unknown as Node],
   ['ai-chat-native', (node) => nodeToAiChatNativeNode(node) as unknown as Node],
   ['ai-chat-pty', (node) => nodeToAiChatPtyNode(node) as unknown as Node],
+  ['ai-chat-acp', (node) => nodeToAiChatAcpNode(node) as unknown as Node],
   ['ai-chat-message', (node) => nodeToAiChatMessageNode(node) as unknown as Node]
 ]);
 

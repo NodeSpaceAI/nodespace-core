@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "21ec6981916634a39cc740d13a0c1205f6a054981d6acaa8c12b5e6dc5ad247d",
+  "hash": "db3a40519e520778b0721427ee7772d7d848538a869440c5293bc1888105329c",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -50,6 +50,33 @@
         }
       }
     },
+    "ai-chat-acp": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "ai-chat-acp",
+        "ai-chat"
+      ],
+      "category": "flat",
+      "contentRole": "title",
+      "derived": [],
+      "parent": "ai-chat",
+      "participation": {
+        "embedded": false,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": {
+        "typed": {
+          "update": false
+        }
+      }
+    },
     "ai-chat-message": {
       "abstract": false,
       "alwaysTitled": false,
@@ -69,6 +96,7 @@
         "children": "none",
         "parent": {
           "mustHaveParentOf": [
+            "ai-chat-acp",
             "ai-chat-native"
           ]
         }
@@ -802,6 +830,49 @@
       "relationships": {},
       "schemaVersion": 1
     },
+    "ai-chat-acp": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "ai-chat",
+      "fields": {
+        "session_id": {
+          "description": "The agent's own id for the session, which its resume call takes: names state on this machine, so it stays here",
+          "friendlyName": "Session id",
+          "indexed": false,
+          "localOnly": true,
+          "name": "session_id",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "session_status": {
+          "coreValues": [
+            {
+              "label": "Active",
+              "value": "active"
+            },
+            {
+              "label": "Ended",
+              "value": "ended"
+            }
+          ],
+          "default": "active",
+          "description": "Whether the agent session is running",
+          "extensible": false,
+          "friendlyName": "Session status",
+          "indexed": true,
+          "name": "session_status",
+          "protection": "core",
+          "required": true,
+          "type": "enum",
+          "userValues": []
+        }
+      },
+      "isCore": true,
+      "name": "AI Chat (ACP)",
+      "relationships": {},
+      "schemaVersion": 1
+    },
     "ai-chat-message": {
       "abstract": false,
       "children": {
@@ -894,6 +965,7 @@
       "parent": {
         "rule": "must_have_parent_of",
         "types": [
+          "ai-chat-acp",
           "ai-chat-native"
         ]
       },

@@ -61,6 +61,16 @@ async fn native_chat(svc: &Arc<NodeService>) -> String {
     .await
 }
 
+async fn acp_chat(svc: &Arc<NodeService>) -> String {
+    create(
+        svc,
+        "ai-chat-acp",
+        "Untitled",
+        json!({ "agent": "opencode" }),
+    )
+    .await
+}
+
 async fn try_create_under(
     svc: &Arc<NodeService>,
     parent_id: Option<&str>,
@@ -239,7 +249,7 @@ async fn a_refused_root_message_names_no_id() {
 }
 
 #[tokio::test]
-async fn a_message_must_sit_under_a_native_chat() {
+async fn a_message_must_sit_under_a_native_or_acp_chat() {
     let (svc, _tmp) = test_service().await;
     let page = create(&svc, "text", "A page", json!({})).await;
     let terminal = create(
@@ -272,6 +282,24 @@ async fn a_message_must_sit_under_a_native_chat() {
             "a message under {parent}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_message_sits_under_an_acp_chat_in_order() {
+    let (svc, _tmp) = test_service().await;
+    let chat = acp_chat(&svc).await;
+    let first = message(&svc, &chat, "hello", json!({ "role": "user" })).await;
+    let second = message(&svc, &chat, "hi", json!({ "role": "assistant" })).await;
+
+    assert_eq!(svc.get_parent(&first).await.unwrap().unwrap().id, chat);
+    let children: Vec<String> = svc
+        .get_children(&chat)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(children, [first, second]);
 }
 
 #[tokio::test]

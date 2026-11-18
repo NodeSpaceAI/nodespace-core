@@ -1401,6 +1401,7 @@ mod tests {
             "ai-chat",
             "ai-chat-native",
             "ai-chat-pty",
+            "ai-chat-acp",
             "invoice", // not a known user type in this set
         ] {
             assert!(

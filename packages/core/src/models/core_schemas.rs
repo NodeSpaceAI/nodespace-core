@@ -23,7 +23,8 @@
 //! - **ai-chat** - Abstract base of the chat family (agent, model, summary)
 //! - **ai-chat-native** - A conversation run by NodeSpace's agent loop
 //! - **ai-chat-pty** - An external coding agent in a terminal
-//! - **ai-chat-message** - One message of a native chat, a child of its chat
+//! - **ai-chat-acp** - An external agent driven over the Agent Client Protocol
+//! - **ai-chat-message** - One message of a native or ACP chat, a child of its chat
 //! - **collection** - Collection containers
 //! - **horizontal-line** - Horizontal rule / thematic break
 //! - **table** - GFM markdown table
@@ -1294,6 +1295,63 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             properties_header_summary_template: None,
             context_paths: Vec::new(),
         },
+        // AI Chat (ACP): a conversation with an external agent driven over the
+        // Agent Client Protocol. Its messages are `ai-chat-message` children.
+        // `session_id` (the agent's own id for the session) never leaves the
+        // machine.
+        SchemaNode {
+            envelope: envelope("ai-chat-acp", "AI Chat (ACP)"),
+            extends: Some("ai-chat".to_string()),
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![
+                SchemaField {
+                    name: "session_status".to_string(),
+                    friendly_name: "Session status".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(enum_values(&AiChatSessionStatus::ALL, AiChatSessionStatus::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!(AiChatSessionStatus::default())),
+                    description: Some("Whether the agent session is running".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "session_id".to_string(),
+                    friendly_name: "Session id".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: true,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("The agent's own id for the session, which its resume call takes: names state on this machine, so it stays here".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+            context_paths: Vec::new(),
+        },
         // AI chat message (ADR-088 §3): one message of a native chat, a child of
         // its chat in conversation order. Its text is its content. What it
         // wrote, looked up or asked to delete is on edges, so the graph sees it.
@@ -2426,6 +2484,7 @@ mod tests {
             [
                 "agent-guidance",
                 "ai-chat",
+                "ai-chat-acp",
                 "ai-chat-message",
                 "ai-chat-native",
                 "ai-chat-pty",
@@ -3330,7 +3389,11 @@ mod tests {
             ["session_status", "session_id", "transcript", "exit_code"]
         );
 
-        for subtype in [native, pty] {
+        let acp = find("ai-chat-acp");
+        assert!(!acp.is_abstract);
+        assert_eq!(field_names(acp), ["session_status", "session_id"]);
+
+        for subtype in [native, pty, acp] {
             assert_eq!(
                 subtype.extends.as_deref(),
                 Some("ai-chat"),
@@ -3358,7 +3421,7 @@ mod tests {
         assert_eq!(
             message.parent,
             SchemaParentRule::MustHaveParentOf {
-                types: vec!["ai-chat-native".to_string()]
+                types: vec!["ai-chat-acp".to_string(), "ai-chat-native".to_string()]
             }
         );
 
@@ -3418,7 +3481,11 @@ mod tests {
         assert_eq!(pins.reverse_cardinality, RelationshipCardinality::Many);
         assert!(pins.edge_fields.is_none());
 
-        for other in [CoreNodeType::AiChat, CoreNodeType::AiChatPty] {
+        for other in [
+            CoreNodeType::AiChat,
+            CoreNodeType::AiChatPty,
+            CoreNodeType::AiChatAcp,
+        ] {
             assert!(core_schema(other).unwrap().relationships.is_empty());
         }
     }
@@ -3473,6 +3540,7 @@ mod tests {
             ["idle", "processing"]
         );
         assert_eq!(values("ai-chat-pty", "session_status"), ["active", "ended"]);
+        assert_eq!(values("ai-chat-acp", "session_status"), ["active", "ended"]);
 
         // A chat with no stored value reads as the enum's default, so the
         // schema's declared default must be that same value.
@@ -3490,6 +3558,10 @@ mod tests {
         );
         assert_eq!(
             default("ai-chat-pty", "session_status"),
+            Some(serde_json::json!("active"))
+        );
+        assert_eq!(
+            default("ai-chat-acp", "session_status"),
             Some(serde_json::json!("active"))
         );
         for schema in &schemas {
@@ -3532,6 +3604,7 @@ mod tests {
             CoreNodeType::AiChat,
             CoreNodeType::AiChatNative,
             CoreNodeType::AiChatPty,
+            CoreNodeType::AiChatAcp,
             CoreNodeType::AiChatMessage,
         ] {
             let mut declared: Vec<String> =
