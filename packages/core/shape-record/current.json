@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "8a2d53d8f5b6e4dfa9c0dcdffb68e02b2b9e7378ec3e6e9d02175544376a5450",
+  "hash": "a1914ab0a778c947cb5cb3a33f4957ea191e1ae63ad58fee29d543016d246acf",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -2369,7 +2369,7 @@
       "contextPaths": [],
       "fields": {
         "approved_binding": {
-          "description": "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). Kept on this device",
+          "description": "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). Declared local-only",
           "friendlyName": "Approved binding",
           "indexed": false,
           "localOnly": true,
@@ -2389,7 +2389,7 @@
         },
         "enabled": {
           "default": false,
-          "description": "Whether the tool may be offered to the model; absent means off; a native tool always is. Kept on this device",
+          "description": "Whether the tool may be offered to the model; absent means off; a native tool always is. Declared local-only",
           "friendlyName": "Enabled",
           "indexed": false,
           "localOnly": true,

@@ -194,6 +194,9 @@ fn check_program(field: &str, value: &str) -> Result<(), ToolBindingError> {
     {
         return refuse();
     }
+    if value.starts_with("//") || value.starts_with("\\\\") {
+        return refuse();
+    }
     let separators = |c: char| c == '/' || c == '\\';
     if !value.contains(separators) {
         return Ok(());
@@ -288,6 +291,8 @@ fn is_reserved_header(lower: &str) -> bool {
             | "cookie"
             | "set-cookie"
             | "proxy-authorization"
+            | "keep-alive"
+            | "forwarded"
     ) || lower.starts_with("proxy-")
 }
 
@@ -321,34 +326,49 @@ pub struct EnvSecret {
     pub secret: String,
 }
 
-/// Variables that change which program runs or what it loads.
+/// Variables that change which program runs, what it loads, where it
+/// connects or which certificates it trusts. A deny-list: an ordinary name such
+/// as `GITHUB_TOKEN` stays allowed.
 fn is_reserved_env(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    upper.starts_with("LD_")
-        || upper.starts_with("DYLD_")
+    [
+        "LD_",
+        "DYLD_",
+        "GIT_",
+        "PYTHON",
+        "NODE_",
+        "JAVA",
+        "BASH_FUNC_",
+    ]
+    .iter()
+    .any(|prefix| upper.starts_with(prefix))
+        || upper.ends_with("_PROXY")
         || matches!(
             upper.as_str(),
             "PATH"
                 | "PATHEXT"
+                | "HOME"
+                | "TMPDIR"
                 | "IFS"
                 | "ENV"
                 | "BASH_ENV"
                 | "SHELL"
+                | "SHELLOPTS"
+                | "BASHOPTS"
+                | "PS4"
+                | "PROMPT_COMMAND"
                 | "COMSPEC"
-                | "PYTHONPATH"
-                | "PYTHONSTARTUP"
-                | "PYTHONHOME"
-                | "NODE_OPTIONS"
-                | "NODE_PATH"
                 | "PERL5OPT"
                 | "PERL5LIB"
                 | "RUBYOPT"
                 | "RUBYLIB"
                 | "CLASSPATH"
-                | "JAVA_TOOL_OPTIONS"
                 | "_JAVA_OPTIONS"
-                | "GIT_EXEC_PATH"
-                | "GIT_SSH_COMMAND"
+                | "JDK_JAVA_OPTIONS"
+                | "DOTNET_STARTUP_HOOKS"
+                | "SSL_CERT_FILE"
+                | "SSL_CERT_DIR"
+                | "CURL_CA_BUNDLE"
         )
 }
 
@@ -1044,6 +1064,8 @@ mod tests {
             "/usr/../bin/sh",
             "C:\\a\\..\\b",
             "\\server\\share\\x",
+            "//server/share/x",
+            "//x",
         ] {
             assert!(cli(bad).is_err(), "{bad}");
         }
@@ -1066,6 +1088,12 @@ mod tests {
             "Content-Length",
             "Transfer-Encoding",
             "Proxy-Foo",
+            "Keep-Alive",
+            "Forwarded",
+            "Upgrade",
+            "TE",
+            "Trailer",
+            "Proxy-Authorization",
             "Connection",
         ] {
             assert!(header(reserved).is_err(), "static {reserved}");
@@ -1092,6 +1120,29 @@ mod tests {
         let env =
             |n: &str| ToolCliFields::from_bucket(&json!({"env":[{"name":n,"secret":"env:K"}]}));
         for bad in [
+            "GIT_SSH_COMMAND",
+            "GIT_CONFIG_COUNT",
+            "PYTHONHOME",
+            "PYTHONUSERBASE",
+            "NODE_EXTRA_CA_CERTS",
+            "NODE_PATH",
+            "JAVA_HOME",
+            "JAVA_TOOL_OPTIONS",
+            "JDK_JAVA_OPTIONS",
+            "BASH_FUNC_foo",
+            "HOME",
+            "TMPDIR",
+            "SHELLOPTS",
+            "BASHOPTS",
+            "PS4",
+            "PROMPT_COMMAND",
+            "DOTNET_STARTUP_HOOKS",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "CURL_CA_BUNDLE",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "NO_PROXY",
             "PATH",
             "path",
             "LD_PRELOAD",
@@ -1104,7 +1155,14 @@ mod tests {
         ] {
             assert!(env(bad).is_err(), "{bad}");
         }
-        for ok in ["API_TOKEN", "GITHUB_TOKEN", "HOME_URL"] {
+        for ok in [
+            "API_TOKEN",
+            "GITHUB_TOKEN",
+            "GITLAB_TOKEN",
+            "HOME_URL",
+            "PROXY_URL",
+            "OPENAI_API_KEY",
+        ] {
             assert!(env(ok).is_ok(), "{ok}");
         }
     }

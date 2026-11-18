@@ -2542,7 +2542,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     default: Some(serde_json::json!(false)),
                     description: Some(
                         "Whether the tool may be offered to the model; absent means off; a native \
-                         tool always is. Kept on this device"
+                         tool always is. Declared local-only"
                             .to_string(),
                     ),
                     item_type: None,
@@ -2558,7 +2558,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         "Approved binding",
                         crate::models::SchemaFieldType::Text,
                         "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). \
-                         Kept on this device",
+                         Declared local-only",
                     )
                 },
             ],

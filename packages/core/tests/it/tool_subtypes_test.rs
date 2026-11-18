@@ -978,3 +978,59 @@ async fn an_absent_enabled_means_off() {
         assert!(!ToolOrigin::of(&chain).unwrap().is_offered(enabled));
     }
 }
+
+/// An invalid binding on an enabled tool is refused on every write path, not
+/// only `create_node`: the batch creates, the trusted import and the batch
+/// update hold the same rules.
+#[tokio::test]
+async fn an_invalid_binding_is_refused_on_every_write_path() {
+    let (svc, _tmp) = test_service().await;
+    let bad = || {
+        json!({
+            "tool": { "enabled": true, "parameter_schema": closed_schema() },
+            "tool-rest": { "method": "GET", "url_template": "https:{h}/p" },
+        })
+    };
+    let refused = |e: String| assert!(e.contains("url_template"), "{e}");
+
+    refused(message(
+        svc.bulk_create(vec![Node::new(
+            "tool-rest".to_string(),
+            "lookup".to_string(),
+            bad(),
+        )])
+        .await,
+    ));
+    let row = |properties: serde_json::Value| {
+        vec![(
+            uuid::Uuid::new_v4().to_string(),
+            "tool-rest".to_string(),
+            "lookup".to_string(),
+            None,
+            1.0,
+            properties,
+        )]
+    };
+    refused(message(svc.bulk_create_hierarchy(row(bad())).await));
+    refused(message(svc.bulk_create_hierarchy_trusted(row(bad())).await));
+
+    // A draft is stored, and a batch update that enables it with a bad
+    // template is refused.
+    let id = create(&svc, "tool-rest", "draft", json!({ "description": "d" }))
+        .await
+        .unwrap();
+    let error = message(
+        svc.bulk_update(vec![(
+            id.clone(),
+            NodeUpdate::new().with_properties(json!({
+                "enabled": true,
+                "method": "GET",
+                "url_template": "https:/{h}/p",
+                "parameter_schema": closed_schema(),
+            })),
+        )])
+        .await,
+    );
+    refused(error);
+    assert_eq!(get(&svc, &id).await.properties["tool"]["enabled"], false);
+}
