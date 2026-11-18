@@ -5719,8 +5719,6 @@ mod tests {
         assert!(validate_native_tool(&node).is_err());
     }
 
-    /// The trust gate is the subtype's rule (ADR-086 §12): a native tool is
-    /// always offered, and any other tool subtype only when `enabled`.
     #[test]
     fn the_binding_hash_follows_the_binding_and_nothing_else() {
         let chain = ["tool-rest", "tool"];
@@ -5787,6 +5785,24 @@ mod tests {
     }
 
     #[test]
+    fn an_absent_enabled_is_a_draft() {
+        let registry = NodeBehaviorRegistry::new();
+        for kind in ["tool-mcp", "tool-rest", "tool-cli"] {
+            for tool in [json!({}), json!({ "enabled": null })] {
+                let node = Node::new(
+                    kind.to_string(),
+                    "arrived".to_string(),
+                    json!({ "tool": tool }),
+                );
+                assert!(
+                    registry.validate_node(&node, &[kind, "tool"]).is_ok(),
+                    "{kind}: an incomplete binding with no enabled is a draft"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn remote_tool_behaviours_reach_every_stored_node_of_their_kind() {
         let registry = NodeBehaviorRegistry::new();
         let node = Node::new(
@@ -5807,6 +5823,8 @@ mod tests {
         assert!(registry.validate_node(&node, &["tool-cli", "tool"]).is_ok());
     }
 
+    /// The trust gate is the subtype's rule (ADR-086 §12): a native tool is
+    /// always offered, and any other tool subtype only when `enabled`.
     #[test]
     fn the_trust_gate_is_decided_by_the_tool_subtype() {
         let offered = |chain: &[&str], enabled: bool| {

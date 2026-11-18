@@ -250,7 +250,7 @@ fn remote_tool_auth(schemes: &[(&str, &str)], description: &str) -> SchemaField 
                 "secret",
                 "Secret",
                 text,
-                "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value",
+                "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
             ),
         ]),
         ..remote_tool_field(
@@ -2541,9 +2541,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     // offered only once someone has enabled it.
                     default: Some(serde_json::json!(false)),
                     description: Some(
-                        "Whether the tool may be offered to the model; a native tool always is. \
-                         Kept on this device: a tool that arrives from elsewhere is off here \
-                         until it is enabled here"
+                        "Whether the tool may be offered to the model; absent means off; a native \
+                         tool always is. Kept on this device"
                             .to_string(),
                     ),
                     item_type: None,
@@ -2558,9 +2557,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         "approved_binding",
                         "Approved binding",
                         crate::models::SchemaFieldType::Text,
-                        "The fingerprint of the tool's binding when it was enabled on this \
-                         device. A tool whose binding no longer matches is not offered until \
-                         it is approved again. Kept on this device",
+                        "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). \
+                         Kept on this device",
                     )
                 },
             ],
@@ -2641,11 +2639,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     None,
                     "How the server is reached: a program NodeSpace starts (stdio) or a URL (http). Required before the tool is enabled",
                 ),
-                remote_tool_field("command", "Command", crate::models::SchemaFieldType::Text, "stdio: the executable, a name or a path with no arguments and no shell syntax"),
+                remote_tool_field("command", "Command", crate::models::SchemaFieldType::Text, "stdio: the executable, a bare name or an absolute path with no `..` segment, with no arguments and no shell syntax; the executor must put `--` before any model-supplied value"),
                 remote_tool_text_list("args", "Arguments", "stdio: one argument per item, passed without a shell"),
                 remote_tool_field("url", "URL", crate::models::SchemaFieldType::Text, "http: the server URL; https, or http only for a loopback host"),
                 remote_tool_field("remote_tool_name", "Remote tool name", crate::models::SchemaFieldType::Text, "The tool's name on the server, which may differ from this node's name. Required before the tool is enabled"),
-                remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value"), "stdio: environment variables for the server, each valued from a credential reference"),
+                remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only"), "stdio: environment variables for the server, each valued from a credential reference"),
                 remote_tool_auth(&[("none", "None"), ("bearer", "Bearer token"), ("header", "Custom header")], "http: how the call authenticates; the credential is a reference"),
                 remote_tool_timeout(),
             ],
@@ -2661,7 +2659,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     None,
                     "The HTTP method. Required before the tool is enabled",
                 ),
-                remote_tool_field("url_template", "URL template", crate::models::SchemaFieldType::Text, "The absolute URL; https, or http only for a loopback host. `{name}` placeholders may appear only after the host and port, and each names a property of the parameter schema. Required before the tool is enabled"),
+                remote_tool_field("url_template", "URL template", crate::models::SchemaFieldType::Text, "The absolute URL, starting with a literal http:// or https:// (http only for a loopback host). `{name}` placeholders may appear only after the host and port, and each names a property of the parameter schema; the executor must percent-encode each value it puts in one. Required before the tool is enabled"),
                 remote_tool_text_list("query_params", "Query parameters", "The arguments sent as query parameters, each a property of the parameter schema"),
                 remote_tool_enum(
                     "body",
@@ -2680,9 +2678,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         remote_tool_schema(
             envelope("tool-cli", "Tool (CLI)"),
             vec![
-                remote_tool_field("program", "Program", crate::models::SchemaFieldType::Text, "The executable, a name or an absolute path; never a shell line. Required before the tool is enabled"),
+                remote_tool_field("program", "Program", crate::models::SchemaFieldType::Text, "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the binding fingerprint and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled"),
                 remote_tool_text_list("args", "Arguments", "One argument per item: a literal, or exactly one `{name}` placeholder naming a property of the parameter schema"),
-                remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value"), "The environment the program gets, besides a fixed base list, each valued from a credential reference"),
+                remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only"), "The environment the program gets, besides a fixed base list, each valued from a credential reference. Names that change which program runs or what it loads (PATH, LD_*, DYLD_*, NODE_OPTIONS, and similar) are refused"),
                 remote_tool_timeout(),
                 remote_tool_cap("max_output_bytes", "Maximum output (bytes)", "output"),
             ],

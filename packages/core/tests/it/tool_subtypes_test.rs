@@ -661,7 +661,7 @@ async fn a_remote_tool_takes_only_its_declared_fields() {
 #[tokio::test]
 async fn a_remote_tool_with_an_invalid_binding_is_refused_naming_the_rule() {
     let (svc, _tmp) = test_service().await;
-    let cases: [(&str, serde_json::Value, &str); 9] = [
+    let cases: [(&str, serde_json::Value, &str); 13] = [
         (
             "tool-mcp",
             json!({"transport":"http","command":"server"}),
@@ -703,6 +703,22 @@ async fn a_remote_tool_with_an_invalid_binding_is_refused_naming_the_rule() {
             json!({"program":"git","max_output_bytes":10_485_761u64}),
             "max_output_bytes",
         ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https:{h}/p"}),
+            "url_template",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https:/{h}/p"}),
+            "url_template",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https:///{a}"}),
+            "url_template",
+        ),
+        ("tool-cli", json!({"program":"../../bin/sh"}), "program"),
     ];
     for (kind, binding, rule) in cases {
         let mut properties = binding.clone();
@@ -932,4 +948,33 @@ async fn the_trust_fields_are_kept_on_the_device() {
     create(&svc, "tool-cli", "lookup", json!({ "program": "git" }))
         .await
         .unwrap();
+}
+
+/// A tool that arrives through a path that applies no schema defaults (a bulk
+/// create) may carry no `enabled` at all: absent means off, so an incomplete
+/// binding is a draft and is accepted, and the stored node has no `enabled`.
+#[tokio::test]
+async fn an_absent_enabled_means_off() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let node = Node::new(
+            kind.to_string(),
+            "arrived".to_string(),
+            json!({ "tool": { "description": "From elsewhere" } }),
+        );
+        let ids = svc
+            .bulk_create(vec![node])
+            .await
+            .unwrap_or_else(|e| panic!("{kind}: {e}"));
+        let stored = get(&svc, &ids[0]).await;
+        let enabled = stored.properties["tool"].get("enabled");
+        assert!(
+            enabled.is_none_or(|v| v.is_null() || v == &json!(false)),
+            "{kind}: {}",
+            stored.properties
+        );
+        let enabled = enabled.and_then(|v| v.as_bool()).unwrap_or(false);
+        let chain = svc.store().type_chain(kind).await.unwrap();
+        assert!(!ToolOrigin::of(&chain).unwrap().is_offered(enabled));
+    }
 }

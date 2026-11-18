@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "6d38096f29eb2e1d3f0e58922125dbf3d2813fdbef0761e4cfe26c9e0032f65d",
+  "hash": "8a2d53d8f5b6e4dfa9c0dcdffb68e02b2b9e7378ec3e6e9d02175544376a5450",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -2369,7 +2369,7 @@
       "contextPaths": [],
       "fields": {
         "approved_binding": {
-          "description": "The fingerprint of the tool's binding when it was enabled on this device. A tool whose binding no longer matches is not offered until it is approved again. Kept on this device",
+          "description": "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). Kept on this device",
           "friendlyName": "Approved binding",
           "indexed": false,
           "localOnly": true,
@@ -2389,7 +2389,7 @@
         },
         "enabled": {
           "default": false,
-          "description": "Whether the tool may be offered to the model; a native tool always is. Kept on this device: a tool that arrives from elsewhere is off here until it is enabled here",
+          "description": "Whether the tool may be offered to the model; absent means off; a native tool always is. Kept on this device",
           "friendlyName": "Enabled",
           "indexed": false,
           "localOnly": true,
@@ -2429,7 +2429,7 @@
           "type": "array"
         },
         "env": {
-          "description": "The environment the program gets, besides a fixed base list, each valued from a credential reference",
+          "description": "The environment the program gets, besides a fixed base list, each valued from a credential reference. Names that change which program runs or what it loads (PATH, LD_*, DYLD_*, NODE_OPTIONS, and similar) are refused",
           "friendlyName": "Environment",
           "indexed": false,
           "itemFields": [
@@ -2443,7 +2443,7 @@
               "type": "text"
             },
             {
-              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value",
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
               "friendlyName": "Secret",
               "indexed": false,
               "name": "secret",
@@ -2469,7 +2469,7 @@
           "type": "number"
         },
         "program": {
-          "description": "The executable, a name or an absolute path; never a shell line. Required before the tool is enabled",
+          "description": "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the binding fingerprint and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled",
           "friendlyName": "Program",
           "indexed": false,
           "name": "program",
@@ -2546,7 +2546,7 @@
               "type": "text"
             },
             {
-              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value",
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
               "friendlyName": "Secret",
               "indexed": false,
               "name": "secret",
@@ -2563,7 +2563,7 @@
           "type": "object"
         },
         "command": {
-          "description": "stdio: the executable, a name or a path with no arguments and no shell syntax",
+          "description": "stdio: the executable, a bare name or an absolute path with no `..` segment, with no arguments and no shell syntax; the executor must put `--` before any model-supplied value",
           "friendlyName": "Command",
           "indexed": false,
           "name": "command",
@@ -2586,7 +2586,7 @@
               "type": "text"
             },
             {
-              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value",
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
               "friendlyName": "Secret",
               "indexed": false,
               "name": "secret",
@@ -2732,7 +2732,7 @@
               "type": "text"
             },
             {
-              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value",
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
               "friendlyName": "Secret",
               "indexed": false,
               "name": "secret",
@@ -2864,7 +2864,7 @@
           "type": "number"
         },
         "url_template": {
-          "description": "The absolute URL; https, or http only for a loopback host. `{name}` placeholders may appear only after the host and port, and each names a property of the parameter schema. Required before the tool is enabled",
+          "description": "The absolute URL, starting with a literal http:// or https:// (http only for a loopback host). `{name}` placeholders may appear only after the host and port, and each names a property of the parameter schema; the executor must percent-encode each value it puts in one. Required before the tool is enabled",
           "friendlyName": "URL template",
           "indexed": false,
           "name": "url_template",

@@ -10,7 +10,7 @@
 //! these, and so does whatever later runs the call, so the rules are written
 //! once.
 //!
-//! A credential is never a value here: a `secret` field holds a
+//! A credential is not stored here: a `secret` field holds a
 //! [`CredentialRef`], a name resolved at call time on this device. These
 //! types are readers decoded from a node's stored properties; they are not a
 //! typed wire shape (the tool family's wire shape is generic), and are generated
@@ -46,7 +46,7 @@ fn err<T>(message: impl Into<String>) -> Result<T, ToolBindingError> {
 // ---------------------------------------------------------------------------
 
 /// Where a credential's value is kept. The node holds this reference and
-/// never the value.
+/// checked as a name only: a string shaped like a token passes as a name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CredentialRef {
     /// `keychain:<name>`: an entry in the device's credential store.
@@ -80,7 +80,7 @@ impl CredentialRef {
                 return Ok(Self::Env(name.to_string()));
             }
         }
-        err("a secret must be a credential reference, `keychain:<name>` or `env:<NAME>`, never a value")
+        err("a secret must be a credential reference, `keychain:<name>` or `env:<NAME>`; it is checked as a name only")
     }
 }
 
@@ -150,7 +150,13 @@ fn check_names_declared(
     Ok(())
 }
 
-/// A program or command: a name or a path, never a shell line.
+/// A program or command: a bare name, or an absolute path with no `..`
+/// segment; never a shell line, a relative path or an option.
+///
+/// A bare name is looked up on the executor's path. An interpreter such as
+/// `sh` or `env` is still accepted: what guards it is the fingerprint and the
+/// confirmation the executor asks for, and the executor must put `--` before
+/// any model-supplied value.
 fn check_program(field: &str, value: &str) -> Result<(), ToolBindingError> {
     let bad = |c: char| {
         c.is_whitespace()
@@ -175,12 +181,34 @@ fn check_program(field: &str, value: &str) -> Result<(), ToolBindingError> {
                     | '#'
             )
     };
-    if value.is_empty() || value.len() > 4096 || value.chars().any(bad) {
-        return err(format!(
-            "{field} must be an executable name or path with no spaces, arguments or shell syntax"
-        ));
+    let refuse = || {
+        err(format!(
+            "{field} must be a bare executable name or an absolute path with no `..` segment, \
+             with no spaces, arguments or shell syntax"
+        ))
+    };
+    if value.is_empty()
+        || value.len() > 4096
+        || value.chars().any(bad)
+        || value.starts_with(['-', '~'])
+    {
+        return refuse();
     }
-    Ok(())
+    let separators = |c: char| c == '/' || c == '\\';
+    if !value.contains(separators) {
+        return Ok(());
+    }
+    let bytes = value.as_bytes();
+    let absolute = value.starts_with('/')
+        || (bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'/' | b'\\'));
+    if absolute && !value.split(separators).any(|segment| segment == "..") {
+        Ok(())
+    } else {
+        refuse()
+    }
 }
 
 fn check_literal_arg(field: &str, value: &str) -> Result<(), ToolBindingError> {
@@ -244,6 +272,36 @@ fn check_cap(field: &str, value: Option<u64>) -> Result<(), ToolBindingError> {
     }
 }
 
+/// Header names a binding may never set, as a static header or as the header
+/// that carries a credential: they frame, route or authenticate the request
+/// itself.
+fn is_reserved_header(lower: &str) -> bool {
+    matches!(
+        lower,
+        "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "upgrade"
+            | "te"
+            | "trailer"
+            | "cookie"
+            | "set-cookie"
+            | "proxy-authorization"
+    ) || lower.starts_with("proxy-")
+}
+
+/// Whether a header name says it carries a credential. Static headers are
+/// non-secret by name, so these go in `auth`.
+fn is_credential_header(lower: &str) -> bool {
+    lower == "authorization"
+        || [
+            "token", "secret", "password", "passwd", "api-key", "apikey", "auth",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+}
+
 fn is_header_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
@@ -263,6 +321,37 @@ pub struct EnvSecret {
     pub secret: String,
 }
 
+/// Variables that change which program runs or what it loads.
+fn is_reserved_env(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("LD_")
+        || upper.starts_with("DYLD_")
+        || matches!(
+            upper.as_str(),
+            "PATH"
+                | "PATHEXT"
+                | "IFS"
+                | "ENV"
+                | "BASH_ENV"
+                | "SHELL"
+                | "COMSPEC"
+                | "PYTHONPATH"
+                | "PYTHONSTARTUP"
+                | "PYTHONHOME"
+                | "NODE_OPTIONS"
+                | "NODE_PATH"
+                | "PERL5OPT"
+                | "PERL5LIB"
+                | "RUBYOPT"
+                | "RUBYLIB"
+                | "CLASSPATH"
+                | "JAVA_TOOL_OPTIONS"
+                | "_JAVA_OPTIONS"
+                | "GIT_EXEC_PATH"
+                | "GIT_SSH_COMMAND"
+        )
+}
+
 fn check_env(env: &[EnvSecret]) -> Result<(), ToolBindingError> {
     let mut seen = Vec::new();
     for entry in env {
@@ -274,6 +363,12 @@ fn check_env(env: &[EnvSecret]) -> Result<(), ToolBindingError> {
         }
         if seen.contains(&entry.name.as_str()) {
             return err(format!("env name `{}` is listed twice", entry.name));
+        }
+        if is_reserved_env(&entry.name) {
+            return err(format!(
+                "env name `{}` changes how a program is found or loaded and is not allowed",
+                entry.name
+            ));
         }
         seen.push(entry.name.as_str());
         CredentialRef::parse(&entry.secret)?;
@@ -311,8 +406,13 @@ fn check_auth(auth: &HttpAuth, allowed: &[&str]) -> Result<(), ToolBindingError>
         }
     }
     match (&auth.header_name, scheme) {
-        (Some(name), "header") if is_header_name(name) => {}
-        (_, "header") => return err("auth scheme header needs a valid header_name"),
+        (Some(name), "header")
+            if is_header_name(name) && !is_reserved_header(&name.to_ascii_lowercase()) => {}
+        (_, "header") => {
+            return err(
+                "auth scheme header needs a valid header_name that is not a reserved header",
+            )
+        }
         (Some(_), _) => return err("header_name is only for auth scheme header"),
         (None, _) => {}
     }
@@ -492,6 +592,51 @@ pub struct ToolRestFields {
     pub max_response_bytes: Option<u64>,
 }
 
+/// A URL template: a literal `http://` or `https://` prefix, then the same
+/// scheme, host and port however each `{name}` placeholder is filled.
+///
+/// The template is parsed twice, with every placeholder replaced by `x` and
+/// then by `y`. A placeholder that reaches the scheme, the host or the port
+/// (`https:{h}/p`, `https:///{h}`, `https://h:{p}/`) changes one of them
+/// between the two parses and is refused. A backslash is refused outright:
+/// the URL parser treats it as a slash. The executor percent-encodes each
+/// value it puts in a placeholder.
+fn check_url_template(template: &str) -> Result<(), ToolBindingError> {
+    placeholders(template)?;
+    let lower = template.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return err("url_template must start with a literal http:// or https://");
+    }
+    if template.contains('\\') {
+        return err("url_template must not contain a backslash");
+    }
+    let fill = |with: char| {
+        let mut out = String::new();
+        let mut rest = template;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            out.push(with);
+            rest = &rest[rest.find('}').map_or(rest.len(), |c| c + 1)..];
+        }
+        out.push_str(rest);
+        out
+    };
+    let (Ok(x), Ok(y)) = (Url::parse(&fill('x')), Url::parse(&fill('y'))) else {
+        return err("url_template must be an absolute URL");
+    };
+    let origin = |u: &Url| {
+        (
+            u.scheme().to_string(),
+            u.host_str().map(str::to_string),
+            u.port(),
+        )
+    };
+    if origin(&x) != origin(&y) {
+        return err("url_template must not template the scheme, host or port");
+    }
+    check_url("url_template", &x)
+}
+
 /// The `{name}` placeholders of `template`, or why it is malformed.
 fn placeholders(template: &str) -> Result<Vec<&str>, ToolBindingError> {
     let mut names = Vec::new();
@@ -538,33 +683,7 @@ impl ToolRestFields {
             }
         }
         if let Some(template) = &self.url_template {
-            placeholders(template)?;
-            // The scheme, host and port are never templated.
-            let authority_end = template
-                .find("://")
-                .map(|i| i + 3)
-                .and_then(|start| {
-                    template[start..]
-                        .find(['/', '?', '#'])
-                        .map(|n| start + n)
-                        .or(Some(template.len()))
-                })
-                .unwrap_or(0);
-            if template[..authority_end].contains(['{', '}']) {
-                return err("url_template must not template the scheme, host or port");
-            }
-            let mut plain = String::new();
-            let mut rest = template.as_str();
-            while let Some(open) = rest.find('{') {
-                plain.push_str(&rest[..open]);
-                plain.push('x');
-                rest = &rest[rest.find('}').map_or(rest.len(), |c| c + 1)..];
-            }
-            plain.push_str(rest);
-            match Url::parse(&plain) {
-                Ok(parsed) => check_url("url_template", &parsed)?,
-                Err(_) => return err("url_template must be an absolute URL"),
-            }
+            check_url_template(template)?;
         }
         for name in self.query_params.iter().flatten() {
             if !is_env_name(name) {
@@ -587,15 +706,7 @@ impl ToolRestFields {
             if !is_header_name(&header.name) {
                 return err(format!("header name `{}` is not valid", header.name));
             }
-            if matches!(
-                lower.as_str(),
-                "authorization"
-                    | "proxy-authorization"
-                    | "cookie"
-                    | "host"
-                    | "content-length"
-                    | "transfer-encoding"
-            ) {
+            if is_reserved_header(&lower) || is_credential_header(&lower) {
                 return err(format!(
                     "header `{}` is not a static header; credentials go in auth",
                     header.name
@@ -876,6 +987,125 @@ mod tests {
             "http://api.test/items",
         ] {
             assert!(rest(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_placeholder_can_never_reach_the_scheme_host_or_port() {
+        let rest = |t: &str| ToolRestFields::from_bucket(&json!({"method":"GET","url_template":t}));
+        for bad in [
+            "https:{h}/p",
+            "https:/{h}/p",
+            "https:\\{h}/p",
+            "https:///{a}",
+            "https://{host}/x",
+            "https://h:{p}/",
+            "https://user@{host}/x",
+            "ftp://a.test/{x}",
+            "//a.test/{x}",
+            "/{x}",
+            "https://a.test\\{x}",
+            "{x}",
+        ] {
+            assert!(rest(bad).is_err(), "{bad}");
+        }
+        for ok in [
+            "HTTPS://a.test/{id}",
+            "https://a.test/{id}/sub?q={q}",
+            "https://a.test:8443/{id}#{frag}",
+            "http://localhost:3000/{id}",
+        ] {
+            assert!(rest(ok).is_ok(), "{ok}: {:?}", rest(ok).err());
+        }
+    }
+
+    #[test]
+    fn a_program_is_a_bare_name_or_an_absolute_path_without_dotdot() {
+        let cli = |p: &str| ToolCliFields::from_bucket(&json!({"program":p}));
+        for ok in [
+            "git",
+            "sh",
+            "env",
+            "/usr/bin/git",
+            "C:\\tools\\x.exe",
+            "C:/tools/x.exe",
+        ] {
+            assert!(cli(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "../../bin/sh",
+            "bin/x",
+            "./x",
+            "~/x",
+            "~",
+            "-rf",
+            "--help",
+            "a/../../b",
+            "/usr/../bin/sh",
+            "C:\\a\\..\\b",
+            "\\server\\share\\x",
+        ] {
+            assert!(cli(bad).is_err(), "{bad}");
+        }
+        assert!(ToolMcpFields::from_bucket(&json!({"command":"../sh"})).is_err());
+    }
+
+    #[test]
+    fn header_names_share_one_reserved_list() {
+        let header =
+            |n: &str| ToolRestFields::from_bucket(&json!({"headers":[{"name":n,"value":"v"}]}));
+        let auth = |n: &str| {
+            ToolRestFields::from_bucket(&json!({
+                "auth":{"scheme":"header","header_name":n,"secret":"env:K"}
+            }))
+        };
+        for reserved in [
+            "Host",
+            "Cookie",
+            "Set-Cookie",
+            "Content-Length",
+            "Transfer-Encoding",
+            "Proxy-Foo",
+            "Connection",
+        ] {
+            assert!(header(reserved).is_err(), "static {reserved}");
+            assert!(auth(reserved).is_err(), "auth {reserved}");
+        }
+        // Credential-looking names are not static headers, but may carry the credential.
+        for secretish in [
+            "Authorization",
+            "X-Api-Key",
+            "X-Auth-Token",
+            "x-access-token",
+            "Api-Key",
+        ] {
+            assert!(header(secretish).is_err(), "static {secretish}");
+        }
+        for name in ["X-Api-Key", "Authorization", "X-Auth-Token"] {
+            assert!(auth(name).is_ok(), "auth {name}");
+        }
+        assert!(header("Accept").is_ok());
+    }
+
+    #[test]
+    fn env_names_that_change_what_runs_are_refused() {
+        let env =
+            |n: &str| ToolCliFields::from_bucket(&json!({"env":[{"name":n,"secret":"env:K"}]}));
+        for bad in [
+            "PATH",
+            "path",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "NODE_OPTIONS",
+            "BASH_ENV",
+            "IFS",
+            "PYTHONPATH",
+        ] {
+            assert!(env(bad).is_err(), "{bad}");
+        }
+        for ok in ["API_TOKEN", "GITHUB_TOKEN", "HOME_URL"] {
+            assert!(env(ok).is_ok(), "{ok}");
         }
     }
 

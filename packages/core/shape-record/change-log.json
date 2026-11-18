@@ -98,7 +98,7 @@
       ],
       "area": "core_schema",
       "class": "refuse",
-      "summary": "The tool base gains a local-only approved_binding field; an older database holds a tool schema without it, which the core-type comparison reports as a missing field.",
+      "summary": "The tool base gains a local-only approved_binding field. A database created by an earlier build holds a tool schema without it, which the core-type comparison reports as a missing field, so that database is refused at open (a schema mismatch) until it is reset.",
       "userProducible": false
     },
     {
@@ -109,11 +109,11 @@
       ],
       "area": "core_schema",
       "class": "migrate",
-      "summary": "The tool base's enabled field becomes local-only, so a tool that arrives from elsewhere is off on this device. The core-type comparison does not read the classification, so an older database keeps the old definition.",
+      "summary": "The tool base's enabled field becomes local-only. The core-type comparison does not read the classification, so this change alone would not be noticed in a stored schema; the database is refused at open for the approved_binding field (see tool-approved-binding-field), and a reset brings in the new classification.",
       "userProducible": false,
       "migrate": {
-        "affectedData": "The stored tool schema node's enabled field in every database an earlier build created: it keeps local_only false, so an enable decision still syncs. The core-type comparison does not read the classification, so such a database opens unchanged.",
-        "transformation": "Set local_only on the enabled field of the stored tool schema."
+        "affectedData": "The stored tool schema node's enabled field in every database an earlier build created: it keeps local_only false. Such a database is refused at open until it is reset, because its stored tool schema also lacks approved_binding.",
+        "transformation": "Set local_only on the enabled field of the stored tool schema; in practice, reset the database."
       }
     }
   ]
