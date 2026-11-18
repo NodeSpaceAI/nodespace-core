@@ -12,7 +12,7 @@
  *   bun run release:watch               # Watch build progress
  */
 
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import path from "path";
 
 const OWNER = "NodeSpaceAI";
@@ -214,16 +214,82 @@ const VERSION_FILES = [
   "package.json"
 ];
 
+/** Directory (relative to the repo root) holding one snapshot per release. */
+const SHAPE_SNAPSHOT_DIR = "packages/core/shape-record/snapshots";
+const SHAPE_CURRENT = "packages/core/shape-record/current.json";
+
+/** The release's snapshot path, relative to the repo root; the name is three numbers, no `v`. */
+function shapeSnapshotPath(version: string): string {
+  return `${SHAPE_SNAPSHOT_DIR}/${version.replace(/^v/, "")}.json`;
+}
+
+/** A release name the shape record accepts: three numbers (ADR-104), so no pre-release suffix. */
+function isShapeReleaseName(version: string): boolean {
+  return /^\d+\.\d+\.\d+$/.test(version.replace(/^v/, ""));
+}
+
+/**
+ * The shape gate, run before anything is changed: `bun run shape:check` fails
+ * when `current.json` is not what this build generates or a difference from the
+ * last release's snapshot has no change-log entry. Throws on failure so no
+ * version bump, push or tag follows.
+ */
+function checkShapeRecord(run: CommandRunner): void {
+  console.log("\n🧬 Checking the built-in shape record (shape:check)...");
+  const r = run(["bun", "run", "shape:check"], { inherit: true });
+  if (r.exitCode !== 0) {
+    throw new Error(
+      `shape:check failed (exit ${r.exitCode}): the built-in shape record is out of step. ` +
+        "Regenerate with `bun run shape:gen`, classify every difference in " +
+        "packages/core/shape-record/change-log.json, merge that, and rerun. No release or tag was created."
+    );
+  }
+}
+
+/**
+ * Record the release's shape: `bun run shape:release <version>` copies
+ * `current.json` to `snapshots/<version>.json`. Returns the snapshot path to
+ * stage in the version-bump commit, so it reaches origin/main with the bump and
+ * before the tag, or null for a name the record does not take (a pre-release
+ * with a suffix; the shape check still ran).
+ *
+ * A snapshot that already equals `current.json` is accepted, so a release that
+ * failed after this step can be rerun; one that differs is left to
+ * `shape:release`, which refuses an existing snapshot.
+ */
+function recordReleaseShape(version: string, run: CommandRunner, root = process.cwd()): string | null {
+  if (!isShapeReleaseName(version)) {
+    console.log(`⚠️  ${version} is not three numbers: no shape snapshot is recorded for it`);
+    return null;
+  }
+  const rel = shapeSnapshotPath(version);
+  const snapshot = path.join(root, rel);
+  const current = path.join(root, SHAPE_CURRENT);
+  if (existsSync(snapshot) && readFileSync(snapshot, "utf-8") === readFileSync(current, "utf-8")) {
+    console.log(`✅ ${rel} already records this shape`);
+    return rel;
+  }
+  console.log(`\n🧬 Recording the release's shape (shape:release ${version.replace(/^v/, "")})...`);
+  const r = run(["bun", "run", "shape:release", version.replace(/^v/, "")], { inherit: true });
+  if (r.exitCode !== 0) {
+    throw new Error(
+      `shape:release failed (exit ${r.exitCode}). No release or tag was created; fix this and rerun.`
+    );
+  }
+  return rel;
+}
+
 /**
  * Re-sync lockfiles, commit and push the version bump, then confirm the
  * commit is on origin/main. Returns the sha the release tag must point at.
  *
  * Throws on the first failing step, so the caller never reaches
  * `gh release create` (which would publish a tag on an unbumped commit and
- * start release.yml). A bump that is already committed and pushed (clean
+ * start release.yml). `extraFiles` (the release's shape snapshot) are staged
+ * with the version files. A bump that is already committed and pushed (clean
  * tree, HEAD equal to origin/main) is accepted.
  */
-function prepareVersionBump(version: string, run: CommandRunner): string {
+function prepareVersionBump(version: string, run: CommandRunner, extraFiles: string[] = []): string {
   const must = (cmd: string[], what: string, opts?: { inherit?: boolean }): CommandResult => {
     const r = run(cmd, opts);
     if (r.exitCode !== 0) {
@@ -250,7 +316,7 @@ function prepareVersionBump(version: string, run: CommandRunner): string {
     console.log("\n⚠️  There are uncommitted changes (version bump).");
     console.log("   Committing version update...\n");
     // Stage only the version files to avoid committing unrelated work.
-    for (const file of VERSION_FILES) {
+    for (const file of [...VERSION_FILES, ...extraFiles]) {
       must(["git", "add", file], `git add ${file}`);
     }
     const staged = run(["git", "diff", "--cached", "--quiet"]);
@@ -493,7 +559,12 @@ async function main() {
   bun run release v0.1.0 --notes-file CHANGELOG.md
   bun run release v0.1.0 --skip-perf  # Skip the performance benchmarks
 
-  Creating a release first runs the performance benchmarks (test:perf) on
+  Creating a release first runs the shape check (shape:check) and refuses on
+  a difference with no change-log entry, records the release's shape
+  (shape:release, snapshots/<version>.json) and commits it with the version
+  bump. Pre-release versions with a suffix get the check but no snapshot.
+
+  Creating a release then runs the performance benchmarks (test:perf) on
   this machine, and refuses to release if any fail. They are not part of the
   push check or merge gate, so this is where they run. Pass --skip-perf only
   for a run you know was noisy (e.g. another build was running).
@@ -571,7 +642,11 @@ async function main() {
           config.notes = readFileSync(args[notesFileIndex + 1], "utf-8");
         }
 
-        // Benchmarks run first, before the version bump is committed and
+        // The shape gate runs before anything else, so a record that is out
+        // of step stops the release with nothing changed.
+        checkShapeRecord(runCommand);
+
+        // Benchmarks run before the version bump is committed and
         // pushed, so a failure leaves nothing to undo.
         if (args.includes("--skip-perf")) {
           console.log("⚠️  Skipping performance benchmarks (--skip-perf)");
@@ -581,13 +656,17 @@ async function main() {
           process.exit(1);
         }
 
+        // The release's snapshot is written before the bump and staged with
+        // it, so it is on origin/main before the tag.
+        const snapshot = recordReleaseShape(version, runCommand);
+
         // Update version in config files before creating release
         console.log("📝 Updating version in config files...");
         updateVersion(version);
 
         // Every step must succeed, and the bump must be on origin/main,
         // before any release or tag exists. Throws otherwise.
-        config.target = prepareVersionBump(version, runCommand);
+        config.target = prepareVersionBump(version, runCommand, snapshot ? [snapshot] : []);
 
         await createRelease(config);
         break;
@@ -612,5 +691,8 @@ export {
   failingBenchmarks,
   generateReleaseNotes,
   buildReleaseCreateArgs,
-  prepareVersionBump
+  prepareVersionBump,
+  checkShapeRecord,
+  recordReleaseShape,
+  shapeSnapshotPath
 };
