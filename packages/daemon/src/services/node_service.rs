@@ -448,6 +448,16 @@ impl GrpcNodeService for NodeServiceImpl {
             skills,
             schemas,
             version: context.version,
+            mentions: context
+                .mentions
+                .into_iter()
+                .map(|mention| NodeReference {
+                    id: mention.id,
+                    title: mention.title,
+                    node_type: mention.node_type,
+                })
+                .collect(),
+            mentions_limit_reached: context.mentions_limit_reached,
         }))
     }
 

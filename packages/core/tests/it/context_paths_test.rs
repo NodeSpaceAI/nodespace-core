@@ -995,3 +995,116 @@ async fn a_query_run_with_context_returns_each_item_whole() -> Result<()> {
     assert_eq!(context.attached.skills[0].skill.name, "Handling a request");
     Ok(())
 }
+
+/// A read lists what the node mentions, one hop: each target as id, title and
+/// type, with no content. What the targets mention is not followed, an
+/// archived target is left out, and the list is part of the read's version.
+#[tokio::test]
+async fn a_read_lists_what_the_node_mentions_one_hop_without_content() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let spec = create(&service, "text", "Spec title", json!({})).await;
+    let task = create(&service, "task", "Ship it", json!({})).await;
+    let archived = create(&service, "text", "Gone", json!({})).await;
+    let second_hop = create(&service, "text", "Two hops away", json!({})).await;
+    for target in [&spec, &archived] {
+        service.create_mention(&task, target).await?;
+    }
+    service.create_mention(&spec, &second_hop).await?;
+    update(
+        &service,
+        &archived,
+        NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+    )
+    .await;
+
+    let context = read(&service, &task, &[]).await;
+    let mut listed: Vec<(String, String)> = context
+        .mentions
+        .iter()
+        .map(|mention| (mention.id.clone(), mention.node_type.clone()))
+        .collect();
+    listed.sort();
+    let mut expected = vec![(spec.clone(), "text".to_string())];
+    expected.sort();
+    assert_eq!(listed, expected);
+    assert!(!context.mentions_limit_reached);
+    // The list carries the target's title and type, and no content.
+    assert_eq!(context.mentions[0].title.as_deref(), Some("Spec title"));
+
+    // A new mention changes the read's version.
+    let before = context.version.clone();
+    let extra = create(&service, "text", "Another", json!({})).await;
+    service.create_mention(&task, &extra).await?;
+    let context = read(&service, &task, &[]).await;
+    assert_eq!(context.mentions.len(), 2);
+    assert_ne!(context.version, before);
+
+    // A change to a mentioned node's title, type or lifecycle changes it too.
+    let mut previous = context.version.clone();
+    update(
+        &service,
+        &spec,
+        NodeUpdate::new().with_content("Renamed spec".to_string()),
+    )
+    .await;
+    let renamed = read(&service, &task, &[]).await;
+    assert!(renamed
+        .mentions
+        .iter()
+        .any(|m| m.title.as_deref() == Some("Renamed spec")));
+    assert_ne!(renamed.version, previous);
+    previous = renamed.version.clone();
+    update(
+        &service,
+        &spec,
+        NodeUpdate::new().with_node_type("task".to_string()),
+    )
+    .await;
+    let retyped = read(&service, &task, &[]).await;
+    assert!(retyped
+        .mentions
+        .iter()
+        .any(|m| m.id == spec && m.node_type == "task"));
+    assert_ne!(retyped.version, previous);
+    previous = retyped.version.clone();
+    update(
+        &service,
+        &spec,
+        NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+    )
+    .await;
+    let archived_now = read(&service, &task, &[]).await;
+    assert_eq!(archived_now.mentions.len(), 1);
+    assert_ne!(archived_now.version, previous);
+    Ok(())
+}
+
+/// A node that mentions more than one read returns is listed up to the cap,
+/// and the read says there are more.
+#[tokio::test]
+async fn a_reads_mention_list_stops_at_the_cap_and_says_so() -> Result<()> {
+    use nodespace_core::ops::node_context_ops::MAX_NODES_PER_PATH;
+    let (service, _tmp) = test_service().await?;
+    let task = create(&service, "task", "Many links", json!({})).await;
+    for i in 0..=MAX_NODES_PER_PATH {
+        let target = create(&service, "text", &format!("Target {i}"), json!({})).await;
+        service.create_mention(&task, &target).await?;
+    }
+    let context = read(&service, &task, &[]).await;
+    assert_eq!(context.mentions.len(), MAX_NODES_PER_PATH);
+    assert!(context.mentions_limit_reached);
+    // Sorted by title, then id, before the cut: "Target 0".."Target 9",
+    // then "Target 10"...; the kept titles are the first 50 in that order.
+    let mut expected: Vec<String> = (0..=MAX_NODES_PER_PATH)
+        .map(|i| format!("Target {i}"))
+        .collect();
+    expected.sort();
+    expected.truncate(MAX_NODES_PER_PATH);
+    let titles: Vec<String> = context
+        .mentions
+        .iter()
+        .map(|m| m.title.clone().unwrap_or_default())
+        .collect();
+    assert_eq!(titles, expected);
+    Ok(())
+}

@@ -9,7 +9,7 @@
 //! node currently matches, or to a node a path reached.
 
 use crate::governance;
-use crate::models::{CoreNodeType, Node, QueryFields, SKILL_ATTACHED_TO};
+use crate::models::{CoreNodeType, Node, NodeReference, QueryFields, SKILL_ATTACHED_TO};
 use crate::ops::path_ops::{resolve_hop, undeclared_message, HopResolution};
 use crate::ops::query_ops::checked_definition;
 use crate::ops::skill_ops::{self, GuidanceSchema, GuidanceSkill, SkillGuidance};
@@ -95,6 +95,14 @@ pub struct NodeContext {
     /// One entry per path followed: the context paths the node's type
     /// declares, then the paths asked for that are not among them.
     pub paths: Vec<PathNodes>,
+    /// What the node itself mentions, one hop: id, title and type of each
+    /// target, never its content and never what the target mentions in turn.
+    /// An archived target is not listed. Empty for the items of a saved query
+    /// run, which are read without it.
+    pub mentions: Vec<NodeReference>,
+    /// Whether the node mentions more than `mentions` holds
+    /// ([`MAX_NODES_PER_PATH`]).
+    pub mentions_limit_reached: bool,
     /// The node's applicable skills: those attached to the node, to a saved
     /// query it currently matches, and to a node a path reached.
     pub attached: AttachedSkills,
@@ -264,7 +272,7 @@ pub async fn read_node_context(
         })?;
     let queries = SkillQueries::load(node_service).await?;
     let mut cache = ReadCache::default();
-    context_of(node_service, root, input.paths, &queries, &mut cache).await
+    context_of(node_service, root, input.paths, true, &queries, &mut cache).await
 }
 
 /// Read each of `nodes`, the items a saved query run returned, with its
@@ -281,7 +289,7 @@ pub async fn read_node_contexts(
         applicable_skills(node_service, &[query_id.to_string()], &[], &mut cache).await?;
     let mut items = Vec::with_capacity(nodes.len());
     for node in nodes {
-        let item = context_of(node_service, node, Vec::new(), &queries, &mut cache).await?;
+        let item = context_of(node_service, node, Vec::new(), false, &queries, &mut cache).await?;
         for skill in &item.attached.skills {
             if !attached
                 .skills
@@ -306,11 +314,13 @@ pub async fn read_node_contexts(
 }
 
 /// The context of `root`: its type's context paths and then `asked`,
-/// followed; its applicable skills; the version.
+/// followed; what it mentions when `with_mentions`; its applicable skills;
+/// the version.
 async fn context_of(
     node_service: &NodeService,
     root: Node,
     asked: Vec<RelationshipPath>,
+    with_mentions: bool,
     queries: &SkillQueries,
     cache: &mut ReadCache,
 ) -> Result<NodeContext, OpsError> {
@@ -356,13 +366,20 @@ async fn context_of(
         });
     }
 
+    let (mentions, mentions_limit_reached) = if with_mentions {
+        mentioned_by(node_service, &root.id).await?
+    } else {
+        (Vec::new(), false)
+    };
     let matched = queries.matching(node_service, &root).await?;
     let attached = applicable_skills(node_service, &returned_ids, &matched, cache).await?;
     let node = context_node(node_service, root).await?;
-    let version = context_version(&node, &paths, &attached);
+    let version = context_version(&node, &paths, &mentions, mentions_limit_reached, &attached);
     Ok(NodeContext {
         node,
         paths,
+        mentions,
+        mentions_limit_reached,
         attached,
         version,
     })
@@ -375,7 +392,13 @@ async fn context_of(
 /// A skill is digested by what it hands over, not by its node's version: its
 /// procedure is its child subtree, and an edit there leaves the skill node's
 /// own version as it was.
-fn context_version(node: &ContextNode, paths: &[PathNodes], attached: &AttachedSkills) -> String {
+fn context_version(
+    node: &ContextNode,
+    paths: &[PathNodes],
+    mentions: &[NodeReference],
+    mentions_limit_reached: bool,
+    attached: &AttachedSkills,
+) -> String {
     let mut hasher = Sha256::new();
     // Each part is length-prefixed, so no two different reads share a byte
     // stream.
@@ -402,6 +425,17 @@ fn context_version(node: &ContextNode, paths: &[PathNodes], attached: &AttachedS
         for node in &reached.nodes {
             node_parts(&mut part, node);
         }
+    }
+    part(&mentions.len().to_string());
+    part(if mentions_limit_reached {
+        "more"
+    } else {
+        "all"
+    });
+    for mention in mentions {
+        part(&mention.id);
+        part(mention.title.as_deref().unwrap_or_default());
+        part(&mention.node_type);
     }
     part(&attached.skills.len().to_string());
     for attached in &attached.skills {
@@ -608,6 +642,40 @@ impl ReadCache {
         self.guidance.insert(skill_ids, guidance.clone());
         Ok(guidance)
     }
+}
+
+/// What `node_id` mentions, one hop: each target as id, title and type,
+/// sorted by title (none first) and then id, up to [`MAX_NODES_PER_PATH`] of
+/// them; and whether there are more. An archived target is not listed. The
+/// targets are not read further. The sort is applied before the cut, so which
+/// targets are kept does not depend on the order the store returns them in.
+async fn mentioned_by(
+    node_service: &NodeService,
+    node_id: &str,
+) -> Result<(Vec<NodeReference>, bool), OpsError> {
+    let ids = node_service
+        .store()
+        .get_outgoing_mentions(node_id)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read mentions: {e}")))?;
+    let targets = node_service
+        .store()
+        .get_nodes_by_ids(&ids)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read mentioned nodes: {e}")))?;
+    let mut mentions: Vec<NodeReference> = targets
+        .values()
+        .filter(|target| governance::participates(target))
+        .map(|target| NodeReference {
+            id: target.id.clone(),
+            title: target.title.clone(),
+            node_type: target.node_type.clone(),
+        })
+        .collect();
+    mentions.sort_by(|a, b| (&a.title, &a.id).cmp(&(&b.title, &b.id)));
+    let limit_reached = mentions.len() > MAX_NODES_PER_PATH;
+    mentions.truncate(MAX_NODES_PER_PATH);
+    Ok((mentions, limit_reached))
 }
 
 /// `node` with its direct checkbox children.

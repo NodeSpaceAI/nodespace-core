@@ -7,7 +7,8 @@
 use anyhow::{Context, Result};
 use nodespace_daemon::nodespace::{
     ConflictRecord as ConflictRecordProto, ContextNode, DeleteNodeResponse, DryRunUpdateResponse,
-    GetNodeContextResponse, MergeNodesResponse, NodeListResponse, PathNodes, RunSavedQueryResponse,
+    GetNodeContextResponse, MergeNodesResponse, NodeListResponse, NodeReference, PathNodes,
+    RunSavedQueryResponse,
 };
 
 use crate::commands::skill::{
@@ -531,6 +532,46 @@ fn write_human_context_node(node: &ContextNode) {
     }
 }
 
+/// What the node read mentions, as `{id, title, type}` and nothing of the
+/// targets' content.
+fn mentions_json(mentions: &[NodeReference]) -> Value {
+    mentions
+        .iter()
+        .map(|mention| {
+            json!({
+                "id": mention.id,
+                "title": mention.title,
+                "type": mention.node_type,
+            })
+        })
+        .collect()
+}
+
+/// One line per mentioned node: title, type and id. Graph text, so control
+/// characters are stripped.
+fn write_human_mentions(response: &GetNodeContextResponse) {
+    if response.mentions.is_empty() {
+        return;
+    }
+    println!(
+        "mentions ({}{}):",
+        response.mentions.len(),
+        if response.mentions_limit_reached {
+            "; the node mentions more, these are the first"
+        } else {
+            ""
+        }
+    );
+    for mention in &response.mentions {
+        println!(
+            "    {}  [{}]  ({})",
+            sanitize_for_terminal(mention.title.as_deref().unwrap_or("(untitled)")),
+            sanitize_for_terminal(&mention.node_type),
+            sanitize_for_terminal(&mention.id)
+        );
+    }
+}
+
 /// A node read with the nodes its paths reach, grouped by path, and the
 /// skills attached to any of them, each inside the banner a skill fetch
 /// prints.
@@ -540,6 +581,8 @@ pub fn print_node_context(response: &GetNodeContextResponse, json: bool) -> Resu
         let value = json!({
             "node": context_node_to_json(node),
             "paths": path_groups_json(&response.paths),
+            "mentions": mentions_json(&response.mentions),
+            "mentions_limit_reached": response.mentions_limit_reached,
             "attached_skills": attached_skills_json(&response.skills, &response.schemas),
             "version": response.version,
         });
@@ -553,6 +596,7 @@ pub fn print_node_context(response: &GetNodeContextResponse, json: bool) -> Resu
     // the graph.
     println!("context version: {}\n", response.version);
     write_human_context_node(node);
+    write_human_mentions(response);
     write_human_paths(&response.paths);
     match tag {
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
