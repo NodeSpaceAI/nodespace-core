@@ -396,6 +396,12 @@ message GetNodeContextResponse {
   // applicable skill, or the set of nodes or skills returned changes. Two
   // reads with no such change between them carry the same version.
   string version = 5;
+  // What the node read mentions, one hop: id, title and type of each target,
+  // no content, and nothing the targets mention in turn. An archived target
+  // is not listed.
+  repeated NodeReference mentions = 6;
+  // True when the node mentions more than `mentions` holds.
+  bool mentions_limit_reached = 7;
 }
 
 // What one item of a saved query run carries of a skill: the skill is in the

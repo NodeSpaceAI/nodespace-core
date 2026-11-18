@@ -2917,7 +2917,7 @@ fn node_context_parses_dotted_paths() {
 /// `relationship delete` it does not.
 #[tokio::test]
 async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() {
-    use nodespace_daemon::nodespace::GetNodeContextRequest;
+    use nodespace_daemon::nodespace::{CreateMentionRequest, GetNodeContextRequest};
 
     let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
     let mut client = connect(&sock, DatabaseIdInterceptor::none())
@@ -3172,6 +3172,23 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         .into_inner();
     assert_eq!(version_only.version, by_default.version);
     assert!(version_only.node.is_none() && version_only.skills.is_empty());
+
+    // What the task mentions is listed one hop, as title and type.
+    assert!(by_default.mentions.is_empty());
+    raw.clone()
+        .create_mention(CreateMentionRequest {
+            mentioning_node_id: task.clone(),
+            mentioned_node_id: project.clone(),
+        })
+        .await
+        .expect("mention the project");
+    let mentioning = read(&task, serde_json::json!([]))
+        .await
+        .expect("read after the mention");
+    assert_eq!(mentioning.mentions.len(), 1);
+    assert_eq!(mentioning.mentions[0].id, project);
+    assert!(!mentioning.mentions[0].node_type.is_empty());
+    assert_ne!(mentioning.version, by_default.version);
 
     // Run with context: the item with what governs it, and each skill once.
     let run = raw
