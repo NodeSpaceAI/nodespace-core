@@ -141,6 +141,172 @@ fn link_list_field(name: &str, friendly_name: &str, description: &str) -> Schema
     }
 }
 
+/// A field of a remote tool subtype: optional and core-protected, so a draft
+/// may be incomplete (the behaviour requires the binding only when enabled).
+fn remote_tool_field(
+    name: &str,
+    friendly_name: &str,
+    field_type: crate::models::SchemaFieldType,
+    description: &str,
+) -> SchemaField {
+    SchemaField {
+        field_type,
+        protection: SchemaProtectionLevel::Core,
+        ..text_field(name, friendly_name, description)
+    }
+}
+
+/// A closed enum field of a remote tool subtype.
+fn remote_tool_enum(
+    name: &str,
+    friendly_name: &str,
+    values: &[(&str, &str)],
+    default: Option<serde_json::Value>,
+    description: &str,
+) -> SchemaField {
+    SchemaField {
+        core_values: Some(
+            values
+                .iter()
+                .map(|(v, l)| EnumValue::new(v.to_string(), l.to_string()))
+                .collect(),
+        ),
+        user_values: Some(vec![]),
+        extensible: Some(false),
+        default,
+        ..remote_tool_field(
+            name,
+            friendly_name,
+            crate::models::SchemaFieldType::Enum,
+            description,
+        )
+    }
+}
+
+/// An array of text.
+fn remote_tool_text_list(name: &str, friendly_name: &str, description: &str) -> SchemaField {
+    SchemaField {
+        item_type: Some(crate::models::SchemaFieldType::Text),
+        ..remote_tool_field(
+            name,
+            friendly_name,
+            crate::models::SchemaFieldType::Array,
+            description,
+        )
+    }
+}
+
+/// An array of `{name, <value_field>}` objects.
+fn remote_tool_pair_list(
+    name: &str,
+    friendly_name: &str,
+    value_field: (&str, &str, &str),
+    description: &str,
+) -> SchemaField {
+    let text = crate::models::SchemaFieldType::Text;
+    SchemaField {
+        item_type: Some(crate::models::SchemaFieldType::Object),
+        item_fields: Some(vec![
+            SchemaField {
+                required: Some(true),
+                ..remote_tool_field("name", "Name", text, "The name")
+            },
+            SchemaField {
+                required: Some(true),
+                ..remote_tool_field(value_field.0, value_field.1, text, value_field.2)
+            },
+        ]),
+        ..remote_tool_field(
+            name,
+            friendly_name,
+            crate::models::SchemaFieldType::Array,
+            description,
+        )
+    }
+}
+
+/// The `auth` object of an http binding.
+fn remote_tool_auth(schemes: &[(&str, &str)], description: &str) -> SchemaField {
+    let text = crate::models::SchemaFieldType::Text;
+    SchemaField {
+        fields: Some(vec![
+            SchemaField {
+                required: Some(true),
+                ..remote_tool_enum(
+                    "scheme",
+                    "Scheme",
+                    schemes,
+                    None,
+                    "How the credential is sent",
+                )
+            },
+            remote_tool_field(
+                "header_name",
+                "Header name",
+                text,
+                "The header that carries the credential; only for the header scheme",
+            ),
+            remote_tool_field(
+                "secret",
+                "Secret",
+                text,
+                "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value",
+            ),
+        ]),
+        ..remote_tool_field(
+            "auth",
+            "Authentication",
+            crate::models::SchemaFieldType::Object,
+            description,
+        )
+    }
+}
+
+const TIMEOUT_DESCRIPTION: &str =
+    "Seconds before the call is abandoned, from 1 to 300 (default 30)";
+
+fn remote_tool_timeout() -> SchemaField {
+    SchemaField {
+        default: Some(serde_json::json!(30)),
+        ..remote_tool_field(
+            "timeout_seconds",
+            "Timeout (seconds)",
+            crate::models::SchemaFieldType::Number,
+            TIMEOUT_DESCRIPTION,
+        )
+    }
+}
+
+fn remote_tool_cap(name: &str, friendly_name: &str, what: &str) -> SchemaField {
+    SchemaField {
+        default: Some(serde_json::json!(1_048_576)),
+        ..remote_tool_field(
+            name,
+            friendly_name,
+            crate::models::SchemaFieldType::Number,
+            &format!("Largest {what} kept, in bytes, up to 10485760 (default 1048576)"),
+        )
+    }
+}
+
+/// Builds the schema of a remote tool subtype of `tool`.
+fn remote_tool_schema(envelope: NodeEnvelope, fields: Vec<SchemaField>) -> SchemaNode {
+    SchemaNode {
+        envelope,
+        extends: Some("tool".to_string()),
+        is_core: true,
+        is_abstract: false,
+        children: Default::default(),
+        parent: Default::default(),
+        schema_version: 1,
+        fields,
+        relationships: vec![],
+        title_template: None,
+        properties_header_summary_template: None,
+        context_paths: Vec::new(),
+    }
+}
+
 /// A required status field with a closed vocabulary. The seeded rules compare
 /// its values by name, so a user cannot add one.
 fn closed_status_field(
@@ -2364,7 +2530,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     name: "enabled".to_string(),
                     friendly_name: "Enabled".to_string(),
                     field_type: crate::models::SchemaFieldType::Boolean,
-                    local_only: false,
+                    local_only: true,
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
                     user_values: None,
@@ -2375,7 +2541,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     // offered only once someone has enabled it.
                     default: Some(serde_json::json!(false)),
                     description: Some(
-                        "Whether the tool may be offered to the model; a native tool always is"
+                        "Whether the tool may be offered to the model; a native tool always is. \
+                         Kept on this device: a tool that arrives from elsewhere is off here \
+                         until it is enabled here"
                             .to_string(),
                     ),
                     item_type: None,
@@ -2383,6 +2551,17 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     item_fields: None,
                     unique: None,
                     unique_case_insensitive: None,
+                },
+                SchemaField {
+                    local_only: true,
+                    ..remote_tool_field(
+                        "approved_binding",
+                        "Approved binding",
+                        crate::models::SchemaFieldType::Text,
+                        "The fingerprint of the tool's binding when it was enabled on this \
+                         device. A tool whose binding no longer matches is not offered until \
+                         it is approved again. Kept on this device",
+                    )
                 },
             ],
             relationships: vec![],
@@ -2450,6 +2629,64 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             properties_header_summary_template: None,
             context_paths: Vec::new(),
         },
+        // Tool (MCP): a tool on an MCP server, reached over stdio or http.
+        // One node per tool; the server fields repeat on each.
+        remote_tool_schema(
+            envelope("tool-mcp", "Tool (MCP)"),
+            vec![
+                remote_tool_enum(
+                    "transport",
+                    "Transport",
+                    &[("stdio", "Stdio"), ("http", "HTTP")],
+                    None,
+                    "How the server is reached: a program NodeSpace starts (stdio) or a URL (http). Required before the tool is enabled",
+                ),
+                remote_tool_field("command", "Command", crate::models::SchemaFieldType::Text, "stdio: the executable, a name or a path with no arguments and no shell syntax"),
+                remote_tool_text_list("args", "Arguments", "stdio: one argument per item, passed without a shell"),
+                remote_tool_field("url", "URL", crate::models::SchemaFieldType::Text, "http: the server URL; https, or http only for a loopback host"),
+                remote_tool_field("remote_tool_name", "Remote tool name", crate::models::SchemaFieldType::Text, "The tool's name on the server, which may differ from this node's name. Required before the tool is enabled"),
+                remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value"), "stdio: environment variables for the server, each valued from a credential reference"),
+                remote_tool_auth(&[("none", "None"), ("bearer", "Bearer token"), ("header", "Custom header")], "http: how the call authenticates; the credential is a reference"),
+                remote_tool_timeout(),
+            ],
+        ),
+        // Tool (REST): an HTTP endpoint.
+        remote_tool_schema(
+            envelope("tool-rest", "Tool (REST)"),
+            vec![
+                remote_tool_enum(
+                    "method",
+                    "Method",
+                    &[("GET", "GET"), ("POST", "POST"), ("PUT", "PUT"), ("PATCH", "PATCH"), ("DELETE", "DELETE")],
+                    None,
+                    "The HTTP method. Required before the tool is enabled",
+                ),
+                remote_tool_field("url_template", "URL template", crate::models::SchemaFieldType::Text, "The absolute URL; https, or http only for a loopback host. `{name}` placeholders may appear only after the host and port, and each names a property of the parameter schema. Required before the tool is enabled"),
+                remote_tool_text_list("query_params", "Query parameters", "The arguments sent as query parameters, each a property of the parameter schema"),
+                remote_tool_enum(
+                    "body",
+                    "Body",
+                    &[("none", "None"), ("json", "JSON")],
+                    Some(serde_json::json!("none")),
+                    "none sends no body; json sends the arguments not used in the URL or query as a JSON object. Not for GET",
+                ),
+                remote_tool_pair_list("headers", "Headers", ("value", "Value", "A fixed, non-secret value"), "Static headers; a credential goes in the authentication field"),
+                remote_tool_auth(&[("none", "None"), ("bearer", "Bearer token"), ("basic", "Basic"), ("header", "Custom header")], "How the call authenticates; the credential is a reference"),
+                remote_tool_timeout(),
+                remote_tool_cap("max_response_bytes", "Maximum response (bytes)", "response"),
+            ],
+        ),
+        // Tool (CLI): a command-line program run without a shell.
+        remote_tool_schema(
+            envelope("tool-cli", "Tool (CLI)"),
+            vec![
+                remote_tool_field("program", "Program", crate::models::SchemaFieldType::Text, "The executable, a name or an absolute path; never a shell line. Required before the tool is enabled"),
+                remote_tool_text_list("args", "Arguments", "One argument per item: a literal, or exactly one `{name}` placeholder naming a property of the parameter schema"),
+                remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`; never the value"), "The environment the program gets, besides a fixed base list, each valued from a credential reference"),
+                remote_tool_timeout(),
+                remote_tool_cap("max_output_bytes", "Maximum output (bytes)", "output"),
+            ],
+        ),
     ];
 
     // A core type's structural rules are the registry's (ADR-089): each
@@ -2511,7 +2748,10 @@ mod tests {
                 "task",
                 "text",
                 "tool",
+                "tool-cli",
+                "tool-mcp",
                 "tool-native",
+                "tool-rest",
             ]
         );
     }

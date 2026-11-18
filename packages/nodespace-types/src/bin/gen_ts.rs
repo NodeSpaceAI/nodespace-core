@@ -142,6 +142,13 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         QueryFields,
         QueryNode,
         QueryNodeUpdate,
+        // remote tool bindings
+        EnvSecret,
+        HttpAuth,
+        StaticHeader,
+        ToolMcpFields,
+        ToolRestFields,
+        ToolCliFields,
         // play
         RuleClass,
         GraphEventType,

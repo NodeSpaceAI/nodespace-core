@@ -73,6 +73,48 @@
       "class": "additive",
       "summary": "The ai-chat-message schema's declared parent list gains ai-chat-acp; an older database's stored schema node keeps the old list and stays valid, because a core type's rules come from the registry rows (see the registry entry) and nothing reads the stored declaration.",
       "userProducible": false
+    },
+    {
+      "id": "remote-tool-types-added",
+      "after": "0.3.11",
+      "covers": [
+        "registry.tool-cli",
+        "schemas.tool-cli",
+        "registry.tool-mcp",
+        "schemas.tool-mcp",
+        "registry.tool-rest",
+        "schemas.tool-rest"
+      ],
+      "area": "core_schema",
+      "class": "additive",
+      "summary": "Three core subtypes of tool are added: tool-mcp, tool-rest and tool-cli, each with its binding fields. A database that does not hold them is seeded with them.",
+      "userProducible": false
+    },
+    {
+      "id": "tool-approved-binding-field",
+      "after": "0.3.11",
+      "covers": [
+        "schemas.tool.fields.approved_binding"
+      ],
+      "area": "core_schema",
+      "class": "refuse",
+      "summary": "The tool base gains a local-only approved_binding field; an older database holds a tool schema without it, which the core-type comparison reports as a missing field.",
+      "userProducible": false
+    },
+    {
+      "id": "tool-enabled-kept-on-device",
+      "after": "0.3.11",
+      "covers": [
+        "schemas.tool.fields.enabled"
+      ],
+      "area": "core_schema",
+      "class": "migrate",
+      "summary": "The tool base's enabled field becomes local-only, so a tool that arrives from elsewhere is off on this device. The core-type comparison does not read the classification, so an older database keeps the old definition.",
+      "userProducible": false,
+      "migrate": {
+        "affectedData": "The stored tool schema node's enabled field in every database an earlier build created: it keeps local_only false, so an enable decision still syncs. The core-type comparison does not read the classification, so such a database opens unchanged.",
+        "transformation": "Set local_only on the enabled field of the stored tool schema."
+      }
     }
   ]
 }

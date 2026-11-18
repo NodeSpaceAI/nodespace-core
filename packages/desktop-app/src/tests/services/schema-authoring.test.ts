@@ -64,6 +64,9 @@ describe('createSchemaInstance', () => {
       ['agent-guidance', 'Untitled Agent Guidance'],
       // `tool` is abstract: its subtypes take the family's content rule.
       ['tool-native', 'Untitled Tool Native'],
+      ['tool-mcp', 'Untitled Tool Mcp'],
+      ['tool-rest', 'Untitled Tool Rest'],
+      ['tool-cli', 'Untitled Tool Cli'],
     ];
     for (const [typeId, expected] of cases) {
       createNodeMock.mockClear();

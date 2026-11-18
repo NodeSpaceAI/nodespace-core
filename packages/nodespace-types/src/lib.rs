@@ -52,6 +52,7 @@ mod skill;
 mod software_project;
 mod spec;
 mod task;
+mod tool_binding;
 
 pub use ai_chat::{
     AiChatAcpNode, AiChatBase, AiChatMessageNode, AiChatMessageRole, AiChatNativeNode,
@@ -118,3 +119,8 @@ pub use skill::{
 pub use software_project::{SoftwareProjectNode, SoftwareProjectNodeUpdate};
 pub use spec::{SpecNode, SpecNodeUpdate, SpecStatus};
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};
+pub use tool_binding::{
+    check_closed_root, is_tool_name, CredentialRef, EnvSecret, HttpAuth, StaticHeader,
+    ToolBindingError, ToolCliFields, ToolMcpFields, ToolRestFields, DEFAULT_RESPONSE_BYTES,
+    DEFAULT_TIMEOUT_SECONDS, MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECONDS,
+};
