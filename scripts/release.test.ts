@@ -14,6 +14,7 @@ import {
   buildReleaseCreateArgs,
   checkShapeRecord,
   recordReleaseShape,
+  runReleaseSteps,
   shapeSnapshotPath,
   failingBenchmarks,
   generateReleaseNotes,
@@ -258,5 +259,65 @@ describe("shape record at release", () => {
     expect(add).toBeGreaterThan(-1);
     expect(add).toBeLessThan(calls.findIndex((c) => c.startsWith("git commit")));
     expect(add).toBeLessThan(calls.indexOf("git push"));
+  });
+});
+
+describe("runReleaseSteps order", () => {
+  const STEPS = ["check", "perf", "record", "version", "bump", "create"];
+
+  function steps(opts: { failAt?: string; perfOk?: boolean; snapshot?: string | null } = {}) {
+    const calls: string[] = [];
+    const step = (name: string) => {
+      calls.push(name);
+      if (opts.failAt === name) throw new Error(`${name} failed`);
+    };
+    return {
+      calls,
+      s: {
+        checkShape: () => step("check"),
+        perf: () => (step("perf"), opts.perfOk !== false),
+        recordShape: () => (step("record"), opts.snapshot === undefined ? "snap.json" : opts.snapshot),
+        updateVersion: () => step("version"),
+        prepareBump: (_v: string, files: string[]) => (step("bump"), calls.push(`files:${files.join(",")}`), "sha"),
+        createRelease: async () => step("create")
+      }
+    };
+  }
+
+  test("runs check, perf, record, version, bump, create in that order and targets the bump sha", async () => {
+    const { calls, s } = steps();
+    const config = { version: "0.3.12" } as { version: string; target?: string };
+    expect(await runReleaseSteps(config, false, s)).toBe(true);
+    expect(calls.filter((c) => !c.startsWith("files:"))).toEqual(STEPS);
+    expect(calls).toContain("files:snap.json");
+    expect(config.target).toBe("sha");
+  });
+
+  test("--skip-perf omits only the benchmarks", async () => {
+    const { calls, s } = steps();
+    await runReleaseSteps({ version: "0.3.12" }, true, s);
+    expect(calls.filter((c) => !c.startsWith("files:"))).toEqual(["check", "record", "version", "bump", "create"]);
+  });
+
+  test("passes no extra files when there is no snapshot", async () => {
+    const { calls, s } = steps({ snapshot: null });
+    await runReleaseSteps({ version: "0.4.0-rc1" }, true, s);
+    expect(calls).toContain("files:");
+  });
+
+  for (let i = 0; i < 5; i++) {
+    const name = ["check", "record", "version", "bump", "create"][i];
+    test(`a failure at ${name} leaves every later step uncalled`, async () => {
+      const { calls, s } = steps({ failAt: name });
+      await expect(runReleaseSteps({ version: "0.3.12" }, false, s)).rejects.toThrow(`${name} failed`);
+      const real = calls.filter((c) => !c.startsWith("files:"));
+      expect(real).toEqual(STEPS.slice(0, STEPS.indexOf(name) + 1));
+    });
+  }
+
+  test("a failing benchmark returns false and nothing after it runs", async () => {
+    const { calls, s } = steps({ perfOk: false });
+    expect(await runReleaseSteps({ version: "0.3.12" }, false, s)).toBe(false);
+    expect(calls).toEqual(["check", "perf"]);
   });
 });

@@ -390,6 +390,53 @@ async function createRelease(config: ReleaseConfig): Promise<void> {
   }
 }
 
+/** The steps of a release, injectable so their order can be tested. */
+interface ReleaseSteps {
+  checkShape: () => void;
+  perf: () => boolean;
+  recordShape: (version: string) => string | null;
+  updateVersion: (version: string) => void;
+  prepareBump: (version: string, extraFiles: string[]) => string;
+  createRelease: (config: ReleaseConfig) => Promise<void>;
+}
+
+const realSteps: ReleaseSteps = {
+  checkShape: () => checkShapeRecord(runCommand),
+  perf: runPerfBenchmarks,
+  recordShape: (v) => recordReleaseShape(v, runCommand),
+  updateVersion: (v) => {
+    console.log("📝 Updating version in config files...");
+    updateVersion(v);
+  },
+  prepareBump: (v, files) => prepareVersionBump(v, runCommand, files),
+  createRelease
+};
+
+/**
+ * The release sequence: shape check, perf benchmarks, the release's shape
+ * snapshot, the version bump (committed and pushed with the snapshot), and only
+ * then the release and tag. Every step but perf throws to stop; a failing perf
+ * run returns false. Later steps are never called after a failure, so a record
+ * that is out of step, or a failed benchmark, leaves nothing to undo.
+ */
+async function runReleaseSteps(
+  config: ReleaseConfig,
+  skipPerf: boolean,
+  steps: ReleaseSteps
+): Promise<boolean> {
+  steps.checkShape();
+  if (skipPerf) {
+    console.log("⚠️  Skipping performance benchmarks (--skip-perf)");
+  } else if (!steps.perf()) {
+    return false;
+  }
+  const snapshot = steps.recordShape(config.version);
+  steps.updateVersion(config.version);
+  config.target = steps.prepareBump(config.version, snapshot ? [snapshot] : []);
+  await steps.createRelease(config);
+  return true;
+}
+
 /** Lines of `test:perf` output printed when the benchmarks fail. */
 const PERF_OUTPUT_TAIL_LINES = 40;
 
@@ -642,33 +689,12 @@ async function main() {
           config.notes = readFileSync(args[notesFileIndex + 1], "utf-8");
         }
 
-        // The shape gate runs before anything else, so a record that is out
-        // of step stops the release with nothing changed.
-        checkShapeRecord(runCommand);
-
-        // Benchmarks run before the version bump is committed and
-        // pushed, so a failure leaves nothing to undo.
-        if (args.includes("--skip-perf")) {
-          console.log("⚠️  Skipping performance benchmarks (--skip-perf)");
-        } else if (!runPerfBenchmarks()) {
+        const done = await runReleaseSteps(config, args.includes("--skip-perf"), realSteps);
+        if (!done) {
           console.error("\nRefusing to release. If the machine was busy, rerun on a quiet one;");
           console.error("if you know the run was noisy, override with --skip-perf.");
           process.exit(1);
         }
-
-        // The release's snapshot is written before the bump and staged with
-        // it, so it is on origin/main before the tag.
-        const snapshot = recordReleaseShape(version, runCommand);
-
-        // Update version in config files before creating release
-        console.log("📝 Updating version in config files...");
-        updateVersion(version);
-
-        // Every step must succeed, and the bump must be on origin/main,
-        // before any release or tag exists. Throws otherwise.
-        config.target = prepareVersionBump(version, runCommand, snapshot ? [snapshot] : []);
-
-        await createRelease(config);
         break;
       }
     }
@@ -693,6 +719,7 @@ export {
   buildReleaseCreateArgs,
   prepareVersionBump,
   checkShapeRecord,
+  runReleaseSteps,
   recordReleaseShape,
   shapeSnapshotPath
 };
