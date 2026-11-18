@@ -7,8 +7,15 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import path from "path";
 import {
   buildReleaseCreateArgs,
+  checkShapeRecord,
+  recordReleaseShape,
+  runReleaseSteps,
+  shapeSnapshotPath,
   failingBenchmarks,
   generateReleaseNotes,
   prepareVersionBump
@@ -177,5 +184,140 @@ describe("prepareVersionBump", () => {
   test("rejects an already-committed bump that is not on origin/main", () => {
     const { run } = fake({ dirty: false, head: "c".repeat(40) });
     expect(() => prepareVersionBump("1.2.3", run)).toThrow(/not origin\/main/);
+  });
+});
+
+describe("shape record at release", () => {
+  const ok = { exitCode: 0, stdout: "", stderr: "" };
+
+  function tree(snapshot?: string, current = '{"a":1}') {
+    const root = mkdtempSync(path.join(tmpdir(), "release-shape-"));
+    mkdirSync(path.join(root, "packages/core/shape-record/snapshots"), { recursive: true });
+    writeFileSync(path.join(root, "packages/core/shape-record/current.json"), current);
+    if (snapshot !== undefined) writeFileSync(path.join(root, shapeSnapshotPath("0.3.12")), snapshot);
+    return root;
+  }
+
+  test("checkShapeRecord runs shape:check and passes when it does", () => {
+    const calls: string[] = [];
+    checkShapeRecord((cmd) => (calls.push(cmd.join(" ")), ok));
+    expect(calls).toEqual(["bun run shape:check"]);
+  });
+
+  test("checkShapeRecord refuses when shape:check fails, naming the fix", () => {
+    const run = () => ({ exitCode: 1, stdout: "", stderr: "" });
+    expect(() => checkShapeRecord(run)).toThrow(/shape:check failed.*shape:gen.*change-log\.json.*No release or tag/s);
+  });
+
+  test("recordReleaseShape runs shape:release with the bare version and returns the snapshot to stage", () => {
+    const calls: string[] = [];
+    const staged = recordReleaseShape("v0.3.12", (cmd) => (calls.push(cmd.join(" ")), ok), tree());
+    expect(calls).toEqual(["bun run shape:release 0.3.12"]);
+    expect(staged).toBe("packages/core/shape-record/snapshots/0.3.12.json");
+  });
+
+  test("recordReleaseShape refuses when shape:release fails", () => {
+    const run = () => ({ exitCode: 1, stdout: "", stderr: "" });
+    expect(() => recordReleaseShape("0.3.12", run, tree())).toThrow(/shape:release failed.*No release or tag/s);
+  });
+
+  test("recordReleaseShape reuses a snapshot equal to current.json, so a rerun works", () => {
+    const calls: string[] = [];
+    const staged = recordReleaseShape("0.3.12", (cmd) => (calls.push(cmd.join(" ")), ok), tree('{"a":1}'));
+    expect(calls).toEqual([]);
+    expect(staged).toBe("packages/core/shape-record/snapshots/0.3.12.json");
+  });
+
+  test("recordReleaseShape leaves a differing existing snapshot to shape:release to refuse", () => {
+    const calls: string[] = [];
+    recordReleaseShape("0.3.12", (cmd) => (calls.push(cmd.join(" ")), ok), tree('{"a":2}'));
+    expect(calls).toEqual(["bun run shape:release 0.3.12"]);
+  });
+
+  test("recordReleaseShape records nothing for a pre-release suffix", () => {
+    const calls: string[] = [];
+    expect(recordReleaseShape("0.4.0-rc1", (cmd) => (calls.push(cmd.join(" ")), ok), tree())).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  test("prepareVersionBump stages the snapshot with the version files, before the commit and push", () => {
+    const { calls, run } = (() => {
+      const calls: string[] = [];
+      const run = (cmd: string[]) => {
+        const line = cmd.join(" ");
+        calls.push(line);
+        const out = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" });
+        if (line === "git status --porcelain") return out(" M Cargo.toml\n");
+        if (line === "git diff --cached --quiet") return { exitCode: 1, stdout: "", stderr: "" };
+        if (line.startsWith("git rev-parse")) return out("a".repeat(40) + "\n");
+        return out();
+      };
+      return { calls, run };
+    })();
+    prepareVersionBump("0.3.12", run, ["packages/core/shape-record/snapshots/0.3.12.json"]);
+    const add = calls.indexOf("git add packages/core/shape-record/snapshots/0.3.12.json");
+    expect(add).toBeGreaterThan(-1);
+    expect(add).toBeLessThan(calls.findIndex((c) => c.startsWith("git commit")));
+    expect(add).toBeLessThan(calls.indexOf("git push"));
+  });
+});
+
+describe("runReleaseSteps order", () => {
+  const STEPS = ["check", "perf", "record", "version", "bump", "create"];
+
+  function steps(opts: { failAt?: string; perfOk?: boolean; snapshot?: string | null } = {}) {
+    const calls: string[] = [];
+    const step = (name: string) => {
+      calls.push(name);
+      if (opts.failAt === name) throw new Error(`${name} failed`);
+    };
+    return {
+      calls,
+      s: {
+        checkShape: () => step("check"),
+        perf: () => (step("perf"), opts.perfOk !== false),
+        recordShape: () => (step("record"), opts.snapshot === undefined ? "snap.json" : opts.snapshot),
+        updateVersion: () => step("version"),
+        prepareBump: (_v: string, files: string[]) => (step("bump"), calls.push(`files:${files.join(",")}`), "sha"),
+        createRelease: async () => step("create")
+      }
+    };
+  }
+
+  test("runs check, perf, record, version, bump, create in that order and targets the bump sha", async () => {
+    const { calls, s } = steps();
+    const config = { version: "0.3.12" } as { version: string; target?: string };
+    expect(await runReleaseSteps(config, false, s)).toBe(true);
+    expect(calls.filter((c) => !c.startsWith("files:"))).toEqual(STEPS);
+    expect(calls).toContain("files:snap.json");
+    expect(config.target).toBe("sha");
+  });
+
+  test("--skip-perf omits only the benchmarks", async () => {
+    const { calls, s } = steps();
+    await runReleaseSteps({ version: "0.3.12" }, true, s);
+    expect(calls.filter((c) => !c.startsWith("files:"))).toEqual(["check", "record", "version", "bump", "create"]);
+  });
+
+  test("passes no extra files when there is no snapshot", async () => {
+    const { calls, s } = steps({ snapshot: null });
+    await runReleaseSteps({ version: "0.4.0-rc1" }, true, s);
+    expect(calls).toContain("files:");
+  });
+
+  for (let i = 0; i < 5; i++) {
+    const name = ["check", "record", "version", "bump", "create"][i];
+    test(`a failure at ${name} leaves every later step uncalled`, async () => {
+      const { calls, s } = steps({ failAt: name });
+      await expect(runReleaseSteps({ version: "0.3.12" }, false, s)).rejects.toThrow(`${name} failed`);
+      const real = calls.filter((c) => !c.startsWith("files:"));
+      expect(real).toEqual(STEPS.slice(0, STEPS.indexOf(name) + 1));
+    });
+  }
+
+  test("a failing benchmark returns false and nothing after it runs", async () => {
+    const { calls, s } = steps({ perfOk: false });
+    expect(await runReleaseSteps({ version: "0.3.12" }, false, s)).toBe(false);
+    expect(calls).toEqual(["check", "perf"]);
   });
 });
