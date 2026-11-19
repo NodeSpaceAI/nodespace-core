@@ -223,8 +223,9 @@ pub use nodespace_proto::{
     ImportServiceServer, LaunchSessionRequest, LaunchSessionResponse, ListSessionsRequest,
     ListSessionsResponse, LocalAgentServiceClient, LocalAgentServiceServer, NodeData,
     NodeServiceClient, NodeServiceServer, ReportHarnessSessionRequest,
-    ReportHarnessSessionResponse, ResizeRequest, ResizeResponse, SessionInfo, StreamOutputRequest,
-    TerminateSessionRequest, TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
+    ReportHarnessSessionResponse, ResizeRequest, ResizeResponse, SecretServiceClient,
+    SecretServiceServer, SessionInfo, StreamOutputRequest, TerminateSessionRequest,
+    TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
 };
 
 pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
@@ -235,8 +236,8 @@ pub use services::{
     unrouted_services_if_default_refused, AgentSessionHandler, DaemonExtensions,
     DaemonExtensionsError, DatabaseManager, DatabaseRequiresExtensions, DatabaseServiceImpl,
     DatabaseServices, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
-    LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable, SharedContext,
-    SharedLocalAgent, SharedServices, SubtreeGateFactory,
+    LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable, SecretServiceImpl,
+    SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
 };
 
 #[cfg(test)]

@@ -121,7 +121,8 @@ pub use software_project::{SoftwareProjectNode, SoftwareProjectNodeUpdate};
 pub use spec::{SpecNode, SpecNodeUpdate, SpecStatus};
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};
 pub use tool_binding::{
-    check_closed_root, is_tool_name, CredentialRef, EnvSecret, HttpAuth, StaticHeader,
-    ToolBindingError, ToolCliFields, ToolMcpFields, ToolRestFields, DEFAULT_RESPONSE_BYTES,
-    DEFAULT_TIMEOUT_SECONDS, MAX_RESPONSE_BYTES, MAX_TIMEOUT_SECONDS,
+    check_closed_root, is_secret_name, is_tool_name, secret_value_problem, CredentialRef,
+    EnvSecret, HttpAuth, StaticHeader, ToolBindingError, ToolCliFields, ToolMcpFields,
+    ToolRestFields, DEFAULT_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECONDS, MAX_RESPONSE_BYTES,
+    MAX_SECRET_VALUE_BYTES, MAX_TIMEOUT_SECONDS,
 };

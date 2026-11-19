@@ -48,7 +48,7 @@ use nodespace_daemon::{
     build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
     resolve_db_path, shared_model_load_in_flight, tray, unrouted_services_if_default_refused,
     BaseServices, DaemonExtensions, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
-    DbManagerLayer, SharedContext,
+    DbManagerLayer, SecretServiceImpl, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use nodespace_proto::socket::TRAY_FLAG;
@@ -1765,6 +1765,7 @@ async fn serve_headless() -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
+        secrets: SecretServiceImpl::keychain(),
     };
     let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
@@ -1859,6 +1860,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
+        secrets: SecretServiceImpl::keychain(),
     };
     let serve_result = build_base_router(
         Server::builder()
@@ -2032,6 +2034,7 @@ async fn serve_headless() -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
+        secrets: SecretServiceImpl::keychain(),
     };
     let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
@@ -2151,6 +2154,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
+        secrets: SecretServiceImpl::keychain(),
     };
     let serve_result = build_base_router(
         Server::builder()
