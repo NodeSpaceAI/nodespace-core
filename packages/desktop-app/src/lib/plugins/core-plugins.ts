@@ -667,6 +667,19 @@ export const aiChatPtyNodePlugin: PluginDefinition = {
   }
 };
 
+/** A chat an external agent drives over the Agent Client Protocol; its messages are `ai-chat-message` child nodes, one per part of the agent's turn. */
+export const aiChatAcpNodePlugin: PluginDefinition = {
+  ...aiChatPluginConfig,
+  id: 'ai-chat-acp',
+  name: 'AI Agent Chat',
+  description: 'External agent conversation node driven over the Agent Client Protocol',
+  version: '1.0.0',
+  viewer: {
+    lazyLoad: () => import('../components/viewers/ai-chat-acp-node-viewer.svelte'),
+    priority: 1
+  }
+};
+
 // Export all core plugins
 // These are the foundation plugins - external developers can create additional plugins
 // like WhiteBoardNode, ImageNode, etc. in separate packages
@@ -744,6 +757,7 @@ export const corePlugins = [
   playNodePlugin,
   aiChatNativeNodePlugin,
   aiChatPtyNodePlugin,
+  aiChatAcpNodePlugin,
   personNodePlugin
 ];
 

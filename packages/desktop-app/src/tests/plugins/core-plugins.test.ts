@@ -17,6 +17,7 @@ import {
   dateNodePlugin,
   aiChatNativeNodePlugin,
   aiChatPtyNodePlugin,
+  aiChatAcpNodePlugin,
   corePlugins,
   registerCorePlugins,
   registerExternalPlugin
@@ -103,9 +104,15 @@ describe('Core Plugins Integration', () => {
       expect(aiChatPtyNodePlugin.viewer?.lazyLoad).toBeDefined();
     });
 
+    it('should have valid aiChatAcpNodePlugin definition', () => {
+      expect(aiChatAcpNodePlugin.id).toBe('ai-chat-acp');
+      expect(aiChatAcpNodePlugin.viewer?.lazyLoad).toBeDefined();
+    });
+
     it.each([
       ['ai-chat-native', aiChatNativeNodePlugin],
-      ['ai-chat-pty', aiChatPtyNodePlugin]
+      ['ai-chat-pty', aiChatPtyNodePlugin],
+      ['ai-chat-acp', aiChatAcpNodePlugin]
     ])('the %s plugin carries the rules every chat shares', (_id, plugin) => {
       // Entity types are not slash-creatable — chats are created via the
       // sidebar's dedicated "AI Chats" section ("+ New chat").
@@ -123,19 +130,23 @@ describe('Core Plugins Integration', () => {
     });
 
     it('gives each chat subtype its own viewer', () => {
-      expect(aiChatNativeNodePlugin.viewer?.lazyLoad).not.toBe(aiChatPtyNodePlugin.viewer?.lazyLoad);
+      const loaders = [aiChatNativeNodePlugin, aiChatPtyNodePlugin, aiChatAcpNodePlugin].map(
+        (p) => p.viewer?.lazyLoad
+      );
+      expect(new Set(loaders).size).toBe(3);
     });
   });
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(corePlugins).toHaveLength(18); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, ai-chat-acp, person
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
       expect(corePlugins).toContain(dateNodePlugin);
       expect(corePlugins).toContain(aiChatNativeNodePlugin);
       expect(corePlugins).toContain(aiChatPtyNodePlugin);
+      expect(corePlugins).toContain(aiChatAcpNodePlugin);
     });
 
     it('should have unique plugin IDs', () => {
@@ -150,7 +161,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(registry.getAllPlugins()).toHaveLength(18); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, ai-chat-acp, person
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -165,10 +176,10 @@ describe('Core Plugins Integration', () => {
       // Verify registration statistics through the registry API
       // Note: Logger output is intentionally silenced during tests
       const stats = registry.getStats();
-      expect(stats.pluginsCount).toBe(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(stats.pluginsCount).toBe(18); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, ai-chat-acp, person
       expect(stats.slashCommandsCount).toBe(11); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 0 (no slash command), collection: 0, date: 0, ai-chat-native: 0, ai-chat-pty: 0, person: 0 (entity types are not slash-creatable)
-      expect(stats.viewersCount).toBe(8); // date, task, issue, collection, query, play, ai-chat-native, and ai-chat-pty have custom viewers
-      expect(stats.referencesCount).toBe(17); // all plugins have references
+      expect(stats.viewersCount).toBe(9); // date, task, issue, collection, query, play, ai-chat-native, ai-chat-pty, and ai-chat-acp have custom viewers
+      expect(stats.referencesCount).toBe(18); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -403,7 +414,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(registry.getAllPlugins()).toHaveLength(18); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, ai-chat-acp, person
 
       registry.clear();
 
