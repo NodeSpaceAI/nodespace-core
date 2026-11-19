@@ -952,7 +952,7 @@ A database is addressed by **name or id**. When a name is ambiguous (shared by m
 
 ### Manage credentials
 
-A remote tool refers to a credential by name (`keychain:<name>`); the value is kept in this device's credential store, never in a node. These subcommands are daemon-global and are not affected by `--database`. **An agent never runs them:** the value belongs to the user, and the MCP passthrough refuses them.
+A remote tool refers to a credential by name (`keychain:<name>`); the value is kept in this device's credential store, never in a node. These subcommands are daemon-global and are not affected by `--database`. The value belongs to the user, and the MCP passthrough refuses these commands.
 
 ```bash
 # Store a credential: the value is typed at a hidden prompt, or read from standard input
@@ -965,7 +965,7 @@ nodespace secret delete github-token
 nodespace secret list-names
 ```
 
-The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text. On a platform without an operating system credential store, use an `env:<NAME>` reference instead.
+The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text; on Windows the credential manager is stricter: at most 1280 UTF-16 units (2560 bytes as stored), and the list of names holds roughly 19 names of full length (about 70 of 16 characters), after which `set` refuses a new name with an error saying so. On a platform without an operating system credential store, use an `env:<NAME>` reference instead.
 
 ### Database settings
 

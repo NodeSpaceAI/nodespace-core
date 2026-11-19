@@ -17,6 +17,14 @@
 //! - Names follow the grammar of a `keychain:` reference, so a name that is
 //!   stored is a name a node can refer to.
 //!
+//! Platform limits: a value is at most [`MAX_SECRET_VALUE_BYTES`] bytes
+//! everywhere, and on Windows also at most 2560 bytes as the credential manager
+//! stores it (UTF-16, so 1280 UTF-16 units). The names index is one item, so
+//! on Windows it has the same 2560-byte ceiling: roughly 19 names of full
+//! length, or about 70 of 16 characters. A value or a new name that would pass
+//! the platform limit is refused with an error saying so, and nothing is left
+//! behind.
+//!
 //! The operating system store cannot be enumerated, so the store keeps an index
 //! of names (names only) as one more item beside the values. Values and the
 //! index sit under reserved account prefixes, so no name can collide with the
@@ -25,6 +33,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use zeroize::{Zeroize, Zeroizing};
 
 pub use nodespace_types::MAX_SECRET_VALUE_BYTES;
 use nodespace_types::{is_secret_name, secret_value_problem, CredentialRef};
@@ -46,6 +55,12 @@ pub enum SecretError {
     /// The value breaks a rule (the reason names the rule, never the value).
     #[error("invalid secret value: {0}")]
     InvalidValue(&'static str),
+    /// A value (or other item) that the platform's credential store cannot hold.
+    #[error("{what} too long for this platform: the credential store accepts at most {max} bytes per item as stored")]
+    TooLong { what: &'static str, max: usize },
+    /// The names index would pass the platform's item limit.
+    #[error("too many secrets for this platform: the list of names is limited to {max} bytes as stored; remove a secret first")]
+    TooManySecrets { max: usize },
     /// A `keychain:` reference whose name has no value on this device.
     #[error("credential `keychain:{0}` is not set on this device; run `nodespace secret set {0}`")]
     NotSet(String),
@@ -71,6 +86,19 @@ impl SecretValue {
     /// into a request or an environment.
     pub fn expose(&self) -> &str {
         &self.0
+    }
+}
+
+impl SecretValue {
+    /// Overwrites the value in place.
+    fn wipe(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Drop for SecretValue {
+    fn drop(&mut self) {
+        self.wipe();
     }
 }
 
@@ -105,6 +133,23 @@ pub trait SecretBackend: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, SecretError>;
     /// Removing an absent item succeeds. Returns whether an item was removed.
     fn delete(&self, account: &str) -> Result<bool, SecretError>;
+    /// The largest item this store holds, measured by [`item_size`](Self::item_size);
+    /// `None` when it has no limit below [`MAX_SECRET_VALUE_BYTES`].
+    fn max_item_size(&self) -> Option<usize> {
+        None
+    }
+    /// How large `text` is as this store keeps it.
+    fn item_size(&self, text: &str) -> usize {
+        text.len()
+    }
+}
+
+/// The Windows credential manager's item ceiling, in bytes as stored.
+pub const WINDOWS_MAX_ITEM_BYTES: usize = 2560;
+
+/// A string's size as the Windows credential manager stores it: UTF-16.
+pub fn utf16_item_size(text: &str) -> usize {
+    text.encode_utf16().count() * 2
 }
 
 /// Names and values on top of a [`SecretBackend`], with the names index.
@@ -142,6 +187,11 @@ impl SecretStore {
     fn write_index(&self, names: &[String]) -> Result<(), SecretError> {
         let text = serde_json::to_string(names)
             .map_err(|_| SecretError::Store("the names index cannot be written".to_string()))?;
+        if let Some(max) = self.backend.max_item_size() {
+            if self.backend.item_size(&text) > max {
+                return Err(SecretError::TooManySecrets { max });
+            }
+        }
         self.backend.set(INDEX_ACCOUNT, &text)
     }
 
@@ -149,16 +199,27 @@ impl SecretStore {
     pub fn set(&self, name: &str, value: &str) -> Result<(), SecretError> {
         validate_secret_name(name)?;
         validate_secret_value(value)?;
+        if let Some(max) = self.backend.max_item_size() {
+            if self.backend.item_size(value) > max {
+                return Err(SecretError::TooLong { what: "value", max });
+            }
+        }
         let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut names = self.read_index()?;
         let account = Self::value_account(name);
+        // What the account held, kept so a failure puts it back: an unlisted
+        // value may already be there, and it must not be lost to a failed set.
+        let old = self.backend.get(&account)?.map(Zeroizing::new);
         self.backend.set(&account, value)?;
         if !names.iter().any(|n| n == name) {
             names.push(name.to_string());
             names.sort();
             if let Err(e) = self.write_index(&names) {
-                // Do not leave a value that nothing lists.
-                let _ = self.backend.delete(&account);
+                // Leave the account as it was: the old value, or nothing.
+                let _ = match &old {
+                    Some(previous) => self.backend.set(&account, previous),
+                    None => self.backend.delete(&account).map(|_| ()),
+                };
                 return Err(e);
             }
         }
@@ -271,10 +332,15 @@ impl KeychainBackend {
 /// failure's kind is kept.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn store_error(error: keyring::Error) -> SecretError {
+    if let keyring::Error::TooLong(_, max) = error {
+        return SecretError::TooLong {
+            what: "item",
+            max: max as usize,
+        };
+    }
     let kind = match error {
         keyring::Error::PlatformFailure(_) => "the platform store failed",
         keyring::Error::NoStorageAccess(_) => "the platform store is locked or refused access",
-        keyring::Error::TooLong(..) => "an item is too long for the platform store",
         keyring::Error::Invalid(..) => "an item is not accepted by the platform store",
         keyring::Error::Ambiguous(_) => "several items match",
         _ => "the platform store reported an error",
@@ -284,6 +350,16 @@ fn store_error(error: keyring::Error) -> SecretError {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SecretBackend for KeychainBackend {
+    fn max_item_size(&self) -> Option<usize> {
+        cfg!(windows).then_some(WINDOWS_MAX_ITEM_BYTES)
+    }
+    fn item_size(&self, text: &str) -> usize {
+        if cfg!(windows) {
+            utf16_item_size(text)
+        } else {
+            text.len()
+        }
+    }
     fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
         Self::entry(account)?
             .set_password(value)
@@ -488,6 +564,138 @@ mod tests {
                 .expose(),
             "from-store"
         );
+    }
+
+    /// Fails the keychain arm over to env? It must not: an empty store with an
+    /// environment that answers every name still reports the name as not set.
+    #[test]
+    fn a_keychain_reference_never_falls_back_to_the_environment() {
+        let (s, _) = store();
+        let env = |_: &str| Some("from-env".to_string());
+        let err =
+            resolve_credential_with(&s, &CredentialRef::Keychain("X".into()), env).unwrap_err();
+        assert_eq!(err, SecretError::NotSet("X".into()));
+    }
+
+    /// A backend with the Windows ceiling, to test the limit logic anywhere.
+    struct WindowsLike(InMemorySecretBackend);
+    impl SecretBackend for WindowsLike {
+        fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+            assert!(
+                utf16_item_size(value) <= WINDOWS_MAX_ITEM_BYTES,
+                "the store was asked to hold an item over its ceiling"
+            );
+            self.0.set(account, value)
+        }
+        fn get(&self, account: &str) -> Result<Option<String>, SecretError> {
+            self.0.get(account)
+        }
+        fn delete(&self, account: &str) -> Result<bool, SecretError> {
+            self.0.delete(account)
+        }
+        fn max_item_size(&self) -> Option<usize> {
+            Some(WINDOWS_MAX_ITEM_BYTES)
+        }
+        fn item_size(&self, text: &str) -> usize {
+            utf16_item_size(text)
+        }
+    }
+
+    fn windows_like() -> (SecretStore, Arc<WindowsLike>) {
+        let backend = Arc::new(WindowsLike(InMemorySecretBackend::default()));
+        (SecretStore::new(backend.clone()), backend)
+    }
+
+    #[test]
+    fn a_value_over_the_platform_ceiling_is_refused_with_a_clear_error_and_nothing_is_written() {
+        let (s, backend) = windows_like();
+        // 1280 UTF-16 units fit; 1281 do not.
+        assert!(s.set("a", &"x".repeat(1280)).is_ok());
+        let err = s.set("b", &"x".repeat(1281)).unwrap_err();
+        assert_eq!(
+            err,
+            SecretError::TooLong {
+                what: "value",
+                max: WINDOWS_MAX_ITEM_BYTES
+            }
+        );
+        assert!(err.to_string().contains("too long for this platform"));
+        assert!(err.to_string().contains("2560"));
+        assert!(!backend.0.snapshot().contains_key("value:b"));
+        assert_eq!(s.names().unwrap(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn the_ceiling_counts_utf16_units_not_bytes() {
+        let (s, _) = windows_like();
+        // A character outside the basic plane is two UTF-16 units.
+        assert!(s.set("a", &"\u{1F600}".repeat(640)).is_ok());
+        assert!(s.set("b", &"\u{1F600}".repeat(641)).is_err());
+        // Three bytes in UTF-8, one unit in UTF-16: 1280 of them fit.
+        assert!(s.set("c", &"\u{20AC}".repeat(1280)).is_ok());
+    }
+
+    #[test]
+    fn a_name_that_would_overflow_the_names_item_is_refused_and_its_value_rolled_back() {
+        let (s, backend) = windows_like();
+        let mut stored = 0;
+        let mut refused = None;
+        for i in 0..200 {
+            let name = format!("{:0>64}", i);
+            match s.set(&name, "v") {
+                Ok(()) => stored += 1,
+                Err(e) => {
+                    refused = Some((name, e));
+                    break;
+                }
+            }
+        }
+        let (name, err) = refused.expect("the index must run out");
+        assert!(stored >= 15, "{stored}");
+        assert_eq!(
+            err,
+            SecretError::TooManySecrets {
+                max: WINDOWS_MAX_ITEM_BYTES
+            }
+        );
+        assert!(err
+            .to_string()
+            .contains("too many secrets for this platform"));
+        // The refused name left no value and no entry; the others are intact.
+        assert!(!backend.0.snapshot().contains_key(&format!("value:{name}")));
+        assert_eq!(s.names().unwrap().len(), stored);
+        assert!(!s.names().unwrap().contains(&name));
+        // Deleting one makes room again.
+        let first = s.names().unwrap()[0].clone();
+        s.delete(&first).unwrap();
+        assert!(s.set(&name, "v").is_ok());
+    }
+
+    /// A value already stored but unlisted (an orphan) must survive a failed
+    /// `set`: the old value is put back, not deleted.
+    #[test]
+    fn a_failed_set_restores_an_orphaned_old_value() {
+        let backend = Arc::new(FailingIndex(InMemorySecretBackend::default()));
+        backend.0.set("value:a", "OLD").unwrap();
+        let s = SecretStore::new(backend.clone());
+        assert!(s.set("a", "NEW").is_err());
+        assert_eq!(backend.0.get("value:a").unwrap(), Some("OLD".to_string()));
+    }
+
+    #[test]
+    fn a_resolved_value_is_zeroed_when_dropped() {
+        let mut v = SecretValue::new("ghp_SECRET".to_string());
+        let ptr = v.0.as_ptr();
+        let len = v.0.len();
+        // What `Drop` runs, called while the buffer is still allocated so the
+        // bytes can be read afterwards.
+        v.wipe();
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(
+            bytes.iter().all(|b| *b == 0),
+            "the value was not overwritten"
+        );
+        std::mem::forget(v);
     }
 
     /// A backend whose index write fails: the value must not be left behind.

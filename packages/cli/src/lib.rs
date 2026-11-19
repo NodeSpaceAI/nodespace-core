@@ -650,9 +650,8 @@ pub async fn connect_local_agent(
         .map_err(|e| connect_failure(sock, e))
 }
 
-/// Connect a `DatabaseService` client. This operates on the daemon's database
-/// registry globally, so it carries no routing header (unlike the data-plane
-/// clients above).
+/// Connect a `SecretService` client. The credential store belongs to the device,
+/// so it carries no database routing header.
 pub async fn connect_secrets(sock: &std::path::Path) -> Result<SecretServiceClient<Channel>> {
     dial_channel(sock)
         .await
@@ -660,6 +659,9 @@ pub async fn connect_secrets(sock: &std::path::Path) -> Result<SecretServiceClie
         .map_err(|e| connect_failure(sock, e))
 }
 
+/// Connect a `DatabaseService` client. This operates on the daemon's database
+/// registry globally, so it carries no routing header (unlike the data-plane
+/// clients above).
 pub async fn connect_database(sock: &std::path::Path) -> Result<DatabaseServiceClient<Channel>> {
     dial_channel(sock)
         .await

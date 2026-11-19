@@ -84,7 +84,9 @@ impl CredentialRef {
     }
 }
 
-/// Largest credential value the device store accepts, in bytes.
+/// Largest credential value the device store accepts, in bytes, on any
+/// platform. Windows' credential manager holds less (1280 UTF-16 units); the
+/// store checks that platform limit itself and says so when it is passed.
 pub const MAX_SECRET_VALUE_BYTES: usize = 16 * 1024;
 
 /// Whether `name` is a name a `keychain:<name>` reference can carry. The one

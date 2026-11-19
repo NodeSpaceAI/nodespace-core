@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use nodespace_core::secrets::{SecretError, SecretStore};
 use tonic::{Request, Response, Status};
+use zeroize::Zeroize;
 
 use crate::nodespace::secret_service_server::SecretService as GrpcSecretService;
 use crate::nodespace::{
@@ -38,9 +39,10 @@ impl SecretServiceImpl {
 
 fn status(error: SecretError) -> Status {
     match error {
-        SecretError::InvalidName | SecretError::InvalidValue(_) => {
+        SecretError::InvalidName | SecretError::InvalidValue(_) | SecretError::TooLong { .. } => {
             Status::invalid_argument(error.to_string())
         }
+        SecretError::TooManySecrets { .. } => Status::resource_exhausted(error.to_string()),
         SecretError::NotSet(_) | SecretError::EnvNotSet(_) => Status::not_found(error.to_string()),
         SecretError::Store(_) => Status::unavailable(error.to_string()),
     }
@@ -52,14 +54,19 @@ impl GrpcSecretService for SecretServiceImpl {
         &self,
         request: Request<SetSecretRequest>,
     ) -> Result<Response<SetSecretResponse>, Status> {
-        let req = request.into_inner();
+        let mut req = request.into_inner();
         // The OS store can block (a prompt, a locked keychain): keep it off the
         // async worker threads.
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || store.set(&req.name, &req.value))
-            .await
-            .map_err(|_| Status::internal("credential store task failed"))?
-            .map_err(status)?;
+        tokio::task::spawn_blocking(move || {
+            let result = store.set(&req.name, &req.value);
+            // The request is the daemon's last copy of the value: overwrite it.
+            req.value.zeroize();
+            result
+        })
+        .await
+        .map_err(|_| Status::internal("credential store task failed"))?
+        .map_err(status)?;
         Ok(Response::new(SetSecretResponse {}))
     }
 
@@ -156,6 +163,32 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn a_platform_limit_is_reported_with_its_own_status_and_message() {
+        struct Limited;
+        impl nodespace_core::secrets::SecretBackend for Limited {
+            fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+                Ok(())
+            }
+            fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+                Ok(None)
+            }
+            fn delete(&self, _: &str) -> Result<bool, SecretError> {
+                Ok(false)
+            }
+            fn max_item_size(&self) -> Option<usize> {
+                Some(8)
+            }
+        }
+        let s = SecretServiceImpl::new(Arc::new(SecretStore::new(Arc::new(Limited))));
+        let err = set(&s, "tok", "this value is over eight bytes")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("too long for this platform"));
+        assert!(!err.message().contains("over eight"));
     }
 
     #[tokio::test]

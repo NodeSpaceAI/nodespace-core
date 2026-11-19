@@ -30,6 +30,8 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 nodespace-core = { workspace = true }
+# Overwrites the credential value of a Set request once it is stored.
+zeroize = "1"
 nodespace-agent = { workspace = true }
 nodespace-nlp-engine = { workspace = true }
 
