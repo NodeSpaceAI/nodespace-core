@@ -520,3 +520,517 @@ async fn no_tool_takes_children() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The remote subtypes: tool-mcp, tool-rest, tool-cli
+// ---------------------------------------------------------------------------
+
+const REMOTE_KINDS: [&str; 3] = ["tool-mcp", "tool-rest", "tool-cli"];
+
+/// A closed root with the parameters the fixtures below use.
+fn closed_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "id": { "type": "string" }, "q": { "type": "string" } },
+    })
+}
+
+/// A complete binding for each kind, to be enabled or left as a draft.
+fn complete_binding(kind: &str) -> serde_json::Value {
+    match kind {
+        "tool-mcp" => json!({
+            "transport": "http",
+            "url": "https://mcp.example.com/rpc",
+            "remote_tool_name": "search",
+            "auth": { "scheme": "bearer", "secret": "keychain:mcp-token" },
+        }),
+        "tool-rest" => json!({
+            "method": "GET",
+            "url_template": "https://api.example.com/items/{id}",
+            "query_params": ["q"],
+        }),
+        _ => json!({ "program": "git", "args": ["log", "{q}"] }),
+    }
+}
+
+fn remote_properties(kind: &str, enabled: bool) -> serde_json::Value {
+    let mut properties = complete_binding(kind);
+    properties["description"] = json!("Looks a thing up");
+    properties["parameter_schema"] = closed_schema();
+    properties["enabled"] = json!(enabled);
+    properties
+}
+
+#[tokio::test]
+async fn the_remote_kinds_are_tools_found_by_a_query_for_the_base() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        assert_eq!(
+            svc.store().type_chain(kind).await.unwrap(),
+            vec![kind, "tool"]
+        );
+        assert!(!svc.store().is_abstract_type(kind).await.unwrap());
+        assert!(svc.type_is_a(kind, CoreNodeType::Tool).await.unwrap());
+        create(
+            &svc,
+            kind,
+            &format!("lookup_{}", kind.replace('-', "_")),
+            remote_properties(kind, false),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{kind}: {e}"));
+    }
+    let tools = svc.query_nodes_by_type("tool", true).await.unwrap();
+    let mut found: Vec<&str> = tools.iter().map(|n| n.node_type.as_str()).collect();
+    found.sort();
+    assert_eq!(found, vec!["tool-cli", "tool-mcp", "tool-rest"]);
+    for kind in REMOTE_KINDS {
+        assert_eq!(
+            ToolOrigin::of(&svc.store().type_chain(kind).await.unwrap()),
+            Some(ToolOrigin::External)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_remote_tool_stores_its_binding_in_its_own_bucket() {
+    let (svc, _tmp) = test_service().await;
+    let id = create(
+        &svc,
+        "tool-cli",
+        "git_log",
+        remote_properties("tool-cli", false),
+    )
+    .await
+    .unwrap();
+    let node = get(&svc, &id).await;
+    assert_eq!(node.properties["tool"]["enabled"], false);
+    assert_eq!(node.properties["tool-cli"]["program"], "git");
+    // The schema default is the only source of a default.
+    assert_eq!(node.properties["tool-cli"]["timeout_seconds"], 30);
+    assert_eq!(node.properties["tool-cli"]["max_output_bytes"], 1_048_576);
+
+    let rest = create(
+        &svc,
+        "tool-rest",
+        "get_item",
+        remote_properties("tool-rest", false),
+    )
+    .await
+    .unwrap();
+    let rest = get(&svc, &rest).await;
+    assert_eq!(rest.properties["tool-rest"]["body"], "none");
+    assert_eq!(
+        rest.properties["tool-rest"]["max_response_bytes"],
+        1_048_576
+    );
+}
+
+#[tokio::test]
+async fn the_approved_binding_is_a_fingerprint_or_unset() {
+    let (svc, _tmp) = test_service().await;
+    let fingerprint = "0123456789abcdef".repeat(4);
+    let mut ok = remote_properties("tool-cli", false);
+    ok["approved_binding"] = json!(fingerprint);
+    create(&svc, "tool-cli", "approved", ok).await.unwrap();
+    for bad in [json!("not-a-hash"), json!("ABCDEF".repeat(11)), json!(7)] {
+        let mut properties = remote_properties("tool-cli", false);
+        properties["approved_binding"] = bad.clone();
+        let error = message(create(&svc, "tool-cli", "bad", properties).await);
+        assert!(error.contains("approved_binding"), "{bad}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn a_remote_tool_takes_only_its_declared_fields() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let mut properties = remote_properties(kind, false);
+        properties["shell"] = json!(true);
+        let error = message(create(&svc, kind, "lookup", properties).await);
+        assert!(error.contains("shell"), "{kind}: {error}");
+    }
+    // A field of another kind is undeclared here.
+    let mut properties = remote_properties("tool-cli", false);
+    properties["method"] = json!("GET");
+    let error = message(create(&svc, "tool-cli", "lookup", properties).await);
+    assert!(error.contains("method"), "{error}");
+}
+
+#[tokio::test]
+async fn a_remote_tool_with_an_invalid_binding_is_refused_naming_the_rule() {
+    let (svc, _tmp) = test_service().await;
+    let cases: [(&str, serde_json::Value, &str); 13] = [
+        (
+            "tool-mcp",
+            json!({"transport":"http","command":"server"}),
+            "stdio transport",
+        ),
+        (
+            "tool-mcp",
+            json!({"transport":"http","url":"http://example.com/x"}),
+            "https",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https://{host}/x"}),
+            "host",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"http://example.com/x"}),
+            "https",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https://a.test/{nope}"}),
+            "nope",
+        ),
+        ("tool-cli", json!({"program":"git status"}), "program"),
+        (
+            "tool-cli",
+            json!({"program":"git","args":["--n={q}"]}),
+            "placeholder",
+        ),
+        (
+            "tool-cli",
+            json!({"program":"git","timeout_seconds":301}),
+            "300",
+        ),
+        (
+            "tool-cli",
+            json!({"program":"git","max_output_bytes":10_485_761u64}),
+            "max_output_bytes",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https:{h}/p"}),
+            "url_template",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https:/{h}/p"}),
+            "url_template",
+        ),
+        (
+            "tool-rest",
+            json!({"method":"GET","url_template":"https:///{a}"}),
+            "url_template",
+        ),
+        ("tool-cli", json!({"program":"../../bin/sh"}), "program"),
+    ];
+    for (kind, binding, rule) in cases {
+        let mut properties = binding.clone();
+        properties["parameter_schema"] = closed_schema();
+        properties["enabled"] = json!(true);
+        let error = message(create(&svc, kind, "lookup", properties).await);
+        assert!(error.contains(rule), "{kind} {binding}: {error}");
+    }
+}
+
+#[tokio::test]
+async fn enabling_needs_a_complete_binding_and_a_draft_may_be_incomplete() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        // A draft with nothing set is stored.
+        let id = create(&svc, kind, "draft", json!({ "description": "Soon" }))
+            .await
+            .unwrap_or_else(|e| panic!("{kind} draft: {e}"));
+        // Enabling it while incomplete is refused.
+        let version = get(&svc, &id).await.version;
+        let error = message(
+            svc.update_node(
+                &id,
+                version,
+                NodeUpdate::new().with_properties(json!({ "enabled": true })),
+            )
+            .await,
+        );
+        assert!(
+            error.contains("before the tool is enabled"),
+            "{kind}: {error}"
+        );
+        assert_eq!(get(&svc, &id).await.properties["tool"]["enabled"], false);
+        // Completing it and enabling in one write is accepted.
+        let mut patch = remote_properties(kind, true);
+        patch["description"] = json!("Soon");
+        svc.update_node(&id, version, NodeUpdate::new().with_properties(patch))
+            .await
+            .unwrap_or_else(|e| panic!("{kind} complete: {e}"));
+        assert_eq!(get(&svc, &id).await.properties["tool"]["enabled"], true);
+    }
+}
+
+#[tokio::test]
+async fn a_literal_credential_is_refused_at_create_and_at_update() {
+    let (svc, _tmp) = test_service().await;
+    let literal = json!({ "scheme": "bearer", "secret": "ghp_0123456789abcdefghij" });
+    let mut properties = remote_properties("tool-rest", false);
+    properties["auth"] = literal.clone();
+    let error = message(create(&svc, "tool-rest", "lookup", properties).await);
+    assert!(error.contains("credential reference"), "{error}");
+
+    let id = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", false),
+    )
+    .await
+    .unwrap();
+    let version = get(&svc, &id).await.version;
+    let error = message(
+        svc.update_node(
+            &id,
+            version,
+            NodeUpdate::new().with_properties(json!({ "auth": literal })),
+        )
+        .await,
+    );
+    assert!(error.contains("credential reference"), "{error}");
+
+    // A reference is accepted, in an environment entry too.
+    create(
+        &svc,
+        "tool-cli",
+        "with_env",
+        json!({ "program": "git", "env": [{ "name": "TOKEN", "secret": "env:GIT_TOKEN" }] }),
+    )
+    .await
+    .unwrap();
+    let error = message(
+        create(
+            &svc,
+            "tool-cli",
+            "with_literal_env",
+            json!({ "program": "git", "env": [{ "name": "TOKEN", "secret": "hunter2" }] }),
+        )
+        .await,
+    );
+    assert!(error.contains("credential reference"), "{error}");
+}
+
+#[tokio::test]
+async fn a_remote_tools_parameter_schema_has_a_closed_root() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        for schema in [
+            json!({ "type": "object", "properties": {} }),
+            json!({ "properties": {}, "additionalProperties": false }),
+            json!({ "type": "object", "additionalProperties": true }),
+        ] {
+            let mut properties = remote_properties(kind, false);
+            properties["parameter_schema"] = schema.clone();
+            let error = message(create(&svc, kind, "lookup", properties).await);
+            assert!(
+                error.contains("parameter_schema"),
+                "{kind} {schema}: {error}"
+            );
+        }
+    }
+    // The base is unchanged: a native tool may leave its root open.
+    native_tool(&svc).await;
+}
+
+#[tokio::test]
+async fn a_remote_tools_name_is_an_identifier() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        for name in ["has space", "2fast", "dotted.name", &"a".repeat(65)] {
+            let error = message(create(&svc, kind, name, remote_properties(kind, false)).await);
+            assert!(error.contains("name"), "{kind} {name}: {error}");
+        }
+        create(&svc, kind, "good_name-1", remote_properties(kind, false))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_remote_tool_is_embedded_as_its_name_and_description_only() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let id = create(&svc, kind, "lookup", remote_properties(kind, false))
+            .await
+            .unwrap();
+        let node = get(&svc, &id).await;
+        let chain = svc.store().type_chain(kind).await.unwrap();
+        let text = nodespace_core::behaviors::NodeBehaviorRegistry::new()
+            .resolve(&chain)
+            .get_embeddable_content(&node)
+            .expect("embedded");
+        assert_eq!(text, "lookup\n\nLooks a thing up", "{kind}");
+    }
+}
+
+#[tokio::test]
+async fn a_user_subtype_of_a_remote_kind_keeps_its_rules() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Internal Rest",
+            "extends": "tool-rest",
+            "fields": [{ "name": "owner", "type": "text" }],
+        }),
+    )
+    .await
+    .expect("a user subtype of tool-rest");
+    let ty = "internal-rest";
+    let mut open = remote_properties("tool-rest", false);
+    open["parameter_schema"] = json!({ "type": "object" });
+    let error = message(create(&svc, ty, "lookup", open).await);
+    assert!(error.contains("parameter_schema"), "{error}");
+    let mut bad = remote_properties("tool-rest", false);
+    bad["url_template"] = json!("http://example.com/{id}");
+    let error = message(create(&svc, ty, "lookup", bad).await);
+    assert!(error.contains("https"), "{error}");
+    let id = create(&svc, ty, "lookup", remote_properties("tool-rest", true))
+        .await
+        .expect("a complete binding is accepted");
+    let chain = svc.store().type_chain(ty).await.unwrap();
+    assert_eq!(ToolOrigin::of(&chain), Some(ToolOrigin::External));
+    assert_eq!(
+        get(&svc, &id).await.properties["tool-rest"]["method"],
+        "GET"
+    );
+}
+
+#[tokio::test]
+async fn retyping_between_remote_kinds_applies_the_new_kinds_rules() {
+    let (svc, _tmp) = test_service().await;
+    let id = create(
+        &svc,
+        "tool-cli",
+        "lookup",
+        json!({ "program": "git", "description": "d" }),
+    )
+    .await
+    .unwrap();
+    let version = get(&svc, &id).await.version;
+    svc.update_node(
+        &id,
+        version,
+        NodeUpdate::new().with_node_type("tool-rest".to_string()),
+    )
+    .await
+    .expect("retyped");
+    let node = get(&svc, &id).await;
+    assert_eq!(node.node_type, "tool-rest");
+    // The base's fields stay in the base's bucket.
+    assert_eq!(node.properties["tool"]["description"], "d");
+    // The node is now held to the REST binding, not the CLI one.
+    let error = message(
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "enabled": true })),
+        )
+        .await,
+    );
+    assert!(error.contains("method"), "{error}");
+}
+
+#[tokio::test]
+async fn the_trust_fields_are_kept_on_the_device() {
+    let (svc, _tmp) = test_service().await;
+    let schema = svc
+        .get_schema_node("tool")
+        .await
+        .unwrap()
+        .expect("tool schema");
+    for name in ["enabled", "approved_binding"] {
+        let field = schema.fields.iter().find(|f| f.name == name).unwrap();
+        assert!(field.local_only, "{name} must be local_only");
+    }
+    // A tool with neither set is valid.
+    create(&svc, "tool-cli", "lookup", json!({ "program": "git" }))
+        .await
+        .unwrap();
+}
+
+/// A tool that arrives through a path that applies no schema defaults (a bulk
+/// create) may carry no `enabled` at all: absent means off, so an incomplete
+/// binding is a draft and is accepted, and the stored node has no `enabled`.
+#[tokio::test]
+async fn an_absent_enabled_means_off() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let node = Node::new(
+            kind.to_string(),
+            "arrived".to_string(),
+            json!({ "tool": { "description": "From elsewhere" } }),
+        );
+        let ids = svc
+            .bulk_create(vec![node])
+            .await
+            .unwrap_or_else(|e| panic!("{kind}: {e}"));
+        let stored = get(&svc, &ids[0]).await;
+        let enabled = stored.properties["tool"].get("enabled");
+        assert!(
+            enabled.is_none_or(|v| v.is_null() || v == &json!(false)),
+            "{kind}: {}",
+            stored.properties
+        );
+        let enabled = enabled.and_then(|v| v.as_bool()).unwrap_or(false);
+        let chain = svc.store().type_chain(kind).await.unwrap();
+        assert!(!ToolOrigin::of(&chain).unwrap().is_offered(enabled));
+    }
+}
+
+/// An invalid binding on an enabled tool is refused on every write path, not
+/// only `create_node`: the batch creates, the trusted import and the batch
+/// update hold the same rules.
+#[tokio::test]
+async fn an_invalid_binding_is_refused_on_every_write_path() {
+    let (svc, _tmp) = test_service().await;
+    let bad = || {
+        json!({
+            "tool": { "enabled": true, "parameter_schema": closed_schema() },
+            "tool-rest": { "method": "GET", "url_template": "https:{h}/p" },
+        })
+    };
+    let refused = |e: String| assert!(e.contains("url_template"), "{e}");
+
+    refused(message(
+        svc.bulk_create(vec![Node::new(
+            "tool-rest".to_string(),
+            "lookup".to_string(),
+            bad(),
+        )])
+        .await,
+    ));
+    let row = |properties: serde_json::Value| {
+        vec![(
+            uuid::Uuid::new_v4().to_string(),
+            "tool-rest".to_string(),
+            "lookup".to_string(),
+            None,
+            1.0,
+            properties,
+        )]
+    };
+    refused(message(svc.bulk_create_hierarchy(row(bad())).await));
+    refused(message(svc.bulk_create_hierarchy_trusted(row(bad())).await));
+
+    // A draft is stored, and a batch update that enables it with a bad
+    // template is refused.
+    let id = create(&svc, "tool-rest", "draft", json!({ "description": "d" }))
+        .await
+        .unwrap();
+    let error = message(
+        svc.bulk_update(vec![(
+            id.clone(),
+            NodeUpdate::new().with_properties(json!({
+                "enabled": true,
+                "method": "GET",
+                "url_template": "https:/{h}/p",
+                "parameter_schema": closed_schema(),
+            })),
+        )])
+        .await,
+    );
+    refused(error);
+    assert_eq!(get(&svc, &id).await.properties["tool"]["enabled"], false);
+}

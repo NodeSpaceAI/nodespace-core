@@ -48,6 +48,9 @@ pub enum CoreNodeType {
     AiChatMessage,
     Tool,
     ToolNative,
+    ToolMcp,
+    ToolRest,
+    ToolCli,
 }
 
 /// Which of the three kinds of core type a variant is.
@@ -274,7 +277,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 31] = [
+    pub const ALL: [CoreNodeType; 34] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -306,6 +309,9 @@ impl CoreNodeType {
         CoreNodeType::AiChatMessage,
         CoreNodeType::Tool,
         CoreNodeType::ToolNative,
+        CoreNodeType::ToolMcp,
+        CoreNodeType::ToolRest,
+        CoreNodeType::ToolCli,
     ];
 
     /// The registry entry for this type.
@@ -551,6 +557,18 @@ impl CoreNodeType {
                     EMBEDDED,
                     WireShape::Generic,
                 )
+            },
+            Self::ToolMcp => CoreTypeInfo {
+                parent: Some(Self::Tool),
+                ..entry("tool-mcp", Structured, Name, EMBEDDED, WireShape::Generic)
+            },
+            Self::ToolRest => CoreTypeInfo {
+                parent: Some(Self::Tool),
+                ..entry("tool-rest", Structured, Name, EMBEDDED, WireShape::Generic)
+            },
+            Self::ToolCli => CoreTypeInfo {
+                parent: Some(Self::Tool),
+                ..entry("tool-cli", Structured, Name, EMBEDDED, WireShape::Generic)
             },
         }
     }
@@ -811,7 +829,10 @@ mod tests {
                 | CoreNodeType::AiChatAcp
                 | CoreNodeType::AiChatMessage
                 | CoreNodeType::Tool
-                | CoreNodeType::ToolNative => {}
+                | CoreNodeType::ToolNative
+                | CoreNodeType::ToolMcp
+                | CoreNodeType::ToolRest
+                | CoreNodeType::ToolCli => {}
             }
         }
         let unique: HashSet<_> = CoreNodeType::ALL.into_iter().collect();
@@ -967,7 +988,10 @@ mod tests {
                 CoreNodeType::Query,
                 CoreNodeType::AiChatMessage,
                 CoreNodeType::Tool,
-                CoreNodeType::ToolNative
+                CoreNodeType::ToolNative,
+                CoreNodeType::ToolMcp,
+                CoreNodeType::ToolRest,
+                CoreNodeType::ToolCli
             ]
         );
         assert_eq!(
@@ -1088,6 +1112,28 @@ mod tests {
             CoreNodeType::nearest(&["tool-remote", "tool"]),
             Some(CoreNodeType::Tool)
         );
+    }
+
+    #[test]
+    fn the_remote_tool_kinds_are_core_subtypes_of_tool() {
+        for (remote, id) in [
+            (CoreNodeType::ToolMcp, "tool-mcp"),
+            (CoreNodeType::ToolRest, "tool-rest"),
+            (CoreNodeType::ToolCli, "tool-cli"),
+        ] {
+            assert_eq!(remote.as_str(), id);
+            assert_eq!(remote.kind(), CoreTypeKind::CoreSubtype);
+            assert_eq!(remote.parent(), Some(CoreNodeType::Tool));
+            assert!(remote.is_a(CoreNodeType::Tool));
+            assert!(!remote.is_a(CoreNodeType::ToolNative));
+            assert!(!remote.is_abstract());
+            assert_eq!(remote.category(), TypeCategory::Structured);
+            assert_eq!(remote.content_role(), ContentRole::Name);
+            assert_eq!(remote.structure().children, ChildrenRule::None);
+            assert!(remote.participation().embedded);
+            assert_eq!(remote.info().wire, WireShape::Generic);
+            assert_eq!(CoreNodeType::nearest(&[id, "tool"]), Some(remote));
+        }
     }
 
     #[test]

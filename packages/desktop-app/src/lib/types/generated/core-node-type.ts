@@ -34,4 +34,7 @@ export type CoreNodeType =
   | 'ai-chat-acp'
   | 'ai-chat-message'
   | 'tool'
-  | 'tool-native';
+  | 'tool-native'
+  | 'tool-mcp'
+  | 'tool-rest'
+  | 'tool-cli';

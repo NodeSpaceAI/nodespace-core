@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "db3a40519e520778b0721427ee7772d7d848538a869440c5293bc1888105329c",
+  "hash": "a1914ab0a778c947cb5cb3a33f4957ea191e1ae63ad58fee29d543016d246acf",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -750,11 +750,80 @@
       "titleTemplate": null,
       "wire": "generic"
     },
+    "tool-cli": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "tool-cli",
+        "tool"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": "tool",
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "generic"
+    },
+    "tool-mcp": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "tool-mcp",
+        "tool"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": "tool",
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "generic"
+    },
     "tool-native": {
       "abstract": false,
       "alwaysTitled": false,
       "ancestry": [
         "tool-native",
+        "tool"
+      ],
+      "category": "structured",
+      "contentRole": "name",
+      "derived": [],
+      "parent": "tool",
+      "participation": {
+        "embedded": true,
+        "excludedFromDefaultQueries": false,
+        "mentionable": true
+      },
+      "structure": {
+        "children": "any",
+        "parent": "any"
+      },
+      "titleTemplate": null,
+      "wire": "generic"
+    },
+    "tool-rest": {
+      "abstract": false,
+      "alwaysTitled": false,
+      "ancestry": [
+        "tool-rest",
         "tool"
       ],
       "category": "structured",
@@ -2299,6 +2368,16 @@
       },
       "contextPaths": [],
       "fields": {
+        "approved_binding": {
+          "description": "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). Declared local-only",
+          "friendlyName": "Approved binding",
+          "indexed": false,
+          "localOnly": true,
+          "name": "approved_binding",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
         "description": {
           "description": "What the tool does; embedded with its name for discovery",
           "friendlyName": "Description",
@@ -2310,9 +2389,10 @@
         },
         "enabled": {
           "default": false,
-          "description": "Whether the tool may be offered to the model; a native tool always is",
+          "description": "Whether the tool may be offered to the model; absent means off; a native tool always is. Declared local-only",
           "friendlyName": "Enabled",
           "indexed": false,
+          "localOnly": true,
           "name": "enabled",
           "protection": "core",
           "required": false,
@@ -2330,6 +2410,249 @@
       },
       "isCore": true,
       "name": "Tool",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "tool-cli": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "tool",
+      "fields": {
+        "args": {
+          "description": "One argument per item: a literal, or exactly one `{name}` placeholder naming a property of the parameter schema",
+          "friendlyName": "Arguments",
+          "indexed": false,
+          "itemType": "text",
+          "name": "args",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "env": {
+          "description": "The environment the program gets, besides a fixed base list, each valued from a credential reference. Names that change which program runs or what it loads (PATH, LD_*, DYLD_*, NODE_OPTIONS, and similar) are refused",
+          "friendlyName": "Environment",
+          "indexed": false,
+          "itemFields": [
+            {
+              "description": "The name",
+              "friendlyName": "Name",
+              "indexed": false,
+              "name": "name",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
+              "friendlyName": "Secret",
+              "indexed": false,
+              "name": "secret",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            }
+          ],
+          "itemType": "object",
+          "name": "env",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "max_output_bytes": {
+          "default": 1048576,
+          "description": "Largest output kept, in bytes, up to 10485760 (default 1048576)",
+          "friendlyName": "Maximum output (bytes)",
+          "indexed": false,
+          "name": "max_output_bytes",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        },
+        "program": {
+          "description": "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the binding fingerprint and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled",
+          "friendlyName": "Program",
+          "indexed": false,
+          "name": "program",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "description": "Seconds before the call is abandoned, from 1 to 300 (default 30)",
+          "friendlyName": "Timeout (seconds)",
+          "indexed": false,
+          "name": "timeout_seconds",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        }
+      },
+      "isCore": true,
+      "name": "Tool (CLI)",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "tool-mcp": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "tool",
+      "fields": {
+        "args": {
+          "description": "stdio: one argument per item, passed without a shell",
+          "friendlyName": "Arguments",
+          "indexed": false,
+          "itemType": "text",
+          "name": "args",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "auth": {
+          "description": "http: how the call authenticates; the credential is a reference",
+          "fields": [
+            {
+              "coreValues": [
+                {
+                  "label": "None",
+                  "value": "none"
+                },
+                {
+                  "label": "Bearer token",
+                  "value": "bearer"
+                },
+                {
+                  "label": "Custom header",
+                  "value": "header"
+                }
+              ],
+              "description": "How the credential is sent",
+              "extensible": false,
+              "friendlyName": "Scheme",
+              "indexed": false,
+              "name": "scheme",
+              "protection": "core",
+              "required": true,
+              "type": "enum",
+              "userValues": []
+            },
+            {
+              "description": "The header that carries the credential; only for the header scheme",
+              "friendlyName": "Header name",
+              "indexed": false,
+              "name": "header_name",
+              "protection": "core",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
+              "friendlyName": "Secret",
+              "indexed": false,
+              "name": "secret",
+              "protection": "core",
+              "required": false,
+              "type": "text"
+            }
+          ],
+          "friendlyName": "Authentication",
+          "indexed": false,
+          "name": "auth",
+          "protection": "core",
+          "required": false,
+          "type": "object"
+        },
+        "command": {
+          "description": "stdio: the executable, a bare name or an absolute path with no `..` segment, with no arguments and no shell syntax; the executor must put `--` before any model-supplied value",
+          "friendlyName": "Command",
+          "indexed": false,
+          "name": "command",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "env": {
+          "description": "stdio: environment variables for the server, each valued from a credential reference",
+          "friendlyName": "Environment",
+          "indexed": false,
+          "itemFields": [
+            {
+              "description": "The name",
+              "friendlyName": "Name",
+              "indexed": false,
+              "name": "name",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
+              "friendlyName": "Secret",
+              "indexed": false,
+              "name": "secret",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            }
+          ],
+          "itemType": "object",
+          "name": "env",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "remote_tool_name": {
+          "description": "The tool's name on the server, which may differ from this node's name. Required before the tool is enabled",
+          "friendlyName": "Remote tool name",
+          "indexed": false,
+          "name": "remote_tool_name",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "description": "Seconds before the call is abandoned, from 1 to 300 (default 30)",
+          "friendlyName": "Timeout (seconds)",
+          "indexed": false,
+          "name": "timeout_seconds",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        },
+        "transport": {
+          "coreValues": [
+            {
+              "label": "Stdio",
+              "value": "stdio"
+            },
+            {
+              "label": "HTTP",
+              "value": "http"
+            }
+          ],
+          "description": "How the server is reached: a program NodeSpace starts (stdio) or a URL (http). Required before the tool is enabled",
+          "extensible": false,
+          "friendlyName": "Transport",
+          "indexed": false,
+          "name": "transport",
+          "protection": "core",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "url": {
+          "description": "http: the server URL; https, or http only for a loopback host",
+          "friendlyName": "URL",
+          "indexed": false,
+          "name": "url",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Tool (MCP)",
       "relationships": {},
       "schemaVersion": 1
     },
@@ -2359,6 +2682,199 @@
       },
       "isCore": true,
       "name": "Tool (Native)",
+      "relationships": {},
+      "schemaVersion": 1
+    },
+    "tool-rest": {
+      "abstract": false,
+      "contextPaths": [],
+      "extends": "tool",
+      "fields": {
+        "auth": {
+          "description": "How the call authenticates; the credential is a reference",
+          "fields": [
+            {
+              "coreValues": [
+                {
+                  "label": "None",
+                  "value": "none"
+                },
+                {
+                  "label": "Bearer token",
+                  "value": "bearer"
+                },
+                {
+                  "label": "Basic",
+                  "value": "basic"
+                },
+                {
+                  "label": "Custom header",
+                  "value": "header"
+                }
+              ],
+              "description": "How the credential is sent",
+              "extensible": false,
+              "friendlyName": "Scheme",
+              "indexed": false,
+              "name": "scheme",
+              "protection": "core",
+              "required": true,
+              "type": "enum",
+              "userValues": []
+            },
+            {
+              "description": "The header that carries the credential; only for the header scheme",
+              "friendlyName": "Header name",
+              "indexed": false,
+              "name": "header_name",
+              "protection": "core",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "description": "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only",
+              "friendlyName": "Secret",
+              "indexed": false,
+              "name": "secret",
+              "protection": "core",
+              "required": false,
+              "type": "text"
+            }
+          ],
+          "friendlyName": "Authentication",
+          "indexed": false,
+          "name": "auth",
+          "protection": "core",
+          "required": false,
+          "type": "object"
+        },
+        "body": {
+          "coreValues": [
+            {
+              "label": "None",
+              "value": "none"
+            },
+            {
+              "label": "JSON",
+              "value": "json"
+            }
+          ],
+          "default": "none",
+          "description": "none sends no body; json sends the arguments not used in the URL or query as a JSON object. Not for GET",
+          "extensible": false,
+          "friendlyName": "Body",
+          "indexed": false,
+          "name": "body",
+          "protection": "core",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "headers": {
+          "description": "Static headers; a credential goes in the authentication field",
+          "friendlyName": "Headers",
+          "indexed": false,
+          "itemFields": [
+            {
+              "description": "The name",
+              "friendlyName": "Name",
+              "indexed": false,
+              "name": "name",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "description": "A fixed, non-secret value",
+              "friendlyName": "Value",
+              "indexed": false,
+              "name": "value",
+              "protection": "core",
+              "required": true,
+              "type": "text"
+            }
+          ],
+          "itemType": "object",
+          "name": "headers",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "max_response_bytes": {
+          "default": 1048576,
+          "description": "Largest response kept, in bytes, up to 10485760 (default 1048576)",
+          "friendlyName": "Maximum response (bytes)",
+          "indexed": false,
+          "name": "max_response_bytes",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        },
+        "method": {
+          "coreValues": [
+            {
+              "label": "GET",
+              "value": "GET"
+            },
+            {
+              "label": "POST",
+              "value": "POST"
+            },
+            {
+              "label": "PUT",
+              "value": "PUT"
+            },
+            {
+              "label": "PATCH",
+              "value": "PATCH"
+            },
+            {
+              "label": "DELETE",
+              "value": "DELETE"
+            }
+          ],
+          "description": "The HTTP method. Required before the tool is enabled",
+          "extensible": false,
+          "friendlyName": "Method",
+          "indexed": false,
+          "name": "method",
+          "protection": "core",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "query_params": {
+          "description": "The arguments sent as query parameters, each a property of the parameter schema",
+          "friendlyName": "Query parameters",
+          "indexed": false,
+          "itemType": "text",
+          "name": "query_params",
+          "protection": "core",
+          "required": false,
+          "type": "array"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "description": "Seconds before the call is abandoned, from 1 to 300 (default 30)",
+          "friendlyName": "Timeout (seconds)",
+          "indexed": false,
+          "name": "timeout_seconds",
+          "protection": "core",
+          "required": false,
+          "type": "number"
+        },
+        "url_template": {
+          "description": "The absolute URL, starting with a literal http:// or https:// (http only for a loopback host). `{name}` placeholders may appear only after the host and port, and each names a property of the parameter schema; the executor must percent-encode each value it puts in one. Required before the tool is enabled",
+          "friendlyName": "URL template",
+          "indexed": false,
+          "name": "url_template",
+          "protection": "core",
+          "required": false,
+          "type": "text"
+        }
+      },
+      "isCore": true,
+      "name": "Tool (REST)",
       "relationships": {},
       "schemaVersion": 1
     }

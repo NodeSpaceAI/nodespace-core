@@ -315,5 +315,35 @@ export const CORE_NODE_TYPES = [
     excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'tool-mcp',
+    parent: 'tool',
+    abstract: false,
+    category: 'structured',
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: false,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'tool-rest',
+    parent: 'tool',
+    abstract: false,
+    category: 'structured',
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: false,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'tool-cli',
+    parent: 'tool',
+    abstract: false,
+    category: 'structured',
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: false,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   }
 ] as const satisfies readonly CoreTypeEntry[];

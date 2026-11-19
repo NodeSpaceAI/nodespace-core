@@ -46,6 +46,8 @@ const NAME_AS_CONTENT_TYPES = [
   'tool'
 ] as const;
 
+const REMOTE_TOOL_TYPES = ['tool-mcp', 'tool-rest', 'tool-cli'] as const;
+
 /**
  * The seed `content` a fresh instance of `typeId` starts with — shared by the
  * immediate create and the unsaved placeholder so both start identically.
@@ -58,6 +60,9 @@ const NAME_AS_CONTENT_TYPES = [
  */
 function seedContent(typeId: string): string {
   if (isA(typeId, 'ai-chat')) return UNTITLED_CHAT_TITLE;
+  // A remote tool's name is an identifier the model API accepts (letters, digits,
+  // `_` and `-`), so its placeholder is hyphenated, not "Untitled Tool Cli".
+  if (REMOTE_TOOL_TYPES.some((base) => isA(typeId, base))) return `untitled-${typeId}`;
   return NAME_AS_CONTENT_TYPES.some((base) => isA(typeId, base))
     ? `Untitled ${humanizeSchemaId(typeId)}`
     : '';

@@ -15,6 +15,9 @@ use crate::models::{
     Node, PlayFields, QueryFields, SchemaNode, SkillFields, ValidationError as NodeValidationError,
 };
 use crate::services::NodeAccessor;
+use nodespace_types::{
+    check_closed_root, is_tool_name, ToolBindingError, ToolCliFields, ToolMcpFields, ToolRestFields,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -2311,6 +2314,237 @@ impl ToolOrigin {
     }
 }
 
+/// Whether `value` is the lowercase hex of a SHA-256 digest.
+fn is_binding_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Appends `value` as JSON with every object's keys in sorted order, so the
+/// same data always yields the same text.
+fn write_canonical(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (i, key) in keys.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical(&map[key], out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// The fingerprint of a remote tool's binding: SHA-256, as lowercase hex, of
+/// every field a subtype of `tool` stores (each bucket of `chain` but `tool`'s
+/// own) and of `parameter_schema`, the arguments the model may pass.
+///
+/// A change to any of them changes the fingerprint. The name, `description`,
+/// `enabled` and `approved_binding` are outside it: enabling a tool and
+/// rewording what it says do not alter what it runs. Whatever offers a tool
+/// compares this with the tool's `approved_binding`, written when it was
+/// enabled on this device.
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::tool_binding_hash;
+/// use serde_json::json;
+///
+/// let chain = ["tool-cli", "tool"];
+/// let node = |program: &str, description: &str| json!({
+///     "tool": { "description": description },
+///     "tool-cli": { "program": program },
+/// });
+/// assert_eq!(
+///     tool_binding_hash(&chain, &node("git", "one")),
+///     tool_binding_hash(&chain, &node("git", "two")),
+/// );
+/// assert_ne!(
+///     tool_binding_hash(&chain, &node("git", "one")),
+///     tool_binding_hash(&chain, &node("rm", "one")),
+/// );
+/// ```
+pub fn tool_binding_hash<S: AsRef<str>>(chain: &[S], properties: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let base = CoreNodeType::Tool.as_str();
+    let mut material = serde_json::Map::new();
+    for node_type in chain.iter().map(AsRef::as_ref).filter(|t| *t != base) {
+        let bucket = properties.get(node_type).cloned().unwrap_or(Value::Null);
+        material.insert(node_type.to_string(), bucket);
+    }
+    let schema = get_namespaced_prop(properties, base, "parameter_schema")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let mut text = String::new();
+    write_canonical(
+        &serde_json::json!({ "buckets": material, "parameter_schema": schema }),
+        &mut text,
+    );
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The rules every remote tool kind adds to [`ToolNodeBehavior`]'s, then the
+/// kind's own binding check (`check_binding(bucket, parameter_schema,
+/// complete)`).
+///
+/// - The name is an identifier the model API accepts.
+/// - `parameter_schema`, when set, has a closed root.
+/// - `approved_binding`, when set, is a binding fingerprint.
+/// - A tool that is `enabled` has a complete binding; a draft may be
+///   incomplete, but whatever it holds is well formed.
+fn validate_remote_tool(
+    node: &Node,
+    kind: &str,
+    check_binding: impl Fn(&Value, Option<&Value>, bool) -> Result<(), ToolBindingError>,
+) -> Result<(), NodeValidationError> {
+    let invalid = |message: String| NodeValidationError::InvalidProperties(message);
+    let base = CoreNodeType::Tool.as_str();
+    if !is_tool_name(&node.content) {
+        return Err(invalid(
+            "a remote tool's name must be ASCII letters, digits, `_` and `-`, start with a \
+             letter and be at most 64 characters"
+                .to_string(),
+        ));
+    }
+    let schema = get_namespaced_prop(&node.properties, base, "parameter_schema")
+        .filter(|schema| !schema.is_null());
+    if let Some(schema) = schema {
+        check_closed_root(schema).map_err(|e| invalid(e.0))?;
+    }
+    match get_namespaced_prop(&node.properties, base, "approved_binding") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(hash)) if is_binding_hash(hash) => {}
+        Some(_) => {
+            return Err(invalid(
+                "approved_binding must be a binding fingerprint".to_string(),
+            ))
+        }
+    }
+    let enabled =
+        get_namespaced_prop(&node.properties, base, "enabled") == Some(&Value::Bool(true));
+    let bucket = node.properties.get(kind).unwrap_or(&Value::Null);
+    check_binding(bucket, schema, enabled).map_err(|e| invalid(e.0))
+}
+
+/// Behavior for `tool-mcp` nodes: a tool on an MCP server. Binding rules are
+/// those of [`ToolMcpFields`]. Nothing here runs the call.
+pub struct ToolMcpNodeBehavior;
+
+impl NodeBehavior for ToolMcpNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::ToolMcp.as_str()
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        validate_remote_tool(node, self.type_name(), |bucket, schema, complete| {
+            let fields = ToolMcpFields::from_bucket(bucket)?;
+            if complete {
+                fields.check_complete(schema)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn supports_markdown(&self) -> bool {
+        ToolNodeBehavior.supports_markdown()
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_embeddable_content(node)
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_parent_contribution(node)
+    }
+}
+
+/// Behavior for `tool-rest` nodes: an HTTP endpoint. Binding rules are those
+/// of [`ToolRestFields`].
+pub struct ToolRestNodeBehavior;
+
+impl NodeBehavior for ToolRestNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::ToolRest.as_str()
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        validate_remote_tool(node, self.type_name(), |bucket, schema, complete| {
+            let fields = ToolRestFields::from_bucket(bucket)?;
+            if complete {
+                fields.check_complete(schema)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn supports_markdown(&self) -> bool {
+        ToolNodeBehavior.supports_markdown()
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_embeddable_content(node)
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_parent_contribution(node)
+    }
+}
+
+/// Behavior for `tool-cli` nodes: a command-line program. Binding rules are
+/// those of [`ToolCliFields`].
+pub struct ToolCliNodeBehavior;
+
+impl NodeBehavior for ToolCliNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::ToolCli.as_str()
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        validate_remote_tool(node, self.type_name(), |bucket, schema, complete| {
+            let fields = ToolCliFields::from_bucket(bucket)?;
+            if complete {
+                fields.check_complete(schema)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn supports_markdown(&self) -> bool {
+        ToolNodeBehavior.supports_markdown()
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_embeddable_content(node)
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_parent_contribution(node)
+    }
+}
+
 /// Maximum object-nesting depth allowed in a tool's `parameter_schema`.
 ///
 /// Bounded nesting stops a tool registered from outside from storing a schema
@@ -2636,6 +2870,9 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(SkillNodeBehavior));
         registry.register_core(Arc::new(ToolNodeBehavior));
         registry.register_core(Arc::new(ToolNativeNodeBehavior));
+        registry.register_core(Arc::new(ToolMcpNodeBehavior));
+        registry.register_core(Arc::new(ToolRestNodeBehavior));
+        registry.register_core(Arc::new(ToolCliNodeBehavior));
         registry.register_core(Arc::new(PlayNodeBehavior));
         registry.register_core(Arc::new(PersonNodeBehavior));
         registry.register_core(Arc::new(DatabaseSettingsNodeBehavior));
@@ -3695,6 +3932,9 @@ mod tests {
         assert!(types.contains(&"skill".to_string()));
         assert!(types.contains(&"tool".to_string()));
         assert!(types.contains(&"tool-native".to_string()));
+        assert!(types.contains(&"tool-mcp".to_string()));
+        assert!(types.contains(&"tool-rest".to_string()));
+        assert!(types.contains(&"tool-cli".to_string()));
         assert!(types.contains(&"person".to_string()));
         assert!(types.contains(&"database-settings".to_string()));
         assert!(types.contains(&"project".to_string()));
@@ -5477,6 +5717,110 @@ mod tests {
         node.content = "".to_string();
         assert!(ToolNodeBehavior.validate(&node).is_err());
         assert!(validate_native_tool(&node).is_err());
+    }
+
+    #[test]
+    fn the_binding_hash_follows_the_binding_and_nothing_else() {
+        let chain = ["tool-rest", "tool"];
+        let node = |url: &str, description: &str, enabled: bool, schema: Value| {
+            json!({
+                "tool": {
+                    "description": description,
+                    "enabled": enabled,
+                    "approved_binding": "ignored",
+                    "parameter_schema": schema,
+                },
+                "tool-rest": { "method": "GET", "url_template": url },
+            })
+        };
+        let closed = json!({"type":"object","additionalProperties":false});
+        let base = tool_binding_hash(
+            &chain,
+            &node("https://a.test/x", "one", false, closed.clone()),
+        );
+        assert_eq!(base.len(), 64);
+        assert!(is_binding_hash(&base));
+        // Not part of the binding.
+        assert_eq!(
+            base,
+            tool_binding_hash(
+                &chain,
+                &node("https://a.test/x", "two", true, closed.clone())
+            )
+        );
+        // Part of the binding.
+        assert_ne!(
+            base,
+            tool_binding_hash(
+                &chain,
+                &node("https://b.test/x", "one", false, closed.clone())
+            )
+        );
+        assert_ne!(
+            base,
+            tool_binding_hash(
+                &chain,
+                &node(
+                    "https://a.test/x",
+                    "one",
+                    false,
+                    json!({"type":"object","additionalProperties":false,"properties":{"q":{}}})
+                )
+            )
+        );
+        // Key order is not part of it.
+        let reordered = json!({
+            "tool-rest": { "url_template": "https://a.test/x", "method": "GET" },
+            "tool": { "parameter_schema": {"additionalProperties":false,"type":"object"} },
+        });
+        assert_eq!(base, tool_binding_hash(&chain, &reordered));
+        // A user subtype's own bucket is part of it.
+        let sub = ["internal", "tool-rest", "tool"];
+        let mut with_extra = reordered.clone();
+        with_extra["internal"] = json!({ "owner": "me" });
+        assert_ne!(
+            tool_binding_hash(&sub, &reordered),
+            tool_binding_hash(&sub, &with_extra)
+        );
+    }
+
+    #[test]
+    fn an_absent_enabled_is_a_draft() {
+        let registry = NodeBehaviorRegistry::new();
+        for kind in ["tool-mcp", "tool-rest", "tool-cli"] {
+            for tool in [json!({}), json!({ "enabled": null })] {
+                let node = Node::new(
+                    kind.to_string(),
+                    "arrived".to_string(),
+                    json!({ "tool": tool }),
+                );
+                assert!(
+                    registry.validate_node(&node, &[kind, "tool"]).is_ok(),
+                    "{kind}: an incomplete binding with no enabled is a draft"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remote_tool_behaviours_reach_every_stored_node_of_their_kind() {
+        let registry = NodeBehaviorRegistry::new();
+        let node = Node::new(
+            "tool-cli".to_string(),
+            "git log".to_string(),
+            json!({ "tool-cli": { "program": "git" } }),
+        );
+        // A name with a space is refused by the kind's behaviour, which the
+        // chain reaches after the base's.
+        assert!(registry
+            .validate_node(&node, &["tool-cli", "tool"])
+            .is_err());
+        let node = Node::new(
+            "tool-cli".to_string(),
+            "git_log".to_string(),
+            json!({ "tool-cli": { "program": "git" } }),
+        );
+        assert!(registry.validate_node(&node, &["tool-cli", "tool"]).is_ok());
     }
 
     /// The trust gate is the subtype's rule (ADR-086 §12): a native tool is

@@ -285,7 +285,10 @@ const fn stage1_core_type_words(
         | T::AiChatAcp
         | T::AiChatMessage
         | T::Tool
-        | T::ToolNative => None,
+        | T::ToolNative
+        | T::ToolMcp
+        | T::ToolRest
+        | T::ToolCli => None,
     }
 }
 

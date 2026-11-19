@@ -64,6 +64,10 @@ describe('createSchemaInstance', () => {
       ['agent-guidance', 'Untitled Agent Guidance'],
       // `tool` is abstract: its subtypes take the family's content rule.
       ['tool-native', 'Untitled Tool Native'],
+      // A remote tool's name must be an identifier: hyphenated, no spaces.
+      ['tool-mcp', 'untitled-tool-mcp'],
+      ['tool-rest', 'untitled-tool-rest'],
+      ['tool-cli', 'untitled-tool-cli'],
     ];
     for (const [typeId, expected] of cases) {
       createNodeMock.mockClear();
