@@ -6,9 +6,16 @@
   into its own settings, so it is never offered here. The card is a live
   region (`role="alert"`) so it is announced when it appears, every choice is a
   native button named in words, and it answers at most once per request.
+
+  The words on a choice are NodeSpace's own ("Allow once", "Reject once"), never
+  the agent's: an agent-supplied name could say something the choice does not
+  do. Focus moves to the card when it appears and, through `onAnswered`, away
+  from it when it is answered, so it never drops to the page. A failed answer
+  is shown and the choices are available again.
 -->
 
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { AcpPermissionOutcome, AcpPermissionRequest } from '$lib/types/acp-session';
   import {
     onceOnlyOptions,
@@ -18,11 +25,14 @@
 
   let {
     request,
-    onAnswer
+    onAnswer,
+    onAnswered
   }: {
     request: AcpPermissionRequest;
     /** Absent when the session cannot take an answer: the choices are shown disabled. */
     onAnswer?: (_requestId: string, _outcome: AcpPermissionOutcome) => void | Promise<void>;
+    /** Called as soon as an answer is sent, so the viewer can take focus off the card. */
+    onAnswered?: () => void;
   } = $props();
 
   const options = $derived(onceOnlyOptions(request.options));
@@ -31,18 +41,33 @@
   let answeredId = $state<string | null>(null);
   const answered = $derived(answeredId === request.requestId);
 
+  let failure = $state<string | null>(null);
+  let sectionEl: HTMLElement | undefined = $state();
+
+  onMount(() => sectionEl?.focus());
+
   const uid = $props.id();
   const titleId = `${uid}-title`;
   const detailId = `${uid}-detail`;
 
   function answer(outcome: AcpPermissionOutcome): void {
     if (answered || !onAnswer) return;
-    answeredId = request.requestId;
-    void onAnswer(request.requestId, outcome);
+    const requestId = request.requestId;
+    answeredId = requestId;
+    failure = null;
+    onAnswered?.();
+    new Promise<void>((resolve) => resolve(onAnswer(requestId, outcome))).catch((err: unknown) => {
+      if (answeredId !== requestId) return;
+      answeredId = null;
+      failure = err instanceof Error ? err.message : String(err);
+      sectionEl?.focus();
+    });
   }
 </script>
 
 <section
+  bind:this={sectionEl}
+  tabindex="-1"
   class="acp-permission"
   role="alert"
   aria-labelledby={titleId}
@@ -68,9 +93,6 @@
         onclick={() => answer({ selected: option.optionId })}
       >
         <span class="acp-permission-choice">{permissionOptionKindLabel(option.kind)}</span>
-        {#if option.name.trim().toLowerCase() !== permissionOptionKindLabel(option.kind).toLowerCase()}
-          <span class="acp-permission-name">{option.name}</span>
-        {/if}
       </button>
     {/each}
     <button
@@ -83,8 +105,13 @@
       <span class="acp-permission-choice">Cancel request</span>
     </button>
   </div>
+  {#if failure}
+    <p class="acp-permission-note error" role="alert">
+      Could not send the answer: {failure}. You can answer again.
+    </p>
+  {/if}
   {#if answered}
-    <p class="acp-permission-note">Answer sent.</p>
+    <p class="acp-permission-note" role="status">Answer sent.</p>
   {/if}
 </section>
 
@@ -162,8 +189,7 @@
     font-weight: 600;
   }
 
-  .acp-permission-name {
-    font-size: 0.75rem;
-    color: hsl(var(--muted-foreground));
+  .acp-permission-note.error {
+    color: hsl(var(--destructive));
   }
 </style>

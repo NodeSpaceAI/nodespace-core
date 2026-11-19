@@ -49,6 +49,7 @@
     session?: AcpSessionSource;
   } = $props();
 
+  let rootEl: HTMLDivElement | undefined = $state();
   let messagesContainer: HTMLDivElement | undefined = $state();
   let sendError = $state<string | null>(null);
   let isSending = $state(false);
@@ -100,10 +101,37 @@
     }
   }
 
+  /**
+   * Take focus off the permission card: to the message input when it can take
+   * it, else to the conversation, so focus never drops to the page.
+   */
+  async function releaseFocus(): Promise<void> {
+    await tick();
+    const input = rootEl?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Chat message input"]');
+    if (input && !input.disabled) input.focus();
+    else messagesContainer?.focus();
+  }
+
   async function scrollToBottom(): Promise<void> {
     await tick();
     if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
+
+  /**
+   * The card can leave without the user answering it (the session ended, the
+   * turn was stopped, the request was answered elsewhere). If that leaves
+   * focus on the page, put it back in the viewer.
+   */
+  let cardShown = false;
+  $effect(() => {
+    const shown = !!session?.pendingPermission && sessionStatus === 'active';
+    const gone = cardShown && !shown;
+    cardShown = shown;
+    if (!gone) return;
+    tick().then(() => {
+      if (!document.activeElement || document.activeElement === document.body) void releaseFocus();
+    });
+  });
 
   onMount(async () => {
     try {
@@ -120,7 +148,7 @@
   });
 </script>
 
-<div class="ai-chat-viewer">
+<div class="ai-chat-viewer" bind:this={rootEl}>
   <AiChatHeader {nodeId} />
 
   {#if !labsFlags.aiChatEnabled}
@@ -133,6 +161,7 @@
     <div
       class="chat-viewer-messages"
       bind:this={messagesContainer}
+      tabindex="-1"
       role="list"
       aria-label="Chat conversation"
     >
@@ -163,13 +192,16 @@
         {/if}
       {/each}
 
-      {#if session?.pendingPermission}
-        <AcpPermissionCard
-          request={session.pendingPermission}
-          onAnswer={session.answerPermission
-            ? (requestId, outcome) => session.answerPermission?.(requestId, outcome)
-            : undefined}
-        />
+      {#if session?.pendingPermission && sessionStatus === 'active'}
+        {#key session.pendingPermission.requestId}
+          <AcpPermissionCard
+            request={session.pendingPermission}
+            onAnswer={session.answerPermission
+              ? (requestId, outcome) => session.answerPermission?.(requestId, outcome)
+              : undefined}
+            onAnswered={releaseFocus}
+          />
+        {/key}
       {/if}
 
       {#if turnRunning}

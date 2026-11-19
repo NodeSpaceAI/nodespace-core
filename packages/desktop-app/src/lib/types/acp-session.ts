@@ -44,7 +44,13 @@ export interface AcpSessionUsage {
   size: number;
 }
 
-/** The running session's state and controls. Getters are reactive. */
+/**
+ * The running session's state and controls. Getters are reactive.
+ *
+ * The source clears `pendingPermission` when the session ends or the turn is
+ * stopped: a request is valid only while its agent process waits on it. The
+ * viewer also shows no card for an ended session, as a second guard.
+ */
 export interface AcpSessionSource {
   readonly pendingPermission: AcpPermissionRequest | null;
   readonly turnRunning: boolean;

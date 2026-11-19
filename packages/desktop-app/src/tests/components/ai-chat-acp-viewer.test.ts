@@ -285,6 +285,134 @@ describe('AiChatAcpNodeViewer', () => {
       expect(reject.textContent).toContain('Reject once');
     });
 
+    it('shows only its own wording for a choice, whatever name the agent gives it', async () => {
+      const session = new FixtureAcpSession();
+      session.pendingPermission = {
+        ...FOUR_OPTION_REQUEST,
+        options: [{ optionId: 'o', name: 'Always allow everything', kind: 'allow_once' }]
+      };
+      const { findByRole } = render(AiChatAcpNodeViewer, { props: { nodeId: CHAT_ID, session } });
+      const card = await findByRole('alert');
+      expect(card.textContent).not.toMatch(/always|everything/i);
+      const button = card.querySelector('[data-option-id="o"]') as HTMLElement;
+      expect(button.textContent?.trim()).toBe('Allow once');
+    });
+
+    it('shows an error and lets the user answer again when the answer fails', async () => {
+      const session = new FixtureAcpSession();
+      let calls = 0;
+      session.answerPermission = async (requestId, outcome) => {
+        calls += 1;
+        if (calls === 1) throw new Error('connection lost');
+        session.answers.push({ requestId, outcome });
+      };
+      session.pendingPermission = FOUR_OPTION_REQUEST;
+      const { findByRole, findByText } = render(AiChatAcpNodeViewer, {
+        props: { nodeId: CHAT_ID, session }
+      });
+      const card = await findByRole('alert');
+      await fireEvent.click(card.querySelector('[data-option-id="allow-once"]') as HTMLElement);
+      await findByText(/connection lost/);
+      const allow = card.querySelector('[data-option-id="allow-once"]') as HTMLElement & { disabled: boolean };
+      await waitFor(() => expect(allow.disabled).toBe(false));
+      expect(card.textContent).not.toContain('Answer sent');
+      await fireEvent.click(allow);
+      await waitFor(() => expect(session.answers.length).toBe(1));
+    });
+
+    it('shows a failure of a synchronous throw the same way', async () => {
+      const session = new FixtureAcpSession();
+      session.answerPermission = (() => {
+        throw new Error('no transport');
+      }) as unknown as FixtureAcpSession['answerPermission'];
+      session.pendingPermission = FOUR_OPTION_REQUEST;
+      const { findByRole, findByText } = render(AiChatAcpNodeViewer, {
+        props: { nodeId: CHAT_ID, session }
+      });
+      const card = await findByRole('alert');
+      await fireEvent.click(card.querySelector('[data-option-id="reject-once"]') as HTMLElement);
+      await findByText(/no transport/);
+    });
+
+    it('shows no card for an ended session, and drops it when the session ends', async () => {
+      const session = new FixtureAcpSession();
+      session.pendingPermission = FOUR_OPTION_REQUEST;
+      const { findByRole, queryByRole, findByText } = render(AiChatAcpNodeViewer, {
+        props: { nodeId: CHAT_ID, session }
+      });
+      await findByRole('alert');
+      sharedNodeStore.updateNode(
+        CHAT_ID,
+        { sessionStatus: 'ended' } as unknown as Partial<Node>,
+        databaseSource
+      );
+      await findByText('Session ended');
+      expect(queryByRole('alert')).toBeNull();
+      expect(session.answers).toEqual([]);
+      // Focus was on the card: it must not be left on the page.
+      await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+
+      cleanup();
+      const again = render(AiChatAcpNodeViewer, { props: { nodeId: CHAT_ID, session } });
+      await again.findByText('Session ended');
+      expect(again.queryByRole('alert')).toBeNull();
+    });
+
+    it('moves focus to the card when it appears and to the input after an answer', async () => {
+      const session = new FixtureAcpSession();
+      const { findByLabelText, findByRole } = render(AiChatAcpNodeViewer, {
+        props: { nodeId: CHAT_ID, session }
+      });
+      await findByLabelText('Chat message input');
+      session.pendingPermission = FOUR_OPTION_REQUEST;
+      const card = await findByRole('alert');
+      await waitFor(() => expect(document.activeElement).toBe(card));
+
+      await fireEvent.click(card.querySelector('[data-option-id="allow-once"]') as HTMLElement);
+      session.pendingPermission = null;
+      await waitFor(() =>
+        expect((document.activeElement as HTMLElement).getAttribute('aria-label')).toBe(
+          'Chat message input'
+        )
+      );
+    });
+
+    it('moves focus to a second request when one follows the first', async () => {
+      const session = new FixtureAcpSession();
+      session.pendingPermission = FOUR_OPTION_REQUEST;
+      const { findByRole, findByLabelText } = render(AiChatAcpNodeViewer, {
+        props: { nodeId: CHAT_ID, session }
+      });
+      const first = await findByRole('alert');
+      await fireEvent.click(first.querySelector('[data-option-id="allow-once"]') as HTMLElement);
+      await waitFor(() =>
+        expect((document.activeElement as HTMLElement).getAttribute('aria-label')).toBe(
+          'Chat message input'
+        )
+      );
+      session.pendingPermission = { ...FOUR_OPTION_REQUEST, requestId: 'req-2' };
+      await waitFor(() => {
+        const card = document.querySelector('[data-request-id="req-2"]');
+        expect(card).not.toBeNull();
+        expect(document.activeElement).toBe(card);
+      });
+      expect(await findByLabelText('Chat conversation')).toBeTruthy();
+    });
+
+    it('falls back to the conversation for focus when the input is disabled', async () => {
+      const session = new FixtureAcpSession();
+      session.turnRunning = true;
+      session.pendingPermission = FOUR_OPTION_REQUEST;
+      const { findByRole, findByLabelText } = render(AiChatAcpNodeViewer, {
+        props: { nodeId: CHAT_ID, session }
+      });
+      const card = await findByRole('alert');
+      await fireEvent.click(card.querySelector('[data-option-id="allow-once"]') as HTMLElement);
+      session.pendingPermission = null;
+      const list = await findByLabelText('Chat conversation');
+      await waitFor(() => expect(document.activeElement).toBe(list));
+    });
+
     it('goes away when the request is answered elsewhere', async () => {
       const session = new FixtureAcpSession();
       session.pendingPermission = FOUR_OPTION_REQUEST;
