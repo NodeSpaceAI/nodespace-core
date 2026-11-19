@@ -22,6 +22,7 @@ use nodespace_agent::agent_types::{
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
 };
+use nodespace_agent::local_agent::cli_runner::CliRunner;
 use nodespace_agent::local_agent::deletion_confirmation::{
     self, landed_write, ConfirmationReply, PendingDeletion,
 };
@@ -669,13 +670,19 @@ impl LocalAgentServiceImpl {
             playbook_lifecycle: self.inner.playbook_lifecycle.clone(),
         });
         // Remote tools (tool-mcp, tool-rest, tool-cli) are offered and run only
-        // through this host. It has no runner yet, so it adds no tool: the
-        // runners are installed here as each kind gains one.
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(RemoteToolHost::new(
-            graph_tools,
-            self.inner.node_service.clone(),
-            Arc::new(nodespace_core::secrets::SecretStore::keychain()),
-        ));
+        // through this host. The `tool-cli` runner is installed; no confirmer is
+        // (the question put to the user is wired separately), so a tool whose
+        // calls need confirmation, which is every `tool-cli` call, is not
+        // offered yet.
+        let secrets = Arc::new(nodespace_core::secrets::SecretStore::keychain());
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(
+            RemoteToolHost::new(
+                graph_tools,
+                self.inner.node_service.clone(),
+                Arc::clone(&secrets),
+            )
+            .with_runner(Arc::new(CliRunner::new(secrets))),
+        );
 
         let prompt_assembler = Some(Arc::new(
             nodespace_agent::prompt_assembler::PromptAssembler::new(

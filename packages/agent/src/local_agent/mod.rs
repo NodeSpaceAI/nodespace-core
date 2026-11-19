@@ -1,4 +1,5 @@
 pub mod agent_loop;
+pub mod cli_runner;
 pub mod decisions;
 pub mod deletion_confirmation;
 pub mod model_manager;

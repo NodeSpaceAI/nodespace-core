@@ -3474,6 +3474,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which 7.0.3",
+ "zeroize",
 ]
 
 [[package]]

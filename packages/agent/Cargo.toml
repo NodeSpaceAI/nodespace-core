@@ -22,6 +22,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset", "stream", "json"] }
 sha2 = "0.10"
+# Overwrites a credential value held while a program is started.
+zeroize = "1"
 uuid = { workspace = true }
 futures = "0.3"
 regex = "1"
