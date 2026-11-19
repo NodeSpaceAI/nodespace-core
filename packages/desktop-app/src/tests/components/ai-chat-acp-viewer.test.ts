@@ -137,6 +137,17 @@ describe('AiChatAcpNodeViewer', () => {
     expect(row.getAttribute('data-status')).toBe('completed');
   });
 
+  it('renders a tool call part with no tool fields set, as the schema accepts one', async () => {
+    seedChild('m-bare', '', { role: 'assistant', partKind: 'tool_call' }, 1);
+    const { container, findByText } = render(AiChatAcpNodeViewer, { props: { nodeId: CHAT_ID } });
+    await findByText('Tool call');
+    const row = container.querySelector('[data-acp-row="tool"]') as HTMLElement;
+    expect(row.getAttribute('data-message-id')).toBe('m-bare');
+    expect(row.getAttribute('data-status')).toBe('pending');
+    expect(row.getAttribute('data-tool-call-id')).toBeNull();
+    expect(row.textContent).toContain('Waiting');
+  });
+
   it('updates a tool call in place when its status changes', async () => {
     seedConversation();
     const { container, findByText } = render(AiChatAcpNodeViewer, { props: { nodeId: CHAT_ID } });

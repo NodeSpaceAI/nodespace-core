@@ -1521,8 +1521,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // AI chat message (ADR-088 §3): one message of a native or ACP chat, a
         // child of its chat in conversation order. An ACP chat records one
-        // message per part of the agent's turn (`part_kind`, `tool_*`). Its text is its content. What it
-        // wrote, looked up or asked to delete is on edges, so the graph sees it.
+        // message per part of the agent's turn (`part_kind`, `tool_*`). Its
+        // text is its content. What it wrote, looked up or asked to delete is
+        // on edges, so the graph sees it.
         SchemaNode {
             envelope: envelope("ai-chat-message", "AI Chat Message"),
             extends: None,

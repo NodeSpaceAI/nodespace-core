@@ -575,8 +575,10 @@ pub struct AiChatMessageNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub options: Vec<String>,
-    /// Which part of an agent's turn this message is, in an ACP chat. `None`
-    /// for a whole message.
+    /// Which part of an agent's turn this message is, in an ACP chat. Absent
+    /// for a whole message. A `tool_call` part is accepted with none of the
+    /// `tool_*` fields set: the writer sets them, and a reader shows a missing
+    /// one as unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_kind: Option<AiChatPartKind>,
     /// The agent's id for the tool call this message records; an update to the

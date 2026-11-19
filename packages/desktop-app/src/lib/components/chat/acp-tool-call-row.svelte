@@ -1,6 +1,10 @@
 <!--
   AcpToolCallRow - one tool call of an ACP turn: its kind, title and status.
   The status is always written out; the glyph beside it only repeats it.
+
+  The schema accepts a tool-call part with none of its tool fields set (the
+  session writer sets them), so each is optional here: a missing title reads
+  "Tool call", a missing kind "Tool", and a missing status "Waiting".
 -->
 
 <script lang="ts">

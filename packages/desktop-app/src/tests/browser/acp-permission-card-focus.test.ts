@@ -26,7 +26,9 @@ describe('AcpPermissionCard focus (real browser)', () => {
   it('focuses each choice in reading order and activates the focused one', () => {
     const answers: AcpPermissionOutcome[] = [];
     const { container } = render(AcpPermissionCard, {
-      props: { request, onAnswer: (_id: string, outcome: AcpPermissionOutcome) => answers.push(outcome) }
+      props: { request, onAnswer: (_id: string, outcome: AcpPermissionOutcome) => {
+        answers.push(outcome);
+      } }
     });
     const buttons = [...container.querySelectorAll<HTMLElement>('button')];
     expect(buttons.map((b) => b.getAttribute('data-option-id'))).toEqual(['o', 'r', 'cancel']);
@@ -46,7 +48,9 @@ describe('AcpPermissionCard focus (real browser)', () => {
   it('takes no focus and answers nothing more once answered', async () => {
     const answers: AcpPermissionOutcome[] = [];
     const { container } = render(AcpPermissionCard, {
-      props: { request, onAnswer: (_id: string, outcome: AcpPermissionOutcome) => answers.push(outcome) }
+      props: { request, onAnswer: (_id: string, outcome: AcpPermissionOutcome) => {
+        answers.push(outcome);
+      } }
     });
     const buttons = [...container.querySelectorAll<HTMLElement>('button')];
     buttons[1].click();
