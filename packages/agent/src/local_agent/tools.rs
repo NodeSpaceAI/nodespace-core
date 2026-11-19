@@ -4589,9 +4589,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
 /// `search_skills` is retrieval, and ADR-038 makes retrieval a deterministic
 /// system step rather than a model tool call — offering it back to the model
 /// is the single-turn pull that ADR rejects, because it lets the model set K
-/// and bypasses the trust filter. The tool stays in [`Tool::ALL`] because it
-/// remains a legitimate surface for external agents (the MCP `find_skills`
-/// handler shares its implementation); only the local loop withholds it.
+/// and bypasses the trust filter. Routing renders its retrieved candidates
+/// into the prompt instead. The tool stays in [`Tool::ALL`] (and keeps its
+/// seeded tool node); external agents reach skill guidance through
+/// `nodespace skill guidance`, and only the local loop withholds the tool.
 pub fn is_system_only_tool(tool: &str) -> bool {
     matches!(Tool::from_name(tool), Some(Tool::SearchSkills))
 }
@@ -13015,9 +13016,10 @@ mod tests {
 
     #[test]
     fn search_skills_stays_in_the_registry_for_external_agents() {
-        // Withheld from the local model, but still a real tool: the MCP
-        // `find_skills` handler shares its implementation, and the seeded tool
-        // node backing that surface is generated from `Tool::ALL`.
+        // Withheld from the local model, but still a real tool: routing
+        // renders retrieved candidates into the prompt rather than calling it,
+        // external agents use `nodespace skill guidance`, and the seeded tool
+        // node is generated from `Tool::ALL`.
         assert!(Tool::ALL.contains(&Tool::SearchSkills));
         assert!(all_tool_definitions()
             .iter()

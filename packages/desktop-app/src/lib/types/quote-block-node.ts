@@ -151,7 +151,7 @@ export function insertQuoteLineBreak(
   let start = selectionStart;
   const end = Math.max(selectionEnd, selectionStart);
   if (start === end) {
-    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const lineStart = start === 0 ? 0 : value.lastIndexOf('\n', start - 1) + 1;
     const match = /^> ?/.exec(value.slice(lineStart));
     if (match && start < lineStart + match[0].length) {
       start = lineStart + match[0].length;

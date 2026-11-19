@@ -98,6 +98,9 @@ describe('insertQuoteLineBreak', () => {
     expect(insertQuoteLineBreak('> a', 0, 0)).toEqual({ value: '> \n> a', caret: 5 });
     expect(insertQuoteLineBreak('> a', 1, 1)).toEqual({ value: '> \n> a', caret: 5 });
   });
+  it('caret at 0 of a block whose first line is empty stays on that line', () => {
+    expect(insertQuoteLineBreak('\n> a', 0, 0)).toEqual({ value: '\n> \n> a', caret: 3 });
+  });
   it('handles a later line and a line lacking the prefix', () => {
     expect(insertQuoteLineBreak('> a\n> b', 7, 7)).toEqual({ value: '> a\n> b\n> ', caret: 10 });
     expect(insertQuoteLineBreak('plain', 5, 5)).toEqual({ value: 'plain\n> ', caret: 8 });
