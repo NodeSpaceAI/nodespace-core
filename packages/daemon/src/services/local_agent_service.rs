@@ -674,6 +674,7 @@ impl LocalAgentServiceImpl {
         let executor: Arc<dyn AgentToolExecutor> = Arc::new(RemoteToolHost::new(
             graph_tools,
             self.inner.node_service.clone(),
+            Arc::new(nodespace_core::secrets::SecretStore::keychain()),
         ));
 
         let prompt_assembler = Some(Arc::new(

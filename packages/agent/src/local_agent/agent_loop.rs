@@ -406,6 +406,21 @@ pub const CANONICAL_ARGS_MAX_CHARS: usize = 4096;
 /// unambiguous and a digest can never be mistaken for a call's real arguments.
 const CANONICAL_ARGS_DIGEST_PREFIX: &str = "sha256:";
 
+/// [`char_preview`] for a tool's text in a log line or a trace span, except that
+/// a remote tool's arguments and results are never logged: what a remote tool
+/// was sent or returned can hold credentials or remote-controlled text, so
+/// only its size is recorded.
+fn tool_log_preview(tool: &str, text: &str, max: usize) -> (String, bool) {
+    if super::remote_tools::is_remote_tool_name(tool) {
+        (
+            format!("<withheld: external tool, {} chars>", text.chars().count()),
+            false,
+        )
+    } else {
+        char_preview(text, max)
+    }
+}
+
 /// Normalise a tool call's raw JSON arguments so equal calls compare equal.
 ///
 /// Round-tripping through serde sorts nothing by itself, but it does normalise
@@ -3240,7 +3255,11 @@ impl AgentSession {
     /// succeeds, the tool never validates the argument, and the invented id
     /// would count as real without any tool having confirmed it.
     pub fn push_tool_result(&mut self, record: ToolExecutionRecord) {
-        collect_node_uris(&record.result, &mut self.grounded_node_uris);
+        // A node id that appears in a remote tool's output is the remote side's
+        // claim, not a fact about the graph: it grounds nothing.
+        if !super::remote_tools::is_external_result(&record.name, &record.result) {
+            collect_node_uris(&record.result, &mut self.grounded_node_uris);
+        }
         let content =
             prompt_templates::format_tool_result(&record.name, &record.result, record.is_error);
         self.messages.push(ChatMessage::tool_result(
@@ -5090,8 +5109,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             match unusable_arguments(&args) {
                                 None => Ok(args),
                                 Some(problem) => {
-                                    let (args_preview, args_preview_truncated) =
-                                        char_preview(&tc.arguments_json, 300);
+                                    let (args_preview, args_preview_truncated) = tool_log_preview(
+                                        &tc.function_name,
+                                        &tc.arguments_json,
+                                        300,
+                                    );
                                     tracing::warn!(
                                         session_id = %session.id,
                                         tool = %tc.function_name,
@@ -5110,7 +5132,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         }
                         Err(parse_err) => {
                             let (args_preview, args_preview_truncated) =
-                                char_preview(&tc.arguments_json, 300);
+                                tool_log_preview(&tc.function_name, &tc.arguments_json, 300);
                             tracing::warn!(
                                 session_id = %session.id,
                                 tool = %tc.function_name,
@@ -5579,9 +5601,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // logged, never acted on.
                 let result_field_count = persisted_field_count(&tc.function_name, &result_value);
 
-                let (args_preview, args_preview_truncated) = char_preview(&args.to_string(), 300);
+                // A remote tool's arguments and result are not logged: only their
+                // sizes (see `tool_log_preview`).
+                let (args_preview, args_preview_truncated) =
+                    tool_log_preview(&tc.function_name, &args.to_string(), 300);
                 let (result_preview, result_preview_truncated) =
-                    char_preview(&result_value.to_string(), 300);
+                    tool_log_preview(&tc.function_name, &result_value.to_string(), 300);
                 // A field of its own rather than something to find in
                 // `result_preview`: the preview is cut at 300 characters, and a
                 // long list of allowed ids would push the error code past it.
@@ -5616,7 +5641,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 );
 
                 let (result_for_span, result_for_span_truncated) =
-                    char_preview(&result_value.to_string(), 2000);
+                    tool_log_preview(&tc.function_name, &result_value.to_string(), 2000);
                 tool_results_for_span.push(serde_json::json!({
                     "tool": tc.function_name,
                     "is_error": is_error,
@@ -7504,6 +7529,101 @@ mod tests {
         assert_eq!(session.messages[1].role, Role::Assistant);
         assert_eq!(session.messages[2].role, Role::Tool);
         assert_eq!(session.messages[3].role, Role::Assistant);
+    }
+
+    /// Runs one turn in which the model calls `tool` with `args` and the
+    /// executor answers `result`; returns the session and everything logged.
+    async fn logged_turn(
+        tool: &str,
+        args: &str,
+        result: serde_json::Value,
+    ) -> (AgentSession, String) {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        let engine = Arc::new(MockEngine::tool_then_text(tool, args, "done"));
+        let executor = Arc::new(MockToolExecutor::new().with_tool(
+            tool,
+            json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            result,
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "Use the tool and tell me what it said",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        drop(guard);
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        (session, log)
+    }
+
+    /// What a remote tool returns reaches the model as fenced data, grounds no
+    /// node id, and appears in no log line, preview or span: only its size.
+    #[tokio::test]
+    async fn a_remote_tools_result_is_fenced_ungrounded_and_never_logged() {
+        let uri = "nodespace://11111111-1111-1111-1111-111111111111";
+        let (session, log) = logged_turn(
+            "ext_tool",
+            r#"{"q":"ARGSECRET-1"}"#,
+            json!({"source": "external", "output": format!("RESULTTEXT-2 {uri}"), "truncated": false}),
+        )
+        .await;
+        assert!(!log.contains("ARGSECRET-1"), "{log}");
+        assert!(!log.contains("RESULTTEXT-2"), "{log}");
+        assert!(log.contains("withheld: external tool"), "{log}");
+        let tool_message = session
+            .messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("a tool result");
+        assert!(tool_message.content.contains("untrusted data from outside"));
+        assert!(tool_message.content.contains("<external-data id="));
+        assert!(tool_message.content.contains("RESULTTEXT-2"));
+        assert!(!session.grounded_node_uris.contains(uri));
+    }
+
+    /// The control: a built-in tool's result is not fenced, still grounds its
+    /// ids and is still previewed.
+    #[tokio::test]
+    async fn a_built_in_tools_result_is_unchanged() {
+        let uri = "nodespace://22222222-2222-2222-2222-222222222222";
+        let (session, log) = logged_turn(
+            "search_nodes",
+            r#"{"query":"billing"}"#,
+            json!({"source": "external", "output": format!("BUILTINTEXT {uri}")}),
+        )
+        .await;
+        assert!(log.contains("BUILTINTEXT"), "{log}");
+        assert!(!log.contains("withheld"), "{log}");
+        let tool_message = session
+            .messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .unwrap();
+        assert!(!tool_message.content.contains("external-data"));
+        assert!(session.grounded_node_uris.contains(uri));
     }
 
     #[tokio::test]

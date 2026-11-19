@@ -3593,6 +3593,7 @@ dependencies = [
  "criterion",
  "cron",
  "futures",
+ "hmac",
  "http-body-util",
  "keyring",
  "libsql",
