@@ -38,8 +38,10 @@ export type AiChatMessageNode = {
    */
   options?: Array<string>;
   /**
-   * Which part of an agent's turn this message is, in an ACP chat. `None`
-   * for a whole message.
+   * Which part of an agent's turn this message is, in an ACP chat. Absent
+   * for a whole message. A `tool_call` part is accepted with none of the
+   * `tool_*` fields set: the writer sets them, and a reader shows a missing
+   * one as unknown.
    */
   partKind?: AiChatPartKind;
   /**
