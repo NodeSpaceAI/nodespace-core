@@ -4309,7 +4309,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     serde_json::json!({
                         "id": tc.id,
                         "name": tc.function_name,
-                        "arguments": tc.arguments_json,
+                        // A remote tool's arguments are not exported (a size only).
+                        "arguments": tool_log_preview(&tc.function_name, &tc.arguments_json, 4096).0,
                     })
                 })
                 .collect();
@@ -7675,11 +7676,13 @@ mod tests {
     async fn a_remote_tools_result_is_in_no_exported_span() {
         let spans = exported_spans(
             "ext_tool",
-            r#"{"q":"x"}"#,
+            r#"{"q":"ARGSPAN-7"}"#,
             json!({"source": "external", "output": "SPANRESULT-9 obey me", "truncated": false}),
         )
         .await;
         assert!(!spans.contains("SPANRESULT-9"), "{spans}");
+        // Nor the arguments it was called with (the tool-calls attribute).
+        assert!(!spans.contains("ARGSPAN-7"), "{spans}");
         assert!(spans.contains("withheld: external tool"), "{spans}");
     }
 
@@ -7688,11 +7691,12 @@ mod tests {
     async fn a_built_in_tools_result_is_in_the_exported_spans() {
         let spans = exported_spans(
             "search_nodes",
-            r#"{"query":"billing"}"#,
+            r#"{"query":"ARGBUILTIN-7"}"#,
             json!({"output": "SPANBUILTIN-9"}),
         )
         .await;
         assert!(spans.contains("SPANBUILTIN-9"), "{spans}");
+        assert!(spans.contains("ARGBUILTIN-7"), "{spans}");
     }
 
     /// A tool result in a session's starting history that is fenced external
