@@ -120,7 +120,12 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'timestamp', wire: 'timestamp' },
     { storage: 'reasoning', wire: 'reasoning' },
     { storage: 'outcome', wire: 'outcome' },
-    { storage: 'options', wire: 'options', structured: 'array' }
+    { storage: 'options', wire: 'options', structured: 'array' },
+    { storage: 'part_kind', wire: 'partKind' },
+    { storage: 'tool_call_id', wire: 'toolCallId' },
+    { storage: 'tool_title', wire: 'toolTitle' },
+    { storage: 'tool_kind', wire: 'toolKind' },
+    { storage: 'tool_status', wire: 'toolStatus' }
   ]
 };
 

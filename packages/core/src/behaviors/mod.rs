@@ -1919,8 +1919,9 @@ impl NodeBehavior for AiChatAcpNodeBehavior {
 /// (ADR-088 §3).
 ///
 /// The closed `role` and `outcome` vocabularies are the schema's to enforce.
-/// This checks the one rule that spans two fields: only an assistant message
-/// records how its turn ended.
+/// This checks the rules that span fields: only an assistant message records
+/// how its turn ended or which part of a turn it is, and the `tool_*` fields
+/// belong to a `tool_call` part.
 ///
 /// A message is not embedded and contributes nothing to its chat's embedding:
 /// conversation fragments are not general knowledge (ADR-061 §4).
@@ -1939,6 +1940,20 @@ impl NodeBehavior for AiChatMessageNodeBehavior {
         if field("outcome").is_some() && field("role") != Some(&assistant) {
             return Err(NodeValidationError::InvalidProperties(
                 "outcome is recorded on an assistant message only".to_string(),
+            ));
+        }
+        if field("part_kind").is_some() && field("role") != Some(&assistant) {
+            return Err(NodeValidationError::InvalidProperties(
+                "part_kind is recorded on an assistant message only".to_string(),
+            ));
+        }
+        let tool_call = serde_json::json!(crate::models::AiChatPartKind::ToolCall);
+        let has_tool_field = ["tool_call_id", "tool_title", "tool_kind", "tool_status"]
+            .iter()
+            .any(|name| field(name).is_some());
+        if has_tool_field && field("part_kind") != Some(&tool_call) {
+            return Err(NodeValidationError::InvalidProperties(
+                "tool fields are recorded on a tool_call part only".to_string(),
             ));
         }
         Ok(())
@@ -5280,6 +5295,69 @@ mod tests {
                 err.to_string().contains("assistant message only"),
                 "{properties}: {err}"
             );
+        }
+    }
+
+    /// Part and tool fields: a part is an assistant message's, and the tool
+    /// fields belong to a tool_call part, in either property shape.
+    #[test]
+    fn test_ai_chat_message_part_and_tool_fields_follow_their_rules() {
+        let registry = NodeBehaviorRegistry::new();
+        let chain = ["ai-chat-message"];
+        let message = |properties: serde_json::Value| {
+            Node::new("ai-chat-message".to_string(), "hi".to_string(), properties)
+        };
+
+        for properties in [
+            json!({ "role": "assistant", "part_kind": "text" }),
+            json!({ "role": "assistant", "part_kind": "thought" }),
+            json!({ "role": "assistant", "part_kind": "plan" }),
+            json!({ "role": "assistant", "part_kind": "tool_call" }),
+            json!({ "role": "assistant", "part_kind": "tool_call", "tool_call_id": "c1",
+                    "tool_title": "Read", "tool_kind": "read", "tool_status": "pending" }),
+            json!({ "ai-chat-message": { "role": "assistant", "part_kind": "tool_call",
+                    "tool_status": "cancelled" } }),
+            json!({ "role": "assistant", "part_kind": null, "tool_title": null }),
+        ] {
+            assert!(
+                registry
+                    .validate_node(&message(properties.clone()), &chain)
+                    .is_ok(),
+                "{properties} must be accepted"
+            );
+        }
+
+        for (properties, needle) in [
+            (json!({ "part_kind": "text" }), "assistant message only"),
+            (
+                json!({ "role": "user", "part_kind": "text" }),
+                "assistant message only",
+            ),
+            (
+                json!({ "ai-chat-message": { "role": "system", "part_kind": "plan" } }),
+                "assistant message only",
+            ),
+            (
+                json!({ "role": "assistant", "tool_title": "Read" }),
+                "tool_call part only",
+            ),
+            (
+                json!({ "role": "assistant", "part_kind": "text", "tool_status": "pending" }),
+                "tool_call part only",
+            ),
+            (
+                json!({ "role": "assistant", "part_kind": "plan", "tool_call_id": "c1" }),
+                "tool_call part only",
+            ),
+            (
+                json!({ "role": "assistant", "tool_kind": "read" }),
+                "tool_call part only",
+            ),
+        ] {
+            let err = registry
+                .validate_node(&message(properties.clone()), &chain)
+                .expect_err("must be refused");
+            assert!(err.to_string().contains(needle), "{properties}: {err}");
         }
     }
 

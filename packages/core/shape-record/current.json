@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "a1914ab0a778c947cb5cb3a33f4957ea191e1ae63ad58fee29d543016d246acf",
+  "hash": "32cd320b67b9ab41bc6f21c045aa6f71de4fe7d8f0368429e24301f9654dc98a",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -984,6 +984,35 @@
           "type": "enum",
           "userValues": []
         },
+        "part_kind": {
+          "coreValues": [
+            {
+              "label": "Text",
+              "value": "text"
+            },
+            {
+              "label": "Thought",
+              "value": "thought"
+            },
+            {
+              "label": "Tool call",
+              "value": "tool_call"
+            },
+            {
+              "label": "Plan",
+              "value": "plan"
+            }
+          ],
+          "description": "Which part of an agent's turn an ACP chat message is; absent on a whole message",
+          "extensible": false,
+          "friendlyName": "Part kind",
+          "indexed": false,
+          "name": "part_kind",
+          "protection": "system",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
         "reasoning": {
           "description": "The model's chain-of-thought toward an assistant message",
           "friendlyName": "Reasoning",
@@ -1027,6 +1056,110 @@
           "protection": "system",
           "required": false,
           "type": "datetime"
+        },
+        "tool_call_id": {
+          "description": "The agent's id for the tool call a message records",
+          "friendlyName": "Tool call id",
+          "indexed": false,
+          "name": "tool_call_id",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "tool_kind": {
+          "coreValues": [
+            {
+              "label": "Read",
+              "value": "read"
+            },
+            {
+              "label": "Edit",
+              "value": "edit"
+            },
+            {
+              "label": "Delete",
+              "value": "delete"
+            },
+            {
+              "label": "Move",
+              "value": "move"
+            },
+            {
+              "label": "Search",
+              "value": "search"
+            },
+            {
+              "label": "Execute",
+              "value": "execute"
+            },
+            {
+              "label": "Think",
+              "value": "think"
+            },
+            {
+              "label": "Fetch",
+              "value": "fetch"
+            },
+            {
+              "label": "Switch mode",
+              "value": "switch_mode"
+            },
+            {
+              "label": "Other",
+              "value": "other"
+            }
+          ],
+          "description": "What kind of work the tool call does",
+          "extensible": false,
+          "friendlyName": "Tool kind",
+          "indexed": false,
+          "name": "tool_kind",
+          "protection": "system",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "tool_status": {
+          "coreValues": [
+            {
+              "label": "Pending",
+              "value": "pending"
+            },
+            {
+              "label": "In progress",
+              "value": "in_progress"
+            },
+            {
+              "label": "Completed",
+              "value": "completed"
+            },
+            {
+              "label": "Failed",
+              "value": "failed"
+            },
+            {
+              "label": "Cancelled",
+              "value": "cancelled"
+            }
+          ],
+          "description": "Where the tool call stands",
+          "extensible": false,
+          "friendlyName": "Tool status",
+          "indexed": false,
+          "name": "tool_status",
+          "protection": "system",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
+        "tool_title": {
+          "description": "The tool call's title as the agent gave it",
+          "friendlyName": "Tool title",
+          "indexed": false,
+          "name": "tool_title",
+          "protection": "system",
+          "required": false,
+          "type": "text"
         }
       },
       "isCore": true,

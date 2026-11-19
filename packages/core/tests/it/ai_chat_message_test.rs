@@ -6,9 +6,10 @@
 
 use nodespace_core::db::{SqliteStore, TreeInvariantRule};
 use nodespace_core::models::{
-    node_to_typed_value, AiChatMessageNode, AiChatMessageRole, AiChatPendingDeleteEdge,
-    AiChatResolvedEdge, AiChatTurnOutcome, AiChatWrite, AiChatWroteEdge, Node, NodeFilter,
-    NodeQuery, NodeUpdate, AI_CHAT_PENDING_DELETE, AI_CHAT_RESOLVED, AI_CHAT_WROTE,
+    node_to_typed_value, AiChatMessageNode, AiChatMessageRole, AiChatPartKind,
+    AiChatPendingDeleteEdge, AiChatResolvedEdge, AiChatToolKind, AiChatToolStatus,
+    AiChatTurnOutcome, AiChatWrite, AiChatWroteEdge, Node, NodeFilter, NodeQuery, NodeUpdate,
+    AI_CHAT_PENDING_DELETE, AI_CHAT_RESOLVED, AI_CHAT_WROTE,
 };
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{
@@ -191,6 +192,101 @@ async fn a_message_takes_only_its_declared_fields_and_values() {
         (json!({ "role": "tool_call" }), "tool_call"),
         (json!({ "role": "assistant", "outcome": "done" }), "done"),
         (json!({ "role": "user", "outcome": "replied" }), "assistant"),
+    ] {
+        let error = try_create_under(&svc, Some(&chat), MESSAGE, "hi", properties.clone())
+            .await
+            .expect_err("the write must be refused")
+            .to_string();
+        assert!(error.contains(named), "{properties}: {error}");
+    }
+}
+
+/// An ACP chat stores one message per part of the agent's turn. A tool call
+/// is one message whose status is updated in place, and the part and tool
+/// vocabularies are closed.
+#[tokio::test]
+async fn an_acp_chat_stores_parts_and_updates_a_tool_call_in_place() {
+    let (svc, _tmp) = test_service().await;
+    let chat = acp_chat(&svc).await;
+    let text = message(
+        &svc,
+        &chat,
+        "Looking.",
+        json!({ "role": "assistant", "part_kind": "text" }),
+    )
+    .await;
+    let plan = message(
+        &svc,
+        &chat,
+        "- [ ] read\n- [ ] edit",
+        json!({ "role": "assistant", "part_kind": "plan" }),
+    )
+    .await;
+    let call = message(
+        &svc,
+        &chat,
+        "",
+        json!({
+            "role": "assistant",
+            "part_kind": "tool_call",
+            "tool_call_id": "call_1",
+            "tool_title": "Read main.rs",
+            "tool_kind": "read",
+            "tool_status": "pending"
+        }),
+    )
+    .await;
+
+    let version = get(&svc, &call).await.version;
+    svc.update_node(
+        &call,
+        version,
+        NodeUpdate::new().with_properties(json!({ "tool_status": "completed" })),
+    )
+    .await
+    .unwrap();
+    let node = get(&svc, &call).await;
+    let typed = AiChatMessageNode::from_node(node.clone()).unwrap();
+    assert_eq!(typed.tool_status, Some(AiChatToolStatus::Completed));
+    assert_eq!(typed.tool_kind, Some(AiChatToolKind::Read));
+    assert_eq!(typed.part_kind, Some(AiChatPartKind::ToolCall));
+    assert_eq!(typed.tool_call_id.as_deref(), Some("call_1"));
+    let wire = node_to_typed_value(node).unwrap();
+    assert_eq!(wire["toolStatus"], "completed");
+    assert_eq!(wire["partKind"], "tool_call");
+
+    let order: Vec<String> = svc
+        .get_children(&chat)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(order, [text, plan, call]);
+}
+
+#[tokio::test]
+async fn part_and_tool_fields_are_closed_and_tied_to_their_part() {
+    let (svc, _tmp) = test_service().await;
+    let chat = acp_chat(&svc).await;
+    for (properties, named) in [
+        (
+            json!({ "role": "assistant", "part_kind": "notice" }),
+            "notice",
+        ),
+        (
+            json!({ "role": "assistant", "part_kind": "tool_call", "tool_status": "done" }),
+            "done",
+        ),
+        (
+            json!({ "role": "assistant", "part_kind": "tool_call", "tool_kind": "run" }),
+            "run",
+        ),
+        (json!({ "role": "user", "part_kind": "text" }), "assistant"),
+        (
+            json!({ "role": "assistant", "part_kind": "text", "tool_title": "x" }),
+            "tool_call",
+        ),
     ] {
         let error = try_create_under(&svc, Some(&chat), MESSAGE, "hi", properties.clone())
             .await

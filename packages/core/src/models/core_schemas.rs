@@ -40,8 +40,9 @@ use crate::models::schema::{
     SchemaProtectionLevel, SchemaRelationship,
 };
 use crate::models::{
-    AiChatMessageRole, AiChatProvider, AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus,
-    CoreNodeType, DecisionStatus, IssueStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
+    AiChatMessageRole, AiChatPartKind, AiChatProvider, AiChatSessionStatus, AiChatToolKind,
+    AiChatToolStatus, AiChatTurnOutcome, AiChatTurnStatus, CoreNodeType, DecisionStatus,
+    IssueStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
 };
 use chrono::Utc;
 use nodespace_types::{CaptureContent, RelationshipPath};
@@ -1518,8 +1519,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             properties_header_summary_template: None,
             context_paths: Vec::new(),
         },
-        // AI chat message (ADR-088 §3): one message of a native chat, a child of
-        // its chat in conversation order. Its text is its content. What it
+        // AI chat message (ADR-088 §3): one message of a native or ACP chat, a
+        // child of its chat in conversation order. An ACP chat records one
+        // message per part of the agent's turn (`part_kind`, `tool_*`). Its text is its content. What it
         // wrote, looked up or asked to delete is on edges, so the graph sees it.
         SchemaNode {
             envelope: envelope("ai-chat-message", "AI Chat Message"),
@@ -1620,6 +1622,101 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     default: None,
                     description: Some("The choices offered with a clarifying question; the question is the content".to_string()),
                     item_type: Some(crate::models::SchemaFieldType::Text),
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "part_kind".to_string(),
+                    friendly_name: "Part kind".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: Some(enum_values(&AiChatPartKind::ALL, AiChatPartKind::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: None,
+                    description: Some("Which part of an agent's turn an ACP chat message is; absent on a whole message".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "tool_call_id".to_string(),
+                    friendly_name: "Tool call id".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("The agent's id for the tool call a message records".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "tool_title".to_string(),
+                    friendly_name: "Tool title".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("The tool call's title as the agent gave it".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "tool_kind".to_string(),
+                    friendly_name: "Tool kind".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: Some(enum_values(&AiChatToolKind::ALL, AiChatToolKind::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: None,
+                    description: Some("What kind of work the tool call does".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "tool_status".to_string(),
+                    friendly_name: "Tool status".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: Some(enum_values(&AiChatToolStatus::ALL, AiChatToolStatus::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: None,
+                    description: Some("Where the tool call stands".to_string()),
+                    item_type: None,
                     fields: None,
                     item_fields: None,
                     unique: None,
@@ -3652,7 +3749,18 @@ mod tests {
         assert!(!message.is_abstract);
         assert_eq!(
             field_names(&message),
-            ["role", "timestamp", "reasoning", "outcome", "options"]
+            [
+                "role",
+                "timestamp",
+                "reasoning",
+                "outcome",
+                "options",
+                "part_kind",
+                "tool_call_id",
+                "tool_title",
+                "tool_kind",
+                "tool_status"
+            ]
         );
         assert_eq!(message.extends, None);
         assert_eq!(message.children, SchemaChildrenRule::None);
