@@ -386,6 +386,18 @@ pub trait RemoteToolRunner: Send + Sync {
     /// Where the call goes, for the confirmation question. Holds no credential.
     fn destination(&self, tool: &RemoteTool, args: &Value) -> String;
 
+    /// The text of the confirmation question. The default is
+    /// [`destination`](Self::destination); a runner that must look something up
+    /// first (where a host resolves to) overrides it, and an `Err` ends the call
+    /// before the user is asked.
+    async fn confirmation_text(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+    ) -> Result<String, RemoteCallError> {
+        Ok(self.destination(tool, args))
+    }
+
     /// Runs one validated, confirmed call.
     async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError>;
 }
@@ -585,10 +597,16 @@ impl RemoteToolHost {
                     false,
                 ));
             };
+            // What the user is shown comes from the runner, which may look
+            // something up first; if it refuses, the user is not asked.
+            let destination = match runner.confirmation_text(&tool, &args).await {
+                Ok(text) => text,
+                Err(error) => return Ok(Self::failure(&name, error.0, false)),
+            };
             let request = ConfirmationRequest {
                 tool_name: name.clone(),
                 kind: tool.kind,
-                destination: runner.destination(&tool, &args),
+                destination,
                 arguments: args.clone(),
             };
             if !confirmer.confirm(&request).await {
@@ -1740,6 +1758,61 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("status 2"));
+    }
+
+    /// A runner that cannot say where a call would go (a destination it refuses):
+    /// the user must not be asked, and nothing runs.
+    #[tokio::test]
+    async fn a_runner_that_refuses_the_destination_ends_the_call_before_the_user_is_asked() {
+        struct Refusing(Arc<AtomicUsize>);
+        #[async_trait]
+        impl RemoteToolRunner for Refusing {
+            fn kind(&self) -> RemoteToolKind {
+                RemoteToolKind::Cli
+            }
+            fn destination(&self, _: &RemoteTool, _: &Value) -> String {
+                String::new()
+            }
+            async fn confirmation_text(
+                &self,
+                _: &RemoteTool,
+                _: &Value,
+            ) -> Result<String, RemoteCallError> {
+                Err(RemoteCallError("that destination is not allowed".into()))
+            }
+            async fn run(
+                &self,
+                _: &RemoteTool,
+                _: &Value,
+            ) -> Result<RemoteOutput, RemoteCallError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(RemoteOutput {
+                    text: String::new(),
+                    truncated: false,
+                })
+            }
+        }
+        let f = fixture().await;
+        f.tool("tool-cli", "c_tool", true).await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let host = RemoteToolHost::new(f.inner.clone(), f.ns.clone(), f.secrets.clone())
+            .with_runner(Arc::new(Refusing(runs.clone())))
+            .with_confirmer(Arc::new(Confirmer {
+                answer: true,
+                asked: asked.clone(),
+                during: None,
+            }));
+        let result = host.execute("c_tool", json!({"q": "x"})).await.unwrap();
+        assert!(result.is_error);
+        assert!(result.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("not allowed"));
+        // The host's own refusal, not remote text.
+        assert!(result.result.get("source").is_none(), "{result:?}");
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
     // -- keyed approval at the host --------------------------------------
