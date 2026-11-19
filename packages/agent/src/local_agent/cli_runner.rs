@@ -67,8 +67,8 @@ use zeroize::Zeroizing;
 
 pub use super::process::BASE_ENV;
 use super::process::{
-    environment_note, program_note, reap, resolve_env_credentials, spawn_isolated, stop, EnvLookup,
-    Isolated,
+    credentials_within, environment_note, program_note, reap, resolve_env_credentials,
+    spawn_isolated, stop, EnvLookup, Isolated,
 };
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
@@ -212,15 +212,19 @@ impl RemoteToolRunner for CliRunner {
     async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError> {
         let fields = read_binding(tool)?;
         let call = invocation(&fields, args)?;
-        let credentials = resolve_env_credentials(
-            &self.secrets,
-            &self.daemon_env,
-            fields.env.as_deref().unwrap_or_default(),
+        let cap = fields.max_output_bytes.unwrap_or(DEFAULT_RESPONSE_BYTES) as usize;
+        let limit = Duration::from_secs(fields.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
+        // The lookup is inside the call's time limit; what is left bounds the run.
+        let (credentials, limit_left) = credentials_within(
+            limit,
+            resolve_env_credentials(
+                &self.secrets,
+                &self.daemon_env,
+                fields.env.as_deref().unwrap_or_default(),
+            ),
         )
         .await?;
         let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
-        let cap = fields.max_output_bytes.unwrap_or(DEFAULT_RESPONSE_BYTES) as usize;
-        let limit = Duration::from_secs(fields.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
 
         let mut process = spawn_isolated(
             &call.program,
@@ -271,7 +275,8 @@ impl RemoteToolRunner for CliRunner {
             (out, err, stopped_at_cap, status)
         };
 
-        let (out, err, stopped_at_cap, status) = match tokio::time::timeout(limit, work).await {
+        let (out, err, stopped_at_cap, status) = match tokio::time::timeout(limit_left, work).await
+        {
             Ok(done) => done,
             Err(_) => {
                 stop(child);
@@ -389,6 +394,31 @@ mod tests {
     }
 
     const PRINT_ARGS: &str = "for a in \"$@\"; do printf '[%s]\\n' \"$a\"; done";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hung_credential_store_ends_the_call_at_its_timeout() {
+        let secrets = Arc::new(SecretStore::new(Arc::new(
+            crate::local_agent::test_http::SlowBackend(Duration::from_secs(3)),
+        )));
+        let mut binding = json!({
+            "program": "/bin/echo",
+            "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}],
+            "timeout_seconds": 1
+        });
+        binding["args"] = json!(["hi"]);
+        let started = std::time::Instant::now();
+        let e = runner(secrets)
+            .run(&tool(binding), &json!({}))
+            .await
+            .unwrap_err()
+            .0;
+        assert!(
+            e.contains("credential store did not answer within 1 seconds"),
+            "{e}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(2500));
+    }
 
     #[tokio::test]
     async fn each_placeholder_is_one_whole_element_and_nothing_goes_through_a_shell() {

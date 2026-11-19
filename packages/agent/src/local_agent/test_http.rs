@@ -182,3 +182,19 @@ impl HostResolver for FakeResolver {
 pub(crate) fn ip(text: &str) -> IpAddr {
     text.parse().unwrap()
 }
+
+/// A credential store that answers only after the given time.
+pub(crate) struct SlowBackend(pub(crate) Duration);
+
+impl nodespace_core::secrets::SecretBackend for SlowBackend {
+    fn set(&self, _a: &str, _v: &str) -> Result<(), nodespace_core::secrets::SecretError> {
+        Ok(())
+    }
+    fn get(&self, _a: &str) -> Result<Option<String>, nodespace_core::secrets::SecretError> {
+        std::thread::sleep(self.0);
+        Ok(Some("SECRETVALUE-123".to_string()))
+    }
+    fn delete(&self, _a: &str) -> Result<bool, nodespace_core::secrets::SecretError> {
+        Ok(false)
+    }
+}

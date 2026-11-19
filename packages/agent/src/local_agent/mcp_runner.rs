@@ -36,6 +36,17 @@
 //! transports, and `2024-11-05` on stdio (its HTTP form was a different
 //! transport, which is not implemented).
 //!
+//! Limits worth knowing: the arguments are checked against the node's closed
+//! schema at the TOP LEVEL only (`validate_arguments`); the shape of nested
+//! values is NOT validated, so the server must not be trusted with it. The same
+//! origin may be redirected to with a `307`/`308` (the POST is repeated; the
+//! credential goes only to that origin). An event stream that ends events with a
+//! bare carriage return (no `\n`) is never split into events and fails closed at
+//! the message limit. Events that carry nothing (comments, retries, empty data)
+//! count against the same bound as non-JSON noise (64). A server that leaves a
+//! grandchild holding stderr (outside the killed process group) is not waited
+//! for: the stderr reader is detached and ends when the pipe closes.
+//!
 //! Every MCP call needs the user's confirmation, so (as for `tool-cli`) nothing
 //! is offered to the model until a confirmer is installed.
 
@@ -59,8 +70,8 @@ use super::net_policy::{
     send_following, HostResolver, Outgoing, SystemResolver, CONNECT_TIMEOUT,
 };
 use super::process::{
-    environment_note, program_note, reap, resolve_env_credentials, spawn_isolated, stop, EnvLookup,
-    Isolated,
+    credentials_within, environment_note, program_note, reap, resolve_env_credentials,
+    spawn_isolated, stop, EnvLookup, Isolated,
 };
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
@@ -94,7 +105,8 @@ const MAX_SESSION_ID: usize = 256;
 const READ_CHUNK: usize = 8192;
 /// Longest confirmation text and the shares of it.
 const MAX_DESTINATION_BYTES: usize = 4096;
-const MAX_ARGV_SHOWN: usize = 800;
+const MAX_ARGV_SHOWN: usize = 300;
+const MAX_TOOL_SHOWN: usize = 128;
 const MAX_PATH_SHOWN: usize = 1000;
 
 /// Runs MCP tool calls.
@@ -253,12 +265,13 @@ async fn await_response(wire: &mut dyn Wire, id: u64) -> Result<Value, RemoteCal
                 if *answer_id == json!(id) {
                     if let Some(error) = object.get("error") {
                         let code = error.get("code").and_then(Value::as_i64).unwrap_or(0);
-                        let mut text = error
+                        // Not cut here: a credential must be removed from the
+                        // whole text (`scrub`) before the text is shortened.
+                        let text = error
                             .get("message")
                             .and_then(Value::as_str)
                             .unwrap_or("")
                             .to_string();
-                        cut(&mut text, ERROR_TEXT_BYTES);
                         return fail(format!(
                             "the server answered with an error ({code}): {text}"
                         ));
@@ -333,7 +346,7 @@ async fn converse(
 
 /// A `tools/call` result as text. Only text content is returned; the rest is
 /// replaced by a note that says what was left out and how big it was.
-fn render(result: &Value) -> (String, bool) {
+fn render(result: &Value, needles: &[Zeroizing<String>]) -> (String, bool) {
     let is_error = result
         .get("isError")
         .and_then(Value::as_bool)
@@ -366,10 +379,31 @@ fn render(result: &Value) -> (String, bool) {
     }
     if parts.is_empty() {
         if let Some(structured) = result.get("structuredContent") {
-            parts.push(serde_json::to_string(structured).unwrap_or_default());
+            // Credentials are removed from the string leaves (and keys) first:
+            // once serialised, a value with a quote or a backslash in it is
+            // escaped and would no longer match.
+            let mut clean = structured.clone();
+            redact_value(&mut clean, needles);
+            parts.push(serde_json::to_string(&clean).unwrap_or_default());
         }
     }
     (parts.join("\n"), is_error)
+}
+
+/// Removes credential values from every string in `value`, keys included.
+fn redact_value(value: &mut Value, needles: &[Zeroizing<String>]) {
+    match value {
+        Value::String(s) => *s = sanitize(s.as_bytes(), needles, false),
+        Value::Array(items) => items.iter_mut().for_each(|v| redact_value(v, needles)),
+        Value::Object(map) => {
+            let old = std::mem::take(map);
+            for (key, mut v) in old {
+                redact_value(&mut v, needles);
+                map.insert(sanitize(key.as_bytes(), needles, false), v);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The final text: credential values removed, cut to `cap`.
@@ -378,7 +412,7 @@ fn finish(
     needles: &[Zeroizing<String>],
     cap: usize,
 ) -> Result<RemoteOutput, RemoteCallError> {
-    let (text, is_error) = render(result);
+    let (text, is_error) = render(result, needles);
     let mut text = sanitize(text.as_bytes(), needles, false);
     if is_error {
         cut(&mut text, ERROR_TEXT_BYTES);
@@ -392,7 +426,10 @@ fn finish(
 /// A failure's message with credential values removed (the server's own words
 /// can carry them).
 fn scrub(error: RemoteCallError, needles: &[Zeroizing<String>]) -> RemoteCallError {
-    RemoteCallError(sanitize(error.0.as_bytes(), needles, false))
+    let mut text = sanitize(error.0.as_bytes(), needles, false);
+    // Shortened only after the credential is gone.
+    cut(&mut text, ERROR_TEXT_BYTES + 200);
+    RemoteCallError(text)
 }
 
 // ---------------------------------------------------------------------------
@@ -669,6 +706,10 @@ impl Wire for HttpWire<'_> {
                         };
                         match event {
                             None => {
+                                // Comments, retries, other event types and empty
+                                // events carry nothing; they are counted so a
+                                // flood of them ends the call.
+                                self.tally.noise(0)?;
                                 put_back(self, response, buffer, done);
                                 continue;
                             }
@@ -731,10 +772,13 @@ impl McpRunner {
             .as_deref()
             .ok_or_else(|| RemoteCallError("the tool's binding has no command".to_string()))?;
         let argv = fields.args.clone().unwrap_or_default();
-        let credentials = resolve_env_credentials(
-            &self.secrets,
-            &self.daemon_env,
-            fields.env.as_deref().unwrap_or_default(),
+        let (credentials, left) = credentials_within(
+            limit,
+            resolve_env_credentials(
+                &self.secrets,
+                &self.daemon_env,
+                fields.env.as_deref().unwrap_or_default(),
+            ),
         )
         .await?;
         let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
@@ -766,7 +810,7 @@ impl McpRunner {
         };
         let mut progress = Progress::default();
         let outcome = tokio::time::timeout(
-            limit,
+            left,
             converse(
                 &mut wire,
                 STDIO_VERSIONS,
@@ -823,8 +867,11 @@ impl McpRunner {
     ) -> Result<RemoteOutput, RemoteCallError> {
         let url = Url::parse(fields.url.as_deref().unwrap_or_default())
             .map_err(|_| RemoteCallError("the tool's binding has no usable url".to_string()))?;
-        let credential =
-            http_credential(&self.secrets, &self.daemon_env, fields.auth.as_ref()).await?;
+        let (credential, left) = credentials_within(
+            limit,
+            http_credential(&self.secrets, &self.daemon_env, fields.auth.as_ref()),
+        )
+        .await?;
         let needles: Vec<Zeroizing<String>> = credential
             .iter()
             .flat_map(|c| c.needles.iter().cloned())
@@ -851,7 +898,7 @@ impl McpRunner {
         };
         let mut progress = Progress::default();
         let outcome = tokio::time::timeout(
-            limit,
+            left,
             converse(
                 &mut wire,
                 HTTP_VERSIONS,
@@ -918,8 +965,11 @@ impl McpRunner {
             cut(&mut argv, MAX_ARGV_SHOWN);
             argv.push('\u{2026}');
         }
+        // The credentials come first, then the parts that can be long.
+        let mut tool_name = remote_tool.to_string();
+        cut(&mut tool_name, MAX_TOOL_SHOWN);
         let head = format!(
-            "MCP server over stdio: run {} with arguments {argv}{environment}; call tool `{remote_tool}`",
+            "MCP server over stdio{environment}; run {} with arguments {argv}; call tool `{tool_name}`",
             program_note(program, &self.daemon_env)
         );
         with_arguments(head, args)
@@ -1081,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn every_mcp_call_needs_confirmation_so_nothing_is_offered_without_a_confirmer() {
+    fn every_mcp_call_needs_confirmation_which_is_what_gates_offering() {
         // The host offers a tool whose calls need confirmation only when a
         // confirmer is installed; none is yet, and there is no read-only
         // exemption for MCP (a server can do anything whatever the tool is called).
@@ -1094,15 +1144,18 @@ mod tests {
 
     #[test]
     fn render_keeps_text_and_replaces_everything_else_with_a_note() {
-        let (text, is_error) = render(&json!({"content": [
-            {"type": "text", "text": "one"},
-            {"type": "image", "data": "AAAA", "mimeType": "image/png"},
-            {"type": "audio", "data": "BB"},
-            {"type": "resource", "resource": {"uri": "file:///etc/passwd", "text": "SECRET"}},
-            {"type": "resource_link", "uri": "file:///x"},
-            {"type": "weird"},
-            {"type": "text", "text": "two"}
-        ]}));
+        let (text, is_error) = render(
+            &json!({"content": [
+                {"type": "text", "text": "one"},
+                {"type": "image", "data": "AAAA", "mimeType": "image/png"},
+                {"type": "audio", "data": "BB"},
+                {"type": "resource", "resource": {"uri": "file:///etc/passwd", "text": "SECRET"}},
+                {"type": "resource_link", "uri": "file:///x"},
+                {"type": "weird"},
+                {"type": "text", "text": "two"}
+            ]}),
+            &[],
+        );
         assert!(!is_error);
         assert!(text.contains("one") && text.contains("two"));
         assert!(text.contains("[image content omitted: 4 bytes]"));
@@ -1112,14 +1165,49 @@ mod tests {
         assert!(!text.contains("SECRET") && !text.contains("passwd"));
     }
 
+    /// A wire that answers from a script.
+    struct Scripted(Vec<Value>);
+
+    #[async_trait]
+    impl Wire for Scripted {
+        async fn send(&mut self, _m: &Value, _r: bool) -> Result<(), RemoteCallError> {
+            Ok(())
+        }
+        async fn next(&mut self) -> Result<Option<Value>, RemoteCallError> {
+            Ok(if self.0.is_empty() {
+                None
+            } else {
+                Some(self.0.remove(0))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_straddling_the_error_cut_is_removed_at_every_offset() {
+        let token = "SECRETVALUE-123456";
+        let needles = vec![Zeroizing::new(token.to_string())];
+        for offset in 1300..(ERROR_TEXT_BYTES + token.len() + 100) {
+            let message = format!("{}{token}{}", "x".repeat(offset), "y".repeat(40));
+            let mut wire = Scripted(vec![
+                json!({"jsonrpc": "2.0", "id": 2, "error": {"code": -1, "message": message}}),
+            ]);
+            let error = await_response(&mut wire, 2).await.unwrap_err();
+            let shown = scrub(error, &needles).0;
+            assert!(!shown.contains("SECR"), "offset {offset}: leaked a prefix");
+        }
+    }
+
     #[test]
     fn structured_content_is_used_only_without_text() {
-        let (with_text, _) = render(&json!({
-            "content": [{"type": "text", "text": "t"}],
-            "structuredContent": {"a": 1}
-        }));
+        let (with_text, _) = render(
+            &json!({
+                "content": [{"type": "text", "text": "t"}],
+                "structuredContent": {"a": 1}
+            }),
+            &[],
+        );
         assert_eq!(with_text, "t");
-        let (only, _) = render(&json!({"content": [], "structuredContent": {"a": 1}}));
+        let (only, _) = render(&json!({"content": [], "structuredContent": {"a": 1}}), &[]);
         assert_eq!(only, r#"{"a":1}"#);
     }
 
@@ -1128,7 +1216,7 @@ mod tests {
         let items: Vec<Value> = (0..MAX_ITEMS + 10)
             .map(|_| json!({"type": "text", "text": "x"}))
             .collect();
-        let (text, _) = render(&json!({"content": items}));
+        let (text, _) = render(&json!({"content": items}), &[]);
         assert!(text.contains("[10 more content items omitted]"));
         assert_eq!(text.matches('x').count(), MAX_ITEMS);
     }
@@ -1221,6 +1309,13 @@ for line in sys.stdin:
                 for _ in range(5):
                     out({"jsonrpc": "2.0", "method": "notifications/message", "params": {"data": "x" * 1900000}})
                 reply(i, text("late"))
+            elif mode == "echostruct":
+                reply(i, {"content": [], "structuredContent": {"k": "pre " + token + " post", "key " + token: 1}})
+            elif mode == "chatty":
+                for _ in range(1200):
+                    sys.stderr.write("e" * 1023 + "\n")
+                sys.stderr.flush()
+                reply(i, text("after the noise"))
             elif mode == "bigresult":
                 reply(i, text("A" * 10000000))
             elif mode == "notify_forever":
@@ -1480,6 +1575,104 @@ for line in sys.stdin:
         }
 
         #[tokio::test]
+        async fn a_chatty_stderr_does_not_stall_the_server() {
+            let f = fixture();
+            let out = f.run("chatty").await.unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(out.text, "after the noise");
+        }
+
+        #[tokio::test]
+        async fn structured_content_is_redacted_before_it_is_serialised() {
+            let f = fixture();
+            let secrets = store();
+            // Quote and backslash: the serialised form would be escaped.
+            secrets.set("tok", "ab\"cd\\ef-9876").unwrap();
+            let mut binding = f.binding("echostruct");
+            binding["env"] = json!([{"name": "MCP_TOKEN", "secret": "keychain:tok"}]);
+            let out = runner(secrets)
+                .run(&tool(binding), &json!({"q": "x"}))
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+            assert!(out.text.contains("[redacted]"), "{}", out.text);
+            assert!(
+                !out.text.contains("ef-9876") && !out.text.contains("ab"),
+                "{}",
+                out.text
+            );
+        }
+
+        #[tokio::test]
+        async fn a_hung_credential_store_ends_the_call_at_its_timeout() {
+            let f = fixture();
+            let secrets = Arc::new(SecretStore::new(Arc::new(
+                crate::local_agent::test_http::SlowBackend(Duration::from_secs(3)),
+            )));
+            let mut binding = f.binding("ok");
+            binding["env"] = json!([{"name": "MCP_TOKEN", "secret": "keychain:tok"}]);
+            binding["timeout_seconds"] = json!(1);
+            let started = Instant::now();
+            let e = runner(secrets)
+                .run(&tool(binding), &json!({"q": "x"}))
+                .await
+                .unwrap_err()
+                .0;
+            assert!(
+                e.contains("credential store did not answer within 1 seconds"),
+                "{e}"
+            );
+            assert!(started.elapsed() < Duration::from_millis(2500));
+            assert!(
+                !f.log.exists(),
+                "a server was started before the credential was read"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_credential_lookup_counts_against_the_same_timeout() {
+            let f = fixture();
+            let secrets = Arc::new(SecretStore::new(Arc::new(
+                crate::local_agent::test_http::SlowBackend(Duration::from_millis(800)),
+            )));
+            let mut binding = f.binding("ignoreinit");
+            binding["env"] = json!([{"name": "MCP_TOKEN", "secret": "keychain:tok"}]);
+            binding["timeout_seconds"] = json!(1);
+            let started = Instant::now();
+            let e = runner(secrets)
+                .run(&tool(binding), &json!({"q": "x"}))
+                .await
+                .unwrap_err()
+                .0;
+            assert!(e.contains("did not answer within 1 seconds"), "{e}");
+            // One second in all, not the lookup plus a second.
+            assert!(
+                started.elapsed() < Duration::from_millis(1500),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+
+        #[tokio::test]
+        async fn the_confirmation_keeps_all_credentials_and_some_room_for_arguments() {
+            let f = fixture();
+            let mut binding = f.binding("ok");
+            binding["args"] = json!(["a".repeat(4000), "b".repeat(4000)]);
+            binding["env"] = json!((0..8)
+                .map(|i| json!({"name": format!("TOKEN_{i}"), "secret": format!("keychain:{}", "k".repeat(60))}))
+                .collect::<Vec<_>>());
+            let long = "z".repeat(5000);
+            let shown = runner(store()).destination(&tool(binding), &json!({"q": long}));
+            for i in 0..8 {
+                assert!(
+                    shown.contains(&format!("TOKEN_{i} from keychain:")),
+                    "{shown}"
+                );
+            }
+            let arguments = shown.split("; arguments: ").last().unwrap();
+            assert!(arguments.len() >= 100, "{} {shown}", arguments.len());
+            assert!(shown.len() <= MAX_DESTINATION_BYTES + 8);
+        }
+
+        #[tokio::test]
         async fn stderr_is_never_returned() {
             let f = fixture();
             let secrets = store();
@@ -1598,7 +1791,7 @@ for line in sys.stdin:
             let long = "z".repeat(20_000);
             let shown = runner(store()).destination(&t, &json!({"q": long}));
             assert!(
-                shown.starts_with("MCP server over stdio: run `python3`"),
+                shown.starts_with("MCP server over stdio; credentials in the environment: MCP_TOKEN from keychain:tok; run `python3`"),
                 "{shown}"
             );
             assert!(shown.contains("MCP_TOKEN from keychain:tok"));
@@ -1771,6 +1964,43 @@ for line in sys.stdin:
             assert!(e.contains("session id that is not valid"), "{e}");
             assert_eq!(server.hits(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn http_a_flood_of_empty_events_ends_the_call_promptly() {
+        let body = "\n\n".repeat(2 * 1024 * 1024);
+        let server = mcp_server("2025-06-18", move || sse(&body)).await;
+        let started = Instant::now();
+        let e = runner(store())
+            .run(&tool(http_binding(server.port)), &json!({"q": "x"}))
+            .await
+            .unwrap_err()
+            .0;
+        assert!(e.contains("not JSON-RPC"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn http_a_hung_credential_store_ends_the_call_at_its_timeout() {
+        let server = mcp_server("2025-06-18", || ok_json("{}")).await;
+        let secrets = Arc::new(SecretStore::new(Arc::new(
+            crate::local_agent::test_http::SlowBackend(Duration::from_secs(3)),
+        )));
+        let mut binding = http_binding(server.port);
+        binding["auth"] = json!({"scheme": "bearer", "secret": "keychain:tok"});
+        binding["timeout_seconds"] = json!(1);
+        let started = Instant::now();
+        let e = runner(secrets)
+            .run(&tool(binding), &json!({"q": "x"}))
+            .await
+            .unwrap_err()
+            .0;
+        assert!(
+            e.contains("credential store did not answer within 1 seconds"),
+            "{e}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(2500));
+        assert_eq!(server.hits(), 0);
     }
 
     #[tokio::test]

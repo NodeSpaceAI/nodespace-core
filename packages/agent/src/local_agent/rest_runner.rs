@@ -725,6 +725,31 @@ mod tests {
         (secrets, auth)
     }
 
+    /// The JSON content type is set, not appended: a declared `Content-Type` does
+    /// not make a second line (the credential header is `insert`ed the same way;
+    /// a declared header of its name is refused by the binding).
+    #[tokio::test]
+    async fn a_declared_content_type_does_not_duplicate_the_json_one() {
+        let server = serve(|_| ok_json("{}")).await;
+        let (secrets, _) = with_token("bearer", json!({}));
+        let binding = json!({
+            "method": "POST",
+            "url_template": format!("http://127.0.0.1:{}/x", server.port),
+            "body": "json",
+            "headers": [
+                {"name": "Content-Type", "value": "text/plain"}
+            ],
+            "auth": {"scheme": "bearer", "secret": "keychain:tok"},
+        });
+        run(&runner(secrets), binding, json!({"title": "t"}))
+            .await
+            .unwrap();
+        let head = server.requests()[0].head.to_ascii_lowercase();
+        assert_eq!(head.matches("content-type:").count(), 1, "{head}");
+        assert!(head.contains("content-type: application/json"), "{head}");
+        assert_eq!(head.matches("authorization:").count(), 1, "{head}");
+    }
+
     #[tokio::test]
     async fn a_credential_is_sent_in_the_bound_header_and_redacted_from_what_comes_back() {
         for (scheme, extra, expect) in [

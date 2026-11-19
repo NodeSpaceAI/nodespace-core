@@ -271,3 +271,20 @@ pub(crate) fn program_note(program: &str, base: &EnvLookup) -> String {
     };
     format!("`{shown}`{resolved}")
 }
+
+/// Runs the credential lookup inside the call's time limit: a credential store
+/// that never answers ends the call at its timeout instead of hanging it. Returns
+/// the result and what is left of the limit.
+pub(crate) async fn credentials_within<T>(
+    limit: Duration,
+    lookup: impl std::future::Future<Output = Result<T, RemoteCallError>>,
+) -> Result<(T, Duration), RemoteCallError> {
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(limit, lookup).await {
+        Ok(found) => Ok((found?, limit.saturating_sub(started.elapsed()))),
+        Err(_) => fail(format!(
+            "the credential store did not answer within {} seconds",
+            limit.as_secs()
+        )),
+    }
+}
