@@ -534,6 +534,11 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("reasoning", "reasoning"),
                     F::text("outcome", "outcome"),
                     F::new("options", "options", Array),
+                    F::text("part_kind", "partKind"),
+                    F::text("tool_call_id", "toolCallId"),
+                    F::text("tool_title", "toolTitle"),
+                    F::text("tool_kind", "toolKind"),
+                    F::text("tool_status", "toolStatus"),
                 ]
             }
         }

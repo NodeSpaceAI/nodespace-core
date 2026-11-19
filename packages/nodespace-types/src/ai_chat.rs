@@ -258,6 +258,126 @@ impl AiChatTurnOutcome {
     }
 }
 
+/// What one message of an ACP chat is, when it is one part of an agent's
+/// turn. A message without a part kind is a whole message: a native chat's, a
+/// user's, or a system notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum AiChatPartKind {
+    /// Reply text; the text is the message's content.
+    Text,
+    /// The agent's reasoning, as a part of its own; the text is the
+    /// message's content.
+    Thought,
+    /// One tool call, updated in place as it progresses. Carries the
+    /// `tool_*` fields.
+    ToolCall,
+    /// The agent's plan, as markdown in the message's content, replaced
+    /// whole on every update.
+    Plan,
+}
+
+impl AiChatPartKind {
+    pub const ALL: [(AiChatPartKind, &'static str); 4] = [
+        (AiChatPartKind::Text, "Text"),
+        (AiChatPartKind::Thought, "Thought"),
+        (AiChatPartKind::ToolCall, "Tool call"),
+        (AiChatPartKind::Plan, "Plan"),
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Thought => "thought",
+            Self::ToolCall => "tool_call",
+            Self::Plan => "plan",
+        }
+    }
+}
+
+/// What kind of work a tool call does, as the agent classifies it. A kind the
+/// vocabulary does not name is `other`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum AiChatToolKind {
+    Read,
+    Edit,
+    Delete,
+    Move,
+    Search,
+    Execute,
+    Think,
+    Fetch,
+    SwitchMode,
+    Other,
+}
+
+impl AiChatToolKind {
+    pub const ALL: [(AiChatToolKind, &'static str); 10] = [
+        (AiChatToolKind::Read, "Read"),
+        (AiChatToolKind::Edit, "Edit"),
+        (AiChatToolKind::Delete, "Delete"),
+        (AiChatToolKind::Move, "Move"),
+        (AiChatToolKind::Search, "Search"),
+        (AiChatToolKind::Execute, "Execute"),
+        (AiChatToolKind::Think, "Think"),
+        (AiChatToolKind::Fetch, "Fetch"),
+        (AiChatToolKind::SwitchMode, "Switch mode"),
+        (AiChatToolKind::Other, "Other"),
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Edit => "edit",
+            Self::Delete => "delete",
+            Self::Move => "move",
+            Self::Search => "search",
+            Self::Execute => "execute",
+            Self::Think => "think",
+            Self::Fetch => "fetch",
+            Self::SwitchMode => "switch_mode",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Where a tool call stands. The agent reports the first four; `cancelled`
+/// is set by NodeSpace on a call the agent never finished when the turn was
+/// cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum AiChatToolStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl AiChatToolStatus {
+    pub const ALL: [(AiChatToolStatus, &'static str); 5] = [
+        (AiChatToolStatus::Pending, "Pending"),
+        (AiChatToolStatus::InProgress, "In progress"),
+        (AiChatToolStatus::Completed, "Completed"),
+        (AiChatToolStatus::Failed, "Failed"),
+        (AiChatToolStatus::Cancelled, "Cancelled"),
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
 /// The fields every chat carries, declared by the abstract `ai-chat` schema
 /// and embedded by each subtype's struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,6 +575,24 @@ pub struct AiChatMessageNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub options: Vec<String>,
+    /// Which part of an agent's turn this message is, in an ACP chat. `None`
+    /// for a whole message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_kind: Option<AiChatPartKind>,
+    /// The agent's id for the tool call this message records; an update to the
+    /// call finds its message by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// The tool call's title as the agent gave it. Raw inputs and outputs are
+    /// never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_title: Option<String>,
+    /// What kind of work the tool call does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<AiChatToolKind>,
+    /// Where the tool call stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_status: Option<AiChatToolStatus>,
 }
 
 impl AiChatMessageNode {
@@ -471,9 +609,7 @@ impl AiChatMessageNode {
             role: enum_prop(&props, "role"),
             timestamp: string_prop(&props, "timestamp"),
             reasoning: string_prop(&props, "reasoning"),
-            outcome: props
-                .get("outcome")
-                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+            outcome: closed_enum_prop(&props, "outcome"),
             options: props
                 .get("options")
                 .and_then(|v| v.as_array())
@@ -484,8 +620,24 @@ impl AiChatMessageNode {
                         .collect()
                 })
                 .unwrap_or_default(),
+            part_kind: closed_enum_prop(&props, "part_kind"),
+            tool_call_id: string_prop(&props, "tool_call_id"),
+            tool_title: string_prop(&props, "tool_title"),
+            tool_kind: closed_enum_prop(&props, "tool_kind"),
+            tool_status: closed_enum_prop(&props, "tool_status"),
         })
     }
+}
+
+/// Read an optional closed-enum field: `None` when it is absent or holds a
+/// value outside the vocabulary.
+fn closed_enum_prop<T: serde::de::DeserializeOwned>(
+    props: &serde_json::Value,
+    key: &str,
+) -> Option<T> {
+    props
+        .get(key)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
 /// Split a node of the chat family into its envelope and its flat field
@@ -638,6 +790,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_acp_part_message_reads_its_part_and_tool_fields() {
+        let node = message(
+            "Read the file",
+            json!({ "ai-chat-message": {
+                "role": "assistant",
+                "part_kind": "tool_call",
+                "tool_call_id": "call_1",
+                "tool_title": "Read src/main.rs",
+                "tool_kind": "read",
+                "tool_status": "in_progress"
+            } }),
+        );
+        let m = AiChatMessageNode::from_node(node).unwrap();
+        assert_eq!(m.part_kind, Some(AiChatPartKind::ToolCall));
+        assert_eq!(m.tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(m.tool_title.as_deref(), Some("Read src/main.rs"));
+        assert_eq!(m.tool_kind, Some(AiChatToolKind::Read));
+        assert_eq!(m.tool_status, Some(AiChatToolStatus::InProgress));
+        assert_eq!(m.envelope.properties, json!({}));
+        let wire = serde_json::to_value(&m).unwrap();
+        assert_eq!(wire["partKind"], "tool_call");
+        assert_eq!(wire["toolCallId"], "call_1");
+        assert_eq!(wire["toolStatus"], "in_progress");
+        assert_eq!(wire["toolKind"], "read");
+        assert_eq!(wire["toolTitle"], "Read src/main.rs");
+    }
+
+    #[test]
+    fn a_native_message_carries_no_part_or_tool_fields() {
+        let m = AiChatMessageNode::from_node(message("hi", json!({}))).unwrap();
+        let wire = serde_json::to_value(&m).unwrap();
+        for absent in [
+            "partKind",
+            "toolCallId",
+            "toolTitle",
+            "toolKind",
+            "toolStatus",
+        ] {
+            assert!(wire.get(absent).is_none(), "{absent} is left off the wire");
+        }
+        let bad = AiChatMessageNode::from_node(message(
+            "x",
+            json!({ "ai-chat-message": { "part_kind": "notice", "tool_status": "done", "tool_kind": "run" } }),
+        ))
+        .unwrap();
+        assert_eq!(bad.part_kind, None);
+        assert_eq!(bad.tool_status, None);
+        assert_eq!(bad.tool_kind, None);
+    }
+
     /// No validated write stores a value outside a closed enum. One that got
     /// there some other way reads as the field's default, and the node still
     /// reads.
@@ -730,6 +933,18 @@ mod tests {
             assert_eq!(
                 serde_json::to_value(outcome).unwrap(),
                 json!(outcome.as_str())
+            );
+        }
+        for (kind, _) in AiChatPartKind::ALL {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.as_str()));
+        }
+        for (kind, _) in AiChatToolKind::ALL {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(kind.as_str()));
+        }
+        for (status, _) in AiChatToolStatus::ALL {
+            assert_eq!(
+                serde_json::to_value(status).unwrap(),
+                json!(status.as_str())
             );
         }
     }

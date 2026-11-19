@@ -88,6 +88,32 @@ describe('chat message node', () => {
     });
   });
 
+  it('nodeToAiChatMessageNode carries the ACP part and tool fields', () => {
+    const message = nodeToAiChatMessageNode(
+      makeNode({
+        nodeType: 'ai-chat-message',
+        role: 'assistant',
+        partKind: 'tool_call',
+        toolCallId: 'call_1',
+        toolTitle: 'Read main.rs',
+        toolKind: 'read',
+        toolStatus: 'in_progress'
+      })
+    );
+    expect(message.partKind).toBe('tool_call');
+    expect(message.toolCallId).toBe('call_1');
+    expect(message.toolTitle).toBe('Read main.rs');
+    expect(message.toolKind).toBe('read');
+    expect(message.toolStatus).toBe('in_progress');
+  });
+
+  it('nodeToAiChatMessageNode leaves the part and tool fields unset on a native message', () => {
+    const message = nodeToAiChatMessageNode(makeNode({ nodeType: 'ai-chat-message' }));
+    for (const key of ['partKind', 'toolCallId', 'toolTitle', 'toolKind', 'toolStatus'] as const) {
+      expect(message[key]).toBeUndefined();
+    }
+  });
+
   it('nodeToAiChatMessageNode drops an options value that is not an array', () => {
     expect(
       nodeToAiChatMessageNode(makeNode({ nodeType: 'ai-chat-message', options: 'a' })).options

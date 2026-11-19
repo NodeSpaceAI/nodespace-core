@@ -115,6 +115,21 @@
         "affectedData": "The stored tool schema node's enabled field in every database an earlier build created: it keeps local_only false. Such a database is refused at open until it is reset, because its stored tool schema also lacks approved_binding.",
         "transformation": "Set local_only on the enabled field of the stored tool schema; in practice, reset the database."
       }
+    },
+    {
+      "id": "ai-chat-message-acp-part-fields",
+      "after": "0.3.11",
+      "covers": [
+        "schemas.ai-chat-message.fields.part_kind",
+        "schemas.ai-chat-message.fields.tool_call_id",
+        "schemas.ai-chat-message.fields.tool_title",
+        "schemas.ai-chat-message.fields.tool_kind",
+        "schemas.ai-chat-message.fields.tool_status"
+      ],
+      "area": "core_schema",
+      "class": "refuse",
+      "summary": "The ai-chat-message schema gains five optional fields that record one part of an ACP chat turn: part_kind, tool_call_id, tool_title, tool_kind and tool_status. A database created by an earlier build holds a message schema without them, which the core-type comparison reports as missing fields, so that database is refused at open (a schema mismatch) until it is reset.",
+      "userProducible": false
     }
   ]
 }

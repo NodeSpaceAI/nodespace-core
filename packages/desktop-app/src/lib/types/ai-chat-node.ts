@@ -36,9 +36,12 @@ export type {
   AiChatMessageNode,
   AiChatMessageRole,
   AiChatNativeNode,
+  AiChatPartKind,
   AiChatProvider,
   AiChatPtyNode,
   AiChatSessionStatus,
+  AiChatToolKind,
+  AiChatToolStatus,
   AiChatTurnOutcome,
   AiChatTurnStatus
 } from './generated';
@@ -95,7 +98,12 @@ export function nodeToAiChatMessageNode(node: Node): AiChatMessageNode {
     timestamp: message.timestamp,
     reasoning: message.reasoning,
     outcome: message.outcome,
-    options: Array.isArray(message.options) ? message.options : undefined
+    options: Array.isArray(message.options) ? message.options : undefined,
+    partKind: message.partKind,
+    toolCallId: message.toolCallId,
+    toolTitle: message.toolTitle,
+    toolKind: message.toolKind,
+    toolStatus: message.toolStatus
   };
 }
 

@@ -1,5 +1,8 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { AiChatMessageRole } from './ai-chat-message-role';
+import type { AiChatPartKind } from './ai-chat-part-kind';
+import type { AiChatToolKind } from './ai-chat-tool-kind';
+import type { AiChatToolStatus } from './ai-chat-tool-status';
 import type { AiChatTurnOutcome } from './ai-chat-turn-outcome';
 import type { NodeReference } from './node-reference';
 
@@ -34,6 +37,29 @@ export type AiChatMessageNode = {
    * The choices offered with a clarifying question.
    */
   options?: Array<string>;
+  /**
+   * Which part of an agent's turn this message is, in an ACP chat. `None`
+   * for a whole message.
+   */
+  partKind?: AiChatPartKind;
+  /**
+   * The agent's id for the tool call this message records; an update to the
+   * call finds its message by it.
+   */
+  toolCallId?: string;
+  /**
+   * The tool call's title as the agent gave it. Raw inputs and outputs are
+   * never stored.
+   */
+  toolTitle?: string;
+  /**
+   * What kind of work the tool call does.
+   */
+  toolKind?: AiChatToolKind;
+  /**
+   * Where the tool call stands.
+   */
+  toolStatus?: AiChatToolStatus;
   id: string;
   nodeType: string;
   content: string;
