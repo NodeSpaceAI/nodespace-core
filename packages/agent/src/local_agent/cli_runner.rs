@@ -54,29 +54,26 @@
 //! lines) is not caught. The child's environment copy of the value is held by
 //! the process machinery and is not wiped.
 
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nodespace_core::secrets::{resolve_credential_with, SecretStore};
-use nodespace_types::{
-    CredentialRef, ToolCliFields, DEFAULT_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECONDS,
-};
+use nodespace_core::secrets::SecretStore;
+use nodespace_types::{ToolCliFields, DEFAULT_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECONDS};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use zeroize::Zeroizing;
 
-use super::redaction::{cut, sanitize, MIN_REDACTABLE_BYTES};
+pub use super::process::BASE_ENV;
+use super::process::{
+    credentials_within, environment_note, program_note, reap, resolve_env_credentials,
+    spawn_isolated, stop, EnvLookup, Isolated,
+};
+use super::redaction::{cut, sanitize};
 use super::remote_tools::{
     RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind, RemoteToolRunner,
 };
-
-/// The daemon's variables a program is given, when they are set: enough to find
-/// other programs and the user's home, and nothing that carries a credential.
-pub const BASE_ENV: &[&str] = &["PATH", "HOME", "LANG", "USER", "TMPDIR"];
 
 /// Read size for the program's output streams.
 const READ_CHUNK: usize = 8192;
@@ -84,16 +81,6 @@ const READ_CHUNK: usize = 8192;
 const ERROR_OUTPUT_BYTES: usize = 1024;
 /// Longest confirmation text.
 const MAX_DESTINATION_BYTES: usize = 4096;
-/// Most credential references the confirmation lists before saying how many more.
-const MAX_ENV_SHOWN: usize = 8;
-/// Longest one credential reference is shown.
-const MAX_ENV_ENTRY_BYTES: usize = 300;
-/// Longest program name or path shown.
-const MAX_PROGRAM_SHOWN: usize = 512;
-/// Longest resolved path shown.
-const MAX_RESOLVED_SHOWN: usize = 160;
-
-type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// Runs `tool-cli` tools.
 pub struct CliRunner {
@@ -192,123 +179,6 @@ fn whole_placeholder(item: &str) -> Option<&str> {
         .and_then(|rest| rest.strip_suffix('}'))
 }
 
-/// Kills the program's process group when it is dropped: a call that is
-/// cancelled (its future dropped mid-flight) must not leave the program or what
-/// it started running. Disarmed once the program has been reaped, so a recycled
-/// process id is never signalled.
-struct GroupGuard(Option<i32>);
-
-impl GroupGuard {
-    fn new(child: &tokio::process::Child) -> Self {
-        Self(child.id().map(|pid| pid as i32))
-    }
-
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for GroupGuard {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.0 {
-            unsafe {
-                libc::killpg(pid, libc::SIGKILL);
-            }
-        }
-    }
-}
-
-/// A private, empty working directory for one call, removed afterwards.
-struct ScratchDir(PathBuf);
-
-impl ScratchDir {
-    fn create() -> std::io::Result<Self> {
-        let path =
-            std::env::temp_dir().join(format!("nodespace-cli-{}", uuid::Uuid::new_v4().simple()));
-        #[cfg(unix)]
-        let builder = {
-            use std::os::unix::fs::DirBuilderExt;
-            let mut builder = std::fs::DirBuilder::new();
-            builder.mode(0o700);
-            builder
-        };
-        #[cfg(not(unix))]
-        let builder = std::fs::DirBuilder::new();
-        builder.create(&path)?;
-        Ok(Self(path))
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.0) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(
-                    path = %self.0.display(),
-                    error = %error.kind(),
-                    "tool-cli: the working directory could not be removed"
-                );
-            }
-        }
-    }
-}
-
-/// How long to wait for a killed program to be reaped.
-const REAP_BOUND: Duration = Duration::from_secs(2);
-
-/// Kills the program and everything it started. The child leads its own process
-/// group, so the group is killed; the child itself is killed as well, so a
-/// failure to signal the group cannot leave it running.
-fn stop(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        unsafe {
-            libc::killpg(pid as i32, libc::SIGKILL);
-        }
-    }
-    let _ = child.start_kill();
-}
-
-/// Waits a bounded time for a program that has been told to stop.
-async fn reap(child: &mut tokio::process::Child) {
-    let _ = tokio::time::timeout(REAP_BOUND, child.wait()).await;
-}
-
-impl CliRunner {
-    /// Resolves the binding's declared credentials: the (name, value) pairs for
-    /// the child's environment. Runs the platform store off the async threads.
-    async fn credentials(
-        &self,
-        fields: &ToolCliFields,
-    ) -> Result<Vec<(String, Zeroizing<String>)>, RemoteCallError> {
-        let mut out = Vec::new();
-        for entry in fields.env.iter().flatten() {
-            let reference = CredentialRef::parse(&entry.secret).map_err(|e| {
-                RemoteCallError(format!("the tool's binding is not valid: {}", e.0))
-            })?;
-            let secrets = Arc::clone(&self.secrets);
-            let lookup = Arc::clone(&self.daemon_env);
-            let value = tokio::task::spawn_blocking(move || {
-                resolve_credential_with(&secrets, &reference, |n| lookup(n))
-            })
-            .await
-            .map_err(|_| RemoteCallError("the credential store task failed".to_string()))?
-            .map_err(|e| RemoteCallError(e.to_string()))?;
-            // The one place a value is read: it goes into the child's environment.
-            let text = Zeroizing::new(value.expose().to_string());
-            if text.len() < MIN_REDACTABLE_BYTES {
-                return fail(format!(
-                    "the credential for `{}` is too short to be redacted safely",
-                    entry.name
-                ));
-            }
-            out.push((entry.name.clone(), text));
-        }
-        Ok(out)
-    }
-}
-
 #[async_trait]
 impl RemoteToolRunner for CliRunner {
     fn kind(&self) -> RemoteToolKind {
@@ -320,60 +190,13 @@ impl RemoteToolRunner for CliRunner {
             Ok(fields) => fields,
             Err(e) => return format!("(unusable binding: {})", e.0),
         };
-        // The credentials come first and are bounded, so a long argument can
-        // never push them out of what the user reads: up to eight references,
-        // then how many more there are.
-        let references: Vec<String> = fields
-            .env
-            .iter()
-            .flatten()
-            .map(|e| {
-                let mut entry = format!("{} from {}", e.name, e.secret);
-                cut(&mut entry, MAX_ENV_ENTRY_BYTES);
-                entry
-            })
-            .collect();
-        let mut environment = if references.is_empty() {
-            "; no credentials".to_string()
-        } else {
-            format!(
-                "; credentials in the environment: {}",
-                references
-                    .iter()
-                    .take(MAX_ENV_SHOWN)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        if references.len() > MAX_ENV_SHOWN {
-            environment.push_str(&format!(", and {} more", references.len() - MAX_ENV_SHOWN));
-        }
+        // The credentials come first and are bounded (see `environment_note`).
+        let environment = environment_note(fields.env.as_deref().unwrap_or_default());
         let call = match invocation(&fields, args) {
             Ok(call) => call,
             Err(e) => return format!("(unusable call: {}){environment}", e.0),
         };
-        let mut program = call.program.clone();
-        cut(&mut program, MAX_PROGRAM_SHOWN);
-        let resolved = if call.program.contains(['/', '\\']) {
-            String::new()
-        } else {
-            match (self.daemon_env)("PATH") {
-                None => " (the daemon's PATH is unset; the OS default applies)".to_string(),
-                Some(path_var) => match which::which_in(&call.program, Some(path_var), "/") {
-                    Ok(path) => {
-                        let mut shown = path.display().to_string();
-                        if shown.len() > MAX_RESOLVED_SHOWN {
-                            cut(&mut shown, MAX_RESOLVED_SHOWN);
-                            shown.push('\u{2026}');
-                        }
-                        format!(" (found on the daemon's PATH as {shown})")
-                    }
-                    Err(_) => " (not found on the daemon's PATH)".to_string(),
-                },
-            }
-        };
-        let head = format!("run `{program}`{resolved}");
+        let head = format!("run {}", program_note(&call.program, &self.daemon_env));
         let argv = serde_json::to_string(&call.argv).unwrap_or_default();
         let prefix = "; arguments: ";
         let budget =
@@ -389,45 +212,29 @@ impl RemoteToolRunner for CliRunner {
     async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError> {
         let fields = read_binding(tool)?;
         let call = invocation(&fields, args)?;
-        let credentials = self.credentials(&fields).await?;
-        let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
         let cap = fields.max_output_bytes.unwrap_or(DEFAULT_RESPONSE_BYTES) as usize;
         let limit = Duration::from_secs(fields.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
+        // The lookup is inside the call's time limit; what is left bounds the run.
+        let (credentials, limit_left) = credentials_within(
+            limit,
+            resolve_env_credentials(
+                &self.secrets,
+                &self.daemon_env,
+                fields.env.as_deref().unwrap_or_default(),
+            ),
+        )
+        .await?;
+        let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
 
-        let scratch = ScratchDir::create().map_err(|e| {
-            RemoteCallError(format!(
-                "a working directory could not be made: {}",
-                e.kind()
-            ))
-        })?;
-        let mut child = {
-            let mut command = Command::new(&call.program);
-            command
-                .args(&call.argv)
-                .env_clear()
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .current_dir(&scratch.0);
-            for name in BASE_ENV {
-                if let Some(value) = (self.daemon_env)(name) {
-                    command.env(name, value);
-                }
-            }
-            for (name, value) in &credentials {
-                command.env(name, value.as_str());
-            }
-            #[cfg(unix)]
-            command.process_group(0);
-            command.spawn().map_err(|e| {
-                RemoteCallError(format!("the program could not be started: {}", e.kind()))
-            })?
-        };
+        let mut process = spawn_isolated(
+            &call.program,
+            &call.argv,
+            &self.daemon_env,
+            &credentials,
+            Stdio::null(),
+        )?;
         drop(credentials);
-        // Declared after `child`, so it is dropped first: a cancelled call kills
-        // the process group before the child handle goes.
-        let mut guard = GroupGuard::new(&child);
+        let Isolated { guard, child, .. } = &mut process;
 
         let mut stdout = child.stdout.take().expect("stdout is piped");
         let mut stderr = child.stderr.take().expect("stderr is piped");
@@ -454,13 +261,13 @@ impl RemoteToolRunner for CliRunner {
                 }
                 if out.len() + err.len() >= read_limit {
                     stopped_at_cap = true;
-                    stop(&mut child);
+                    stop(child);
                     break;
                 }
             }
             let status = if stopped_at_cap {
                 // Killed: a bounded wait, and its status says nothing.
-                reap(&mut child).await;
+                reap(child).await;
                 child.try_wait()
             } else {
                 child.wait().await.map(Some)
@@ -468,11 +275,12 @@ impl RemoteToolRunner for CliRunner {
             (out, err, stopped_at_cap, status)
         };
 
-        let (out, err, stopped_at_cap, status) = match tokio::time::timeout(limit, work).await {
+        let (out, err, stopped_at_cap, status) = match tokio::time::timeout(limit_left, work).await
+        {
             Ok(done) => done,
             Err(_) => {
-                stop(&mut child);
-                reap(&mut child).await;
+                stop(child);
+                reap(child).await;
                 if matches!(child.try_wait(), Ok(Some(_))) {
                     guard.disarm();
                 }
@@ -521,6 +329,7 @@ impl RemoteToolRunner for CliRunner {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::local_agent::process::ScratchDir;
     use nodespace_core::secrets::InMemorySecretBackend;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -585,6 +394,31 @@ mod tests {
     }
 
     const PRINT_ARGS: &str = "for a in \"$@\"; do printf '[%s]\\n' \"$a\"; done";
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hung_credential_store_ends_the_call_at_its_timeout() {
+        let secrets = Arc::new(SecretStore::new(Arc::new(
+            crate::local_agent::test_http::SlowBackend(Duration::from_secs(3)),
+        )));
+        let mut binding = json!({
+            "program": "/bin/echo",
+            "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}],
+            "timeout_seconds": 1
+        });
+        binding["args"] = json!(["hi"]);
+        let started = std::time::Instant::now();
+        let e = runner(secrets)
+            .run(&tool(binding), &json!({}))
+            .await
+            .unwrap_err()
+            .0;
+        assert!(
+            e.contains("credential store did not answer within 1 seconds"),
+            "{e}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(2500));
+    }
 
     #[tokio::test]
     async fn each_placeholder_is_one_whole_element_and_nothing_goes_through_a_shell() {
@@ -1096,7 +930,7 @@ mod tests {
         let used = PathBuf::from(lines.next().unwrap());
         assert_eq!(lines.next().unwrap().trim(), "0", "it started empty");
         let name = used.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("nodespace-cli-"), "{used:?}");
+        assert!(name.starts_with("nodespace-run-"), "{used:?}");
         assert!(!used.exists(), "the directory was left behind");
         // Made private: checked on a directory made the same way.
         let made = ScratchDir::create().unwrap();

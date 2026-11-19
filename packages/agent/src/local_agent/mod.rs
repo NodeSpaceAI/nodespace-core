@@ -2,8 +2,11 @@ pub mod agent_loop;
 pub mod cli_runner;
 pub mod decisions;
 pub mod deletion_confirmation;
+pub mod mcp_runner;
 pub mod model_manager;
+pub(crate) mod net_policy;
 pub mod otlp_tracer;
+pub(crate) mod process;
 pub mod prompt_templates;
 pub(crate) mod redaction;
 pub mod remote_tools;
@@ -11,4 +14,6 @@ pub mod response_processing;
 pub mod rest_runner;
 pub mod routing;
 pub mod routing_probe;
+#[cfg(test)]
+pub(crate) mod test_http;
 pub mod tools;
