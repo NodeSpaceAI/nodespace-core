@@ -94,6 +94,8 @@ const MAX_ENV_SHOWN: usize = 8;
 const MAX_ENV_ENTRY_BYTES: usize = 300;
 /// Longest program name or path shown.
 const MAX_PROGRAM_SHOWN: usize = 512;
+/// Longest resolved path shown.
+const MAX_RESOLVED_SHOWN: usize = 160;
 
 type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
@@ -194,43 +196,91 @@ fn whole_placeholder(item: &str) -> Option<&str> {
         .and_then(|rest| rest.strip_suffix('}'))
 }
 
-/// Replaces every credential value in `text`, longest first.
-fn redact(text: &str, needles: &[Zeroizing<String>]) -> String {
-    let mut ordered: Vec<&str> = needles.iter().map(|n| n.as_str()).collect();
-    ordered.sort_by_key(|n| std::cmp::Reverse(n.len()));
-    let mut out = text.to_string();
-    for needle in ordered {
-        out = out.replace(needle, REDACTED);
+/// Every place `needle` occurs in `data`, as (start, end) byte spans.
+fn occurrences(data: &[u8], needle: &[u8]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    if needle.is_empty() || data.len() < needle.len() {
+        return found;
     }
-    out
-}
-
-/// Removes from the end of `text` any part of a credential that the stream was
-/// cut inside of: the longest suffix that is a proper prefix of a needle, until
-/// none is left.
-fn strip_partial_tail(text: &mut String, needles: &[Zeroizing<String>]) {
-    loop {
-        let bytes = text.as_bytes();
-        let longest = needles
-            .iter()
-            .filter_map(|needle| {
-                let needle = needle.as_bytes();
-                (1..needle.len())
-                    .rev()
-                    .find(|&k| bytes.ends_with(&needle[..k]))
-            })
-            .max();
-        match longest {
-            Some(k) => {
-                let mut end = text.len() - k;
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
-                text.truncate(end);
-            }
-            None => return,
+    for start in 0..=(data.len() - needle.len()) {
+        if data[start] == needle[0] && data[start..].starts_with(needle) {
+            found.push((start, start + needle.len()));
         }
     }
+    found
+}
+
+/// The length of the longest suffix of `data` that is a proper prefix of one of
+/// the needles, if there is one: the part of a credential a stream was cut
+/// inside of.
+fn partial_tail(data: &[u8], needles: &[Zeroizing<String>]) -> Option<usize> {
+    needles
+        .iter()
+        .filter_map(|needle| {
+            let needle = needle.as_bytes();
+            (1..needle.len())
+                .rev()
+                .find(|&k| data.ends_with(&needle[..k]))
+        })
+        .max()
+}
+
+/// A stream's bytes as text with every credential removed, working on the raw
+/// bytes and converting to text last (so a character cut in half cannot turn a
+/// credential's prefix into something that no longer matches it).
+///
+/// - Every occurrence of every credential is found in the original bytes, and
+///   overlapping or adjacent occurrences are merged and replaced once by the
+///   marker, so one credential that contains or overlaps another leaves no part
+///   of itself behind.
+/// - When `cut` (the stream ended because the program was stopped, not because
+///   it finished), whatever the bytes end with that is the start of a
+///   credential is removed too, repeatedly (removing one can uncover another).
+///   That tail joins any occurrence it overlaps: such a span gets the marker; a
+///   tail that overlaps none is dropped.
+///
+/// The result holds no complete credential, and, when `cut`, no prefix of one.
+fn sanitize(data: &[u8], needles: &[Zeroizing<String>], cut: bool) -> String {
+    // (start, end, is a complete occurrence)
+    let mut spans: Vec<(usize, usize, bool)> = Vec::new();
+    for needle in needles {
+        spans.extend(
+            occurrences(data, needle.as_bytes())
+                .into_iter()
+                .map(|(s, e)| (s, e, true)),
+        );
+    }
+    if cut {
+        let mut end = data.len();
+        while let Some(k) = partial_tail(&data[..end], needles) {
+            end -= k;
+        }
+        if end < data.len() {
+            spans.push((end, data.len(), false));
+        }
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize, bool)> = Vec::new();
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.0 <= last.1 => {
+                last.1 = last.1.max(span.1);
+                last.2 |= span.2;
+            }
+            _ => merged.push(span),
+        }
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut position = 0;
+    for (start, end, complete) in merged {
+        out.extend_from_slice(&data[position..start]);
+        if complete {
+            out.extend_from_slice(REDACTED.as_bytes());
+        }
+        position = end;
+    }
+    out.extend_from_slice(&data[position..]);
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -294,7 +344,15 @@ impl ScratchDir {
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %self.0.display(),
+                    error = %error.kind(),
+                    "tool-cli: the working directory could not be removed"
+                );
+            }
+        }
     }
 }
 
@@ -402,9 +460,19 @@ impl RemoteToolRunner for CliRunner {
         let resolved = if call.program.contains(['/', '\\']) {
             String::new()
         } else {
-            match which::which_in(&call.program, (self.daemon_env)("PATH"), "/") {
-                Ok(path) => format!(" (found on the daemon's PATH as {})", path.display()),
-                Err(_) => " (not found on the daemon's PATH)".to_string(),
+            match (self.daemon_env)("PATH") {
+                None => " (the daemon's PATH is unset; the OS default applies)".to_string(),
+                Some(path_var) => match which::which_in(&call.program, Some(path_var), "/") {
+                    Ok(path) => {
+                        let mut shown = path.display().to_string();
+                        if shown.len() > MAX_RESOLVED_SHOWN {
+                            cut(&mut shown, MAX_RESOLVED_SHOWN);
+                            shown.push('\u{2026}');
+                        }
+                        format!(" (found on the daemon's PATH as {shown})")
+                    }
+                    Err(_) => " (not found on the daemon's PATH)".to_string(),
+                },
             }
         };
         let head = format!("run `{program}`{resolved}");
@@ -520,16 +588,11 @@ impl RemoteToolRunner for CliRunner {
         if matches!(status, Ok(Some(_))) {
             guard.disarm();
         }
-        // Redact each stream whole first, so every complete credential is gone.
-        let mut out_text = redact(&String::from_utf8_lossy(&out), &needles);
-        let mut err_text = redact(&String::from_utf8_lossy(&err), &needles);
-        if stopped_at_cap {
-            // Reading stopped at an arbitrary byte, so a stream can end part way
-            // through a credential. Strip any such trailing part, so no prefix of
-            // a credential is returned.
-            strip_partial_tail(&mut out_text, &needles);
-            strip_partial_tail(&mut err_text, &needles);
-        }
+        // Reading stopped at an arbitrary byte when the program was stopped at
+        // the cap, so a stream can end part way through a credential (or a
+        // character of one): each stream is sanitized as raw bytes.
+        let out_text = sanitize(&out, &needles, stopped_at_cap);
+        let err_text = sanitize(&err, &needles, stopped_at_cap);
         let mut text = out_text;
         if !err_text.is_empty() {
             text.push_str("\n[stderr]\n");
@@ -1193,5 +1256,215 @@ mod tests {
             absolute.contains("`/bin/sh`") && !absolute.contains("found on"),
             "{absolute}"
         );
+    }
+
+    // -- sanitize: the cut-output invariant, exhaustively ------------------
+
+    fn needles_of(values: &[&str]) -> Vec<Zeroizing<String>> {
+        values
+            .iter()
+            .map(|v| Zeroizing::new(v.to_string()))
+            .collect()
+    }
+
+    /// The invariant: whatever the cut position, the text holds no complete
+    /// credential and, when the stream was cut, no prefix of one that is at
+    /// least four bytes (a shorter prefix is not a credential).
+    fn assert_no_leak(raw: &[u8], values: &[&str]) {
+        let needles = needles_of(values);
+        // Uncut: no whole credential.
+        let whole = sanitize(raw, &needles, false);
+        for v in values {
+            assert!(!whole.contains(v), "complete {v:?} in {whole:?}");
+        }
+        // Cut at every position.
+        for at in 0..=raw.len() {
+            let text = sanitize(&raw[..at], &needles, true);
+            for v in values {
+                let bytes = v.as_bytes();
+                for k in MIN_REDACTABLE_BYTES..=bytes.len() {
+                    let prefix = &bytes[..k];
+                    assert!(
+                        !text.as_bytes().windows(k).any(|w| w == prefix),
+                        "a {k}-byte prefix of {v:?} leaked cutting at {at} of {:?}: {text:?}",
+                        String::from_utf8_lossy(raw)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_ascii_credentials_leave_no_prefix_at_any_cut() {
+        assert_no_leak(
+            b"aaaa TOKENALPHA1 bb SECONDKEY99 cc TOKENALPHA1 dd SEC",
+            &["TOKENALPHA1", "SECONDKEY99"],
+        );
+        // One 40-byte credential, the reviewer's shape.
+        assert_no_leak(
+            b"FFFFFFFFFFSECRETSECRETSECRETSECRETSECRETABCDFFFFFFFFFFFFFFFFFFFFSECRETSECRET",
+            &["SECRETSECRETSECRETSECRETSECRETABCD"],
+        );
+    }
+
+    #[test]
+    fn a_credential_that_is_a_prefix_of_another_leaves_none_of_the_longer_one() {
+        assert_no_leak(
+            b"xx XYZ1234 yy XYZ1234QQ77WW88 zz XYZ1234QQ77WW88",
+            &["XYZ1234", "XYZ1234QQ77WW88"],
+        );
+        // The order the values are listed in does not matter.
+        assert_no_leak(
+            b"xx XYZ1234QQ77WW88 yy XYZ1234",
+            &["XYZ1234QQ77WW88", "XYZ1234"],
+        );
+    }
+
+    #[test]
+    fn credentials_that_overlap_or_repeat_themselves_leave_no_prefix() {
+        // The end of one is the start of the other.
+        assert_no_leak(
+            b"xxABCDEF1234ZZZZ99yy EF1234ZZZZ99 ABCDEF1234",
+            &["ABCDEF1234", "EF1234ZZZZ99"],
+        );
+        // A credential that overlaps itself.
+        assert_no_leak(b"AAAA1AAAA1AAAA1AAAA", &["AAAA1AAAA1"]);
+        assert_no_leak(b"ABABABAB ABABABABAB ABAB", &["ABABABAB"]);
+    }
+
+    #[test]
+    fn credentials_with_multibyte_characters_leave_no_prefix_at_any_cut() {
+        let value = "ABCDé€FGHIJ";
+        let raw = format!("xx {value} yy {value} z ABCDé").into_bytes();
+        assert_no_leak(&raw, &[value]);
+        // Made only of multibyte characters.
+        let only = "éé€€éé";
+        let raw = format!("a {only} b {only} c é€").into_bytes();
+        assert_no_leak(&raw, &[only]);
+        // And alongside an ASCII one.
+        assert_no_leak(
+            format!("{value}|WXYZ1234|{value}").as_bytes(),
+            &[value, "WXYZ1234"],
+        );
+    }
+
+    /// Stripping a trailing part of one credential can uncover the start of
+    /// another: one pass is not enough.
+    #[test]
+    fn stripping_a_tail_can_uncover_another_and_is_repeated() {
+        let needles = needles_of(&["WXYZ1", "ZZ99QQ"]);
+        let text = sanitize(b"xxxZZ99QWXY", &needles, true);
+        assert!(!text.contains("ZZ99"), "{text:?}");
+        assert_eq!(text, "xxx");
+        assert_no_leak(b"xxxZZ99QWXY", &["WXYZ1", "ZZ99QQ"]);
+    }
+
+    #[test]
+    fn a_tail_that_overlaps_nothing_is_dropped_and_one_that_overlaps_a_match_is_redacted_once() {
+        let needles = needles_of(&["ABCDEF", "DEFGHI"]);
+        // Ends with the whole of the first, which is also the start of the second.
+        assert_eq!(sanitize(b"..ABCDEF", &needles, true), "..[redacted]");
+        // Ends with a partial that touches nothing: dropped, no marker.
+        assert_eq!(sanitize(b"..ABC", &needles_of(&["ABCDEF"]), true), "..");
+        // Not cut: the same ending is ordinary text.
+        assert_eq!(sanitize(b"..ABC", &needles_of(&["ABCDEF"]), false), "..ABC");
+    }
+
+    /// A complete occurrence that a trailing partial one overlaps: one marker,
+    /// whichever span comes first.
+    #[test]
+    fn an_occurrence_overlapped_by_a_trailing_partial_keeps_its_marker() {
+        let needles = needles_of(&["ABCDE", "CDEFGH"]);
+        assert_eq!(sanitize(b"ABCDEFG", &needles, true), "[redacted]");
+        assert_no_leak(b"xxABCDEFGHyy ABCDEFG", &["ABCDE", "CDEFGH"]);
+    }
+
+    /// The same, through `run`: the read ends in the middle of a character of the
+    /// credential.
+    #[tokio::test]
+    async fn a_credential_cut_in_the_middle_of_a_character_leaves_no_prefix() {
+        for stream in ["", ">&2"] {
+            let dir = TempDir::new().unwrap();
+            let program = script(
+                dir.path(),
+                "mid.sh",
+                &format!("printf 'xxxx%s' \"$(printf %s \"$API_TOKEN\" | head -c 5)\" {stream}"),
+            );
+            let secrets = store();
+            secrets.set("tok", "ABCD\u{e9}\u{20ac}FGHIJ").unwrap();
+            let out = run(
+                &runner(secrets),
+                json!({"program": program, "max_output_bytes": 8, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+                json!({}),
+            )
+            .await
+            .unwrap();
+            assert!(out.truncated, "{stream:?}");
+            assert!(!out.text.contains("ABCD"), "{stream:?}: {:?}", out.text);
+        }
+    }
+
+    /// The cut one is on stderr, and a complete occurrence on stdout shrank the
+    /// text so that the stderr tail falls inside the cap.
+    #[tokio::test]
+    async fn a_credential_cut_mid_character_on_stderr_leaves_no_prefix() {
+        let dir = TempDir::new().unwrap();
+        let program = script(
+            dir.path(),
+            "mid_err.sh",
+            "printf %s \"$API_TOKEN\"\nprintf %s \"$API_TOKEN\" | head -c 5 >&2",
+        );
+        let secrets = store();
+        secrets
+            .set(
+                "tok",
+                "ABCD\u{e9}\u{20ac}FGHIJFGHIJFGHIJFGHIJFGHIJFGHIJFGHIJ",
+            )
+            .unwrap();
+        let out = run(
+            &runner(secrets),
+            json!({"program": program, "max_output_bytes": 49, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert!(out.text.starts_with("[redacted]"), "{:?}", out.text);
+        assert!(!out.text.contains("ABCD"), "{:?}", out.text);
+    }
+
+    #[test]
+    fn a_long_resolved_path_does_not_squeeze_out_the_credentials_or_arguments() {
+        let root = TempDir::new().unwrap();
+        let mut deep = root.path().to_path_buf();
+        for _ in 0..4 {
+            deep.push("d".repeat(200));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        script(&deep, "longprog", "true");
+        let path_var = deep.to_string_lossy().into_owned();
+        let r =
+            CliRunner::with_env_lookup(store(), move |n| (n == "PATH").then(|| path_var.clone()));
+        let t = tool(json!({
+            "program": "longprog",
+            "args": ["{q}"],
+            "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}],
+        }));
+        let shown = r.destination(&t, &json!({"q": "main"}));
+        assert!(shown.contains("API_TOKEN from keychain:tok"), "{shown}");
+        assert!(shown.contains(r#"["--","main"]"#), "{shown}");
+        assert!(
+            shown.contains('\u{2026}'),
+            "the long path was not cut: {shown}"
+        );
+        assert!(shown.len() < 1500, "{}", shown.len());
+    }
+
+    #[test]
+    fn an_unset_path_is_said_to_be_unset_not_reported_as_not_found() {
+        let r = CliRunner::with_env_lookup(store(), |_| None);
+        let shown = r.destination(&tool(json!({"program": "git"})), &json!({}));
+        assert!(shown.contains("PATH is unset"), "{shown}");
+        assert!(!shown.contains("not found"), "{shown}");
     }
 }
