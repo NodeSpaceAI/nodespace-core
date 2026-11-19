@@ -1,0 +1,1470 @@
+//! The runner of `tool-cli` tools: runs the program a binding names, with the
+//! arguments the model chose, and returns what it printed.
+//!
+//! The rules it keeps (each is tested against fake programs):
+//!
+//! - **The binding is read through the typed reader** ([`ToolCliFields`]) and
+//!   must be complete; anything malformed fails closed before a process starts.
+//! - **No shell.** The program is spawned directly with an argv vector. Each
+//!   `{name}` placeholder in the binding is one whole argv element, whatever
+//!   the model's value holds (spaces, `;`, `$(...)`, quotes, a leading `-`).
+//!   A value is a string, number or boolean; anything else, or a string with a
+//!   NUL, is refused. A placeholder whose argument the model left out is
+//!   dropped.
+//! - **`--` before model-supplied values.** When at least one model-supplied
+//!   element is present, a `--` element is inserted before the first one, so a
+//!   value that looks like an option is a positional argument.
+//! - **The environment is built, not inherited.** The child gets a short fixed
+//!   list of the daemon's variables ([`BASE_ENV`]) and the entries the binding
+//!   declares; nothing else.
+//! - **Credentials.** A declared `env` entry's `keychain:` or `env:` reference
+//!   is resolved here, at the point the child's environment is built, and goes
+//!   to that one child only. It is never an argument, is held in memory that is
+//!   wiped when dropped, and is redacted from everything this runner returns.
+//!   A credential too short to redact safely is refused. When output is cut
+//!   (the program is stopped at the cap) each stream is redacted whole and any
+//!   trailing part of a credential the read stopped inside of is removed, so no
+//!   prefix of a credential is ever returned.
+//! - **Limits.** A timeout kills the program and everything it started (its
+//!   process group); output is read as a stream and capped, and the program is
+//!   killed when the cap is reached, rather than buffered and cut afterwards.
+//!
+//! What `--` does and does not do: it goes before the first model-supplied
+//! element, so the binding's own fixed arguments that follow a placeholder also
+//! come after it (`["log", "{q}"]` runs `git log -- main`, which names paths,
+//! not a revision; `["{q}", "--out", "x"]` passes `--out` as a positional
+//! argument). A program that does not honour `--` receives a literal `--`
+//! argument. Option injection through a value is therefore prevented only for
+//! programs that honour `--` (git, ssh, curl and most others do). A binding
+//! that is itself dangerous (an interpreter run with `-c`, say) is within what
+//! the user approved: the approval covers the binding, not what it can do.
+//!
+//! Process handling: the program runs in its own process group, which is
+//! killed on a timeout, at the output cap, and when the call is cancelled
+//! (the future is dropped). A background process the program leaves running
+//! after it exits normally, and one that leaves the group (`setsid`), are not
+//! stopped. The program starts in a fresh private (`0700`) empty directory that
+//! is removed afterwards. It inherits the daemon's `PATH` (so bare program
+//! names resolve as they do for the user, Homebrew paths included), the file
+//! descriptors the platform does not mark close-on-exec, the umask and the
+//! signal mask; another process of the same user can read its environment.
+//!
+//! Limits of the redaction: the exact value is replaced. A program that prints
+//! a transformed form of a credential (base64, URL-encoded, split across
+//! lines) is not caught. The child's environment copy of the value is held by
+//! the process machinery and is not wiped.
+
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use nodespace_core::secrets::{resolve_credential_with, SecretStore};
+use nodespace_types::{
+    CredentialRef, ToolCliFields, DEFAULT_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECONDS,
+};
+use serde_json::Value;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+use zeroize::Zeroizing;
+
+use super::remote_tools::{
+    RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind, RemoteToolRunner,
+};
+
+/// The daemon's variables a program is given, when they are set: enough to find
+/// other programs and the user's home, and nothing that carries a credential.
+pub const BASE_ENV: &[&str] = &["PATH", "HOME", "LANG", "USER", "TMPDIR"];
+
+/// A credential shorter than this is refused: redacting it would mangle ordinary
+/// output, and it is not a credential.
+const MIN_REDACTABLE_BYTES: usize = 4;
+/// Read size for the program's output streams.
+const READ_CHUNK: usize = 8192;
+/// How much of a failing program's output an error message carries.
+const ERROR_OUTPUT_BYTES: usize = 1024;
+/// What a redacted value is replaced with.
+const REDACTED: &str = "[redacted]";
+/// Longest confirmation text.
+const MAX_DESTINATION_BYTES: usize = 4096;
+/// Most credential references the confirmation lists before saying how many more.
+const MAX_ENV_SHOWN: usize = 8;
+/// Longest one credential reference is shown.
+const MAX_ENV_ENTRY_BYTES: usize = 300;
+/// Longest program name or path shown.
+const MAX_PROGRAM_SHOWN: usize = 512;
+/// Longest resolved path shown.
+const MAX_RESOLVED_SHOWN: usize = 160;
+
+type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// Runs `tool-cli` tools.
+pub struct CliRunner {
+    secrets: Arc<SecretStore>,
+    daemon_env: EnvLookup,
+}
+
+impl CliRunner {
+    /// A runner whose credentials come from `secrets` and whose base
+    /// environment comes from this process.
+    pub fn new(secrets: Arc<SecretStore>) -> Self {
+        Self {
+            secrets,
+            daemon_env: Arc::new(|name| std::env::var(name).ok()),
+        }
+    }
+
+    /// A runner reading the daemon's variables (for `env:` references and the
+    /// base environment) through `lookup`, for tests.
+    pub fn with_env_lookup(
+        secrets: Arc<SecretStore>,
+        lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            secrets,
+            daemon_env: Arc::new(lookup),
+        }
+    }
+}
+
+/// What to run: the program and its argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Invocation {
+    program: String,
+    argv: Vec<String>,
+}
+
+fn fail<T>(message: impl Into<String>) -> Result<T, RemoteCallError> {
+    Err(RemoteCallError(message.into()))
+}
+
+/// Decodes the binding and requires it complete. Fails closed.
+fn read_binding(tool: &RemoteTool) -> Result<ToolCliFields, RemoteCallError> {
+    let fields = ToolCliFields::from_bucket(tool.binding())
+        .map_err(|e| RemoteCallError(format!("the tool's binding is not valid: {}", e.0)))?;
+    fields
+        .check_complete(Some(&tool.parameter_schema))
+        .map_err(|e| RemoteCallError(format!("the tool's binding is not complete: {}", e.0)))?;
+    Ok(fields)
+}
+
+/// One model-supplied value as an argv element.
+fn element(name: &str, value: &Value) -> Result<String, RemoteCallError> {
+    let text = match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => return fail(format!("`{name}` must be a string, number or boolean")),
+    };
+    if text.contains('\0') {
+        return fail(format!("`{name}` cannot contain a NUL character"));
+    }
+    Ok(text)
+}
+
+/// The program and argv for a call: literals as written, each placeholder one
+/// whole element, `--` before the first model-supplied one.
+fn invocation(fields: &ToolCliFields, args: &Value) -> Result<Invocation, RemoteCallError> {
+    let program = fields
+        .program
+        .clone()
+        .ok_or_else(|| RemoteCallError("the tool's binding names no program".to_string()))?;
+    let mut argv = Vec::new();
+    let mut separated = false;
+    for item in fields.args.iter().flatten() {
+        match whole_placeholder(item) {
+            None => argv.push(item.clone()),
+            Some(name) => {
+                let Some(value) = args.get(name) else {
+                    continue;
+                };
+                if !separated {
+                    argv.push("--".to_string());
+                    separated = true;
+                }
+                argv.push(element(name, value)?);
+            }
+        }
+    }
+    Ok(Invocation { program, argv })
+}
+
+/// The parameter a whole-element `{name}` item names.
+fn whole_placeholder(item: &str) -> Option<&str> {
+    item.strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+}
+
+/// Every place `needle` occurs in `data`, as (start, end) byte spans.
+fn occurrences(data: &[u8], needle: &[u8]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    if needle.is_empty() || data.len() < needle.len() {
+        return found;
+    }
+    for start in 0..=(data.len() - needle.len()) {
+        if data[start] == needle[0] && data[start..].starts_with(needle) {
+            found.push((start, start + needle.len()));
+        }
+    }
+    found
+}
+
+/// The length of the longest suffix of `data` that is a proper prefix of one of
+/// the needles, if there is one: the part of a credential a stream was cut
+/// inside of.
+fn partial_tail(data: &[u8], needles: &[Zeroizing<String>]) -> Option<usize> {
+    needles
+        .iter()
+        .filter_map(|needle| {
+            let needle = needle.as_bytes();
+            (1..needle.len())
+                .rev()
+                .find(|&k| data.ends_with(&needle[..k]))
+        })
+        .max()
+}
+
+/// A stream's bytes as text with every credential removed, working on the raw
+/// bytes and converting to text last (so a character cut in half cannot turn a
+/// credential's prefix into something that no longer matches it).
+///
+/// - Every occurrence of every credential is found in the original bytes, and
+///   overlapping or adjacent occurrences are merged and replaced once by the
+///   marker, so one credential that contains or overlaps another leaves no part
+///   of itself behind.
+/// - When `cut` (the stream ended because the program was stopped, not because
+///   it finished), whatever the bytes end with that is the start of a
+///   credential is removed too, repeatedly (removing one can uncover another).
+///   That tail joins any occurrence it overlaps: such a span gets the marker; a
+///   tail that overlaps none is dropped.
+///
+/// The result holds no complete credential, and, when `cut`, no prefix of one.
+fn sanitize(data: &[u8], needles: &[Zeroizing<String>], cut: bool) -> String {
+    // (start, end, is a complete occurrence)
+    let mut spans: Vec<(usize, usize, bool)> = Vec::new();
+    for needle in needles {
+        spans.extend(
+            occurrences(data, needle.as_bytes())
+                .into_iter()
+                .map(|(s, e)| (s, e, true)),
+        );
+    }
+    if cut {
+        let mut end = data.len();
+        while let Some(k) = partial_tail(&data[..end], needles) {
+            end -= k;
+        }
+        if end < data.len() {
+            spans.push((end, data.len(), false));
+        }
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize, bool)> = Vec::new();
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.0 <= last.1 => {
+                last.1 = last.1.max(span.1);
+                last.2 |= span.2;
+            }
+            _ => merged.push(span),
+        }
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut position = 0;
+    for (start, end, complete) in merged {
+        out.extend_from_slice(&data[position..start]);
+        if complete {
+            out.extend_from_slice(REDACTED.as_bytes());
+        }
+        position = end;
+    }
+    out.extend_from_slice(&data[position..]);
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `text` cut to at most `max` bytes at a character boundary.
+fn cut(text: &mut String, max: usize) {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+}
+
+/// Kills the program's process group when it is dropped: a call that is
+/// cancelled (its future dropped mid-flight) must not leave the program or what
+/// it started running. Disarmed once the program has been reaped, so a recycled
+/// process id is never signalled.
+struct GroupGuard(Option<i32>);
+
+impl GroupGuard {
+    fn new(child: &tokio::process::Child) -> Self {
+        Self(child.id().map(|pid| pid as i32))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0 {
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// A private, empty working directory for one call, removed afterwards.
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn create() -> std::io::Result<Self> {
+        let path =
+            std::env::temp_dir().join(format!("nodespace-cli-{}", uuid::Uuid::new_v4().simple()));
+        #[cfg(unix)]
+        let builder = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = std::fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
+        builder.create(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %self.0.display(),
+                    error = %error.kind(),
+                    "tool-cli: the working directory could not be removed"
+                );
+            }
+        }
+    }
+}
+
+/// How long to wait for a killed program to be reaped.
+const REAP_BOUND: Duration = Duration::from_secs(2);
+
+/// Kills the program and everything it started. The child leads its own process
+/// group, so the group is killed; the child itself is killed as well, so a
+/// failure to signal the group cannot leave it running.
+fn stop(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::killpg(pid as i32, libc::SIGKILL);
+        }
+    }
+    let _ = child.start_kill();
+}
+
+/// Waits a bounded time for a program that has been told to stop.
+async fn reap(child: &mut tokio::process::Child) {
+    let _ = tokio::time::timeout(REAP_BOUND, child.wait()).await;
+}
+
+impl CliRunner {
+    /// Resolves the binding's declared credentials: the (name, value) pairs for
+    /// the child's environment. Runs the platform store off the async threads.
+    async fn credentials(
+        &self,
+        fields: &ToolCliFields,
+    ) -> Result<Vec<(String, Zeroizing<String>)>, RemoteCallError> {
+        let mut out = Vec::new();
+        for entry in fields.env.iter().flatten() {
+            let reference = CredentialRef::parse(&entry.secret).map_err(|e| {
+                RemoteCallError(format!("the tool's binding is not valid: {}", e.0))
+            })?;
+            let secrets = Arc::clone(&self.secrets);
+            let lookup = Arc::clone(&self.daemon_env);
+            let value = tokio::task::spawn_blocking(move || {
+                resolve_credential_with(&secrets, &reference, |n| lookup(n))
+            })
+            .await
+            .map_err(|_| RemoteCallError("the credential store task failed".to_string()))?
+            .map_err(|e| RemoteCallError(e.to_string()))?;
+            // The one place a value is read: it goes into the child's environment.
+            let text = Zeroizing::new(value.expose().to_string());
+            if text.len() < MIN_REDACTABLE_BYTES {
+                return fail(format!(
+                    "the credential for `{}` is too short to be redacted safely",
+                    entry.name
+                ));
+            }
+            out.push((entry.name.clone(), text));
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl RemoteToolRunner for CliRunner {
+    fn kind(&self) -> RemoteToolKind {
+        RemoteToolKind::Cli
+    }
+
+    fn destination(&self, tool: &RemoteTool, args: &Value) -> String {
+        let fields = match read_binding(tool) {
+            Ok(fields) => fields,
+            Err(e) => return format!("(unusable binding: {})", e.0),
+        };
+        // The credentials come first and are bounded, so a long argument can
+        // never push them out of what the user reads: up to eight references,
+        // then how many more there are.
+        let references: Vec<String> = fields
+            .env
+            .iter()
+            .flatten()
+            .map(|e| {
+                let mut entry = format!("{} from {}", e.name, e.secret);
+                cut(&mut entry, MAX_ENV_ENTRY_BYTES);
+                entry
+            })
+            .collect();
+        let mut environment = if references.is_empty() {
+            "; no credentials".to_string()
+        } else {
+            format!(
+                "; credentials in the environment: {}",
+                references
+                    .iter()
+                    .take(MAX_ENV_SHOWN)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        if references.len() > MAX_ENV_SHOWN {
+            environment.push_str(&format!(", and {} more", references.len() - MAX_ENV_SHOWN));
+        }
+        let call = match invocation(&fields, args) {
+            Ok(call) => call,
+            Err(e) => return format!("(unusable call: {}){environment}", e.0),
+        };
+        let mut program = call.program.clone();
+        cut(&mut program, MAX_PROGRAM_SHOWN);
+        let resolved = if call.program.contains(['/', '\\']) {
+            String::new()
+        } else {
+            match (self.daemon_env)("PATH") {
+                None => " (the daemon's PATH is unset; the OS default applies)".to_string(),
+                Some(path_var) => match which::which_in(&call.program, Some(path_var), "/") {
+                    Ok(path) => {
+                        let mut shown = path.display().to_string();
+                        if shown.len() > MAX_RESOLVED_SHOWN {
+                            cut(&mut shown, MAX_RESOLVED_SHOWN);
+                            shown.push('\u{2026}');
+                        }
+                        format!(" (found on the daemon's PATH as {shown})")
+                    }
+                    Err(_) => " (not found on the daemon's PATH)".to_string(),
+                },
+            }
+        };
+        let head = format!("run `{program}`{resolved}");
+        let argv = serde_json::to_string(&call.argv).unwrap_or_default();
+        let prefix = "; arguments: ";
+        let budget =
+            MAX_DESTINATION_BYTES.saturating_sub(head.len() + environment.len() + prefix.len() + 3);
+        let mut shown_argv = argv.clone();
+        if argv.len() > budget {
+            cut(&mut shown_argv, budget);
+            shown_argv.push('\u{2026}');
+        }
+        format!("{head}{environment}{prefix}{shown_argv}")
+    }
+
+    async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError> {
+        let fields = read_binding(tool)?;
+        let call = invocation(&fields, args)?;
+        let credentials = self.credentials(&fields).await?;
+        let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
+        let cap = fields.max_output_bytes.unwrap_or(DEFAULT_RESPONSE_BYTES) as usize;
+        let limit = Duration::from_secs(fields.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
+
+        let scratch = ScratchDir::create().map_err(|e| {
+            RemoteCallError(format!(
+                "a working directory could not be made: {}",
+                e.kind()
+            ))
+        })?;
+        let mut child = {
+            let mut command = Command::new(&call.program);
+            command
+                .args(&call.argv)
+                .env_clear()
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .current_dir(&scratch.0);
+            for name in BASE_ENV {
+                if let Some(value) = (self.daemon_env)(name) {
+                    command.env(name, value);
+                }
+            }
+            for (name, value) in &credentials {
+                command.env(name, value.as_str());
+            }
+            #[cfg(unix)]
+            command.process_group(0);
+            command.spawn().map_err(|e| {
+                RemoteCallError(format!("the program could not be started: {}", e.kind()))
+            })?
+        };
+        drop(credentials);
+        // Declared after `child`, so it is dropped first: a cancelled call kills
+        // the process group before the child handle goes.
+        let mut guard = GroupGuard::new(&child);
+
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        // Reading stops, and the program is killed, once this much has been read.
+        let read_limit = cap;
+
+        let work = async {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let (mut out_open, mut err_open) = (true, true);
+            let mut chunk_out = vec![0u8; READ_CHUNK];
+            let mut chunk_err = vec![0u8; READ_CHUNK];
+            let mut stopped_at_cap = false;
+            while out_open || err_open {
+                tokio::select! {
+                    read = stdout.read(&mut chunk_out), if out_open => match read {
+                        Ok(n) if n > 0 => out.extend_from_slice(&chunk_out[..n]),
+                        _ => out_open = false,
+                    },
+                    read = stderr.read(&mut chunk_err), if err_open => match read {
+                        Ok(n) if n > 0 => err.extend_from_slice(&chunk_err[..n]),
+                        _ => err_open = false,
+                    },
+                }
+                if out.len() + err.len() >= read_limit {
+                    stopped_at_cap = true;
+                    stop(&mut child);
+                    break;
+                }
+            }
+            let status = if stopped_at_cap {
+                // Killed: a bounded wait, and its status says nothing.
+                reap(&mut child).await;
+                child.try_wait()
+            } else {
+                child.wait().await.map(Some)
+            };
+            (out, err, stopped_at_cap, status)
+        };
+
+        let (out, err, stopped_at_cap, status) = match tokio::time::timeout(limit, work).await {
+            Ok(done) => done,
+            Err(_) => {
+                stop(&mut child);
+                reap(&mut child).await;
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    guard.disarm();
+                }
+                return fail(format!(
+                    "the program did not finish within {} seconds and was stopped",
+                    limit.as_secs()
+                ));
+            }
+        };
+
+        if matches!(status, Ok(Some(_))) {
+            guard.disarm();
+        }
+        // Reading stopped at an arbitrary byte when the program was stopped at
+        // the cap, so a stream can end part way through a credential (or a
+        // character of one): each stream is sanitized as raw bytes.
+        let out_text = sanitize(&out, &needles, stopped_at_cap);
+        let err_text = sanitize(&err, &needles, stopped_at_cap);
+        let mut text = out_text;
+        if !err_text.is_empty() {
+            text.push_str("\n[stderr]\n");
+            text.push_str(&err_text);
+        }
+        let truncated = stopped_at_cap || text.len() > cap;
+        cut(&mut text, cap);
+
+        match status {
+            // The program was stopped because it had said enough: what it said
+            // is the result, marked cut, whatever its status was when killed.
+            _ if stopped_at_cap => Ok(RemoteOutput { text, truncated }),
+            Ok(Some(status)) if status.success() => Ok(RemoteOutput { text, truncated }),
+            Ok(None) => fail("the program had not finished when its output ended"),
+            Ok(Some(status)) => {
+                let code = status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "a signal".to_string());
+                cut(&mut text, ERROR_OUTPUT_BYTES);
+                fail(format!("the program exited with status {code}: {text}"))
+            }
+            Err(e) => fail(format!("the program could not be waited for: {}", e.kind())),
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use nodespace_core::secrets::InMemorySecretBackend;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+    use std::time::Instant;
+    use tempfile::TempDir;
+
+    /// A fake program: an executable shell script in `dir`.
+    fn script(dir: &Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn schema() -> Value {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "q": {"type": "string"},
+                "r": {"type": "string"},
+                "n": {"type": "integer"},
+                "flag": {"type": "boolean"},
+                "o": {"type": "object"},
+            },
+        })
+    }
+
+    fn tool(binding: Value) -> RemoteTool {
+        RemoteTool {
+            node_id: "node-1".into(),
+            name: "c_tool".into(),
+            kind: RemoteToolKind::Cli,
+            description: "d".into(),
+            parameter_schema: schema(),
+            properties: json!({ "tool-cli": binding }),
+            approval_tag: String::new(),
+        }
+    }
+
+    fn store() -> Arc<SecretStore> {
+        Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())))
+    }
+
+    /// A runner whose view of the daemon's environment is fixed.
+    fn runner(secrets: Arc<SecretStore>) -> CliRunner {
+        CliRunner::with_env_lookup(secrets, |name| match name {
+            "PATH" => Some("/usr/bin:/bin".to_string()),
+            "HOME" => Some("/tmp".to_string()),
+            "HOST_TOKEN" => Some("ENVVALUE-456".to_string()),
+            _ => None,
+        })
+    }
+
+    async fn run(
+        runner: &CliRunner,
+        binding: Value,
+        args: Value,
+    ) -> Result<RemoteOutput, RemoteCallError> {
+        runner.run(&tool(binding), &args).await
+    }
+
+    const PRINT_ARGS: &str = "for a in \"$@\"; do printf '[%s]\\n' \"$a\"; done";
+
+    #[tokio::test]
+    async fn each_placeholder_is_one_whole_element_and_nothing_goes_through_a_shell() {
+        let dir = TempDir::new().unwrap();
+        let program = script(dir.path(), "args.sh", PRINT_ARGS);
+        let flag: PathBuf = dir.path().join("injected");
+        let nasty = format!(
+            "a b; touch {0} $(touch {0}) `touch {0}` * 'q\" && touch {0}",
+            flag.display()
+        );
+        let out = run(
+            &runner(store()),
+            json!({"program": program, "args": ["status", "{q}"]}),
+            json!({ "q": nasty }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.text, format!("[status]\n[--]\n[{nasty}]\n"));
+        assert!(!flag.exists(), "a shell ran the model's text");
+    }
+
+    #[tokio::test]
+    async fn the_separator_goes_before_the_first_model_value_and_only_when_there_is_one() {
+        let dir = TempDir::new().unwrap();
+        let program = script(dir.path(), "args.sh", PRINT_ARGS);
+        let binding = json!({"program": program, "args": ["-x", "{q}", "-y", "{r}"]});
+        let r = runner(store());
+        // No value: no separator.
+        let none = run(&r, binding.clone(), json!({})).await.unwrap();
+        assert_eq!(none.text, "[-x]\n[-y]\n");
+        // Two values: one separator, before the first, and the literal between
+        // them keeps its place.
+        let two = run(&r, binding.clone(), json!({"q": "1", "r": "2"}))
+            .await
+            .unwrap();
+        assert_eq!(two.text, "[-x]\n[--]\n[1]\n[-y]\n[2]\n");
+        // Only the second: the separator is before it.
+        let second = run(&r, binding.clone(), json!({"r": "2"})).await.unwrap();
+        assert_eq!(second.text, "[-x]\n[-y]\n[--]\n[2]\n");
+        // A value that looks like an option follows the separator.
+        let option = run(&r, binding, json!({"q": "--version"})).await.unwrap();
+        assert_eq!(option.text, "[-x]\n[--]\n[--version]\n[-y]\n");
+    }
+
+    #[tokio::test]
+    async fn values_are_strings_numbers_or_booleans_and_nothing_else() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("ran");
+        let program = script(
+            dir.path(),
+            "args.sh",
+            &format!("touch {}\n{PRINT_ARGS}", marker.display()),
+        );
+        let binding = json!({"program": program, "args": ["{n}", "{flag}", "{q}"]});
+        let r = runner(store());
+        let ok = run(&r, binding.clone(), json!({"n": 5, "flag": true, "q": "s"}))
+            .await
+            .unwrap();
+        assert_eq!(ok.text, "[--]\n[5]\n[true]\n[s]\n");
+        std::fs::remove_file(&marker).unwrap();
+        for bad in [
+            json!({"q": {"a": 1}}),
+            json!({"q": [1]}),
+            json!({"q": null}),
+            json!({"q": "a\u{0}b"}),
+        ] {
+            let err = run(&r, binding.clone(), bad.clone()).await.unwrap_err();
+            assert!(err.0.contains("`q`"), "{bad}: {}", err.0);
+            assert!(!marker.exists(), "the program ran for {bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_environment_is_built_from_the_allow_list_and_the_binding_only() {
+        let dir = TempDir::new().unwrap();
+        let program = script(dir.path(), "env.sh", "env | cut -d= -f1 | sort");
+        std::env::set_var("NS_CLI_TEST_INHERITED", "leaked");
+        let secrets = store();
+        secrets.set("tok", "SECRETVALUE-123").unwrap();
+        let r = CliRunner::new(secrets);
+        let out = run(
+            &r,
+            json!({"program": program, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        let names: Vec<&str> = out.text.lines().collect();
+        assert!(!names.contains(&"NS_CLI_TEST_INHERITED"), "{names:?}");
+        assert!(names.contains(&"API_TOKEN"));
+        // What a shell adds itself, and the base list when set.
+        for name in &names {
+            assert!(
+                BASE_ENV.contains(name)
+                    || [
+                        "API_TOKEN",
+                        "PWD",
+                        "SHLVL",
+                        "_",
+                        "OLDPWD",
+                        "__CF_USER_TEXT_ENCODING"
+                    ]
+                    .contains(name),
+                "unexpected variable {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_reaches_only_the_programs_environment_and_is_redacted_everywhere() {
+        let dir = TempDir::new().unwrap();
+        // Prints the credential on both streams and its own argv.
+        let program = script(
+            dir.path(),
+            "echo.sh",
+            "echo \"out:$API_TOKEN:$HOST_TOKEN\"\necho \"err:$API_TOKEN\" >&2\nfor a in \"$@\"; do echo \"arg:$a\"; done",
+        );
+        let secrets = store();
+        secrets.set("tok", "SECRETVALUE-123").unwrap();
+        let r = runner(secrets);
+        let out = run(
+            &r,
+            json!({"program": program, "args": ["{q}"], "env": [
+                {"name": "API_TOKEN", "secret": "keychain:tok"},
+                {"name": "HOST_TOKEN", "secret": "env:HOST_TOKEN"},
+            ]}),
+            json!({"q": "hello"}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            out.text.contains("out:[redacted]:[redacted]"),
+            "{}",
+            out.text
+        );
+        assert!(out.text.contains("err:[redacted]"), "{}", out.text);
+        for value in ["SECRETVALUE-123", "ENVVALUE-456"] {
+            assert!(!out.text.contains(value), "{}", out.text);
+        }
+        // Never an argument.
+        assert!(out.text.contains("arg:--") && out.text.contains("arg:hello"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_too_short_credential_stops_the_call_before_the_program_runs() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("ran");
+        let program = script(dir.path(), "p.sh", &format!("touch {}", marker.display()));
+        let secrets = store();
+        secrets.set("short", "abc").unwrap();
+        let r = runner(secrets);
+        for (reference, expect) in [
+            ("keychain:absent", "not set on this device"),
+            ("env:ABSENT_VAR", "not set in the environment"),
+            ("keychain:short", "too short to be redacted"),
+        ] {
+            let err = run(
+                &r,
+                json!({"program": program, "env": [{"name": "API_TOKEN", "secret": reference}]}),
+                json!({}),
+            )
+            .await
+            .unwrap_err();
+            assert!(err.0.contains(expect), "{reference}: {}", err.0);
+            assert!(!marker.exists(), "{reference}: the program ran");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_program_reports_its_status_and_redacted_bounded_output() {
+        let dir = TempDir::new().unwrap();
+        let program = script(
+            dir.path(),
+            "fail.sh",
+            "echo \"bad $API_TOKEN\" >&2\nhead -c 5000 /dev/zero | tr '\\0' x >&2\nexit 3",
+        );
+        let secrets = store();
+        secrets.set("tok", "SECRETVALUE-123").unwrap();
+        let err = run(
+            &runner(secrets),
+            json!({"program": program, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.0.contains("status 3"), "{}", err.0);
+        assert!(err.0.contains("[redacted]"));
+        assert!(!err.0.contains("SECRETVALUE-123"));
+        assert!(err.0.len() < ERROR_OUTPUT_BYTES + 200, "{}", err.0.len());
+    }
+
+    #[tokio::test]
+    async fn the_timeout_stops_the_program_and_everything_it_started() {
+        let dir = TempDir::new().unwrap();
+        let pidfile = dir.path().join("pid");
+        let program = script(
+            dir.path(),
+            "slow.sh",
+            &format!("sleep 30 &\necho $! > {}\nwait", pidfile.display()),
+        );
+        let started = Instant::now();
+        let err = run(
+            &runner(store()),
+            json!({"program": program, "timeout_seconds": 1}),
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.0.contains("did not finish within 1 seconds"),
+            "{}",
+            err.0
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The grandchild is gone too (allow the kernel a moment).
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = unsafe { libc::kill(pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive, "the program's own child outlived the timeout");
+    }
+
+    #[tokio::test]
+    async fn output_is_read_as_a_stream_capped_and_the_program_is_stopped_at_the_cap() {
+        let dir = TempDir::new().unwrap();
+        let program = script(
+            dir.path(),
+            "endless.sh",
+            "while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done",
+        );
+        let started = Instant::now();
+        let out = run(
+            &runner(store()),
+            json!({"program": program, "max_output_bytes": 4096}),
+            json!({}),
+        )
+        .await
+        .expect("the program was stopped at the cap and its output returned");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "it was not stopped at the cap"
+        );
+        assert!(out.truncated);
+        assert!(out.text.len() <= 4096, "{}", out.text.len());
+        assert!(out.text.len() > 4000);
+    }
+
+    #[tokio::test]
+    async fn a_credential_cut_by_the_cap_leaves_no_part_of_itself_in_the_output() {
+        let dir = TempDir::new().unwrap();
+        // The credential arrives in two writes, the cap falling inside the first
+        // half: the reader must keep reading until the whole value is in hand
+        // to redact it, then cut.
+        let program = script(
+            dir.path(),
+            "edge.sh",
+            "printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%s' \"$(printf %s \"$API_TOKEN\" | cut -c1-7)\"\nsleep 1\nprintf '%s' \"$(printf %s \"$API_TOKEN\" | cut -c8-)\"\nsleep 1\nprintf 'BBBBBBBBBBBBBBBBBBBBBBBB'",
+        );
+        let secrets = store();
+        secrets.set("tok", "SECRETVALUE-123").unwrap();
+        let out = run(
+            &runner(secrets),
+            json!({"program": program, "max_output_bytes": 64, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert!(out.text.len() <= 64);
+        for part in ["SECR", "ECRET", "VALUE", "-123"] {
+            assert!(!out.text.contains(part), "{}", out.text);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_malformed_or_incomplete_binding_fails_closed_before_anything_runs() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("ran");
+        let program = script(dir.path(), "p.sh", &format!("touch {}", marker.display()));
+        let r = runner(store());
+        for (why, binding) in [
+            ("no program", json!({"args": ["x"]})),
+            (
+                "a partial placeholder",
+                json!({"program": program, "args": ["a{q}"]}),
+            ),
+            (
+                "an undeclared placeholder",
+                json!({"program": program, "args": ["{nope}"]}),
+            ),
+            ("a shell line", json!({"program": "git status"})),
+            (
+                "a denied variable",
+                json!({"program": program, "env": [{"name": "PATH", "secret": "env:HOST_TOKEN"}]}),
+            ),
+            (
+                "a literal secret",
+                json!({"program": program, "env": [{"name": "TOKEN", "secret": "ghp_literal"}]}),
+            ),
+            ("an unknown key", json!({"program": program, "unknown": 1})),
+            (
+                "a timeout over the maximum",
+                json!({"program": program, "timeout_seconds": 100000}),
+            ),
+        ] {
+            let err = run(&r, binding, json!({})).await.unwrap_err();
+            assert!(err.0.contains("binding"), "{why}: {}", err.0);
+            assert!(!marker.exists(), "{why}: the program ran");
+        }
+        assert!(run(&r, json!(null), json!({})).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_program_that_cannot_start_is_an_error() {
+        let err = run(
+            &runner(store()),
+            json!({"program": "/nonexistent/program"}),
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.0.contains("could not be started"), "{}", err.0);
+    }
+
+    #[test]
+    fn the_confirmation_names_the_program_the_arguments_and_the_credential_references() {
+        let secrets = store();
+        secrets.set("tok", "SECRETVALUE-123").unwrap();
+        let r = runner(secrets);
+        let t = tool(json!({
+            "program": "/usr/bin/git",
+            "args": ["log", "{q}"],
+            "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}],
+        }));
+        let shown = r.destination(&t, &json!({"q": "main"}));
+        assert!(shown.contains("/usr/bin/git"), "{shown}");
+        assert!(shown.contains(r#"["log","--","main"]"#), "{shown}");
+        assert!(shown.contains("API_TOKEN from keychain:tok"), "{shown}");
+        assert!(!shown.contains("SECRETVALUE-123"));
+        // A long argument list is cut.
+        let long = r.destination(&t, &json!({"q": "x".repeat(10_000)}));
+        assert!(long.len() <= MAX_DESTINATION_BYTES);
+        // An unusable binding is said so, not described as a command.
+        let bad = r.destination(&tool(json!({"args": ["x"]})), &json!({}));
+        assert!(bad.contains("unusable binding"), "{bad}");
+    }
+
+    /// The raw output ends part way through a credential after an earlier
+    /// occurrence was redacted (and so shortened the text): no prefix of the
+    /// last, cut-off occurrence may be returned.
+    #[tokio::test]
+    async fn a_credential_cut_at_the_end_of_what_was_read_leaves_no_prefix() {
+        let dir = TempDir::new().unwrap();
+        let program = script(
+            dir.path(),
+            "tail.sh",
+            "printf '%s%s%s%s' FFFFFFFFFFFFFFFFFFFFFFFFFFFFFF \"$API_TOKEN\" FFFFFFFFFFFFFFFFFFFF \"$(printf %s \"$API_TOKEN\" | cut -c1-14)\"",
+        );
+        let secrets = store();
+        secrets
+            .set("tok", "SECRETSECRETSECRETSECRETSECRETSECRETABCD")
+            .unwrap();
+        let out = run(
+            &runner(secrets),
+            json!({"program": program, "max_output_bytes": 64, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert!(out.text.len() <= 64);
+        assert!(out.text.contains("[redacted]"), "{}", out.text);
+        for part in ["SECR", "ECRET", "ABCD", "RETS"] {
+            assert!(!out.text.contains(part), "{}", out.text);
+        }
+    }
+
+    /// Two credentials, the cut-off one being the other of them, on either
+    /// stream.
+    #[tokio::test]
+    async fn several_credentials_and_either_stream_leave_no_prefix_when_cut() {
+        for stream in ["", ">&2"] {
+            let dir = TempDir::new().unwrap();
+            let program = script(
+                dir.path(),
+                "tail2.sh",
+                &format!(
+                    "printf '%s%s%s%s%s%s' FFFFFFFFFF \"$B\" FFFFFFFFFF \"$A\" FFFFFFFFFF BRAVOSEC {stream}"
+                ),
+            );
+            let secrets = store();
+            secrets
+                .set("a", "ALPHAKEYALPHAKEYALPHAKEYALPHAKEYALPHAKEY")
+                .unwrap();
+            secrets.set("b", "BRAVOSECRETBRAVOSECRET").unwrap();
+            let out = run(
+                &runner(secrets),
+                json!({"program": program, "max_output_bytes": 100, "env": [
+                    {"name": "A", "secret": "keychain:a"},
+                    {"name": "B", "secret": "keychain:b"},
+                ]}),
+                json!({}),
+            )
+            .await
+            .unwrap();
+            assert!(out.truncated, "{stream:?}");
+            for part in ["ALPHA", "BRAVO", "KEYAL", "SECRET"] {
+                assert!(!out.text.contains(part), "{stream:?}: {}", out.text);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn output_on_stderr_alone_counts_toward_the_cap() {
+        let dir = TempDir::new().unwrap();
+        let program = script(
+            dir.path(),
+            "err.sh",
+            "while :; do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx >&2; done",
+        );
+        let started = Instant::now();
+        let out = run(
+            &runner(store()),
+            json!({"program": program, "max_output_bytes": 4096}),
+            json!({}),
+        )
+        .await
+        .expect("stopped at the cap and returned");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(out.truncated);
+        assert!(out.text.len() <= 4096);
+        assert!(out.text.contains("[stderr]"));
+    }
+
+    /// A cancelled call (its future dropped) stops the program and what it
+    /// started, and removes its working directory.
+    #[tokio::test]
+    async fn a_cancelled_call_stops_the_program_and_its_children() {
+        let dir = TempDir::new().unwrap();
+        let (p1, p2, cwd) = (
+            dir.path().join("p1"),
+            dir.path().join("p2"),
+            dir.path().join("cwd"),
+        );
+        let program = script(
+            dir.path(),
+            "bg.sh",
+            &format!(
+                "pwd > {}\necho $$ > {}\nsleep 30 &\necho $! > {}\nwait",
+                cwd.display(),
+                p1.display(),
+                p2.display()
+            ),
+        );
+        let r = runner(store());
+        let t = tool(json!({"program": program}));
+        let no_args = json!({});
+        let call = r.run(&t, &no_args);
+        // Drop the future part way through.
+        let _ = tokio::time::timeout(Duration::from_millis(1500), call).await;
+        let pids: Vec<i32> = [&p1, &p2]
+            .iter()
+            .map(|p| std::fs::read_to_string(p).unwrap().trim().parse().unwrap())
+            .collect();
+        for pid in pids {
+            let mut alive = true;
+            for _ in 0..50 {
+                alive = unsafe { libc::kill(pid, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(!alive, "process {pid} outlived the cancelled call");
+        }
+        let used = PathBuf::from(std::fs::read_to_string(&cwd).unwrap().trim());
+        assert!(!used.exists(), "the working directory was left behind");
+    }
+
+    /// The program starts in a fresh private directory, which is removed.
+    #[tokio::test]
+    async fn the_program_runs_in_a_fresh_private_directory_that_is_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let seen = dir.path().join("seen");
+        let program = script(
+            dir.path(),
+            "cwd.sh",
+            &format!(
+                "pwd > {0}\nls -A | wc -l >> {0}\necho x > scratch-file",
+                seen.display()
+            ),
+        );
+        let out = run(&runner(store()), json!({"program": program}), json!({}))
+            .await
+            .unwrap();
+        assert_eq!(out.text, "");
+        let text = std::fs::read_to_string(&seen).unwrap();
+        let mut lines = text.lines();
+        let used = PathBuf::from(lines.next().unwrap());
+        assert_eq!(lines.next().unwrap().trim(), "0", "it started empty");
+        let name = used.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("nodespace-cli-"), "{used:?}");
+        assert!(!used.exists(), "the directory was left behind");
+        // Made private: checked on a directory made the same way.
+        let made = ScratchDir::create().unwrap();
+        let mode = std::fs::metadata(&made.0).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        assert_ne!(made.0, std::env::temp_dir());
+    }
+
+    /// Credentials are listed first and bounded, so no argument can hide them.
+    #[test]
+    fn a_long_argument_cannot_push_the_credentials_out_of_the_confirmation() {
+        let r = runner(store());
+        let t = tool(json!({
+            "program": "/usr/bin/git",
+            "args": ["log", "{q}"],
+            "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}],
+        }));
+        let shown = r.destination(&t, &json!({"q": "x".repeat(10_000)}));
+        assert!(shown.contains("API_TOKEN from keychain:tok"), "{shown}");
+        assert!(shown.len() <= MAX_DESTINATION_BYTES, "{}", shown.len());
+        // The cut argument list says so.
+        assert!(
+            shown.ends_with('\u{2026}'),
+            "{}",
+            &shown[shown.len() - 20..]
+        );
+        // Many references: eight shown, the rest counted, none hidden silently.
+        let env: Vec<Value> = (0..11)
+            .map(|i| json!({"name": format!("ENV_{i}"), "secret": "env:SOME_VAR"}))
+            .collect();
+        let many = tool(json!({"program": "/usr/bin/git", "env": env}));
+        let shown = r.destination(&many, &json!({}));
+        assert!(shown.contains("ENV_0 from env:SOME_VAR"));
+        assert!(shown.contains("ENV_7 from env:SOME_VAR"));
+        assert!(!shown.contains("ENV_8"));
+        assert!(shown.contains("and 3 more"), "{shown}");
+    }
+
+    #[test]
+    fn a_bare_program_name_is_shown_with_where_it_resolves() {
+        let r = runner(store());
+        let found = r.destination(&tool(json!({"program": "sh"})), &json!({}));
+        assert!(found.contains("found on the daemon's PATH as"), "{found}");
+        let missing = r.destination(
+            &tool(json!({"program": "definitely-not-a-program-xyz"})),
+            &json!({}),
+        );
+        assert!(
+            missing.contains("not found on the daemon's PATH"),
+            "{missing}"
+        );
+        // An absolute path is shown as given.
+        let absolute = r.destination(&tool(json!({"program": "/bin/sh"})), &json!({}));
+        assert!(
+            absolute.contains("`/bin/sh`") && !absolute.contains("found on"),
+            "{absolute}"
+        );
+    }
+
+    // -- sanitize: the cut-output invariant, exhaustively ------------------
+
+    fn needles_of(values: &[&str]) -> Vec<Zeroizing<String>> {
+        values
+            .iter()
+            .map(|v| Zeroizing::new(v.to_string()))
+            .collect()
+    }
+
+    /// The invariant: whatever the cut position, the text holds no complete
+    /// credential and, when the stream was cut, no prefix of one that is at
+    /// least four bytes (a shorter prefix is not a credential).
+    fn assert_no_leak(raw: &[u8], values: &[&str]) {
+        let needles = needles_of(values);
+        // Uncut: no whole credential.
+        let whole = sanitize(raw, &needles, false);
+        for v in values {
+            assert!(!whole.contains(v), "complete {v:?} in {whole:?}");
+        }
+        // Cut at every position.
+        for at in 0..=raw.len() {
+            let text = sanitize(&raw[..at], &needles, true);
+            for v in values {
+                let bytes = v.as_bytes();
+                for k in MIN_REDACTABLE_BYTES..=bytes.len() {
+                    let prefix = &bytes[..k];
+                    assert!(
+                        !text.as_bytes().windows(k).any(|w| w == prefix),
+                        "a {k}-byte prefix of {v:?} leaked cutting at {at} of {:?}: {text:?}",
+                        String::from_utf8_lossy(raw)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_ascii_credentials_leave_no_prefix_at_any_cut() {
+        assert_no_leak(
+            b"aaaa TOKENALPHA1 bb SECONDKEY99 cc TOKENALPHA1 dd SEC",
+            &["TOKENALPHA1", "SECONDKEY99"],
+        );
+        // One 40-byte credential, the reviewer's shape.
+        assert_no_leak(
+            b"FFFFFFFFFFSECRETSECRETSECRETSECRETSECRETABCDFFFFFFFFFFFFFFFFFFFFSECRETSECRET",
+            &["SECRETSECRETSECRETSECRETSECRETABCD"],
+        );
+    }
+
+    #[test]
+    fn a_credential_that_is_a_prefix_of_another_leaves_none_of_the_longer_one() {
+        assert_no_leak(
+            b"xx XYZ1234 yy XYZ1234QQ77WW88 zz XYZ1234QQ77WW88",
+            &["XYZ1234", "XYZ1234QQ77WW88"],
+        );
+        // The order the values are listed in does not matter.
+        assert_no_leak(
+            b"xx XYZ1234QQ77WW88 yy XYZ1234",
+            &["XYZ1234QQ77WW88", "XYZ1234"],
+        );
+    }
+
+    #[test]
+    fn credentials_that_overlap_or_repeat_themselves_leave_no_prefix() {
+        // The end of one is the start of the other.
+        assert_no_leak(
+            b"xxABCDEF1234ZZZZ99yy EF1234ZZZZ99 ABCDEF1234",
+            &["ABCDEF1234", "EF1234ZZZZ99"],
+        );
+        // A credential that overlaps itself.
+        assert_no_leak(b"AAAA1AAAA1AAAA1AAAA", &["AAAA1AAAA1"]);
+        assert_no_leak(b"ABABABAB ABABABABAB ABAB", &["ABABABAB"]);
+    }
+
+    #[test]
+    fn credentials_with_multibyte_characters_leave_no_prefix_at_any_cut() {
+        let value = "ABCDé€FGHIJ";
+        let raw = format!("xx {value} yy {value} z ABCDé").into_bytes();
+        assert_no_leak(&raw, &[value]);
+        // Made only of multibyte characters.
+        let only = "éé€€éé";
+        let raw = format!("a {only} b {only} c é€").into_bytes();
+        assert_no_leak(&raw, &[only]);
+        // And alongside an ASCII one.
+        assert_no_leak(
+            format!("{value}|WXYZ1234|{value}").as_bytes(),
+            &[value, "WXYZ1234"],
+        );
+    }
+
+    /// Stripping a trailing part of one credential can uncover the start of
+    /// another: one pass is not enough.
+    #[test]
+    fn stripping_a_tail_can_uncover_another_and_is_repeated() {
+        let needles = needles_of(&["WXYZ1", "ZZ99QQ"]);
+        let text = sanitize(b"xxxZZ99QWXY", &needles, true);
+        assert!(!text.contains("ZZ99"), "{text:?}");
+        assert_eq!(text, "xxx");
+        assert_no_leak(b"xxxZZ99QWXY", &["WXYZ1", "ZZ99QQ"]);
+    }
+
+    #[test]
+    fn a_tail_that_overlaps_nothing_is_dropped_and_one_that_overlaps_a_match_is_redacted_once() {
+        let needles = needles_of(&["ABCDEF", "DEFGHI"]);
+        // Ends with the whole of the first, which is also the start of the second.
+        assert_eq!(sanitize(b"..ABCDEF", &needles, true), "..[redacted]");
+        // Ends with a partial that touches nothing: dropped, no marker.
+        assert_eq!(sanitize(b"..ABC", &needles_of(&["ABCDEF"]), true), "..");
+        // Not cut: the same ending is ordinary text.
+        assert_eq!(sanitize(b"..ABC", &needles_of(&["ABCDEF"]), false), "..ABC");
+    }
+
+    /// A complete occurrence that a trailing partial one overlaps: one marker,
+    /// whichever span comes first.
+    #[test]
+    fn an_occurrence_overlapped_by_a_trailing_partial_keeps_its_marker() {
+        let needles = needles_of(&["ABCDE", "CDEFGH"]);
+        assert_eq!(sanitize(b"ABCDEFG", &needles, true), "[redacted]");
+        assert_no_leak(b"xxABCDEFGHyy ABCDEFG", &["ABCDE", "CDEFGH"]);
+    }
+
+    /// The same, through `run`: the read ends in the middle of a character of the
+    /// credential.
+    #[tokio::test]
+    async fn a_credential_cut_in_the_middle_of_a_character_leaves_no_prefix() {
+        for stream in ["", ">&2"] {
+            let dir = TempDir::new().unwrap();
+            let program = script(
+                dir.path(),
+                "mid.sh",
+                &format!("printf 'xxxx%s' \"$(printf %s \"$API_TOKEN\" | head -c 5)\" {stream}"),
+            );
+            let secrets = store();
+            secrets.set("tok", "ABCD\u{e9}\u{20ac}FGHIJ").unwrap();
+            let out = run(
+                &runner(secrets),
+                json!({"program": program, "max_output_bytes": 8, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+                json!({}),
+            )
+            .await
+            .unwrap();
+            assert!(out.truncated, "{stream:?}");
+            assert!(!out.text.contains("ABCD"), "{stream:?}: {:?}", out.text);
+        }
+    }
+
+    /// The cut one is on stderr, and a complete occurrence on stdout shrank the
+    /// text so that the stderr tail falls inside the cap.
+    #[tokio::test]
+    async fn a_credential_cut_mid_character_on_stderr_leaves_no_prefix() {
+        let dir = TempDir::new().unwrap();
+        let program = script(
+            dir.path(),
+            "mid_err.sh",
+            "printf %s \"$API_TOKEN\"\nprintf %s \"$API_TOKEN\" | head -c 5 >&2",
+        );
+        let secrets = store();
+        secrets
+            .set(
+                "tok",
+                "ABCD\u{e9}\u{20ac}FGHIJFGHIJFGHIJFGHIJFGHIJFGHIJFGHIJ",
+            )
+            .unwrap();
+        let out = run(
+            &runner(secrets),
+            json!({"program": program, "max_output_bytes": 49, "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}]}),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(out.truncated);
+        assert!(out.text.starts_with("[redacted]"), "{:?}", out.text);
+        assert!(!out.text.contains("ABCD"), "{:?}", out.text);
+    }
+
+    #[test]
+    fn a_long_resolved_path_does_not_squeeze_out_the_credentials_or_arguments() {
+        let root = TempDir::new().unwrap();
+        let mut deep = root.path().to_path_buf();
+        for _ in 0..4 {
+            deep.push("d".repeat(200));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        script(&deep, "longprog", "true");
+        let path_var = deep.to_string_lossy().into_owned();
+        let r =
+            CliRunner::with_env_lookup(store(), move |n| (n == "PATH").then(|| path_var.clone()));
+        let t = tool(json!({
+            "program": "longprog",
+            "args": ["{q}"],
+            "env": [{"name": "API_TOKEN", "secret": "keychain:tok"}],
+        }));
+        let shown = r.destination(&t, &json!({"q": "main"}));
+        assert!(shown.contains("API_TOKEN from keychain:tok"), "{shown}");
+        assert!(shown.contains(r#"["--","main"]"#), "{shown}");
+        assert!(
+            shown.contains('\u{2026}'),
+            "the long path was not cut: {shown}"
+        );
+        assert!(shown.len() < 1500, "{}", shown.len());
+    }
+
+    #[test]
+    fn an_unset_path_is_said_to_be_unset_not_reported_as_not_found() {
+        let r = CliRunner::with_env_lookup(store(), |_| None);
+        let shown = r.destination(&tool(json!({"program": "git"})), &json!({}));
+        assert!(shown.contains("PATH is unset"), "{shown}");
+        assert!(!shown.contains("not found"), "{shown}");
+    }
+}
