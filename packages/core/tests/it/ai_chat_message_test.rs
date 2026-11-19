@@ -254,6 +254,11 @@ async fn an_acp_chat_stores_parts_and_updates_a_tool_call_in_place() {
     let wire = node_to_typed_value(node).unwrap();
     assert_eq!(wire["toolStatus"], "completed");
     assert_eq!(wire["partKind"], "tool_call");
+    assert_eq!(
+        wire["properties"],
+        json!({}),
+        "the part fields are promoted, not extension properties"
+    );
 
     let order: Vec<String> = svc
         .get_children(&chat)

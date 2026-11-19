@@ -809,6 +809,7 @@ mod tests {
         assert_eq!(m.tool_title.as_deref(), Some("Read src/main.rs"));
         assert_eq!(m.tool_kind, Some(AiChatToolKind::Read));
         assert_eq!(m.tool_status, Some(AiChatToolStatus::InProgress));
+        assert_eq!(m.envelope.properties, json!({}));
         let wire = serde_json::to_value(&m).unwrap();
         assert_eq!(wire["partKind"], "tool_call");
         assert_eq!(wire["toolCallId"], "call_1");
