@@ -52,8 +52,12 @@
 //!   archive); no response header is returned. A non-success status is an
 //!   error with a bounded, redacted piece of the body.
 //!
-//! Limits: redaction replaces exact values, so a transformed form of a
-//! credential in a body is not caught; the credential is held in the
+//! Limits: the system resolver runs on the blocking thread pool, so a lookup that
+//! never returns can hold one pool thread for as long as the OS lets it (the
+//! call itself is stopped by the timeout); redaction replaces exact values, so a
+//! URL-encoded or JSON-escaped echo of a value that contains `\"`, `\\` or `+`
+//! is not caught; a model-controlled query argument can carry data to the bound
+//! origin, by design; the credential is held in the
 //! `HeaderValue` the HTTP stack keeps while the request is in flight; one
 //! resolver answer is used for a hop, so a name that points at a different
 //! public address later is followed on the next hop only.
@@ -172,6 +176,11 @@ fn blocked_v4(ip: Ipv4Addr, loopback_ok: bool) -> Option<&'static str> {
     if a == 198 && (b == 18 || b == 19) {
         return Some("a benchmarking address");
     }
+    // 192.0.0.0/24 (IETF protocol assignments, 192.0.0.8 among them) and the
+    // deprecated 6to4 relay anycast range.
+    if (a == 192 && b == 0 && c == 0) || (a == 192 && b == 88 && c == 99) {
+        return Some("a reserved address");
+    }
     None
 }
 
@@ -217,6 +226,27 @@ fn blocked_v6(ip: Ipv6Addr, loopback_ok: bool) -> Option<&'static str> {
     if first == 0x2001 && segments[1] == 0x0db8 {
         return Some("a documentation address");
     }
+    // Transition and special-purpose ranges that carry or hide an IPv4 address,
+    // or are not for the public internet: 6to4 (2002::/16), Teredo (2001::/32),
+    // discard-only (100::/64), 3fff::/20, 64:ff9b:1::/48, 5f00::/16.
+    if first == 0x2002 {
+        return Some("a 6to4 address");
+    }
+    if first == 0x2001 && segments[1] == 0 {
+        return Some("a Teredo address");
+    }
+    if first == 0x0100 && segments[1..4] == [0, 0, 0] {
+        return Some("a discard-only address");
+    }
+    if first == 0x3fff && segments[1] & 0xf000 == 0 {
+        return Some("a documentation address");
+    }
+    if first == 0x0064 && segments[1] == 0xff9b && segments[2] == 1 {
+        return Some("a local-use NAT64 address");
+    }
+    if first == 0x5f00 {
+        return Some("a reserved address");
+    }
     None
 }
 
@@ -237,8 +267,26 @@ pub(crate) fn pick_address(
                 "`{host}` resolves to {ip}, {reason}: the request was not sent"
             ));
         }
+        // A destination the binding names as loopback must stay on this machine:
+        // plain http to it is allowed because it cannot leave, so a name that
+        // resolves anywhere else is refused.
+        if loopback_ok && !is_loopback_address(*ip) {
+            return fail(format!(
+                "`{host}` resolves to {ip}, which is not a loopback address: the request was not sent"
+            ));
+        }
     }
     Ok(addresses[0])
+}
+
+/// Whether `ip` is a loopback address (`::ffff:127.x` included).
+fn is_loopback_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+    }
 }
 
 /// A destination the binding names as loopback.
@@ -670,7 +718,10 @@ impl RestRunner {
                     .header(CONTENT_TYPE, "application/json")
                     .body(bytes.clone());
             }
-            let mut response = request.send().await.map_err(|e| request_error(e, limit))?;
+            let mut response = request
+                .send()
+                .await
+                .map_err(|e| request_error(e, limit, needles))?;
             let status = response.status();
 
             if status.is_redirection() {
@@ -715,10 +766,9 @@ impl RestRunner {
                 .map(str::to_string);
             if let Some(kind) = &content_type {
                 if !is_text_type(kind) {
-                    return fail(format!(
-                        "the server answered with `{}`, which is not returned (text and JSON only)",
-                        kind.chars().take(80).collect::<String>()
-                    ));
+                    // Nothing from the response headers is repeated: it is the
+                    // server's text, and the credential may be in it.
+                    return fail("the server answered with a content type that is not text or JSON, which is not returned");
                 }
             }
             // Read as a stream; stop at the cap.
@@ -734,7 +784,7 @@ impl RestRunner {
                         }
                     }
                     Ok(None) => break,
-                    Err(e) => return Err(request_error(e, limit)),
+                    Err(e) => return Err(request_error(e, limit, needles)),
                 }
             }
             if content_type.is_none() && std::str::from_utf8(&bytes).is_err() && !stopped_at_cap {
@@ -755,7 +805,11 @@ impl RestRunner {
 }
 
 /// An HTTP client failure as a message that carries no URL.
-fn request_error(error: reqwest::Error, limit: Duration) -> RemoteCallError {
+fn request_error(
+    error: reqwest::Error,
+    limit: Duration,
+    needles: &[Zeroizing<String>],
+) -> RemoteCallError {
     if error.is_timeout() {
         return RemoteCallError(format!(
             "the request did not finish within {} seconds",
@@ -769,7 +823,12 @@ fn request_error(error: reqwest::Error, limit: Duration) -> RemoteCallError {
     } else {
         "the request failed"
     };
-    RemoteCallError(format!("{kind} ({})", error.without_url()))
+    // The text may carry something the server sent: redact it and keep it short
+    // and plain.
+    let mut detail = sanitize(error.without_url().to_string().as_bytes(), needles, false);
+    detail.retain(|c| !c.is_control());
+    cut(&mut detail, 200);
+    RemoteCallError(format!("{kind} ({detail})"))
 }
 
 /// The confirmation text, built from the call and, when known, where the host
@@ -843,7 +902,16 @@ impl RemoteToolRunner for RestRunner {
         let fields = read_binding(tool)?;
         let plan = plan(&fields, args)?;
         let destination = destination(&plan.url)?;
-        let ip = self.checked_address(&destination).await?;
+        // A resolver that never answers must not hold the question: a timeout is a
+        // refused destination.
+        let ip = tokio::time::timeout(CONNECT_TIMEOUT, self.checked_address(&destination))
+            .await
+            .map_err(|_| {
+                RemoteCallError(format!(
+                    "`{}` could not be resolved in time: the request was not sent",
+                    destination.host
+                ))
+            })??;
         Ok(describe(&fields, &plan, Some(&ip.to_string())))
     }
 
@@ -852,36 +920,39 @@ impl RemoteToolRunner for RestRunner {
         let plan = plan(&fields, args)?;
         // Scheme and host rules before anything is resolved or read.
         destination(&plan.url)?;
-        let credential = self.credential(&fields).await?;
-        if credential.is_some() {
-            // A credential goes over https, or over http only to a loopback host.
-            let d = destination(&plan.url)?;
-            if plan.url.scheme() != "https" && !d.loopback {
-                return fail("a credential is only sent over https");
-            }
-        }
-        let needles: Vec<Zeroizing<String>> = credential
-            .iter()
-            .flat_map(|(_, _, values)| values.iter().cloned())
-            .collect();
-        let mut headers = HeaderMap::new();
-        for header in fields.headers.iter().flatten() {
-            let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|_| {
-                RemoteCallError("the tool's binding is not valid: a header name".to_string())
-            })?;
-            let value = HeaderValue::from_str(&header.value).map_err(|_| {
-                RemoteCallError("the tool's binding is not valid: a header value".to_string())
-            })?;
-            headers.append(name, value);
-        }
         let limit = Duration::from_secs(fields.timeout_seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS));
         let cap = fields.max_response_bytes.unwrap_or(DEFAULT_RESPONSE_BYTES) as usize;
-        match tokio::time::timeout(
-            limit,
-            self.exchange(plan, headers, &credential, &needles, limit, cap),
-        )
-        .await
-        {
+        let work = async {
+            // The credential store read, the name lookup, every hop and the body
+            // all count against the one timeout.
+            let credential = self.credential(&fields).await?;
+            if credential.is_some() {
+                // Redundant with `destination` (http only reaches a loopback host),
+                // kept as a second guard: a credential goes over https, or over
+                // http only to a loopback host.
+                let d = destination(&plan.url)?;
+                if plan.url.scheme() != "https" && !d.loopback {
+                    return fail("a credential is only sent over https");
+                }
+            }
+            let needles: Vec<Zeroizing<String>> = credential
+                .iter()
+                .flat_map(|(_, _, values)| values.iter().cloned())
+                .collect();
+            let mut headers = HeaderMap::new();
+            for header in fields.headers.iter().flatten() {
+                let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|_| {
+                    RemoteCallError("the tool's binding is not valid: a header name".to_string())
+                })?;
+                let value = HeaderValue::from_str(&header.value).map_err(|_| {
+                    RemoteCallError("the tool's binding is not valid: a header value".to_string())
+                })?;
+                headers.append(name, value);
+            }
+            self.exchange(plan, headers, &credential, &needles, limit, cap)
+                .await
+        };
+        match tokio::time::timeout(limit, work).await {
             Ok(result) => result,
             Err(_) => fail(format!(
                 "the request did not finish within {} seconds",
@@ -1380,6 +1451,21 @@ mod tests {
             "2001:db8::1",
             "::1.2.3.4",
             "fec0::1",
+            // Transition and special-purpose ranges.
+            "2002:a00:1::1",
+            "2002:7f00:1::1",
+            "2002:a9fe:a9fe::1",
+            "2002::1",
+            "2001::1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "100::1",
+            "3fff::1",
+            "3fff:fff::1",
+            "64:ff9b:1::1",
+            "5f00::1",
+            "192.0.0.8",
+            "192.0.0.1",
+            "192.88.99.1",
         ] {
             assert!(
                 blocked_reason(ip(blocked), false).is_some(),
@@ -1862,5 +1948,104 @@ mod tests {
         let blocked = FakeResolver::with("api.example", vec![vec![ip("10.0.0.5")]]);
         let r = RestRunner::with_parts(store(), |_| None, blocked);
         assert!(r.confirmation_text(&t, &json!({"id": "7"})).await.is_err());
+    }
+
+    // -- review fixes ---------------------------------------------------------
+
+    /// A destination named loopback may be reached over plain http because it
+    /// cannot leave the machine: a name that resolves anywhere else is refused,
+    /// and nothing is sent (so no credential goes out in the clear).
+    #[tokio::test]
+    async fn a_loopback_named_destination_must_resolve_to_loopback() {
+        let server = serve(|_| ok_json("{}")).await;
+        for answers in [
+            vec![ip("8.8.8.8")],
+            vec![ip("127.0.0.1"), ip("8.8.8.8")],
+            vec![ip("2606:4700:4700::1111")],
+        ] {
+            let resolver = FakeResolver::with("localhost", vec![answers]);
+            let (secrets, auth) = with_token("bearer", json!({}));
+            let r = RestRunner::with_parts(secrets, |_| None, resolver);
+            let mut binding = json!({
+                "method": "GET",
+                "url_template": format!("http://localhost:{}/x", server.port),
+            });
+            binding["auth"] = auth;
+            let err = run(&r, binding, json!({})).await.unwrap_err();
+            assert!(
+                err.0.contains("not a loopback address") || err.0.contains("not sent"),
+                "{}",
+                err.0
+            );
+        }
+        assert_eq!(server.hits(), 0);
+        assert!(pick_address("localhost", &[ip("8.8.8.8")], true).is_err());
+        assert!(pick_address("localhost", &[ip("127.0.0.1"), ip("::1")], true).is_ok());
+        assert!(pick_address("localhost", &[ip("::ffff:127.0.0.1")], true).is_ok());
+    }
+
+    /// Nothing from a response header is repeated, the credential in it included.
+    #[tokio::test]
+    async fn a_content_type_that_carries_the_credential_is_not_echoed() {
+        let (secrets, auth) = with_token("bearer", json!({}));
+        let server = serve(|_| {
+            Reply::Whole(http(
+                "200 OK",
+                &[("Content-Type", &format!("x/{TOKEN}"))],
+                b"data",
+            ))
+        })
+        .await;
+        let mut binding = get(server.port, "/x");
+        binding["auth"] = auth;
+        let err = run(&runner(secrets), binding, json!({})).await.unwrap_err();
+        assert!(err.0.contains("not text or JSON"), "{}", err.0);
+        assert!(!err.0.contains(TOKEN) && !err.0.contains("x/"), "{}", err.0);
+    }
+
+    struct Hanging;
+
+    #[async_trait]
+    impl HostResolver for Hanging {
+        async fn resolve(&self, _host: &str, _port: u16) -> std::io::Result<Vec<IpAddr>> {
+            std::future::pending().await
+        }
+    }
+
+    /// A resolver that never answers does not hold the call past its timeout.
+    #[tokio::test]
+    async fn the_total_timeout_covers_the_name_lookup() {
+        let r = RestRunner::with_parts(store(), |_| None, Arc::new(Hanging));
+        let mut binding = json!({"method": "GET", "url_template": "https://api.example/x"});
+        binding["timeout_seconds"] = json!(1);
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(15), run(&r, binding, json!({})))
+            .await
+            .expect("the call outlived its timeout");
+        let err = result.unwrap_err();
+        assert!(
+            err.0.contains("did not finish within 1 seconds"),
+            "{}",
+            err.0
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// ... and neither does it hold the question put to the user: a lookup that
+    /// does not answer is a refused destination.
+    #[tokio::test(start_paused = true)]
+    async fn the_confirmation_does_not_wait_forever_for_a_name_lookup() {
+        let r = RestRunner::with_parts(store(), |_| None, Arc::new(Hanging));
+        let t = tool(
+            json!({"method": "POST", "url_template": "https://api.example/x", "body": "json"}),
+        );
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            r.confirmation_text(&t, &json!({"title": "t"})),
+        )
+        .await
+        .expect("the confirmation waited for a lookup that never answered");
+        let err = result.unwrap_err();
+        assert!(err.0.contains("could not be resolved in time"), "{}", err.0);
     }
 }
