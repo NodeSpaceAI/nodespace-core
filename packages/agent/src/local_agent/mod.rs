@@ -4,6 +4,7 @@ pub mod deletion_confirmation;
 pub mod model_manager;
 pub mod otlp_tracer;
 pub mod prompt_templates;
+pub mod remote_tools;
 pub mod response_processing;
 pub mod routing;
 pub mod routing_probe;

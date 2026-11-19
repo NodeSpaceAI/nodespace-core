@@ -3453,6 +3453,7 @@ dependencies = [
  "minijinja",
  "nodespace-core",
  "nodespace-nlp-engine",
+ "nodespace-types",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

@@ -7449,9 +7449,9 @@ impl AgentToolExecutor for GraphToolExecutor {
     /// Return typed `ToolDefinition`s generated from tool nodes in the graph.
     ///
     /// Reads every node whose type is a `tool` subtype and builds a
-    /// `ToolDefinition` from each one its subtype's trust gate lets through
-    /// (`ToolOrigin::is_offered`), registry tools first in canonical registry
-    /// order. A built-in tool's definition comes only from its own seeded node.
+    /// `ToolDefinition` from each native one, in canonical registry order. A
+    /// built-in tool's definition comes only from its own seeded node. A tool
+    /// of any other subtype is not offered here: `RemoteToolHost` offers those.
     /// `query_nodes` returns the wire shape, so the fields of the node's whole
     /// chain (`tool` and its subtype) are read from the top level of
     /// `properties`.
@@ -7513,38 +7513,34 @@ impl AgentToolExecutor for GraphToolExecutor {
 
             let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
-            // The trust gate is the subtype's rule (ADR-086 §12): a native
-            // tool is always offered, and any other subtype only when
-            // `enabled`. A node that doesn't say is not enabled, and a type
-            // that is no tool has no origin.
-            let enabled = props
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let Some(origin) = ToolOrigin::of(chain).filter(|o| o.is_offered(enabled)) else {
+            // Only a native tool is offered here. Any other subtype comes from
+            // outside and is offered by `RemoteToolHost`, which alone checks
+            // that this device enabled and approved it and that something
+            // can run it (ADR-086 §12): an offering that nothing dispatches
+            // would be a tool the model can call and nothing runs.
+            if ToolOrigin::of(chain) != Some(ToolOrigin::Native) {
                 tracing::debug!(
                     node_id,
                     node_type,
-                    "available_tools: skipping a node the tool trust gate does not offer"
+                    "available_tools: leaving a node that is not native to the remote tool host"
                 );
                 continue;
-            };
+            }
 
             // A native tool is called by its handler key, which is what the
-            // executor dispatches on. Any other subtype is called by its
-            // name; nothing dispatches one yet, since no remote subtype with
-            // a binding exists.
-            let name = match origin {
-                ToolOrigin::Native => props.get("handler"),
-                ToolOrigin::External => node.get("content"),
-            }
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            // executor dispatches on. A native node is trusted for being
+            // NodeSpace's code, so one that is not the seed of the handler it
+            // names is refused: it cannot put its own description and schema
+            // in a built-in tool's place.
+            let name = props
+                .get("handler")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if name.is_empty() {
-                // Tool validation requires a name and, for a native tool, a
-                // handler, so a node without one means this reader no longer
-                // matches the stored shape.
+                // Tool validation requires a handler for a native tool, so a
+                // node without one means this reader no longer matches the
+                // stored shape.
                 tracing::warn!(
                     node_id,
                     node_type,
@@ -7552,21 +7548,12 @@ impl AgentToolExecutor for GraphToolExecutor {
                 );
                 continue;
             }
-            // A built-in tool is defined by its own seeded node and no other.
-            // A native node is trusted for being NodeSpace's code, so one
-            // that is not the seed of the handler it names is refused, and so
-            // is any other subtype that takes a built-in tool's name: neither
-            // can put its own description and schema in that tool's place.
-            let admitted = match origin {
-                ToolOrigin::Native => Tool::is_seeded_as(&name, node_id),
-                ToolOrigin::External => Tool::from_name(&name).is_none(),
-            };
-            if !admitted {
+            if !Tool::is_seeded_as(&name, node_id) {
                 tracing::warn!(
                     node_id,
                     node_type,
                     name = %name,
-                    "available_tools: skipping tool node that is not the seed of a built-in tool but is native or takes one's name"
+                    "available_tools: skipping a native tool node that is not the seed of a built-in tool"
                 );
                 continue;
             }
@@ -13226,17 +13213,16 @@ mod tests {
             }
         }
 
-        /// The trust gate is the subtype's rule (ADR-086 §12).
+        /// A native tool is trusted whatever `enabled` says; a tool of any other
+        /// subtype is never offered by this executor, enabled or not, whatever
+        /// name it takes. `RemoteToolHost` offers those, behind its own gate.
         #[tokio::test]
-        async fn a_tool_that_is_not_native_is_offered_only_when_enabled() {
+        async fn this_executor_offers_native_tools_only() {
             let schema = json!({"type": "object", "properties": {}});
             let (executor, _tmp) = executor_seeded_with(vec![
-                // A native tool is trusted whatever `enabled` says.
                 native_tool_template("get_node", "Get a node", schema.clone(), false),
                 remote_tool_template("remote_disabled", "Disabled", schema.clone(), false),
                 remote_tool_template("remote_enabled", "Enabled", schema.clone(), true),
-                // Enabled, but under a built-in tool's name: never offered in
-                // that tool's place.
                 remote_tool_template("delete_node", "Impostor", schema.clone(), true),
             ])
             .await;
@@ -13244,12 +13230,8 @@ mod tests {
             let tools = executor.available_tools().await.unwrap();
 
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-            assert_eq!(names, vec!["get_node", "remote_enabled"]);
+            assert_eq!(names, vec!["get_node"]);
             assert_eq!(tools[0].description, "Get a node");
-            // A tool with no handler is called by its name, and its inherited
-            // fields are read like a native tool's.
-            assert_eq!(tools[1].description, "Enabled");
-            assert_eq!(tools[1].parameters_schema, schema);
         }
 
         /// A tool that is not native and never said whether it is enabled is

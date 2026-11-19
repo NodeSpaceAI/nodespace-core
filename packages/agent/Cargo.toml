@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 nodespace-core = { workspace = true }
+nodespace-types = { workspace = true }
 nodespace-nlp-engine = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
