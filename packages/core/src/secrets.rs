@@ -61,6 +61,11 @@ pub enum SecretError {
     /// The names index would pass the platform's item limit.
     #[error("too many secrets for this platform: the list of names is limited to {max} bytes as stored; remove a secret first")]
     TooManySecrets { max: usize },
+    /// A failed `set` could not undo itself: the names index would not take the
+    /// new name, and the account could not be put back as it was, so it holds the
+    /// new value, unlisted. `cause` is the index failure (it carries no value).
+    #[error("could not record secret `{name}` ({cause}) and could not put its previous state back: the credential store now holds the new value, unlisted; run `nodespace secret set {name}` again to list it, or `nodespace secret delete {name}`")]
+    NotRestored { name: String, cause: String },
     /// A `keychain:` reference whose name has no value on this device.
     #[error("credential `keychain:{0}` is not set on this device; run `nodespace secret set {0}`")]
     NotSet(String),
@@ -215,11 +220,23 @@ impl SecretStore {
             names.push(name.to_string());
             names.sort();
             if let Err(e) = self.write_index(&names) {
-                // Leave the account as it was: the old value, or nothing.
-                let _ = match &old {
+                // Put the account back as it was: the old value, or nothing. If
+                // that fails too the account holds the new, unlisted value, and
+                // the caller is told so.
+                let restored = match &old {
                     Some(previous) => self.backend.set(&account, previous),
                     None => self.backend.delete(&account).map(|_| ()),
                 };
+                if restored.is_err() {
+                    tracing::error!(
+                        secret_name = %name,
+                        "secret store: the names index write failed and the previous state could not be restored"
+                    );
+                    return Err(SecretError::NotRestored {
+                        name: name.to_string(),
+                        cause: e.to_string(),
+                    });
+                }
                 return Err(e);
             }
         }
@@ -669,6 +686,62 @@ mod tests {
         let first = s.names().unwrap()[0].clone();
         s.delete(&first).unwrap();
         assert!(s.set(&name, "v").is_ok());
+    }
+
+    /// A backend whose index write fails and whose value writes after the first
+    /// fail too (so the restore fails), and whose deletes fail.
+    struct NothingRestores {
+        inner: InMemorySecretBackend,
+        value_writes: std::sync::atomic::AtomicUsize,
+    }
+    impl SecretBackend for NothingRestores {
+        fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+            if account == INDEX_ACCOUNT {
+                return Err(SecretError::Store("index write failed".into()));
+            }
+            let n = self
+                .value_writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n >= 1 {
+                return Err(SecretError::Store("restore write failed".into()));
+            }
+            self.inner.set(account, value)
+        }
+        fn get(&self, account: &str) -> Result<Option<String>, SecretError> {
+            self.inner.get(account)
+        }
+        fn delete(&self, _account: &str) -> Result<bool, SecretError> {
+            Err(SecretError::Store("delete failed".into()))
+        }
+    }
+
+    #[test]
+    fn a_restore_that_fails_is_reported_not_swallowed() {
+        for old in [Some("OLD"), None] {
+            let backend = Arc::new(NothingRestores {
+                inner: InMemorySecretBackend::default(),
+                value_writes: Default::default(),
+            });
+            if let Some(old) = old {
+                backend.inner.set("value:a", old).unwrap();
+            }
+            let s = SecretStore::new(backend.clone());
+            let err = s.set("a", "NEW-VALUE").unwrap_err();
+            match &err {
+                SecretError::NotRestored { name, cause } => {
+                    assert_eq!(name, "a");
+                    assert!(cause.contains("index write failed"), "{cause}");
+                }
+                other => panic!("old={old:?}: expected NotRestored, got {other:?}"),
+            }
+            let text = err.to_string();
+            assert!(
+                text.contains("could not put its previous state back"),
+                "{text}"
+            );
+            assert!(!text.contains("NEW-VALUE") && !text.contains("OLD"));
+            assert!(!format!("{err:?}").contains("NEW-VALUE"));
+        }
     }
 
     /// A value already stored but unlisted (an orphan) must survive a failed
