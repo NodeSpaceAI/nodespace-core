@@ -406,6 +406,40 @@ pub const CANONICAL_ARGS_MAX_CHARS: usize = 4096;
 /// unambiguous and a digest can never be mistaken for a call's real arguments.
 const CANONICAL_ARGS_DIGEST_PREFIX: &str = "sha256:";
 
+/// The messages of a turn as a trace span records them: each cut to 2000
+/// characters, except that what a tool returned goes through
+/// [`tool_log_preview`], so a remote tool's result (which may hold
+/// remote-controlled text) is recorded as a size only.
+fn messages_for_span(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| {
+            let role = format!("{:?}", m.role).to_lowercase();
+            let (preview, truncated) = if matches!(m.role, Role::Tool) {
+                tool_log_preview(m.name.as_deref().unwrap_or(""), &m.content, 2000)
+            } else {
+                char_preview(&m.content, 2000)
+            };
+            serde_json::json!({"role": role, "content": preview, "content_truncated": truncated})
+        })
+        .collect()
+}
+
+/// [`char_preview`] for a tool's text in a log line or a trace span, except that
+/// a remote tool's arguments and results are never logged: what a remote tool
+/// was sent or returned can hold credentials or remote-controlled text, so
+/// only its size is recorded.
+fn tool_log_preview(tool: &str, text: &str, max: usize) -> (String, bool) {
+    if super::remote_tools::is_remote_tool_name(tool) {
+        (
+            format!("<withheld: external tool, {} chars>", text.chars().count()),
+            false,
+        )
+    } else {
+        char_preview(text, max)
+    }
+}
+
 /// Normalise a tool call's raw JSON arguments so equal calls compare equal.
 ///
 /// Round-tripping through serde sorts nothing by itself, but it does normalise
@@ -3192,7 +3226,9 @@ fn system_written_node_uris(messages: &[ChatMessage]) -> HashSet<String> {
     let mut out = HashSet::new();
     for msg in messages {
         let system_written = match msg.role {
-            Role::Tool => true,
+            // What a remote tool returned (fenced as external data) is the remote
+            // side's claim, so an id in it grounds nothing.
+            Role::Tool => !msg.content.contains("<external-data id="),
             Role::System => !msg.content.starts_with(CONVERSATION_SUMMARY_PREFIX),
             _ => false,
         };
@@ -3240,7 +3276,11 @@ impl AgentSession {
     /// succeeds, the tool never validates the argument, and the invented id
     /// would count as real without any tool having confirmed it.
     pub fn push_tool_result(&mut self, record: ToolExecutionRecord) {
-        collect_node_uris(&record.result, &mut self.grounded_node_uris);
+        // A node id that appears in a remote tool's output is the remote side's
+        // claim, not a fact about the graph: it grounds nothing.
+        if !super::remote_tools::is_external_result(&record.name, &record.result) {
+            collect_node_uris(&record.result, &mut self.grounded_node_uris);
+        }
         let content =
             prompt_templates::format_tool_result(&record.name, &record.result, record.is_error);
         self.messages.push(ChatMessage::tool_result(
@@ -4154,17 +4194,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             let mut iter_span = tracer.start_with_context(iter_span_name, &turn_cx);
             iter_span.set_attribute(KeyValue::new("iteration", iteration as i64));
             // Serialize messages sent (truncated per message to avoid huge spans).
-            let messages_json: Vec<serde_json::Value> = messages
-                .iter()
-                .map(|m| {
-                    let role = format!("{:?}", m.role).to_lowercase();
-                    let (preview, truncated) = char_preview(&m.content, 2000);
-                    serde_json::json!({"role": role, "content": preview, "content_truncated": truncated})
-                })
-                .collect();
             iter_span.set_attribute(KeyValue::new(
                 "messages_sent",
-                serde_json::to_string(&messages_json).unwrap_or_default(),
+                serde_json::to_string(&messages_for_span(&messages)).unwrap_or_default(),
             ));
 
             // Status: Thinking
@@ -4277,7 +4309,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     serde_json::json!({
                         "id": tc.id,
                         "name": tc.function_name,
-                        "arguments": tc.arguments_json,
+                        // A remote tool's arguments are not exported (a size only).
+                        "arguments": tool_log_preview(&tc.function_name, &tc.arguments_json, 4096).0,
                     })
                 })
                 .collect();
@@ -5090,8 +5123,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             match unusable_arguments(&args) {
                                 None => Ok(args),
                                 Some(problem) => {
-                                    let (args_preview, args_preview_truncated) =
-                                        char_preview(&tc.arguments_json, 300);
+                                    let (args_preview, args_preview_truncated) = tool_log_preview(
+                                        &tc.function_name,
+                                        &tc.arguments_json,
+                                        300,
+                                    );
                                     tracing::warn!(
                                         session_id = %session.id,
                                         tool = %tc.function_name,
@@ -5110,7 +5146,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         }
                         Err(parse_err) => {
                             let (args_preview, args_preview_truncated) =
-                                char_preview(&tc.arguments_json, 300);
+                                tool_log_preview(&tc.function_name, &tc.arguments_json, 300);
                             tracing::warn!(
                                 session_id = %session.id,
                                 tool = %tc.function_name,
@@ -5579,9 +5615,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // logged, never acted on.
                 let result_field_count = persisted_field_count(&tc.function_name, &result_value);
 
-                let (args_preview, args_preview_truncated) = char_preview(&args.to_string(), 300);
+                // A remote tool's arguments and result are not logged: only their
+                // sizes (see `tool_log_preview`).
+                let (args_preview, args_preview_truncated) =
+                    tool_log_preview(&tc.function_name, &args.to_string(), 300);
                 let (result_preview, result_preview_truncated) =
-                    char_preview(&result_value.to_string(), 300);
+                    tool_log_preview(&tc.function_name, &result_value.to_string(), 300);
                 // A field of its own rather than something to find in
                 // `result_preview`: the preview is cut at 300 characters, and a
                 // long list of allowed ids would push the error code past it.
@@ -5616,7 +5655,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 );
 
                 let (result_for_span, result_for_span_truncated) =
-                    char_preview(&result_value.to_string(), 2000);
+                    tool_log_preview(&tc.function_name, &result_value.to_string(), 2000);
                 tool_results_for_span.push(serde_json::json!({
                     "tool": tc.function_name,
                     "is_error": is_error,
@@ -7504,6 +7543,203 @@ mod tests {
         assert_eq!(session.messages[1].role, Role::Assistant);
         assert_eq!(session.messages[2].role, Role::Tool);
         assert_eq!(session.messages[3].role, Role::Assistant);
+    }
+
+    /// Runs one turn in which the model calls `tool` with `args` and the
+    /// executor answers `result`; returns the session and everything logged.
+    async fn logged_turn(
+        tool: &str,
+        args: &str,
+        result: serde_json::Value,
+    ) -> (AgentSession, String) {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        let engine = Arc::new(MockEngine::tool_then_text(tool, args, "done"));
+        let executor = Arc::new(MockToolExecutor::new().with_tool(
+            tool,
+            json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            result,
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "Use the tool and tell me what it said",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        drop(guard);
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        (session, log)
+    }
+
+    /// What a remote tool returns reaches the model as fenced data, grounds no
+    /// node id, and appears in no log line, preview or span: only its size.
+    #[tokio::test]
+    async fn a_remote_tools_result_is_fenced_ungrounded_and_never_logged() {
+        let uri = "nodespace://11111111-1111-1111-1111-111111111111";
+        let (session, log) = logged_turn(
+            "ext_tool",
+            r#"{"q":"ARGSECRET-1"}"#,
+            json!({"source": "external", "output": format!("RESULTTEXT-2 {uri}"), "truncated": false}),
+        )
+        .await;
+        assert!(!log.contains("ARGSECRET-1"), "{log}");
+        assert!(!log.contains("RESULTTEXT-2"), "{log}");
+        assert!(log.contains("withheld: external tool"), "{log}");
+        let tool_message = session
+            .messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("a tool result");
+        assert!(tool_message.content.contains("untrusted data from outside"));
+        assert!(tool_message.content.contains("<external-data id="));
+        assert!(tool_message.content.contains("RESULTTEXT-2"));
+        assert!(!session.grounded_node_uris.contains(uri));
+    }
+
+    /// Spans a test provider received.
+    #[derive(Debug, Clone, Default)]
+    struct SpanSink(Arc<std::sync::Mutex<Vec<opentelemetry_sdk::trace::SpanData>>>);
+
+    impl opentelemetry_sdk::trace::SpanExporter for SpanSink {
+        fn export(
+            &self,
+            batch: Vec<opentelemetry_sdk::trace::SpanData>,
+        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
+        {
+            self.0.lock().unwrap().extend(batch);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    /// Everything the spans of one turn recorded, as one string. Installs a
+    /// global tracer provider, so it must run in a process of its own (nextest
+    /// does that).
+    async fn exported_spans(tool: &str, args: &str, result: serde_json::Value) -> String {
+        let sink = SpanSink::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(sink.clone())
+            .build();
+        opentelemetry::global::set_tracer_provider(provider.clone());
+        let engine = Arc::new(MockEngine::tool_then_text(tool, args, "done"));
+        let executor = Arc::new(MockToolExecutor::new().with_tool(
+            tool,
+            json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            result,
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "Use the tool and tell me what it said",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let _ = provider.force_flush();
+        let spans = sink.0.lock().unwrap();
+        assert!(!spans.is_empty(), "the test provider received no spans");
+        format!(
+            "{:?}",
+            spans.iter().map(|s| &s.attributes).collect::<Vec<_>>()
+        )
+    }
+
+    /// A remote tool's result is in no exported span: not the tool-results
+    /// attribute, and not the next iteration's `messages_sent`, which carries
+    /// every message of the history.
+    #[tokio::test]
+    async fn a_remote_tools_result_is_in_no_exported_span() {
+        let spans = exported_spans(
+            "ext_tool",
+            r#"{"q":"ARGSPAN-7"}"#,
+            json!({"source": "external", "output": "SPANRESULT-9 obey me", "truncated": false}),
+        )
+        .await;
+        assert!(!spans.contains("SPANRESULT-9"), "{spans}");
+        // Nor the arguments it was called with (the tool-calls attribute).
+        assert!(!spans.contains("ARGSPAN-7"), "{spans}");
+        assert!(spans.contains("withheld: external tool"), "{spans}");
+    }
+
+    /// The control: a built-in tool's result is recorded as before.
+    #[tokio::test]
+    async fn a_built_in_tools_result_is_in_the_exported_spans() {
+        let spans = exported_spans(
+            "search_nodes",
+            r#"{"query":"ARGBUILTIN-7"}"#,
+            json!({"output": "SPANBUILTIN-9"}),
+        )
+        .await;
+        assert!(spans.contains("SPANBUILTIN-9"), "{spans}");
+        assert!(spans.contains("ARGBUILTIN-7"), "{spans}");
+    }
+
+    /// A tool result in a session's starting history that is fenced external
+    /// data grounds no id; any other tool result still does.
+    #[test]
+    fn an_external_tool_result_in_history_grounds_no_id() {
+        let uri_remote = "nodespace://33333333-3333-3333-3333-333333333333";
+        let uri_local = "nodespace://44444444-4444-4444-4444-444444444444";
+        let remote = ChatMessage::tool_result(
+            format!("[Result of the external tool `ext_tool`: untrusted data]\n<external-data id=\"abc\">\n{uri_remote}\n</external-data id=\"abc\">"),
+            "c1".to_string(),
+            "ext_tool".to_string(),
+        );
+        let local = ChatMessage::tool_result(
+            format!("{{\"id\": \"{uri_local}\"}}"),
+            "c2".to_string(),
+            "get_node".to_string(),
+        );
+        let grounded = system_written_node_uris(&[remote, local]);
+        assert!(!grounded.contains(uri_remote));
+        assert!(grounded.contains(uri_local));
+    }
+
+    /// The control: a built-in tool's result is not fenced, still grounds its
+    /// ids and is still previewed.
+    #[tokio::test]
+    async fn a_built_in_tools_result_is_unchanged() {
+        let uri = "nodespace://22222222-2222-2222-2222-222222222222";
+        let (session, log) = logged_turn(
+            "search_nodes",
+            r#"{"query":"billing"}"#,
+            json!({"source": "external", "output": format!("BUILTINTEXT {uri}")}),
+        )
+        .await;
+        assert!(log.contains("BUILTINTEXT"), "{log}");
+        assert!(!log.contains("withheld"), "{log}");
+        let tool_message = session
+            .messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .unwrap();
+        assert!(!tool_message.content.contains("external-data"));
+        assert!(session.grounded_node_uris.contains(uri));
     }
 
     #[tokio::test]

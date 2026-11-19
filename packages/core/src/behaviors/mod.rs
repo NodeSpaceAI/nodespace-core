@@ -2374,10 +2374,10 @@ fn write_canonical(value: &Value, out: &mut String) {
 /// own) and of `parameter_schema`, the arguments the model may pass.
 ///
 /// A change to any of them changes the fingerprint. The name, `description`,
-/// `enabled` and `approved_binding` are outside it: enabling a tool and
-/// rewording what it says do not alter what it runs. Whatever offers a tool
-/// compares this with the tool's `approved_binding`, written when it was
-/// enabled on this device.
+/// `enabled` and `approved_binding` are outside it. This is only the binding
+/// part of what a device approves: `approved_binding` holds the device approval
+/// tag ([`tool_approval_tag`]), a keyed MAC over this fingerprint, the node id,
+/// the name and the description, and that is what offers a tool.
 ///
 /// # Examples
 ///
@@ -2421,13 +2421,91 @@ pub fn tool_binding_hash<S: AsRef<str>>(chain: &[S], properties: &Value) -> Stri
         .collect()
 }
 
+/// The label that keys the approval tag's message to its purpose and version.
+const APPROVAL_LABEL: &[u8] = b"tool-approval-v1";
+
+/// The message a device approval tag authenticates: the label, then the node
+/// id, the name, the description and the binding fingerprint, each prefixed by
+/// its length so no two field splits give one message.
+fn approval_message<S: AsRef<str>>(
+    node_id: &str,
+    name: &str,
+    chain: &[S],
+    properties: &Value,
+) -> Vec<u8> {
+    let description = get_namespaced_prop(properties, CoreNodeType::Tool.as_str(), "description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let binding = tool_binding_hash(chain, properties);
+    let mut message = APPROVAL_LABEL.to_vec();
+    for field in [node_id, name, description, binding.as_str()] {
+        message.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        message.extend_from_slice(field.as_bytes());
+    }
+    message
+}
+
+/// The device approval tag of a remote tool: `hex(HMAC-SHA256(key, "tool-approval-v1"
+/// || node id || name || description || binding fingerprint))`, 64 lowercase hex
+/// characters. `key` is this device's approval key; whoever holds only the node
+/// (a peer, a copy) cannot produce a tag that verifies, and the tag is bound to
+/// this node, its name and its description, so it cannot be moved to another
+/// node or survive a rewording.
+///
+/// Written to `approved_binding` when the tool is enabled on this device.
+pub fn tool_approval_tag<S: AsRef<str>>(
+    key: &[u8],
+    node_id: &str,
+    name: &str,
+    chain: &[S],
+    properties: &Value,
+) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(key)
+        .expect("an HMAC accepts a key of any length");
+    mac.update(&approval_message(node_id, name, chain, properties));
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Whether `tag` is the device approval tag of the tool under `key`. The
+/// comparison is constant-time. A malformed tag is not an approval.
+pub fn verify_tool_approval<S: AsRef<str>>(
+    key: &[u8],
+    tag: &str,
+    node_id: &str,
+    name: &str,
+    chain: &[S],
+    properties: &Value,
+) -> bool {
+    use hmac::{Hmac, Mac};
+    if !is_binding_hash(tag) {
+        return false;
+    }
+    let bytes: Option<Vec<u8>> = (0..tag.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&tag[i..i + 2], 16).ok())
+        .collect();
+    let Some(bytes) = bytes else {
+        return false;
+    };
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(key)
+        .expect("an HMAC accepts a key of any length");
+    mac.update(&approval_message(node_id, name, chain, properties));
+    mac.verify_slice(&bytes).is_ok()
+}
+
 /// The rules every remote tool kind adds to [`ToolNodeBehavior`]'s, then the
 /// kind's own binding check (`check_binding(bucket, parameter_schema,
 /// complete)`).
 ///
 /// - The name is an identifier the model API accepts.
 /// - `parameter_schema`, when set, has a closed root.
-/// - `approved_binding`, when set, is a binding fingerprint.
+/// - `approved_binding`, when set, is a 64-character lowercase hex string (a
+///   device approval tag; whether it verifies is for the device to check).
 /// - A tool that is `enabled` has a complete binding; a draft may be
 ///   incomplete, but whatever it holds is well formed.
 fn validate_remote_tool(
@@ -2454,7 +2532,7 @@ fn validate_remote_tool(
         Some(Value::String(hash)) if is_binding_hash(hash) => {}
         Some(_) => {
             return Err(invalid(
-                "approved_binding must be a binding fingerprint".to_string(),
+                "approved_binding must be a 64-character lowercase hex string".to_string(),
             ))
         }
     }
@@ -5795,6 +5873,142 @@ mod tests {
         node.content = "".to_string();
         assert!(ToolNodeBehavior.validate(&node).is_err());
         assert!(validate_native_tool(&node).is_err());
+    }
+
+    /// A tool's stored properties for the approval-tag tests.
+    fn approval_node(url: &str, description: &str) -> Value {
+        json!({
+            "tool": {
+                "description": description,
+                "enabled": true,
+                "approved_binding": "ignored",
+                "parameter_schema": {"type":"object","additionalProperties":false},
+            },
+            "tool-rest": { "method": "GET", "url_template": url },
+        })
+    }
+
+    #[test]
+    fn an_approval_tag_verifies_only_for_the_same_key_node_name_description_and_binding() {
+        let chain = ["tool-rest", "tool"];
+        let key = [7u8; 32];
+        let props = approval_node("https://a.test/x", "Looks up");
+        let tag = tool_approval_tag(&key, "node-1", "lookup", &chain, &props);
+        assert_eq!(tag.len(), 64);
+        assert!(
+            is_binding_hash(&tag),
+            "the field's own validation accepts it"
+        );
+        let ok = |key: &[u8], id: &str, name: &str, props: &Value| {
+            verify_tool_approval(key, &tag, id, name, &chain, props)
+        };
+        assert!(ok(&key, "node-1", "lookup", &props));
+        // A different device key.
+        assert!(!ok(&[8u8; 32], "node-1", "lookup", &props));
+        // A copy on another node.
+        assert!(!ok(&key, "node-2", "lookup", &props));
+        // A rename.
+        assert!(!ok(&key, "node-1", "lookup2", &props));
+        // A reworded description.
+        assert!(!ok(
+            &key,
+            "node-1",
+            "lookup",
+            &approval_node("https://a.test/x", "Looks up!")
+        ));
+        // A changed binding.
+        assert!(!ok(
+            &key,
+            "node-1",
+            "lookup",
+            &approval_node("https://b.test/x", "Looks up")
+        ));
+        // A changed parameter schema.
+        let mut schema = props.clone();
+        schema["tool"]["parameter_schema"]["properties"] = json!({"q": {"type":"string"}});
+        assert!(!ok(&key, "node-1", "lookup", &schema));
+        // `enabled` and `approved_binding` are outside it.
+        let mut moved = props.clone();
+        moved["tool"]["enabled"] = json!(false);
+        moved["tool"]["approved_binding"] = json!(tag);
+        assert!(ok(&key, "node-1", "lookup", &moved));
+    }
+
+    /// A pinned tag: a change to the label, the field order or the encoding
+    /// changes it, and with it every approval on every device (which then all
+    /// fail closed), so it must be deliberate. The expected value was computed
+    /// independently of this code (HMAC-SHA256 over the label and the
+    /// length-prefixed fields, with the binding fingerprint
+    /// `24030245b26c56cf3ef04a79c3668bc5e8d47ed8ee442dc9736557fc9c1fe9b5`).
+    #[test]
+    fn the_approval_tag_has_a_pinned_known_answer() {
+        let chain = ["tool-rest", "tool"];
+        let props = approval_node("https://a.test/x", "Looks up");
+        assert_eq!(
+            tool_binding_hash(&chain, &props),
+            "24030245b26c56cf3ef04a79c3668bc5e8d47ed8ee442dc9736557fc9c1fe9b5"
+        );
+        assert_eq!(
+            tool_approval_tag(&[7u8; 32], "node-1", "lookup", &chain, &props),
+            "5230e564ead8d0efe9e4d686be629f2b626421438e2cdd1d9a6bbb792599206a"
+        );
+    }
+
+    #[test]
+    fn a_malformed_approval_tag_never_verifies() {
+        let chain = ["tool-rest", "tool"];
+        let key = [7u8; 32];
+        let props = approval_node("https://a.test/x", "d");
+        let tag = tool_approval_tag(&key, "n", "t", &chain, &props);
+        for bad in [
+            String::new(),
+            "0".repeat(64),
+            tag.to_uppercase(),
+            tag[..63].to_string(),
+            format!("{tag}0"),
+            format!("{}g", &tag[..63]),
+        ] {
+            assert!(
+                !verify_tool_approval(&key, &bad, "n", "t", &chain, &props),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_text_between_the_name_and_the_description_changes_the_tag() {
+        let chain = ["tool-rest", "tool"];
+        let key = [7u8; 32];
+        let one = tool_approval_tag(
+            &key,
+            "n",
+            "ab",
+            &chain,
+            &approval_node("https://a.test/x", "c"),
+        );
+        let two = tool_approval_tag(
+            &key,
+            "n",
+            "a",
+            &chain,
+            &approval_node("https://a.test/x", "bc"),
+        );
+        assert_ne!(one, two);
+        let three = tool_approval_tag(
+            &key,
+            "nab",
+            "",
+            &chain,
+            &approval_node("https://a.test/x", "c"),
+        );
+        let four = tool_approval_tag(
+            &key,
+            "n",
+            "ab",
+            &chain,
+            &approval_node("https://a.test/x", "c"),
+        );
+        assert_ne!(three, four);
     }
 
     #[test]

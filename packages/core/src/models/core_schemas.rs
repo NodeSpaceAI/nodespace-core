@@ -2655,8 +2655,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         "approved_binding",
                         "Approved binding",
                         crate::models::SchemaFieldType::Text,
-                        "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). \
-                         Declared local-only",
+                        "The device approval tag: a keyed MAC, under a key kept on this device, over the tool's id, name, \
+                         description and binding (every subtype field and the parameter schema). A tool is offered \
+                         only while the tag verifies. Declared local-only",
                     )
                 },
             ],
@@ -2776,7 +2777,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         remote_tool_schema(
             envelope("tool-cli", "Tool (CLI)"),
             vec![
-                remote_tool_field("program", "Program", crate::models::SchemaFieldType::Text, "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the binding fingerprint and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled"),
+                remote_tool_field("program", "Program", crate::models::SchemaFieldType::Text, "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the device approval and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled"),
                 remote_tool_text_list("args", "Arguments", "One argument per item: a literal, or exactly one `{name}` placeholder naming a property of the parameter schema"),
                 remote_tool_pair_list("env", "Environment", ("secret", "Secret", "A credential reference, `keychain:<name>` or `env:<NAME>`, checked as a name only"), "The environment the program gets, besides a fixed base list, each valued from a credential reference. Names that change which program runs or what it loads (PATH, LD_*, DYLD_*, NODE_OPTIONS, and similar) are refused"),
                 remote_tool_timeout(),

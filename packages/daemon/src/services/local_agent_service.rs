@@ -26,6 +26,7 @@ use nodespace_agent::local_agent::deletion_confirmation::{
     self, landed_write, ConfirmationReply, PendingDeletion,
 };
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
+use nodespace_agent::local_agent::remote_tools::RemoteToolHost;
 use nodespace_agent::local_agent::tools::{
     is_cross_turn_guarded_tool, resolves_entities_tool, GraphToolExecutor, SharedEmbeddingService,
 };
@@ -661,12 +662,20 @@ impl LocalAgentServiceImpl {
         // `resolve_query`'s nested decomposition call. The whole service is
         // rebuilt per turn, so there is no separate "wire once, update later"
         // path to support for it.
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
+        let graph_tools: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
             node_service: Some(self.inner.node_service.clone()),
             embedding_service: self.inner.embedding_service.clone(),
             inference_engine: Some(engine.clone()),
             playbook_lifecycle: self.inner.playbook_lifecycle.clone(),
         });
+        // Remote tools (tool-mcp, tool-rest, tool-cli) are offered and run only
+        // through this host. It has no runner yet, so it adds no tool: the
+        // runners are installed here as each kind gains one.
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(RemoteToolHost::new(
+            graph_tools,
+            self.inner.node_service.clone(),
+            Arc::new(nodespace_core::secrets::SecretStore::keychain()),
+        ));
 
         let prompt_assembler = Some(Arc::new(
             nodespace_agent::prompt_assembler::PromptAssembler::new(

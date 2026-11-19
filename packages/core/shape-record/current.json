@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "32cd320b67b9ab41bc6f21c045aa6f71de4fe7d8f0368429e24301f9654dc98a",
+  "hash": "51f97a77e76d5720edb7061194518760763bf4458ac264a31aad7846ca601aa0",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -2502,7 +2502,7 @@
       "contextPaths": [],
       "fields": {
         "approved_binding": {
-          "description": "A fingerprint of the tool's binding (the hash of every subtype field and the parameter schema). Declared local-only",
+          "description": "The device approval tag: a keyed MAC, under a key kept on this device, over the tool's id, name, description and binding (every subtype field and the parameter schema). A tool is offered only while the tag verifies. Declared local-only",
           "friendlyName": "Approved binding",
           "indexed": false,
           "localOnly": true,
@@ -2602,7 +2602,7 @@
           "type": "number"
         },
         "program": {
-          "description": "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the binding fingerprint and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled",
+          "description": "The executable: a bare name or an absolute path with no `..` segment, never a shell line, a relative path or an option. An interpreter such as sh is accepted: the device approval and the confirmation before a call are the guards, and an executor must put `--` before any model-supplied value. Required before the tool is enabled",
           "friendlyName": "Program",
           "indexed": false,
           "name": "program",

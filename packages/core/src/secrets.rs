@@ -45,6 +45,10 @@ pub const KEYCHAIN_SERVICE: &str = "nodespace.secrets";
 const VALUE_PREFIX: &str = "value:";
 /// Account of the names index. Not a valid value account: it has no prefix.
 const INDEX_ACCOUNT: &str = "index";
+/// Account of this device's tool approval key. Like the index it has no value
+/// prefix, so no `keychain:<name>` reference can read it, no name can collide
+/// with it, and the names listing never shows it.
+const APPROVAL_KEY_ACCOUNT: &str = "approval-key";
 
 /// A failure of the secret store. No variant carries a credential value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -110,6 +114,45 @@ impl Drop for SecretValue {
 impl fmt::Debug for SecretValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SecretValue(<redacted>)")
+    }
+}
+
+/// This device's key for tool approval tags: 32 random bytes, generated on the
+/// first approval and kept in the credential store beside the secrets but
+/// outside the names a node can refer to. Debug prints a placeholder; the bytes
+/// are overwritten when it is dropped.
+pub struct ApprovalKey(Zeroizing<[u8; 32]>);
+
+impl ApprovalKey {
+    /// A key from its bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    /// The key's bytes, for keying a MAC.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0[..]
+    }
+
+    fn to_hex(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.0.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    fn from_hex(text: &str) -> Option<Self> {
+        if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()?;
+        }
+        Some(Self::from_bytes(bytes))
+    }
+}
+
+impl fmt::Debug for ApprovalKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ApprovalKey(<redacted>)")
     }
 }
 
@@ -265,6 +308,46 @@ impl SecretStore {
             self.write_index(&names)?;
         }
         Ok(existed)
+    }
+
+    /// This device's approval key: `None` when none has been provisioned, an
+    /// error when the store cannot be read or holds something that is not a key
+    /// (which callers treat as no key: they fail closed).
+    pub fn approval_key(&self) -> Result<Option<ApprovalKey>, SecretError> {
+        let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.read_approval_key()
+    }
+
+    fn read_approval_key(&self) -> Result<Option<ApprovalKey>, SecretError> {
+        match self.backend.get(APPROVAL_KEY_ACCOUNT)?.map(Zeroizing::new) {
+            None => Ok(None),
+            Some(text) => ApprovalKey::from_hex(&text)
+                .map(Some)
+                .ok_or_else(|| SecretError::Store("the approval key is unreadable".to_string())),
+        }
+    }
+
+    /// This device's approval key, generating and storing one on first use. An
+    /// existing key is never replaced, and one that cannot be read is an error
+    /// (replacing it would silently void every approval).
+    pub fn provision_approval_key(&self) -> Result<ApprovalKey, SecretError> {
+        let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(key) = self.read_approval_key()? {
+            return Ok(key);
+        }
+        // Two random UUIDs carry 244 random bits; take the bytes of both.
+        let mut bytes = [0u8; 32];
+        bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        let key = ApprovalKey::from_bytes(bytes);
+        bytes.zeroize();
+        self.backend.set(APPROVAL_KEY_ACCOUNT, &key.to_hex())?;
+        // The lock above only serialises this process. Another store instance
+        // (a second daemon, the command line) can have written its own key
+        // between the read and the write: return what is stored now, so the
+        // key handed back is the one approvals will be checked against.
+        self.read_approval_key()?
+            .ok_or_else(|| SecretError::Store("the approval key was not stored".to_string()))
     }
 
     /// The names that have a value on this device, sorted. Never values.
@@ -769,6 +852,100 @@ mod tests {
             "the value was not overwritten"
         );
         std::mem::forget(v);
+    }
+
+    #[test]
+    fn the_approval_key_is_provisioned_once_and_is_stable() {
+        let (s, _) = store();
+        assert!(s.approval_key().unwrap().is_none());
+        let first = s.provision_approval_key().unwrap();
+        assert_eq!(first.as_bytes().len(), 32);
+        let again = s.provision_approval_key().unwrap();
+        assert_eq!(first.as_bytes(), again.as_bytes());
+        assert_eq!(
+            s.approval_key().unwrap().unwrap().as_bytes(),
+            first.as_bytes()
+        );
+        // Another store is another key.
+        let (other, _) = store();
+        let theirs = other.provision_approval_key().unwrap();
+        assert_ne!(first.as_bytes(), theirs.as_bytes());
+        assert_ne!(first.as_bytes(), &[0u8; 32]);
+    }
+
+    /// Another store instance (a second daemon, the command line) writes its own
+    /// key right after ours: the key handed back must be the one stored.
+    #[test]
+    fn a_racing_provision_returns_the_key_that_is_stored() {
+        struct OtherWriterWins {
+            inner: InMemorySecretBackend,
+            other: ApprovalKey,
+        }
+        impl SecretBackend for OtherWriterWins {
+            fn set(&self, a: &str, v: &str) -> Result<(), SecretError> {
+                self.inner.set(a, v)?;
+                if a == APPROVAL_KEY_ACCOUNT {
+                    self.inner.set(a, &self.other.to_hex())?;
+                }
+                Ok(())
+            }
+            fn get(&self, a: &str) -> Result<Option<String>, SecretError> {
+                self.inner.get(a)
+            }
+            fn delete(&self, a: &str) -> Result<bool, SecretError> {
+                self.inner.delete(a)
+            }
+        }
+        let other = ApprovalKey::from_bytes([5u8; 32]);
+        let backend = Arc::new(OtherWriterWins {
+            inner: InMemorySecretBackend::default(),
+            other: ApprovalKey::from_bytes([5u8; 32]),
+        });
+        let s = SecretStore::new(backend);
+        let handed_back = s.provision_approval_key().unwrap();
+        assert_eq!(handed_back.as_bytes(), other.as_bytes());
+        assert_eq!(
+            s.approval_key().unwrap().unwrap().as_bytes(),
+            handed_back.as_bytes()
+        );
+    }
+
+    #[test]
+    fn the_approval_key_is_not_a_secret_name_and_never_listed_or_resolvable() {
+        let (s, backend) = store();
+        let key = s.provision_approval_key().unwrap();
+        assert!(s.names().unwrap().is_empty());
+        // No reference reads it: every reference is a `value:` account.
+        for name in ["approval-key", "index", "value:approval-key"] {
+            let got = resolve_credential_with(
+                &s,
+                &CredentialRef::Keychain(name.replace("value:", "")),
+                |_| None,
+            );
+            assert!(matches!(got, Err(SecretError::NotSet(_))), "{name}");
+        }
+        // The hex of the key is not stored under any value account.
+        let hex = key.to_hex();
+        assert!(backend
+            .snapshot()
+            .iter()
+            .all(|(account, v)| account == APPROVAL_KEY_ACCOUNT || !v.contains(hex.as_str())));
+        assert!(!format!("{key:?}").contains(hex.as_str()));
+    }
+
+    #[test]
+    fn an_unreadable_approval_key_is_an_error_and_is_never_replaced() {
+        let (s, backend) = store();
+        backend.set(APPROVAL_KEY_ACCOUNT, "not a key").unwrap();
+        assert!(matches!(s.approval_key(), Err(SecretError::Store(_))));
+        assert!(matches!(
+            s.provision_approval_key(),
+            Err(SecretError::Store(_))
+        ));
+        assert_eq!(
+            backend.snapshot().get(APPROVAL_KEY_ACCOUNT).unwrap(),
+            "not a key"
+        );
     }
 
     /// A backend whose index write fails: the value must not be left behind.
