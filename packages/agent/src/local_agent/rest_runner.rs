@@ -62,24 +62,26 @@
 //! resolver answer is used for a hop, so a name that points at a different
 //! public address later is followed on the next hop only.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nodespace_core::secrets::{resolve_credential_with, SecretStore};
-use nodespace_types::{
-    CredentialRef, HttpAuth, ToolRestFields, DEFAULT_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECONDS,
-};
+use nodespace_core::secrets::SecretStore;
+use nodespace_types::{ToolRestFields, DEFAULT_RESPONSE_BYTES, DEFAULT_TIMEOUT_SECONDS};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::Method;
 use serde_json::{Map, Value};
-use url::{Host, Url};
+use url::Url;
 use zeroize::Zeroizing;
 
-use super::redaction::{cut, sanitize, MIN_REDACTABLE_BYTES};
+use super::net_policy::{
+    checked_address, credential_note, destination, http_credential, request_error, send_following,
+    HostResolver, HttpCredential, Outgoing, SystemResolver, CONNECT_TIMEOUT,
+};
+use super::process::EnvLookup;
+use super::redaction::{cut, sanitize};
 use super::remote_tools::{
     RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind, RemoteToolRunner,
 };
@@ -90,261 +92,17 @@ const UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'_')
     .remove(b'~');
-/// Most redirects followed.
-const MAX_REDIRECTS: usize = 3;
 /// Largest request body sent, in bytes.
 const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024;
-/// Longest credential value accepted as a header value.
-const MAX_CREDENTIAL_BYTES: usize = 8 * 1024;
 /// How much of a failing response an error message carries.
 const ERROR_BODY_BYTES: usize = 1500;
-/// Longest connect phase.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest confirmation text.
 const MAX_DESTINATION_BYTES: usize = 4096;
 /// Longest path-and-query part of the confirmation text.
 const MAX_PATH_SHOWN: usize = 1500;
-/// Longest credential reference shown.
-const MAX_REFERENCE_SHOWN: usize = 300;
-
-type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 fn fail<T>(message: impl Into<String>) -> Result<T, RemoteCallError> {
     Err(RemoteCallError(message.into()))
-}
-
-// ---------------------------------------------------------------------------
-// Resolving and the address policy
-// ---------------------------------------------------------------------------
-
-/// Resolves a host name to addresses. Replaceable, so tests can answer without
-/// DNS.
-#[async_trait]
-pub trait HostResolver: Send + Sync {
-    async fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<IpAddr>>;
-}
-
-/// The operating system's resolver.
-pub struct SystemResolver;
-
-#[async_trait]
-impl HostResolver for SystemResolver {
-    async fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<IpAddr>> {
-        Ok(tokio::net::lookup_host((host, port))
-            .await?
-            .map(|address| address.ip())
-            .collect())
-    }
-}
-
-/// Why `ip` may not be connected to, or `None` when it may. `loopback_ok` is
-/// true only for a destination the binding names as loopback (`localhost` or a
-/// loopback address): a name that merely resolves to a loopback address is not.
-pub(crate) fn blocked_reason(ip: IpAddr, loopback_ok: bool) -> Option<&'static str> {
-    match ip {
-        IpAddr::V4(v4) => blocked_v4(v4, loopback_ok),
-        IpAddr::V6(v6) => blocked_v6(v6, loopback_ok),
-    }
-}
-
-fn blocked_v4(ip: Ipv4Addr, loopback_ok: bool) -> Option<&'static str> {
-    let [a, b, c, _] = ip.octets();
-    if ip.is_loopback() {
-        return (!loopback_ok).then_some("a loopback address");
-    }
-    if ip.is_unspecified() || a == 0 {
-        return Some("an unspecified address");
-    }
-    if ip.is_private() {
-        return Some("a private address");
-    }
-    if ip.is_link_local() {
-        return Some("a link-local address");
-    }
-    if ip.is_broadcast() || ip.is_multicast() || a >= 240 {
-        return Some("a broadcast, multicast or reserved address");
-    }
-    if a == 100 && (64..=127).contains(&b) {
-        return Some("a shared (carrier-grade NAT) address");
-    }
-    if (a == 192 && b == 0 && c == 2)
-        || (a == 198 && b == 51 && c == 100)
-        || (a == 203 && b == 0 && c == 113)
-    {
-        return Some("a documentation address");
-    }
-    if a == 198 && (b == 18 || b == 19) {
-        return Some("a benchmarking address");
-    }
-    // 192.0.0.0/24 (IETF protocol assignments, 192.0.0.8 among them) and the
-    // deprecated 6to4 relay anycast range.
-    if (a == 192 && b == 0 && c == 0) || (a == 192 && b == 88 && c == 99) {
-        return Some("a reserved address");
-    }
-    None
-}
-
-fn blocked_v6(ip: Ipv6Addr, loopback_ok: bool) -> Option<&'static str> {
-    if ip.is_loopback() {
-        return (!loopback_ok).then_some("a loopback address");
-    }
-    if ip.is_unspecified() {
-        return Some("an unspecified address");
-    }
-    // An IPv4 address carried inside an IPv6 one is judged as the IPv4 address.
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return blocked_v4(v4, loopback_ok);
-    }
-    let segments = ip.segments();
-    // NAT64 (64:ff9b::/96) embeds an IPv4 address in the last 32 bits.
-    if segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6] == [0, 0, 0, 0] {
-        let v4 = Ipv4Addr::new(
-            (segments[6] >> 8) as u8,
-            segments[6] as u8,
-            (segments[7] >> 8) as u8,
-            segments[7] as u8,
-        );
-        return blocked_v4(v4, loopback_ok).or(Some("a translated (NAT64) address"));
-    }
-    // IPv4-compatible (::/96) is deprecated and ambiguous.
-    if segments[..6] == [0, 0, 0, 0, 0, 0] {
-        return Some("an IPv4-compatible address");
-    }
-    if ip.is_multicast() {
-        return Some("a multicast address");
-    }
-    let first = segments[0];
-    if first & 0xfe00 == 0xfc00 {
-        return Some("a unique-local address");
-    }
-    if first & 0xffc0 == 0xfe80 {
-        return Some("a link-local address");
-    }
-    if first & 0xffc0 == 0xfec0 {
-        return Some("a site-local address");
-    }
-    if first == 0x2001 && segments[1] == 0x0db8 {
-        return Some("a documentation address");
-    }
-    // Transition and special-purpose ranges that carry or hide an IPv4 address,
-    // or are not for the public internet: 6to4 (2002::/16), Teredo (2001::/32),
-    // discard-only (100::/64), 3fff::/20, 64:ff9b:1::/48, 5f00::/16.
-    if first == 0x2002 {
-        return Some("a 6to4 address");
-    }
-    if first == 0x2001 && segments[1] == 0 {
-        return Some("a Teredo address");
-    }
-    if first == 0x0100 && segments[1..4] == [0, 0, 0] {
-        return Some("a discard-only address");
-    }
-    if first == 0x3fff && segments[1] & 0xf000 == 0 {
-        return Some("a documentation address");
-    }
-    if first == 0x0064 && segments[1] == 0xff9b && segments[2] == 1 {
-        return Some("a local-use NAT64 address");
-    }
-    if first == 0x5f00 {
-        return Some("a reserved address");
-    }
-    None
-}
-
-/// Checks every resolved address and returns the one to connect to (the
-/// first). One refused address refuses the call, so a mixed answer cannot be
-/// used to slip a private address in.
-pub(crate) fn pick_address(
-    host: &str,
-    addresses: &[IpAddr],
-    loopback_ok: bool,
-) -> Result<IpAddr, RemoteCallError> {
-    if addresses.is_empty() {
-        return fail(format!("`{host}` resolved to no address"));
-    }
-    for ip in addresses {
-        if let Some(reason) = blocked_reason(*ip, loopback_ok) {
-            return fail(format!(
-                "`{host}` resolves to {ip}, {reason}: the request was not sent"
-            ));
-        }
-        // A destination the binding names as loopback must stay on this machine:
-        // plain http to it is allowed because it cannot leave, so a name that
-        // resolves anywhere else is refused.
-        if loopback_ok && !is_loopback_address(*ip) {
-            return fail(format!(
-                "`{host}` resolves to {ip}, which is not a loopback address: the request was not sent"
-            ));
-        }
-    }
-    Ok(addresses[0])
-}
-
-/// Whether `ip` is a loopback address (`::ffff:127.x` included).
-fn is_loopback_address(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_loopback(),
-        IpAddr::V6(v6) => {
-            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
-        }
-    }
-}
-
-/// A destination the binding names as loopback.
-fn is_loopback_host(host: &Host<&str>) -> bool {
-    match host {
-        Host::Domain(name) => name.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
-        Host::Ipv4(ip) => ip.is_loopback(),
-        Host::Ipv6(ip) => ip.is_loopback(),
-    }
-}
-
-/// The scheme, host and port a request may go to.
-struct Destination {
-    host: String,
-    port: u16,
-    /// Whether the destination is loopback by what the URL says.
-    loopback: bool,
-}
-
-/// `https` always; `http` only to a loopback destination; no user information.
-fn destination(url: &Url) -> Result<Destination, RemoteCallError> {
-    let Some(host) = url.host() else {
-        return fail("the URL has no host");
-    };
-    if !url.username().is_empty() || url.password().is_some() {
-        return fail("the URL carries credentials; they are never sent that way");
-    }
-    let loopback = is_loopback_host(&host);
-    match url.scheme() {
-        "https" => {}
-        "http" if loopback => {}
-        _ => return fail("the request must use https (http only to a loopback host)"),
-    }
-    let Some(port) = url.port_or_known_default() else {
-        return fail("the URL has no usable port");
-    };
-    Ok(Destination {
-        host: url.host_str().unwrap_or_default().to_string(),
-        port,
-        loopback,
-    })
-}
-
-/// Answers every lookup with the one address that was checked.
-struct PinnedResolver {
-    address: SocketAddr,
-    lookups: Arc<AtomicUsize>,
-}
-
-impl reqwest::dns::Resolve for PinnedResolver {
-    fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        self.lookups.fetch_add(1, Ordering::SeqCst);
-        let address = self.address;
-        Box::pin(async move {
-            let addrs: reqwest::dns::Addrs = Box::new(std::iter::once(address));
-            Ok(addrs)
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -539,58 +297,6 @@ fn template_with(template: &str, fill: &str) -> String {
     out
 }
 
-fn base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        out.push(TABLE[(n >> 18) as usize & 63] as char);
-        out.push(TABLE[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
-/// The credential header for `auth` and the resolved `value`.
-fn auth_header(auth: &HttpAuth, value: &str) -> Result<(HeaderName, HeaderValue), RemoteCallError> {
-    if value.len() > MAX_CREDENTIAL_BYTES || value.chars().any(char::is_control) {
-        return fail("the credential cannot be sent as a header value");
-    }
-    let (name, text) = match auth.scheme.as_str() {
-        "bearer" => (AUTHORIZATION, format!("Bearer {value}")),
-        "basic" => (AUTHORIZATION, format!("Basic {}", base64(value.as_bytes()))),
-        "header" => {
-            let name = auth.header_name.as_deref().ok_or_else(|| {
-                RemoteCallError("the binding names no credential header".to_string())
-            })?;
-            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
-                RemoteCallError("the credential header name is not valid".to_string())
-            })?;
-            (name, value.to_string())
-        }
-        _ => return fail("the binding's auth scheme sends no credential"),
-    };
-    let mut header = HeaderValue::from_str(&text).map_err(|_| {
-        RemoteCallError("the credential cannot be sent as a header value".to_string())
-    })?;
-    header.set_sensitive(true);
-    Ok((name, header))
-}
-
 /// Whether a response of `content_type` is returned as data: text and JSON-like
 /// types only.
 fn is_text_type(content_type: &str) -> bool {
@@ -607,158 +313,40 @@ fn is_text_type(content_type: &str) -> bool {
         || essence == "application/javascript"
 }
 
-/// The origin a request goes to: scheme, host and port.
-fn origin(url: &Url) -> (String, Option<String>, Option<u16>) {
-    (
-        url.scheme().to_string(),
-        url.host_str().map(str::to_ascii_lowercase),
-        url.port_or_known_default(),
-    )
-}
-
 impl RestRunner {
-    /// Resolves the credential the binding names: the header and the value to
-    /// redact.
-    async fn credential(
-        &self,
-        fields: &ToolRestFields,
-    ) -> Result<Option<(HeaderName, HeaderValue, Vec<Zeroizing<String>>)>, RemoteCallError> {
-        let Some(auth) = &fields.auth else {
-            return Ok(None);
-        };
-        if auth.scheme == "none" {
-            return Ok(None);
-        }
-        let secret = auth
-            .secret
-            .as_deref()
-            .ok_or_else(|| RemoteCallError("the binding names no credential".to_string()))?;
-        let reference = CredentialRef::parse(secret)
-            .map_err(|e| RemoteCallError(format!("the tool's binding is not valid: {}", e.0)))?;
-        let secrets = Arc::clone(&self.secrets);
-        let lookup = Arc::clone(&self.daemon_env);
-        let value = tokio::task::spawn_blocking(move || {
-            resolve_credential_with(&secrets, &reference, |n| lookup(n))
-        })
-        .await
-        .map_err(|_| RemoteCallError("the credential store task failed".to_string()))?
-        .map_err(|e| RemoteCallError(e.to_string()))?;
-        // The one place the value is read: it goes into the request header.
-        let text = Zeroizing::new(value.expose().to_string());
-        if text.len() < MIN_REDACTABLE_BYTES {
-            return fail("the credential is too short to be redacted safely");
-        }
-        let (name, header) = auth_header(auth, &text)?;
-        // What the server could echo back: the value, and for `basic` its encoding.
-        let mut needles = vec![text.clone()];
-        if auth.scheme == "basic" {
-            needles.push(Zeroizing::new(base64(text.as_bytes())));
-        }
-        Ok(Some((name, header, needles)))
-    }
-
-    /// Resolves and checks a destination, returning the address to connect to.
-    async fn checked_address(&self, destination: &Destination) -> Result<IpAddr, RemoteCallError> {
-        // An address in the URL needs no lookup, but the same rules apply to it.
-        if let Ok(ip) = destination.host.trim_matches(['[', ']']).parse::<IpAddr>() {
-            return pick_address(&destination.host, &[ip], destination.loopback);
-        }
-        let addresses = self
-            .resolver
-            .resolve(&destination.host, destination.port)
-            .await
-            .map_err(|e| {
-                RemoteCallError(format!(
-                    "`{}` could not be resolved: {}",
-                    destination.host,
-                    e.kind()
-                ))
-            })?;
-        pick_address(&destination.host, &addresses, destination.loopback)
-    }
-
     /// One request, with the redirects the policy allows.
     async fn exchange(
         &self,
         plan: Plan,
         headers: HeaderMap,
-        credential: &Option<(HeaderName, HeaderValue, Vec<Zeroizing<String>>)>,
+        credential: &Option<HttpCredential>,
         needles: &[Zeroizing<String>],
         limit: Duration,
         cap: usize,
     ) -> Result<RemoteOutput, RemoteCallError> {
-        let first_origin = origin(&plan.url);
-        let mut url = plan.url;
-        let method = plan.method;
-        let body = plan.body;
-        for hop in 0..=MAX_REDIRECTS {
-            let destination = destination(&url)?;
-            let ip = self.checked_address(&destination).await?;
-            let pinned = Arc::new(PinnedResolver {
-                address: SocketAddr::new(ip, destination.port),
-                lookups: Arc::clone(&self.pinned_lookups),
-            });
-            let client = reqwest::Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .dns_resolver(pinned)
-                .connect_timeout(CONNECT_TIMEOUT.min(limit))
-                .timeout(limit)
-                .user_agent("nodespace-agent")
-                .build()
-                .map_err(|_| RemoteCallError("the HTTP client could not be built".to_string()))?;
-            let mut request = client
-                .request(method.clone(), url.clone())
-                .headers(headers.clone());
-            if let Some((name, value, _)) = credential {
-                request = request.header(name.clone(), value.clone());
-            }
-            if let Some(bytes) = &body {
-                request = request
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(bytes.clone());
-            }
-            let mut response = request
-                .send()
-                .await
-                .map_err(|e| request_error(e, limit, needles))?;
-            let status = response.status();
-
-            if status.is_redirection() {
-                let location = response
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
-                let Some(location) = location else {
-                    return fail(format!(
-                        "the server answered HTTP {status} with no Location"
-                    ));
-                };
-                if hop == MAX_REDIRECTS {
-                    return fail("the server redirected too many times");
-                }
-                let next = url.join(&location).map_err(|_| {
-                    RemoteCallError("the server sent an unusable redirect".to_string())
-                })?;
-                if origin(&next) != first_origin
-                    || !next.username().is_empty()
-                    || next.password().is_some()
-                {
-                    return fail(
-                        "the server redirected to a different origin; it was not followed",
-                    );
-                }
-                let keeps_method = matches!(status.as_u16(), 307 | 308);
-                if !keeps_method && method != Method::GET {
-                    return fail(
-                        "the server redirected a request that is not a GET; it was not followed",
-                    );
-                }
-                url = next;
-                continue;
-            }
-
+        let mut headers = headers;
+        if let Some(credential) = credential {
+            headers.insert(credential.name.clone(), credential.value.clone());
+        }
+        if plan.body.is_some() {
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        }
+        let mut response = send_following(
+            &Outgoing {
+                resolver: &*self.resolver,
+                lookups: &self.pinned_lookups,
+                limit,
+                needles,
+            },
+            plan.method,
+            plan.url,
+            &headers,
+            plan.body.as_deref(),
+        )
+        .await?;
+        let status = response.status();
+        // (the response is read here)
+        {
             let content_type = response
                 .headers()
                 .get(CONTENT_TYPE)
@@ -793,42 +381,14 @@ impl RestRunner {
             let mut text = sanitize(&bytes, needles, stopped_at_cap);
             let truncated = stopped_at_cap || text.len() > cap;
             cut(&mut text, cap);
-            return if status.is_success() {
+            if status.is_success() {
                 Ok(RemoteOutput { text, truncated })
             } else {
                 cut(&mut text, ERROR_BODY_BYTES);
                 fail(format!("the server answered HTTP {status}: {text}"))
-            };
+            }
         }
-        fail("the server redirected too many times")
     }
-}
-
-/// An HTTP client failure as a message that carries no URL.
-fn request_error(
-    error: reqwest::Error,
-    limit: Duration,
-    needles: &[Zeroizing<String>],
-) -> RemoteCallError {
-    if error.is_timeout() {
-        return RemoteCallError(format!(
-            "the request did not finish within {} seconds",
-            limit.as_secs()
-        ));
-    }
-    let kind = if error.is_connect() {
-        "could not connect"
-    } else if error.is_body() || error.is_decode() {
-        "the response could not be read"
-    } else {
-        "the request failed"
-    };
-    // The text may carry something the server sent: redact it and keep it short
-    // and plain.
-    let mut detail = sanitize(error.without_url().to_string().as_bytes(), needles, false);
-    detail.retain(|c| !c.is_control());
-    cut(&mut detail, 200);
-    RemoteCallError(format!("{kind} ({detail})"))
 }
 
 /// The confirmation text, built from the call and, when known, where the host
@@ -843,21 +403,7 @@ fn describe(fields: &ToolRestFields, plan: &Plan, resolved: Option<&str>) -> Str
         None => shown.push_str(" (the address is checked when it is sent)"),
     }
     // The credential comes before the parts that can be long.
-    match &fields.auth {
-        Some(auth) if auth.scheme != "none" => {
-            let reference = auth.secret.as_deref().unwrap_or("?");
-            let mut line = match auth.scheme.as_str() {
-                "header" => format!(
-                    "; credential in the {} header from {reference}",
-                    auth.header_name.as_deref().unwrap_or("?")
-                ),
-                other => format!("; credential ({other}) from {reference}"),
-            };
-            cut(&mut line, MAX_REFERENCE_SHOWN);
-            shown.push_str(&line);
-        }
-        _ => shown.push_str("; no credential"),
-    }
+    shown.push_str(&credential_note(fields.auth.as_ref()));
     let mut path = url[url::Position::BeforePath..].to_string();
     if path.len() > MAX_PATH_SHOWN {
         cut(&mut path, MAX_PATH_SHOWN);
@@ -904,14 +450,17 @@ impl RemoteToolRunner for RestRunner {
         let destination = destination(&plan.url)?;
         // A resolver that never answers must not hold the question: a timeout is a
         // refused destination.
-        let ip = tokio::time::timeout(CONNECT_TIMEOUT, self.checked_address(&destination))
-            .await
-            .map_err(|_| {
-                RemoteCallError(format!(
-                    "`{}` could not be resolved in time: the request was not sent",
-                    destination.host
-                ))
-            })??;
+        let ip = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            checked_address(&*self.resolver, &destination),
+        )
+        .await
+        .map_err(|_| {
+            RemoteCallError(format!(
+                "`{}` could not be resolved in time: the request was not sent",
+                destination.host
+            ))
+        })??;
         Ok(describe(&fields, &plan, Some(&ip.to_string())))
     }
 
@@ -925,7 +474,8 @@ impl RemoteToolRunner for RestRunner {
         let work = async {
             // The credential store read, the name lookup, every hop and the body
             // all count against the one timeout.
-            let credential = self.credential(&fields).await?;
+            let credential =
+                http_credential(&self.secrets, &self.daemon_env, fields.auth.as_ref()).await?;
             if credential.is_some() {
                 // Redundant with `destination` (http only reaches a loopback host),
                 // kept as a second guard: a credential goes over https, or over
@@ -937,7 +487,7 @@ impl RemoteToolRunner for RestRunner {
             }
             let needles: Vec<Zeroizing<String>> = credential
                 .iter()
-                .flat_map(|(_, _, values)| values.iter().cloned())
+                .flat_map(|c| c.needles.iter().cloned())
                 .collect();
             let mut headers = HeaderMap::new();
             for header in fields.headers.iter().flatten() {
@@ -965,183 +515,14 @@ impl RemoteToolRunner for RestRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::local_agent::net_policy::{base64, blocked_reason, pick_address};
+    use crate::local_agent::test_http::{http, ip, ok_json, serve, FakeResolver, Reply, Request};
     use nodespace_core::secrets::InMemorySecretBackend;
     use serde_json::json;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
+    use std::net::IpAddr;
+    use std::sync::atomic::Ordering;
     use std::time::Instant;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    // -- a local HTTP server ----------------------------------------------
-
-    #[derive(Debug, Clone)]
-    struct Request {
-        head: String,
-        body: Vec<u8>,
-    }
-
-    enum Reply {
-        Whole(Vec<u8>),
-        /// The head, then `chunk` every `every`, until the client goes away.
-        Stream {
-            head: Vec<u8>,
-            chunk: Vec<u8>,
-            every: Duration,
-        },
-    }
-
-    fn http(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
-        let mut out = format!(
-            "HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n",
-            body.len()
-        );
-        for (name, value) in headers {
-            out.push_str(&format!("{name}: {value}\r\n"));
-        }
-        out.push_str("\r\n");
-        let mut bytes = out.into_bytes();
-        bytes.extend_from_slice(body);
-        bytes
-    }
-
-    fn ok_json(body: &str) -> Reply {
-        Reply::Whole(http(
-            "200 OK",
-            &[("Content-Type", "application/json")],
-            body.as_bytes(),
-        ))
-    }
-
-    struct Server {
-        port: u16,
-        seen: Arc<Mutex<Vec<Request>>>,
-        /// Set when a streaming client went away.
-        closed: Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    impl Server {
-        fn hits(&self) -> usize {
-            self.seen.lock().unwrap().len()
-        }
-        fn requests(&self) -> Vec<Request> {
-            self.seen.lock().unwrap().clone()
-        }
-    }
-
-    async fn serve(handler: impl Fn(&Request) -> Reply + Send + Sync + 'static) -> Server {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let seen: Arc<Mutex<Vec<Request>>> = Arc::default();
-        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let handler = Arc::new(handler);
-        let (seen_in, closed_in) = (Arc::clone(&seen), Arc::clone(&closed));
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let (handler, seen, closed) = (
-                    Arc::clone(&handler),
-                    Arc::clone(&seen_in),
-                    Arc::clone(&closed_in),
-                );
-                tokio::spawn(async move {
-                    let mut buffer = Vec::new();
-                    let mut chunk = [0u8; 4096];
-                    let head_end = loop {
-                        let n = stream.read(&mut chunk).await.unwrap_or(0);
-                        if n == 0 {
-                            return;
-                        }
-                        buffer.extend_from_slice(&chunk[..n]);
-                        if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-                            break at + 4;
-                        }
-                    };
-                    let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
-                    let length = head
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                        })
-                        .unwrap_or(0);
-                    while buffer.len() < head_end + length {
-                        let n = stream.read(&mut chunk).await.unwrap_or(0);
-                        if n == 0 {
-                            break;
-                        }
-                        buffer.extend_from_slice(&chunk[..n]);
-                    }
-                    let request = Request {
-                        head,
-                        body: buffer[head_end..].to_vec(),
-                    };
-                    let reply = handler(&request);
-                    seen.lock().unwrap().push(request);
-                    match reply {
-                        Reply::Whole(bytes) => {
-                            let _ = stream.write_all(&bytes).await;
-                            let _ = stream.shutdown().await;
-                        }
-                        Reply::Stream { head, chunk, every } => {
-                            if stream.write_all(&head).await.is_err() {
-                                closed.store(true, Ordering::SeqCst);
-                                return;
-                            }
-                            loop {
-                                if stream.write_all(&chunk).await.is_err()
-                                    || stream.flush().await.is_err()
-                                {
-                                    closed.store(true, Ordering::SeqCst);
-                                    return;
-                                }
-                                tokio::time::sleep(every).await;
-                            }
-                        }
-                    }
-                });
-            }
-        });
-        Server { port, seen, closed }
-    }
-
-    /// A resolver with scripted answers; counts its calls.
-    #[derive(Default)]
-    struct FakeResolver {
-        answers: Mutex<HashMap<String, Vec<Vec<IpAddr>>>>,
-        calls: AtomicUsize,
-    }
-
-    impl FakeResolver {
-        fn with(host: &str, answers: Vec<Vec<IpAddr>>) -> Arc<Self> {
-            let r = Self::default();
-            r.answers.lock().unwrap().insert(host.to_string(), answers);
-            Arc::new(r)
-        }
-    }
-
-    #[async_trait]
-    impl HostResolver for FakeResolver {
-        async fn resolve(&self, host: &str, _port: u16) -> std::io::Result<Vec<IpAddr>> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let mut answers = self.answers.lock().unwrap();
-            let list = answers
-                .get_mut(host)
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such host"))?;
-            Ok(if list.len() > 1 {
-                list.remove(0)
-            } else {
-                list[0].clone()
-            })
-        }
-    }
-
-    fn ip(text: &str) -> IpAddr {
-        text.parse().unwrap()
-    }
+    use url::Url;
 
     // -- helpers -----------------------------------------------------------
 
