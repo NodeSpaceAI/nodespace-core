@@ -84,6 +84,34 @@ impl CredentialRef {
     }
 }
 
+/// Largest credential value the device store accepts, in bytes, on any
+/// platform. Windows' credential manager holds less (1280 UTF-16 units); the
+/// store checks that platform limit itself and says so when it is passed.
+pub const MAX_SECRET_VALUE_BYTES: usize = 16 * 1024;
+
+/// Whether `name` is a name a `keychain:<name>` reference can carry. The one
+/// definition: the store and the command-line tool both ask it.
+pub fn is_secret_name(name: &str) -> bool {
+    matches!(
+        CredentialRef::parse(&format!("keychain:{name}")),
+        Ok(CredentialRef::Keychain(_))
+    )
+}
+
+/// Why `value` cannot be stored as a credential, if it cannot. The reason names
+/// the rule and never the value.
+pub fn secret_value_problem(value: &str) -> Option<&'static str> {
+    if value.is_empty() {
+        Some("a value cannot be empty")
+    } else if value.len() > MAX_SECRET_VALUE_BYTES {
+        Some("a value is too long")
+    } else if value.contains('\0') {
+        Some("a value cannot contain NUL")
+    } else {
+        None
+    }
+}
+
 fn is_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     name.len() <= 128

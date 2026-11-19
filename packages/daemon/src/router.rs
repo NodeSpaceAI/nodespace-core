@@ -16,6 +16,7 @@ use crate::{
     AgentSessionHandler, AgentSessionServiceServer, DatabaseServiceImpl, DatabaseServiceServer,
     EmbeddingsServiceImpl, EmbeddingsServiceServer, ImportServiceImpl, ImportServiceServer,
     LocalAgentServiceImpl, LocalAgentServiceServer, NodeServiceImpl, NodeServiceServer,
+    SecretServiceImpl, SecretServiceServer,
 };
 
 /// All base service implementations required by a NodeSpace daemon.
@@ -32,6 +33,9 @@ pub struct BaseServices {
     /// Registry manager for the daemon's local databases (ADR-053). Process-global
     /// (not routed): it operates on the registry itself, not a single database.
     pub database: DatabaseServiceImpl,
+    /// The device credential store's service. Process-global (not routed):
+    /// the store belongs to the device, not to a database.
+    pub secrets: SecretServiceImpl,
 }
 
 /// Build the base tonic router with all base services registered.
@@ -77,6 +81,9 @@ where
         )))
         .add_service(with_message_limits!(DatabaseServiceServer::new(
             services.database
+        )))
+        .add_service(with_message_limits!(SecretServiceServer::new(
+            services.secrets
         )));
 
     match services.embeddings {

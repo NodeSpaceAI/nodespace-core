@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nodespace_agent::pty::PtySessionManager;
+use nodespace_core::secrets::{InMemorySecretBackend, SecretStore};
 use nodespace_core::{NodeService, NodeUpdate, SqliteStore};
 use nodespace_daemon::incompatible_database::open_default_or_record_refusal;
 use nodespace_daemon::nodespace::{
@@ -22,8 +23,8 @@ use nodespace_daemon::nodespace::{
 };
 use nodespace_daemon::{
     build_base_router, unrouted_services_if_default_refused, BaseServices, DatabaseManager,
-    DatabaseServiceClient, DatabaseServiceImpl, DbManagerLayer, NodeServiceClient, SharedContext,
-    DATABASE_ID_HEADER,
+    DatabaseServiceClient, DatabaseServiceImpl, DbManagerLayer, NodeServiceClient,
+    SecretServiceImpl, SharedContext, DATABASE_ID_HEADER,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use nodespace_proto::{extension_names, requires_extension};
@@ -157,6 +158,9 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
+        secrets: SecretServiceImpl::new(std::sync::Arc::new(SecretStore::new(
+            std::sync::Arc::new(InMemorySecretBackend::default()),
+        ))),
     };
     let router = build_base_router(
         tonic::transport::Server::builder().layer(DbManagerLayer::new(manager.clone())),
@@ -316,6 +320,9 @@ async fn a_reserved_client_id_is_refused_by_the_unrouted_service_set() {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
+        secrets: SecretServiceImpl::new(std::sync::Arc::new(SecretStore::new(
+            std::sync::Arc::new(InMemorySecretBackend::default()),
+        ))),
     };
     let router = build_base_router(
         tonic::transport::Server::builder().layer(DbManagerLayer::new(manager.clone())),

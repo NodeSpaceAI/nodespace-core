@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nodespace_daemon::{
     AgentSessionServiceClient, DatabaseServiceClient, ImportServiceClient, LocalAgentServiceClient,
-    NodeServiceClient,
+    NodeServiceClient, SecretServiceClient,
 };
 use nodespace_proto::with_message_limits;
 use tonic::metadata::{Ascii, MetadataValue};
@@ -204,6 +204,12 @@ pub enum Command {
     Database {
         #[command(subcommand)]
         action: commands::database::DatabaseAction,
+    },
+    /// Manage the credentials remote tools refer to as `keychain:<name>` (set, delete, list-names).
+    /// Values are never shown and never passed as arguments.
+    Secret {
+        #[command(subcommand)]
+        action: commands::secret::SecretAction,
     },
     /// Uninstall NodeSpace: stop daemon, remove binaries and service registration.
     Uninstall(commands::uninstall::UninstallArgs),
@@ -644,6 +650,15 @@ pub async fn connect_local_agent(
         .map_err(|e| connect_failure(sock, e))
 }
 
+/// Connect a `SecretService` client. The credential store belongs to the device,
+/// so it carries no database routing header.
+pub async fn connect_secrets(sock: &std::path::Path) -> Result<SecretServiceClient<Channel>> {
+    dial_channel(sock)
+        .await
+        .map(|channel| with_message_limits!(SecretServiceClient::new(channel)))
+        .map_err(|e| connect_failure(sock, e))
+}
+
 /// Connect a `DatabaseService` client. This operates on the daemon's database
 /// registry globally, so it carries no routing header (unlike the data-plane
 /// clients above).
@@ -886,6 +901,12 @@ async fn dispatch(cli: Cli) -> Result<()> {
         Command::Database { action } => {
             let mut client = connect_database(&sock).await?;
             commands::database::run(&mut client, action, json).await
+        }
+        // The credential store belongs to the device, so the `secret`
+        // subcommands are not routed by `--database` either.
+        Command::Secret { action } => {
+            let mut client = connect_secrets(&sock).await?;
+            commands::secret::run(&mut client, action, json).await
         }
         Command::Uninstall(args) => commands::uninstall::run(args),
         // `install`/`uninstall`/`status` never touch the daemon -- they shell

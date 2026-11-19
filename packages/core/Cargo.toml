@@ -42,6 +42,8 @@ async-trait = { workspace = true }
 regex = "1.0"
 pulldown-cmark = "0.11"
 sha2 = "0.10"
+# Overwrites a credential value when it is dropped.
+zeroize = "1"
 
 # Logging
 tracing = { workspace = true }
@@ -56,7 +58,15 @@ cel-interpreter = { version = "0.10.0", features = ["json"] }
 cel-parser = "0.10"
 cron = "0.16"
 
+# The device credential store behind `keychain:` references. macOS and Windows
+# only: the Linux backends need system libraries the build does not install, so
+# there the store reports itself unavailable and `env:` references apply.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
 # libsql-sys 0.8's default (non-"rusqlite") connection-open path opens the
 # database file via `std::os::unix::ffi::OsStrExt::as_bytes()`, which is
 # Unix-only and doesn't compile on Windows at all (no cfg gate, no

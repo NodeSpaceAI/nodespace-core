@@ -950,6 +950,23 @@ A database is addressed by **name or id**. When a name is ambiguous (shared by m
 
 **Refused databases.** A database can list an extension this NodeSpace build doesn't support. The daemon then refuses to open it and changes nothing in its file. `database list` shows its status as `requires_extension` and appends what it needs after the path; with `--json` the entry carries `unsupported_extensions` and a `refusal` message (`null` for any other database). `nodespace diagnostics` lists every database the same way, in both forms. `database use` accepts such a database and prints a `Warning:` line on stderr: once it is the default, every command without `--database` is refused. Any command routed to such a database, without `--database` when it is the default or with `--database` naming it, exits non-zero with that refusal message and a `Download …` line. Relay the message to the user verbatim, with the download line; the `refusal` field is the message alone, so when relaying from a listing, say the download link comes with the error of any command run against that database. Do not retry, and never move, rename, copy or edit the file to get around it. To keep working, target another database with `--database`. Ask the user before `database use`: it changes the default for every client, the desktop app included.
 
+### Manage credentials
+
+A remote tool refers to a credential by name (`keychain:<name>`); the value is kept in this device's credential store, never in a node. These subcommands are daemon-global and are not affected by `--database`. The value belongs to the user, and the MCP passthrough refuses these commands.
+
+```bash
+# Store a credential: the value is typed at a hidden prompt, or read from standard input
+nodespace secret set github-token
+
+# Remove a credential
+nodespace secret delete github-token
+
+# List the stored names (never the values)
+nodespace secret list-names
+```
+
+The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text; on Windows the credential manager is stricter: at most 1280 UTF-16 units (2560 bytes as stored), and the list of names holds roughly 19 names of full length (about 70 of 16 characters), after which `set` refuses a new name with an error saying so. On a platform without an operating system credential store, use an `env:<NAME>` reference instead.
+
 ### Database settings
 
 Each database holds its own settings in its `database-settings` node, id `database-settings-singleton`. There is no machine-wide settings file: a setting applies to the database a command is routed to (`--database`, else the default), and two databases open in one daemon each behave by their own.
@@ -1437,6 +1454,20 @@ Manage the daemon's registry of local databases (list, create, register, remove,
 **`nodespace database use`** — Set the daemon-wide default database (used when no database is selected)
 
 - `<DATABASE>` — Database to make the default, by name or id (required)
+
+### `nodespace secret`
+
+Manage the credentials remote tools refer to as `keychain:<name>` (set, delete, list-names). Values are never shown and never passed as arguments
+
+**`nodespace secret set`** — Store a credential under a name. The value is read from a hidden prompt on a terminal, or from standard input; it is never an argument
+
+- `<NAME>` — Name a tool refers to as `keychain:<name>` (letters, digits, `.`, `_`, `-`) (required)
+
+**`nodespace secret delete`** — Remove a credential
+
+- `<NAME>` — The name to remove (required)
+
+**`nodespace secret list-names`** — List the stored names. Values are never shown
 
 ### `nodespace uninstall`
 

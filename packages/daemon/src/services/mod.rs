@@ -20,6 +20,7 @@ pub mod local_agent_service;
 pub mod node_service;
 #[cfg(test)]
 pub(crate) mod required_extensions_tests;
+pub mod secret_service;
 pub mod terminal_summary;
 
 pub use agent_session_service::AgentSessionHandler;
@@ -39,3 +40,4 @@ pub use extensions::{DaemonExtensions, DaemonExtensionsError};
 pub use import_service::ImportServiceImpl;
 pub use local_agent_service::{LocalAgentServiceImpl, SharedLocalAgent};
 pub use node_service::NodeServiceImpl;
+pub use secret_service::SecretServiceImpl;

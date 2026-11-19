@@ -9,6 +9,15 @@ pub mod socket;
 pub mod nodespace {
     #![allow(clippy::all)]
     tonic::include_proto!("nodespace");
+
+    impl std::fmt::Debug for SetSecretRequest {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("SetSecretRequest")
+                .field("name", &self.name)
+                .field("value", &"<redacted>")
+                .finish()
+        }
+    }
 }
 
 /// Maximum size, in bytes, of a single gRPC message on any NodeSpace
@@ -104,6 +113,8 @@ pub use nodespace::local_agent_service_client::LocalAgentServiceClient;
 pub use nodespace::local_agent_service_server::LocalAgentServiceServer;
 pub use nodespace::node_service_client::NodeServiceClient;
 pub use nodespace::node_service_server::NodeServiceServer;
+pub use nodespace::secret_service_client::SecretServiceClient;
+pub use nodespace::secret_service_server::SecretServiceServer;
 pub use nodespace::{
     AgentAvailability, CheckAvailabilityRequest, CheckAvailabilityResponse, CreateDatabaseRequest,
     DatabaseInfo, DatabaseStatus, LaunchSessionRequest, LaunchSessionResponse,
@@ -113,3 +124,19 @@ pub use nodespace::{
     ResizeRequest, ResizeResponse, SessionInfo, SetDefaultDatabaseRequest, StreamOutputRequest,
     TerminateSessionRequest, TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
 };
+
+#[cfg(test)]
+mod secret_debug_tests {
+    use crate::nodespace::SetSecretRequest;
+
+    #[test]
+    fn a_set_secret_request_never_prints_its_value() {
+        let req = SetSecretRequest {
+            name: "tok".into(),
+            value: "ghp_SUPERSECRET".into(),
+        };
+        let text = format!("{req:?} {req:#?}");
+        assert!(!text.contains("ghp_SUPERSECRET"));
+        assert!(text.contains("tok"));
+    }
+}

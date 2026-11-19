@@ -17,5 +17,6 @@ mod import_dir_multi;
 mod launched_session;
 mod mcp_integration;
 mod requires_extension;
+mod secret_cli;
 mod skill_md_generation;
 mod wait;

@@ -1082,11 +1082,20 @@ mod tests {
         "seed",
         "session",
         "database",
+        "secret",
         "uninstall",
         "wait",
         "mcp",
         "help",
     ];
+
+    /// The credential commands are never reachable through the passthrough: the
+    /// agent that calls it must not be able to store, remove or probe credentials.
+    #[test]
+    fn the_secret_commands_are_not_reachable_through_the_passthrough() {
+        assert!(!ALLOWED_SUBCOMMANDS.contains(&"secret"));
+        assert!(REFUSED.contains(&"secret"));
+    }
 
     #[test]
     fn every_cli_subcommand_has_a_passthrough_decision() {

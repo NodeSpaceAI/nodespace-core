@@ -32,6 +32,7 @@ pub mod node_batch;
 pub mod ops;
 pub mod playbook;
 pub mod schema;
+pub mod secrets;
 pub mod services;
 pub mod shape_record;
 pub mod utils;
