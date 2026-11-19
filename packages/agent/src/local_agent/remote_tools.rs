@@ -1648,6 +1648,10 @@ mod tests {
         }
         let f = fixture().await;
         f.tool("tool-rest", "r_tool", true).await;
+        // A tool approved under the all-zero key a fail-open default would use:
+        // it must stay off when the key cannot be read.
+        let z = f.tool("tool-rest", "r_zero", false).await;
+        approve_with(&f, &z, &ApprovalKey::from_bytes([0u8; 32])).await;
         let host = RemoteToolHost::new(
             f.inner.clone(),
             f.ns.clone(),

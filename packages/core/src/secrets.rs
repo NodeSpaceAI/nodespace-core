@@ -342,7 +342,12 @@ impl SecretStore {
         let key = ApprovalKey::from_bytes(bytes);
         bytes.zeroize();
         self.backend.set(APPROVAL_KEY_ACCOUNT, &key.to_hex())?;
-        Ok(key)
+        // The lock above only serialises this process. Another store instance
+        // (a second daemon, the command line) can have written its own key
+        // between the read and the write: return what is stored now, so the
+        // key handed back is the one approvals will be checked against.
+        self.read_approval_key()?
+            .ok_or_else(|| SecretError::Store("the approval key was not stored".to_string()))
     }
 
     /// The names that have a value on this device, sorted. Never values.
@@ -866,6 +871,43 @@ mod tests {
         let theirs = other.provision_approval_key().unwrap();
         assert_ne!(first.as_bytes(), theirs.as_bytes());
         assert_ne!(first.as_bytes(), &[0u8; 32]);
+    }
+
+    /// Another store instance (a second daemon, the command line) writes its own
+    /// key right after ours: the key handed back must be the one stored.
+    #[test]
+    fn a_racing_provision_returns_the_key_that_is_stored() {
+        struct OtherWriterWins {
+            inner: InMemorySecretBackend,
+            other: ApprovalKey,
+        }
+        impl SecretBackend for OtherWriterWins {
+            fn set(&self, a: &str, v: &str) -> Result<(), SecretError> {
+                self.inner.set(a, v)?;
+                if a == APPROVAL_KEY_ACCOUNT {
+                    self.inner.set(a, &self.other.to_hex())?;
+                }
+                Ok(())
+            }
+            fn get(&self, a: &str) -> Result<Option<String>, SecretError> {
+                self.inner.get(a)
+            }
+            fn delete(&self, a: &str) -> Result<bool, SecretError> {
+                self.inner.delete(a)
+            }
+        }
+        let other = ApprovalKey::from_bytes([5u8; 32]);
+        let backend = Arc::new(OtherWriterWins {
+            inner: InMemorySecretBackend::default(),
+            other: ApprovalKey::from_bytes([5u8; 32]),
+        });
+        let s = SecretStore::new(backend);
+        let handed_back = s.provision_approval_key().unwrap();
+        assert_eq!(handed_back.as_bytes(), other.as_bytes());
+        assert_eq!(
+            s.approval_key().unwrap().unwrap().as_bytes(),
+            handed_back.as_bytes()
+        );
     }
 
     #[test]

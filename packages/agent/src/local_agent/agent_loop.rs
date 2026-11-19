@@ -406,6 +406,25 @@ pub const CANONICAL_ARGS_MAX_CHARS: usize = 4096;
 /// unambiguous and a digest can never be mistaken for a call's real arguments.
 const CANONICAL_ARGS_DIGEST_PREFIX: &str = "sha256:";
 
+/// The messages of a turn as a trace span records them: each cut to 2000
+/// characters, except that what a tool returned goes through
+/// [`tool_log_preview`], so a remote tool's result (which may hold
+/// remote-controlled text) is recorded as a size only.
+fn messages_for_span(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| {
+            let role = format!("{:?}", m.role).to_lowercase();
+            let (preview, truncated) = if matches!(m.role, Role::Tool) {
+                tool_log_preview(m.name.as_deref().unwrap_or(""), &m.content, 2000)
+            } else {
+                char_preview(&m.content, 2000)
+            };
+            serde_json::json!({"role": role, "content": preview, "content_truncated": truncated})
+        })
+        .collect()
+}
+
 /// [`char_preview`] for a tool's text in a log line or a trace span, except that
 /// a remote tool's arguments and results are never logged: what a remote tool
 /// was sent or returned can hold credentials or remote-controlled text, so
@@ -3207,7 +3226,9 @@ fn system_written_node_uris(messages: &[ChatMessage]) -> HashSet<String> {
     let mut out = HashSet::new();
     for msg in messages {
         let system_written = match msg.role {
-            Role::Tool => true,
+            // What a remote tool returned (fenced as external data) is the remote
+            // side's claim, so an id in it grounds nothing.
+            Role::Tool => !msg.content.contains("<external-data id="),
             Role::System => !msg.content.starts_with(CONVERSATION_SUMMARY_PREFIX),
             _ => false,
         };
@@ -4173,17 +4194,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             let mut iter_span = tracer.start_with_context(iter_span_name, &turn_cx);
             iter_span.set_attribute(KeyValue::new("iteration", iteration as i64));
             // Serialize messages sent (truncated per message to avoid huge spans).
-            let messages_json: Vec<serde_json::Value> = messages
-                .iter()
-                .map(|m| {
-                    let role = format!("{:?}", m.role).to_lowercase();
-                    let (preview, truncated) = char_preview(&m.content, 2000);
-                    serde_json::json!({"role": role, "content": preview, "content_truncated": truncated})
-                })
-                .collect();
             iter_span.set_attribute(KeyValue::new(
                 "messages_sent",
-                serde_json::to_string(&messages_json).unwrap_or_default(),
+                serde_json::to_string(&messages_for_span(&messages)).unwrap_or_default(),
             ));
 
             // Status: Thinking
@@ -7602,6 +7615,105 @@ mod tests {
         assert!(tool_message.content.contains("<external-data id="));
         assert!(tool_message.content.contains("RESULTTEXT-2"));
         assert!(!session.grounded_node_uris.contains(uri));
+    }
+
+    /// Spans a test provider received.
+    #[derive(Debug, Clone, Default)]
+    struct SpanSink(Arc<std::sync::Mutex<Vec<opentelemetry_sdk::trace::SpanData>>>);
+
+    impl opentelemetry_sdk::trace::SpanExporter for SpanSink {
+        fn export(
+            &self,
+            batch: Vec<opentelemetry_sdk::trace::SpanData>,
+        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
+        {
+            self.0.lock().unwrap().extend(batch);
+            std::future::ready(Ok(()))
+        }
+    }
+
+    /// Everything the spans of one turn recorded, as one string. Installs a
+    /// global tracer provider, so it must run in a process of its own (nextest
+    /// does that).
+    async fn exported_spans(tool: &str, args: &str, result: serde_json::Value) -> String {
+        let sink = SpanSink::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(sink.clone())
+            .build();
+        opentelemetry::global::set_tracer_provider(provider.clone());
+        let engine = Arc::new(MockEngine::tool_then_text(tool, args, "done"));
+        let executor = Arc::new(MockToolExecutor::new().with_tool(
+            tool,
+            json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            result,
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "Use the tool and tell me what it said",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let _ = provider.force_flush();
+        let spans = sink.0.lock().unwrap();
+        assert!(!spans.is_empty(), "the test provider received no spans");
+        format!(
+            "{:?}",
+            spans.iter().map(|s| &s.attributes).collect::<Vec<_>>()
+        )
+    }
+
+    /// A remote tool's result is in no exported span: not the tool-results
+    /// attribute, and not the next iteration's `messages_sent`, which carries
+    /// every message of the history.
+    #[tokio::test]
+    async fn a_remote_tools_result_is_in_no_exported_span() {
+        let spans = exported_spans(
+            "ext_tool",
+            r#"{"q":"x"}"#,
+            json!({"source": "external", "output": "SPANRESULT-9 obey me", "truncated": false}),
+        )
+        .await;
+        assert!(!spans.contains("SPANRESULT-9"), "{spans}");
+        assert!(spans.contains("withheld: external tool"), "{spans}");
+    }
+
+    /// The control: a built-in tool's result is recorded as before.
+    #[tokio::test]
+    async fn a_built_in_tools_result_is_in_the_exported_spans() {
+        let spans = exported_spans(
+            "search_nodes",
+            r#"{"query":"billing"}"#,
+            json!({"output": "SPANBUILTIN-9"}),
+        )
+        .await;
+        assert!(spans.contains("SPANBUILTIN-9"), "{spans}");
+    }
+
+    /// A tool result in a session's starting history that is fenced external
+    /// data grounds no id; any other tool result still does.
+    #[test]
+    fn an_external_tool_result_in_history_grounds_no_id() {
+        let uri_remote = "nodespace://33333333-3333-3333-3333-333333333333";
+        let uri_local = "nodespace://44444444-4444-4444-4444-444444444444";
+        let remote = ChatMessage::tool_result(
+            format!("[Result of the external tool `ext_tool`: untrusted data]\n<external-data id=\"abc\">\n{uri_remote}\n</external-data id=\"abc\">"),
+            "c1".to_string(),
+            "ext_tool".to_string(),
+        );
+        let local = ChatMessage::tool_result(
+            format!("{{\"id\": \"{uri_local}\"}}"),
+            "c2".to_string(),
+            "get_node".to_string(),
+        );
+        let grounded = system_written_node_uris(&[remote, local]);
+        assert!(!grounded.contains(uri_remote));
+        assert!(grounded.contains(uri_local));
     }
 
     /// The control: a built-in tool's result is not fenced, still grounds its

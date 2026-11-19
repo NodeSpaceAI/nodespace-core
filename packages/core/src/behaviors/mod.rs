@@ -5934,6 +5934,26 @@ mod tests {
         assert!(ok(&key, "node-1", "lookup", &moved));
     }
 
+    /// A pinned tag: a change to the label, the field order or the encoding
+    /// changes it, and with it every approval on every device (which then all
+    /// fail closed), so it must be deliberate. The expected value was computed
+    /// independently of this code (HMAC-SHA256 over the label and the
+    /// length-prefixed fields, with the binding fingerprint
+    /// `24030245b26c56cf3ef04a79c3668bc5e8d47ed8ee442dc9736557fc9c1fe9b5`).
+    #[test]
+    fn the_approval_tag_has_a_pinned_known_answer() {
+        let chain = ["tool-rest", "tool"];
+        let props = approval_node("https://a.test/x", "Looks up");
+        assert_eq!(
+            tool_binding_hash(&chain, &props),
+            "24030245b26c56cf3ef04a79c3668bc5e8d47ed8ee442dc9736557fc9c1fe9b5"
+        );
+        assert_eq!(
+            tool_approval_tag(&[7u8; 32], "node-1", "lookup", &chain, &props),
+            "5230e564ead8d0efe9e4d686be629f2b626421438e2cdd1d9a6bbb792599206a"
+        );
+    }
+
     #[test]
     fn a_malformed_approval_tag_never_verifies() {
         let chain = ["tool-rest", "tool"];
