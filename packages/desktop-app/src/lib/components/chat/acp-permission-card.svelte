@@ -153,11 +153,6 @@
     background: hsl(var(--accent));
   }
 
-  .acp-permission-button:focus-visible {
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 2px;
-  }
-
   .acp-permission-button:disabled {
     opacity: 0.6;
     cursor: default;

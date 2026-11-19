@@ -43,11 +43,6 @@
     user-select: none;
   }
 
-  summary:focus-visible {
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 2px;
-  }
-
   .acp-collapsible-body {
     margin-top: 0.375rem;
     padding-left: 0.75rem;
