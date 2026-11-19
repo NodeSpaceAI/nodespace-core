@@ -24,6 +24,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 # Overwrites a credential value held while a program is started.
 zeroize = "1"
+# Percent-encodes the values the model puts in a request URL, and parses it.
+percent-encoding = "2"
+url = { workspace = true }
 uuid = { workspace = true }
 futures = "0.3"
 regex = "1"
