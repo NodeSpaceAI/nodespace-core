@@ -45,7 +45,17 @@ fn status(error: SecretError) -> Status {
         SecretError::TooManySecrets { .. } => Status::resource_exhausted(error.to_string()),
         SecretError::NotSet(_) | SecretError::EnvNotSet(_) => Status::not_found(error.to_string()),
         SecretError::Store(_) => Status::unavailable(error.to_string()),
+        SecretError::NotRestored { .. } => Status::internal(error.to_string()),
     }
+}
+
+/// Stores the request's value, then overwrites it: the request is the daemon's
+/// last copy of the value, and it is wiped whether the store accepted it or
+/// not.
+fn store_and_wipe(store: &SecretStore, request: &mut SetSecretRequest) -> Result<(), SecretError> {
+    let result = store.set(&request.name, &request.value);
+    request.value.zeroize();
+    result
 }
 
 #[tonic::async_trait]
@@ -58,15 +68,10 @@ impl GrpcSecretService for SecretServiceImpl {
         // The OS store can block (a prompt, a locked keychain): keep it off the
         // async worker threads.
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || {
-            let result = store.set(&req.name, &req.value);
-            // The request is the daemon's last copy of the value: overwrite it.
-            req.value.zeroize();
-            result
-        })
-        .await
-        .map_err(|_| Status::internal("credential store task failed"))?
-        .map_err(status)?;
+        tokio::task::spawn_blocking(move || store_and_wipe(&store, &mut req))
+            .await
+            .map_err(|_| Status::internal("credential store task failed"))?
+            .map_err(status)?;
         Ok(Response::new(SetSecretResponse {}))
     }
 
@@ -117,6 +122,34 @@ mod tests {
         }))
         .await
         .map(|_| ())
+    }
+
+    #[test]
+    fn the_request_value_is_wiped_whether_the_store_accepts_it_or_not() {
+        let store = SecretStore::new(Arc::new(InMemorySecretBackend::default()));
+        // Accepted.
+        let mut ok = SetSecretRequest {
+            name: "tok".into(),
+            value: TOKEN.into(),
+        };
+        let ptr = ok.value.as_ptr();
+        let len = ok.value.len();
+        assert!(store_and_wipe(&store, &mut ok).is_ok());
+        assert!(ok.value.is_empty());
+        // The buffer that held it is zeroed, not just shortened.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(bytes.iter().all(|b| *b == 0), "the value bytes were left");
+        // Refused (a bad name).
+        let mut bad = SetSecretRequest {
+            name: "bad name".into(),
+            value: TOKEN.into(),
+        };
+        let ptr = bad.value.as_ptr();
+        let len = bad.value.len();
+        assert!(store_and_wipe(&store, &mut bad).is_err());
+        assert!(bad.value.is_empty());
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(bytes.iter().all(|b| *b == 0), "the value bytes were left");
     }
 
     #[tokio::test]
