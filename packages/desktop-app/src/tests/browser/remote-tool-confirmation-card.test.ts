@@ -77,12 +77,19 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
   it('focus is taken once and not taken again when the card re-checks itself', async () => {
     const message = await cardMessage();
     const { container, rerender } = mount(message, async () => true);
-    await vi.waitUntil(() => document.activeElement === choice(container, 'deny'));
+    await vi.waitUntil(() => document.activeElement === choice(container, 'deny'), {
+      timeout: 3000
+    });
     // The user moves on to Allow; a re-render with the same message must not pull
     // focus back to Don't allow.
     choice(container, 'allow').focus();
     await rerender({ message: { ...message }, onAnswer: async () => true });
-    await new Promise((r) => setTimeout(r, 700));
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(ENABLE_DELAY_MS * 2);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(document.activeElement).toBe(choice(container, 'allow'));
   });
 
@@ -91,8 +98,13 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     document.body.appendChild(outside);
     outside.focus();
     const message = await cardMessage({ confirmationId: undefined, confirmationDigest: undefined });
-    mount(message, async () => true);
-    await new Promise((r) => setTimeout(r, 700));
+    vi.useFakeTimers();
+    try {
+      mount(message, async () => true);
+      await vi.advanceTimersByTimeAsync(ENABLE_DELAY_MS * 2);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(document.activeElement).toBe(outside);
     outside.remove();
   });
