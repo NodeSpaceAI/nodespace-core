@@ -123,6 +123,13 @@ pub(crate) struct Isolated {
     _scratch: ScratchDir,
 }
 
+impl Isolated {
+    /// The private working directory the program runs in.
+    pub(crate) fn working_dir(&self) -> &std::path::Path {
+        &self._scratch.0
+    }
+}
+
 /// Starts `program` with `argv`: no shell, the environment cleared and rebuilt
 /// from [`BASE_ENV`] (read through `base`) and `credentials`, a fresh private
 /// working directory, its own process group, stdout and stderr piped and the

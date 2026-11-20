@@ -5,6 +5,7 @@
 //! that delegate to types defined here.
 
 // Shared types, traits, and interface contracts for agent subsystems
+pub mod acp;
 pub mod agent_types;
 pub use agent_types::*;
 
