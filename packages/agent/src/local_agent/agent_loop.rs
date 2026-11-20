@@ -3872,11 +3872,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // is not on the surface (a remote tool that is unknown, off, unapproved
         // or changed on this device) is simply not offered. One warning per
         // turn, names only.
-        if let Some(warning) =
-            routing::unavailable_whitelist_warning(&routed.candidates, &all_tools)
-        {
-            tracing::warn!(session_id = %session.id, "{warning}");
-        }
+        log_unavailable_whitelist(&session.id, &routed.candidates, &all_tools);
         let scoped = routing::stage2_scoped_tools(&routed.candidates, &all_tools);
         let scoped_surface = scoped.is_some();
         let mut tools = scoped.unwrap_or_else(|| routing::fail_open_surface(&all_tools));
@@ -7130,6 +7126,18 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// The one warning per turn for whitelist names that are not offered (see
+/// [`routing::unavailable_whitelist_warning`]): names only.
+fn log_unavailable_whitelist(
+    session_id: &str,
+    candidates: &[crate::agent_types::SkillCandidate],
+    all_tools: &[ToolDefinition],
+) {
+    if let Some(warning) = routing::unavailable_whitelist_warning(candidates, all_tools) {
+        tracing::warn!(session_id = %session_id, "{warning}");
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -22731,5 +22739,50 @@ mod tests {
             "close parent",
             "the switch leaves the rules alone"
         );
+    }
+
+    /// The turn's whitelist warning is really logged: once, at warn level, names
+    /// only, with nothing from a name that could forge or reorder a log line.
+    #[test]
+    fn the_whitelist_warning_is_logged_once_per_turn_without_control_characters() {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let candidate = crate::agent_types::SkillCandidate {
+            id: "s".to_string(),
+            name: "S".to_string(),
+            use_for: "u".to_string(),
+            score: 0.99,
+            tools: vec![
+                "remote_one".to_string(),
+                "evil\nINFO forged\u{1b}[31m\0\u{202E}".to_string(),
+            ],
+            instructions: String::new(),
+            schema_metadata: json!([]),
+            schemas_linked: false,
+            role: Default::default(),
+            pinned: false,
+        };
+        log_unavailable_whitelist("session-1", &[candidate], &[]);
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(log.lines().count(), 1, "one line: {log}");
+        assert!(log.contains("WARN"), "{log}");
+        assert!(log.contains("remote_one"), "{log}");
+        assert!(!log.contains('\u{1b}') && !log.contains('\0') && !log.contains('\u{202E}'));
     }
 }

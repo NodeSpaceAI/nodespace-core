@@ -1955,6 +1955,16 @@ pub fn stage2_scoped_tools(
 const MAX_UNAVAILABLE_SHOWN: usize = 10;
 const MAX_UNAVAILABLE_NAME_BYTES: usize = 64;
 
+/// Control characters and the bidirectional formatting characters: neither
+/// belongs in a log line.
+fn is_unsafe_for_log(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
 /// The warning for a turn whose matched skills whitelist tools that are not on
 /// the surface and are not built-in tools: a remote tool (`tool-mcp`,
 /// `tool-rest`, `tool-cli` node) that is unknown, disabled, not approved on this
@@ -1971,25 +1981,37 @@ pub fn unavailable_whitelist_warning(
     all: &[ToolDefinition],
 ) -> Option<String> {
     let offered: std::collections::HashSet<&str> = all.iter().map(|t| t.name.as_str()).collect();
-    let mut names: Vec<&str> = candidates
+    let names: Vec<&str> = candidates
         .iter()
         .filter(|c| clears_score_gate(c))
         .flat_map(|c| c.tools.iter().map(|t| t.as_str()))
         .filter(|t| !offered.contains(t) && super::tools::Tool::from_name(t).is_none())
+        .collect();
+    // The names are authored by users and peers: control characters (a newline
+    // or an escape sequence would forge or hide log lines) and bidirectional
+    // controls (they reorder what a reader sees) are replaced BEFORE the name
+    // is cut, and the names are de-duplicated AFTER the cut, so two long names
+    // that differ only past the cut are not printed twice.
+    let mut names: Vec<String> = names
+        .into_iter()
+        .map(|n| {
+            let mut n: String = n
+                .chars()
+                .map(|c| if is_unsafe_for_log(c) { '\u{FFFD}' } else { c })
+                .collect();
+            super::redaction::cut(&mut n, MAX_UNAVAILABLE_NAME_BYTES);
+            n
+        })
         .collect();
     names.sort_unstable();
     names.dedup();
     if names.is_empty() {
         return None;
     }
-    let shown: Vec<String> = names
+    let shown: Vec<&str> = names
         .iter()
         .take(MAX_UNAVAILABLE_SHOWN)
-        .map(|n| {
-            let mut n = n.to_string();
-            super::redaction::cut(&mut n, MAX_UNAVAILABLE_NAME_BYTES);
-            n
-        })
+        .map(String::as_str)
         .collect();
     let more = names.len().saturating_sub(MAX_UNAVAILABLE_SHOWN);
     let mut text = format!(

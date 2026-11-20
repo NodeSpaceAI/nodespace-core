@@ -2190,6 +2190,49 @@ mod tests {
     }
 
     #[test]
+    fn names_are_cleaned_of_control_and_bidi_characters_before_they_are_cut() {
+        let hostile = ["a\nb", "c\x1b[31md", "e\0f", "g\u{202E}h\u{2066}i\u{200F}"];
+        let skills = [skill_naming(&hostile)];
+        let text = unavailable_whitelist_warning(&skills, &[]).unwrap();
+        assert!(
+            !text.chars().any(|c| c.is_control()
+                || matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+            "{text:?}"
+        );
+        assert!(text.contains('\u{FFFD}'));
+        // Cleaning comes before the cut: a control character at the cut point
+        // cannot survive by being counted as one byte.
+        let long = format!("{}\n{}", "x".repeat(63), "y");
+        let skills = [skill_naming(&[long.as_str()])];
+        let text = unavailable_whitelist_warning(&skills, &[]).unwrap();
+        assert!(!text.contains('\n'), "{text:?}");
+    }
+
+    #[test]
+    fn two_long_names_that_differ_past_the_cut_are_listed_once() {
+        let a = format!("{}A", "n".repeat(70));
+        let b = format!("{}B", "n".repeat(70));
+        let skills = [skill_naming(&[a.as_str(), b.as_str()])];
+        let text = unavailable_whitelist_warning(&skills, &[]).unwrap();
+        assert_eq!(text.matches(&"n".repeat(64)).count(), 1, "{text}");
+    }
+
+    #[tokio::test]
+    async fn names_match_exactly_and_case_sensitively() {
+        let f = fixture().await;
+        f.tool("tool-rest", "r_get", true).await;
+        let host = f.host(&all_kinds(), &Arc::new(AtomicUsize::new(0)));
+        let (surface, warning) = turn_surface(&host, &["R_GET", "Get_Node"]).await;
+        assert!(!surface.contains(&"R_GET".to_string()));
+        // Neither name resolved, so nothing narrowed: the surface is the gated
+        // one, which carries the approved r_get whatever the whitelist's case.
+        assert!(surface.contains(&"r_get".to_string()));
+        let warning = warning.unwrap();
+        assert!(warning.contains("R_GET"), "{warning}");
+        assert!(warning.contains("Get_Node"), "{warning}");
+    }
+
+    #[test]
     fn a_built_in_name_that_is_not_on_the_surface_is_not_reported() {
         let skills = [skill_naming(&["get_node", "remote_x"])];
         let text = unavailable_whitelist_warning(&skills, &[]).unwrap();
