@@ -12,6 +12,10 @@ pub use agent_types::*;
 // Local agent subsystem: model management, inference, tool execution
 pub mod local_agent;
 
+// The programs this daemon starts for tools, recorded so the daemon can tell them
+// from the user's own applications when something connects to its socket.
+pub mod spawned;
+
 // Shared agent guidance rules: single source of truth for tool strategy,
 // schema creation, and node reference guidance. Consumed by
 // `prompt_assembler` (local agent) and by ADR-032 context-file

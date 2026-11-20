@@ -171,6 +171,11 @@ pub(crate) fn spawn_isolated(
             RemoteCallError(format!("the program could not be started: {}", e.kind()))
         })?
     };
+    // Recorded so the daemon can tell this program from the user's applications
+    // when something connects to its socket (see `crate::spawned`).
+    if let Some(pid) = child.id() {
+        crate::spawned::record(pid);
+    }
     let guard = GroupGuard::new(&child);
     Ok(Isolated {
         guard,
@@ -293,5 +298,23 @@ pub(crate) async fn credentials_within<T>(
             "the credential store did not answer within {} seconds",
             limit.as_secs()
         )),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// Every program started for a tool is recorded, so the daemon can tell it
+    /// from the user's applications when something connects to its socket.
+    #[tokio::test]
+    async fn a_program_started_through_spawn_isolated_is_recorded_as_a_tools() {
+        let base: EnvLookup = Arc::new(|name| std::env::var(name).ok());
+        let mut process = spawn_isolated("sleep", &["5".to_string()], &base, &[], Stdio::null())
+            .expect("sleep starts");
+        let pid = process.child.id().expect("a running child has an id");
+        assert_eq!(crate::spawned::classify_peer(pid), Some(true));
+        stop(&mut process.child);
+        reap(&mut process.child).await;
     }
 }

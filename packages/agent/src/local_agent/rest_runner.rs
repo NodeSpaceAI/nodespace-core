@@ -1530,4 +1530,50 @@ mod tests {
         assert!(r.run_pinned(&t, &json!({}), &wrong).await.is_err());
         assert_eq!(server.hits(), 0);
     }
+
+    #[tokio::test]
+    async fn a_pinned_run_that_follows_a_same_origin_redirect_asks_the_resolver_nothing_more() {
+        let server = serve(|req| {
+            if req.head.starts_with("GET /x ") {
+                Reply::Whole(http("302 Found", &[("Location", "/y")], b""))
+            } else {
+                ok_json("{}")
+            }
+        })
+        .await;
+        let resolver = FakeResolver::with("localhost", vec![vec![ip("127.0.0.1")]]);
+        let r = RestRunner::with_parts(store(), |_| None, resolver.clone());
+        let t = tool(json!({
+            "method": "GET",
+            "url_template": format!("http://localhost:{}/x", server.port),
+        }));
+        let pin = r.confirmation(&t, &json!({})).await.unwrap().pin.unwrap();
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        r.run_pinned(&t, &json!({}), &pin).await.unwrap();
+        assert_eq!(server.hits(), 2, "the redirect was followed");
+        assert_eq!(
+            resolver.calls.load(Ordering::SeqCst),
+            1,
+            "no lookup for any hop"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pin_the_address_policy_blocks_is_refused_even_when_it_is_reachable() {
+        // 0.0.0.0 reaches this machine, so a run that skipped the policy would
+        // connect; the policy refuses it for a named loopback host.
+        let server = serve(|_| ok_json("{}")).await;
+        let resolver = FakeResolver::with("localhost", vec![vec![ip("127.0.0.1")]]);
+        let r = RestRunner::with_parts(store(), |_| None, resolver);
+        let t = tool(json!({
+            "method": "GET",
+            "url_template": format!("http://localhost:{}/x", server.port),
+        }));
+        let blocked = ResolvedPin {
+            host: "localhost".into(),
+            address: ip("0.0.0.0"),
+        };
+        assert!(r.run_pinned(&t, &json!({}), &blocked).await.is_err());
+        assert_eq!(server.hits(), 0);
+    }
 }

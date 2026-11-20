@@ -1968,7 +1968,7 @@ fn is_unsafe_for_log(c: char) -> bool {
             // bidirectional controls
             | '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
             // the tag block (invisible text) and variation selectors
-            | '\u{E0000}'..='\u{E007F}' | '\u{FE00}'..='\u{FE0F}'
+            | '\u{E0000}'..='\u{E007F}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' | '\u{180B}'..='\u{180F}'
         )
 }
 
