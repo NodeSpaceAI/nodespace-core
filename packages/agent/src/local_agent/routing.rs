@@ -1957,16 +1957,27 @@ const MAX_UNAVAILABLE_NAME_BYTES: usize = 64;
 
 /// Control characters and the bidirectional formatting characters: neither
 /// belongs in a log line.
-fn is_unsafe_for_log(c: char) -> bool {
+pub(crate) fn is_unsafe_for_log(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
+            // soft hyphen and the combining grapheme joiner
+            '\u{00AD}' | '\u{034F}'
+            // Hangul and Khmer fillers, halfwidth Hangul filler
+            | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{3164}' | '\u{FFA0}'
             // line and paragraph separators
-            '\u{2028}' | '\u{2029}'
-            // zero-width and invisible formatting: space, non-joiner, joiner, word joiner, BOM
-            | '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}'
+            | '\u{2028}' | '\u{2029}'
+            // zero-width and invisible formatting: space, non-joiner, joiner,
+            // word joiner, invisible operators, BOM
+            | '\u{200B}'..='\u{200D}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}'
             // bidirectional controls
             | '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            // deprecated formatting controls
+            | '\u{206A}'..='\u{206F}'
+            // interlinear annotation and object replacement
+            | '\u{FFF9}'..='\u{FFFC}'
+            // musical symbol formatting
+            | '\u{1D173}'..='\u{1D17A}'
             // the tag block (invisible text) and variation selectors
             | '\u{E0000}'..='\u{E007F}' | '\u{FE00}'..='\u{FE0F}' | '\u{E0100}'..='\u{E01EF}' | '\u{180B}'..='\u{180F}'
         )

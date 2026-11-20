@@ -34,6 +34,7 @@ export type {
   AiChatAcpNode,
   AiChatBase,
   AiChatMessageNode,
+  AiChatConfirmationStatus,
   AiChatMessageRole,
   AiChatNativeNode,
   AiChatPartKind,
@@ -103,7 +104,14 @@ export function nodeToAiChatMessageNode(node: Node): AiChatMessageNode {
     toolCallId: message.toolCallId,
     toolTitle: message.toolTitle,
     toolKind: message.toolKind,
-    toolStatus: message.toolStatus
+    toolStatus: message.toolStatus,
+    confirmationId: message.confirmationId,
+    confirmationDigest: message.confirmationDigest,
+    confirmationStatus: message.confirmationStatus,
+    confirmationArguments: message.confirmationArguments,
+    confirmationCredentials: Array.isArray(message.confirmationCredentials)
+      ? message.confirmationCredentials
+      : undefined
   };
 }
 

@@ -152,6 +152,20 @@ describe('Tauri System Commands - API Surface', () => {
       expect(mockInvoke).toHaveBeenCalledWith('local_agent_cancel_turn', { nodeId: 'node-1' });
     });
 
+    it('localAgentAnswerConfirmation sends the daemon id and digest unchanged and returns acceptance', async () => {
+      mockInvoke.mockResolvedValue(true);
+
+      const accepted = await tauriCommands.localAgentAnswerConfirmation('chat-1', 'req', 'dig', true);
+
+      expect(accepted).toBe(true);
+      expect(mockInvoke).toHaveBeenCalledWith('local_agent_answer_confirmation', {
+        nodeId: 'chat-1',
+        requestId: 'req',
+        digest: 'dig',
+        allow: true
+      });
+    });
+
     it('localAgentOpenBoundChat invokes local_agent_open_bound_chat and returns the chat id', async () => {
       mockInvoke.mockResolvedValue('chat-1');
 

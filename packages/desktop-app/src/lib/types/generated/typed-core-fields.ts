@@ -125,7 +125,12 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'tool_call_id', wire: 'toolCallId' },
     { storage: 'tool_title', wire: 'toolTitle' },
     { storage: 'tool_kind', wire: 'toolKind' },
-    { storage: 'tool_status', wire: 'toolStatus' }
+    { storage: 'tool_status', wire: 'toolStatus' },
+    { storage: 'confirmation_id', wire: 'confirmationId' },
+    { storage: 'confirmation_digest', wire: 'confirmationDigest' },
+    { storage: 'confirmation_status', wire: 'confirmationStatus' },
+    { storage: 'confirmation_arguments', wire: 'confirmationArguments' },
+    { storage: 'confirmation_credentials', wire: 'confirmationCredentials', structured: 'array' }
   ]
 };
 

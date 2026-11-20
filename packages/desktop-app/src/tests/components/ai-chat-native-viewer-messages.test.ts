@@ -111,6 +111,45 @@ describe('AiChatNativeNodeViewer message nodes', () => {
     expect(queryByText('A note under the chat')).toBeNull();
   });
 
+  it('renders a confirmation card in place between the user message and the reply, and not as a message', async () => {
+    seedChild('m-1', 'ai-chat-message', 'Run it', { role: 'user' }, 1);
+    seedChild(
+      'card-1',
+      'ai-chat-message',
+      'run `git`; credentials in the environment: T from keychain:t',
+      {
+        role: 'assistant',
+        partKind: 'confirmation',
+        confirmationId: 'req-1',
+        confirmationDigest: 'd'.repeat(64),
+        confirmationStatus: 'pending',
+        confirmationArguments: '{"q":"x"}',
+        confirmationCredentials: ['T from keychain:t']
+      },
+      2
+    );
+    seedChild('m-2', 'ai-chat-message', 'Done.', { role: 'assistant' }, 3);
+
+    const { container, findByText } = render(AiChatNativeNodeViewer, {
+      props: { nodeId: CHAT_ID }
+    });
+
+    await findByText('Done.');
+    // The card is not a chat message: it is not among them, and its summary is
+    // shown once, on the card.
+    expect(messageIds(container)).toEqual(['m-1', 'm-2']);
+    const cards = container.querySelectorAll('[data-confirmation-status]');
+    expect(cards).toHaveLength(1);
+    expect(container.textContent?.split('run `git`').length).toBe(2);
+    // In place: after the user's message, before the reply.
+    const all = [...container.querySelectorAll('[data-message-id], [data-confirmation-status]')];
+    expect(all.map((el) => el.getAttribute('data-message-id') ?? 'card')).toEqual([
+      'm-1',
+      'card',
+      'm-2'
+    ]);
+  });
+
   it('loads the chat children when it mounts', async () => {
     const load = vi.spyOn(sharedNodeStore, 'loadChildrenForParent').mockResolvedValue([]);
     const { findByText } = render(AiChatNativeNodeViewer, { props: { nodeId: CHAT_ID } });

@@ -9,8 +9,8 @@ use crate::agent_events;
 use crate::commands::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{
-    CancelTurnRequest, EnsureModelReadyRequest, GetLocalStatusRequest, ListModelsRequest,
-    OpenBoundChatRequest, SubscribeTokenStreamRequest,
+    AnswerConfirmationRequest, CancelTurnRequest, EnsureModelReadyRequest, GetLocalStatusRequest,
+    ListModelsRequest, OpenBoundChatRequest, SubscribeTokenStreamRequest,
 };
 use serde::Serialize;
 use std::future::Future;
@@ -271,6 +271,31 @@ pub async fn local_agent_cancel_turn(
         .await
         .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
     Ok(())
+}
+
+/// Answer a remote-tool confirmation the agent is waiting on. `request_id` and
+/// `digest` are the ones the daemon put on the card, echoed back unchanged; the
+/// daemon accepts the answer only for that exact question, once. Returns whether
+/// it was accepted (a refusal gives no reason).
+#[tauri::command]
+pub async fn local_agent_answer_confirmation(
+    node_id: String,
+    request_id: String,
+    digest: String,
+    allow: bool,
+    grpc: State<'_, GrpcClient>,
+) -> Result<bool, CommandError> {
+    let mut client = grpc.local_agent_client().await;
+    let response = client
+        .answer_confirmation(AnswerConfirmationRequest {
+            node_id,
+            request_id,
+            digest,
+            allow,
+        })
+        .await
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
+    Ok(response.into_inner().accepted)
 }
 
 /// Open a chat bound to a node and return the chat's id. The chat pins the

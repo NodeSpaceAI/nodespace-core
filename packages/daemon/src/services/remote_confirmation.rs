@@ -87,6 +87,8 @@ pub struct ConfirmationAsk {
     pub summary: String,
     pub arguments_json: String,
     pub arguments_bytes: usize,
+    /// The credential references the call uses, one per entry.
+    pub credentials: Vec<String>,
     pub digest: String,
 }
 
@@ -304,6 +306,7 @@ impl CallConfirmer for DaemonCallConfirmer {
             summary: request.destination.clone(),
             arguments_json: request.arguments_json.clone(),
             arguments_bytes: request.arguments_bytes,
+            credentials: request.credentials.clone(),
             digest: request.digest.clone(),
         };
         let mut guard = EntryGuard {
@@ -397,7 +400,14 @@ pub trait AnswerGate: Send + Sync {
 /// `setsid`) and whose parent has exited cannot be told from another program of
 /// the same user; closing that needs the peer's audit token and a code-signature
 /// check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity` against the NodeSpace
-/// team id), which is not done here. The peer's pid is captured when it connects
+/// team id), which is not done here.
+///
+/// Two more facts. The question's id and digest are stored on the chat card, so
+/// any same-user program can read them (`nodespace get`): the id is not a secret
+/// from tools, and this gate is the only barrier. And a UI started from the
+/// in-app PTY terminal or by an ACP agent descends from a recorded program, so
+/// it is refused (fail closed; the user answers from the app as started
+/// normally). The peer's pid is captured when it connects
 /// and judged on each request; a connector that has died reads as unknown and is
 /// refused. This narrows the channel; it is not a sandbox.
 pub struct SpawnedProcessGate {
@@ -473,6 +483,7 @@ mod tests {
             arguments,
             arguments_bytes: arguments_json.len(),
             arguments_json,
+            credentials: vec!["TOKEN from keychain:t".to_string()],
         }
     }
 
@@ -582,6 +593,7 @@ mod tests {
         assert_eq!(ask.summary, req.destination);
         assert_eq!(ask.arguments_json, req.arguments_json);
         assert_eq!(ask.digest, req.digest);
+        assert_eq!(ask.credentials, req.credentials);
         assert_eq!(ask.tool_name, "a");
         assert_eq!(ask.kind, "tool-cli");
         assert_eq!(ask.chat_node_id, "chat");
@@ -973,7 +985,7 @@ mod tests {
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            nodespace_agent::spawned::record(child.id());
+            nodespace_agent::spawned::record(child.id(), true);
             child
         }
 

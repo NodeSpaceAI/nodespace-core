@@ -174,7 +174,8 @@ pub(crate) fn spawn_isolated(
     // Recorded so the daemon can tell this program from the user's applications
     // when something connects to its socket (see `crate::spawned`).
     if let Some(pid) = child.id() {
-        crate::spawned::record(pid);
+        // It was started with `process_group(0)`: it leads its own group.
+        crate::spawned::record(pid, cfg!(unix));
     }
     let guard = GroupGuard::new(&child);
     Ok(Isolated {

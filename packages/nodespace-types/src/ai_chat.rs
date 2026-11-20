@@ -276,14 +276,19 @@ pub enum AiChatPartKind {
     /// The agent's plan, as markdown in the message's content, replaced
     /// whole on every update.
     Plan,
+    /// A question put to the user before a remote tool call runs, kept as a
+    /// record of what was asked and answered. Carries the `confirmation_*`
+    /// fields; the text is the summary of the call.
+    Confirmation,
 }
 
 impl AiChatPartKind {
-    pub const ALL: [(AiChatPartKind, &'static str); 4] = [
+    pub const ALL: [(AiChatPartKind, &'static str); 5] = [
         (AiChatPartKind::Text, "Text"),
         (AiChatPartKind::Thought, "Thought"),
         (AiChatPartKind::ToolCall, "Tool call"),
         (AiChatPartKind::Plan, "Plan"),
+        (AiChatPartKind::Confirmation, "Confirmation"),
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -292,6 +297,46 @@ impl AiChatPartKind {
             Self::Thought => "thought",
             Self::ToolCall => "tool_call",
             Self::Plan => "plan",
+            Self::Confirmation => "confirmation",
+        }
+    }
+}
+
+/// How a remote-tool confirmation stands. `pending` becomes one of the others
+/// once, and stays there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum AiChatConfirmationStatus {
+    /// Waiting for an answer.
+    Pending,
+    /// The user allowed this one call.
+    Allowed,
+    /// The user did not allow it.
+    Denied,
+    /// No answer in time.
+    Expired,
+    /// The turn was cancelled, the app closed, or the question could not be
+    /// shown.
+    Cancelled,
+}
+
+impl AiChatConfirmationStatus {
+    pub const ALL: [(AiChatConfirmationStatus, &'static str); 5] = [
+        (AiChatConfirmationStatus::Pending, "Pending"),
+        (AiChatConfirmationStatus::Allowed, "Allowed"),
+        (AiChatConfirmationStatus::Denied, "Denied"),
+        (AiChatConfirmationStatus::Expired, "Expired"),
+        (AiChatConfirmationStatus::Cancelled, "Cancelled"),
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::Expired => "expired",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -595,6 +640,25 @@ pub struct AiChatMessageNode {
     /// Where the tool call stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_status: Option<AiChatToolStatus>,
+    /// The id of the question a `confirmation` part records. Device-local: it is
+    /// how this device's answer finds the waiting call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_id: Option<String>,
+    /// The daemon's digest of what the question showed; an answer carries it back.
+    /// Device-local.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_digest: Option<String>,
+    /// How the question stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_status: Option<AiChatConfirmationStatus>,
+    /// The call's arguments as JSON text, whole (up to the confirmation bound).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation_arguments: Option<String>,
+    /// The credential references the call uses, one per entry. References only,
+    /// never a value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub confirmation_credentials: Vec<String>,
 }
 
 impl AiChatMessageNode {
@@ -627,6 +691,20 @@ impl AiChatMessageNode {
             tool_title: string_prop(&props, "tool_title"),
             tool_kind: closed_enum_prop(&props, "tool_kind"),
             tool_status: closed_enum_prop(&props, "tool_status"),
+            confirmation_id: string_prop(&props, "confirmation_id"),
+            confirmation_digest: string_prop(&props, "confirmation_digest"),
+            confirmation_status: closed_enum_prop(&props, "confirmation_status"),
+            confirmation_arguments: string_prop(&props, "confirmation_arguments"),
+            confirmation_credentials: props
+                .get("confirmation_credentials")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }

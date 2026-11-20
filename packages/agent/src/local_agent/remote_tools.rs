@@ -449,9 +449,53 @@ pub struct ConfirmationRequest {
     pub arguments_json: String,
     /// The real size of `arguments_json`, in bytes.
     pub arguments_bytes: usize,
+    /// The credentials the call uses, as references (never values), one per
+    /// entry: `NAME from keychain:x`, `bearer from env:Y`. Shown on their own line.
+    pub credentials: Vec<String>,
     /// [`confirmation_digest`] of `destination` and `arguments_json`: what an
     /// answer is bound to.
     pub digest: String,
+}
+
+/// Most credential references a confirmation lists, and the longest one.
+const MAX_CREDENTIAL_REFERENCES: usize = 32;
+const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 300;
+
+/// The credential references a tool's binding uses, for the confirmation's own
+/// credential line: each `env` entry as `NAME from <reference>` and the `auth`
+/// secret as `<scheme> from <reference>` (`header X-Key from <reference>` for a
+/// named header). References only: a value is never read here.
+pub fn credential_references(tool: &RemoteTool) -> Vec<String> {
+    let binding = tool.binding();
+    let mut out: Vec<String> = Vec::new();
+    if let Some(entries) = binding.get("env").and_then(Value::as_array) {
+        for entry in entries {
+            if let (Some(name), Some(secret)) = (
+                entry.get("name").and_then(Value::as_str),
+                entry.get("secret").and_then(Value::as_str),
+            ) {
+                out.push(format!("{name} from {secret}"));
+            }
+        }
+    }
+    if let Some(auth) = binding.get("auth") {
+        let scheme = auth.get("scheme").and_then(Value::as_str).unwrap_or("");
+        if scheme != "none" {
+            if let Some(secret) = auth.get("secret").and_then(Value::as_str) {
+                out.push(
+                    match (scheme, auth.get("header_name").and_then(Value::as_str)) {
+                        ("header", Some(name)) => format!("header {name} from {secret}"),
+                        _ => format!("{scheme} from {secret}"),
+                    },
+                );
+            }
+        }
+    }
+    out.truncate(MAX_CREDENTIAL_REFERENCES);
+    for reference in &mut out {
+        super::redaction::cut(reference, MAX_CREDENTIAL_REFERENCE_BYTES);
+    }
+    out
 }
 
 /// The largest arguments a call that needs confirmation may carry. The card
@@ -698,6 +742,7 @@ impl RemoteToolHost {
                 arguments: args.clone(),
                 arguments_bytes: arguments_json.len(),
                 arguments_json,
+                credentials: credential_references(&tool),
             };
             if !confirmer.confirm(&request).await {
                 return Ok(Self::failure(
@@ -2531,4 +2576,165 @@ mod tests {
             assert_eq!(shown, "a\u{FFFD}b", "{name:?} -> {shown:?}");
         }
     }
+
+    #[test]
+    fn the_credential_references_of_a_binding_are_listed_without_values() {
+        let cli = |env: Value| RemoteTool {
+            node_id: "n".into(),
+            name: "t".into(),
+            kind: RemoteToolKind::Cli,
+            description: String::new(),
+            parameter_schema: json!({}),
+            properties: json!({"tool-cli": {"program": "p", "env": env}}),
+            approval_tag: String::new(),
+        };
+        assert_eq!(
+            credential_references(&cli(json!([
+                {"name": "A", "secret": "keychain:one"},
+                {"name": "B", "secret": "env:TWO"}
+            ]))),
+            ["A from keychain:one", "B from env:TWO"]
+        );
+        assert!(credential_references(&cli(json!([]))).is_empty());
+        let rest = |auth: Value| RemoteTool {
+            kind: RemoteToolKind::Rest,
+            properties: json!({"tool-rest": {"auth": auth}}),
+            ..cli(json!([]))
+        };
+        assert_eq!(
+            credential_references(&rest(json!({"scheme": "bearer", "secret": "keychain:t"}))),
+            ["bearer from keychain:t"]
+        );
+        assert_eq!(
+            credential_references(&rest(
+                json!({"scheme": "header", "header_name": "X-Key", "secret": "env:K"})
+            )),
+            ["header X-Key from env:K"]
+        );
+        assert!(credential_references(&rest(json!({"scheme": "none"}))).is_empty());
+        // Bounded: at most 32, each cut.
+        let many: Vec<Value> = (0..40)
+            .map(|i| json!({"name": format!("N{i}"), "secret": format!("keychain:{}", "k".repeat(500))}))
+            .collect();
+        let listed = credential_references(&cli(json!(many)));
+        assert_eq!(listed.len(), 32);
+        assert!(listed.iter().all(|r| r.len() <= 300));
+    }
+
+    /// The credential line lists every credential; the summary lists the first
+    /// eight and counts the rest. The card checks the one against the other, so
+    /// the two must agree on exactly this.
+    #[test]
+    fn the_credential_references_and_the_summarys_credential_note_agree() {
+        use crate::local_agent::process::environment_note;
+        let env: Vec<Value> = (0..12)
+            .map(|i| json!({"name": format!("T{i}"), "secret": format!("keychain:k{i}")}))
+            .collect();
+        let tool = RemoteTool {
+            node_id: "n".into(),
+            name: "t".into(),
+            kind: RemoteToolKind::Cli,
+            description: String::new(),
+            parameter_schema: json!({}),
+            properties: json!({"tool-cli": {"program": "p", "env": env.clone()}}),
+            approval_tag: String::new(),
+        };
+        let references = credential_references(&tool);
+        assert_eq!(references.len(), 12);
+        let entries: Vec<nodespace_types::EnvSecret> = env
+            .iter()
+            .map(|e| nodespace_types::EnvSecret {
+                name: e["name"].as_str().unwrap().to_string(),
+                secret: e["secret"].as_str().unwrap().to_string(),
+            })
+            .collect();
+        let note = environment_note(&entries);
+        for shown in &references[..8] {
+            assert!(note.contains(shown.as_str()), "{shown} not in {note}");
+        }
+        assert!(!note.contains(references[8].as_str()));
+        assert!(note.ends_with(", and 4 more"), "{note}");
+    }
+
+    /// The same digests the card computes in the browser (`confirmationDigest` in
+    /// `utils/confirmation-card.ts`, pinned there by the same two constants).
+    #[test]
+    fn the_digest_matches_the_constants_the_card_pins() {
+        assert_eq!(
+            confirmation_digest(
+                "run `git`; credentials in the environment: T from keychain:t",
+                r#"{"q":"x"}"#
+            ),
+            "563fe7bbff2b124c9a14943c7bb8806a125ea123cf4c64c4f6dca928fb08c9af"
+        );
+        assert_eq!(
+            confirmation_digest("a\u{e9}", "b\0c"),
+            "8cd5d2d5358425ebd2b6e8fdd49957e52fec3fedc01c99891e256262481de6fe"
+        );
+    }
+
+    /// The characters the card escapes (`CONFIRMATION_UNSAFE_VECTOR` in the
+    /// card's utility) are all unsafe here too.
+    #[test]
+    fn every_character_the_card_escapes_is_unsafe_for_the_log() {
+        use crate::local_agent::routing::is_unsafe_for_log;
+        for c in SHARED_UNSAFE_VECTOR {
+            assert!(
+                is_unsafe_for_log(*c),
+                "U+{:04X} is not unsafe for the log",
+                *c as u32
+            );
+        }
+        for ok in ['a', 'Z', '0', ' ', '\u{e9}', '\u{4e2d}', '\u{1f600}'] {
+            assert!(!is_unsafe_for_log(ok));
+        }
+    }
+
+    /// One character of each unsafe class, kept in step with the card's vector.
+    const SHARED_UNSAFE_VECTOR: &[char] = &[
+        '\u{0}',
+        '\n',
+        '\r',
+        '\u{1b}',
+        '\u{7f}',
+        '\u{85}',
+        '\u{ad}',
+        '\u{34f}',
+        '\u{115f}',
+        '\u{1160}',
+        '\u{17b4}',
+        '\u{17b5}',
+        '\u{180b}',
+        '\u{180f}',
+        '\u{200b}',
+        '\u{200c}',
+        '\u{200d}',
+        '\u{200e}',
+        '\u{200f}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{202a}',
+        '\u{202e}',
+        '\u{2060}',
+        '\u{2061}',
+        '\u{2064}',
+        '\u{2066}',
+        '\u{2069}',
+        '\u{206a}',
+        '\u{206f}',
+        '\u{3164}',
+        '\u{fe00}',
+        '\u{fe0f}',
+        '\u{feff}',
+        '\u{ffa0}',
+        '\u{fff9}',
+        '\u{fffc}',
+        '\u{1d173}',
+        '\u{1d17a}',
+        '\u{e0041}',
+        '\u{e007f}',
+        '\u{e0100}',
+        '\u{e01ef}',
+        '\u{61c}',
+    ];
 }

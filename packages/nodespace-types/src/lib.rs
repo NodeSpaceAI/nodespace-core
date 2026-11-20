@@ -55,11 +55,11 @@ mod task;
 mod tool_binding;
 
 pub use ai_chat::{
-    AiChatAcpNode, AiChatBase, AiChatMessageNode, AiChatMessageRole, AiChatNativeNode,
-    AiChatPartKind, AiChatPendingDeleteEdge, AiChatProvider, AiChatPtyNode, AiChatResolvedEdge,
-    AiChatSessionStatus, AiChatToolKind, AiChatToolStatus, AiChatTurnOutcome, AiChatTurnStatus,
-    AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_PINS, AI_CHAT_RESOLVED,
-    AI_CHAT_WROTE, NODESPACE_AGENT,
+    AiChatAcpNode, AiChatBase, AiChatConfirmationStatus, AiChatMessageNode, AiChatMessageRole,
+    AiChatNativeNode, AiChatPartKind, AiChatPendingDeleteEdge, AiChatProvider, AiChatPtyNode,
+    AiChatResolvedEdge, AiChatSessionStatus, AiChatToolKind, AiChatToolStatus, AiChatTurnOutcome,
+    AiChatTurnStatus, AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_PINS,
+    AI_CHAT_RESOLVED, AI_CHAT_WROTE, NODESPACE_AGENT,
 };
 pub use collection::{CollectionNode, CollectionNodeUpdate};
 pub use convert::{

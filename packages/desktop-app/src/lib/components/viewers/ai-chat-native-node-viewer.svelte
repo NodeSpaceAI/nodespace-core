@@ -55,7 +55,8 @@
   import { AGENT_EVENTS } from '$lib/types/agent-types';
   import type { AiChatMessageNode, AiChatNativeNode } from '$lib/types/ai-chat-node';
   import { isAiChatMessageNode, nodeToAiChatMessageNode } from '$lib/types/ai-chat-node';
-  import { localAgentCancelTurn } from '$lib/services/tauri-commands';
+  import { localAgentAnswerConfirmation, localAgentCancelTurn } from '$lib/services/tauri-commands';
+  import RemoteToolConfirmationCard from '$lib/components/chat/remote-tool-confirmation-card.svelte';
   import { modelStore, describePreparation } from '$lib/stores/model-store.svelte';
   import { statusBar } from '$lib/stores/status-bar.svelte';
   import { createLogger } from '$lib/utils/logger';
@@ -131,6 +132,9 @@
   /** The chat's messages, mapped to DisplayMessage for rendering. */
   const persistedMessages: DisplayMessage[] = $derived(
     messageNodes
+      // A confirmation card is a question to the user, not a message of the
+      // conversation: it renders as its own card, in place (see `timeline`).
+      .filter((m) => m.partKind !== 'confirmation')
       .filter((m) => m.role === 'user' || m.role === 'assistant')
       .map((m) => ({
         id: m.id,
@@ -142,6 +146,43 @@
         options: m.options,
       }))
   );
+
+  /** The remote-tool confirmation cards of the chat, by node id. */
+  const confirmationCards = $derived(
+    new Map(messageNodes.filter((m) => m.partKind === 'confirmation').map((m) => [m.id, m]))
+  );
+
+  /**
+   * What the conversation shows, in order: messages and confirmation cards. A
+   * card sits where it was asked, between the user's message and the reply.
+   */
+  type TimelineItem =
+    | { kind: 'message'; message: DisplayMessage }
+    | { kind: 'card'; card: AiChatMessageNode };
+  const timeline: TimelineItem[] = $derived.by(() => {
+    const shown = new Map(displayMessages.map((m) => [m.id, m]));
+    const items: TimelineItem[] = [];
+    for (const node of messageNodes) {
+      const card = confirmationCards.get(node.id);
+      if (card) items.push({ kind: 'card', card });
+      else {
+        const message = shown.get(node.id);
+        if (message) items.push({ kind: 'message', message });
+      }
+    }
+    const overlay = shown.get('streaming');
+    if (overlay) items.push({ kind: 'message', message: overlay });
+    return items;
+  });
+
+  /** Answers a confirmation: the daemon's id and digest from the card, unchanged. */
+  async function answerConfirmation(
+    requestId: string,
+    digest: string,
+    allow: boolean
+  ): Promise<boolean> {
+    return localAgentAnswerConfirmation(nodeId, requestId, digest, allow);
+  }
 
   /** All messages to display: persisted + optional streaming overlay. */
   const displayMessages: DisplayMessage[] = $derived.by(() => {
@@ -378,7 +419,7 @@
 
   // Auto-scroll as messages stream/append.
   $effect(() => {
-    void displayMessages.length;
+    void timeline.length;
     scrollToBottom();
   });
 </script>
@@ -413,7 +454,7 @@
       role="list"
       aria-label="Chat conversation"
     >
-      {#if displayMessages.length === 0}
+      {#if timeline.length === 0}
         <div class="empty-conversation">
           <div class="empty-conversation-icon">
             <svg
@@ -431,12 +472,18 @@
           <p class="empty-conversation-hint">Type a message below to begin</p>
         </div>
       {:else}
-        {#each displayMessages as message, index (message.id)}
-          <ChatMessage
-            {message}
-            isLatest={index === displayMessages.length - 1}
-            onSelectOption={isProcessing || isSending ? undefined : handleSend}
-          />
+        {#each timeline as item, index (item.kind === 'card' ? item.card.id : item.message.id)}
+          {#if item.kind === 'card'}
+            <div role="listitem">
+              <RemoteToolConfirmationCard message={item.card} onAnswer={answerConfirmation} />
+            </div>
+          {:else}
+            <ChatMessage
+              message={item.message}
+              isLatest={index === timeline.length - 1}
+              onSelectOption={isProcessing || isSending ? undefined : handleSend}
+            />
+          {/if}
         {/each}
       {/if}
 

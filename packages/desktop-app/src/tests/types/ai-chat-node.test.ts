@@ -107,6 +107,29 @@ describe('chat message node', () => {
     expect(message.toolStatus).toBe('in_progress');
   });
 
+  it('nodeToAiChatMessageNode carries the confirmation fields', () => {
+    const message = nodeToAiChatMessageNode(
+      makeNode({
+        nodeType: 'ai-chat-message',
+        role: 'assistant',
+        partKind: 'confirmation',
+        confirmationId: 'req-1',
+        confirmationDigest: 'd'.repeat(64),
+        confirmationStatus: 'pending',
+        confirmationArguments: '{"q":"x"}',
+        confirmationCredentials: ['T from keychain:t']
+      })
+    );
+    expect(message.partKind).toBe('confirmation');
+    expect(message.confirmationId).toBe('req-1');
+    expect(message.confirmationDigest).toBe('d'.repeat(64));
+    expect(message.confirmationStatus).toBe('pending');
+    expect(message.confirmationArguments).toBe('{"q":"x"}');
+    expect(message.confirmationCredentials).toEqual(['T from keychain:t']);
+    const plain = nodeToAiChatMessageNode(makeNode({ nodeType: 'ai-chat-message' }));
+    expect(plain.confirmationCredentials).toBeUndefined();
+  });
+
   it('nodeToAiChatMessageNode leaves the part and tool fields unset on a native message', () => {
     const message = nodeToAiChatMessageNode(makeNode({ nodeType: 'ai-chat-message' }));
     for (const key of ['partKind', 'toolCallId', 'toolTitle', 'toolKind', 'toolStatus'] as const) {

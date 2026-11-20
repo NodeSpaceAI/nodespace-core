@@ -28,7 +28,7 @@ use nodespace_agent::local_agent::deletion_confirmation::{
 };
 use nodespace_agent::local_agent::mcp_runner::McpRunner;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
-use nodespace_agent::local_agent::remote_tools::RemoteToolHost;
+use nodespace_agent::local_agent::remote_tools::{CallConfirmer, RemoteToolHost};
 use nodespace_agent::local_agent::rest_runner::RestRunner;
 use nodespace_agent::local_agent::tools::{
     is_cross_turn_guarded_tool, resolves_entities_tool, GraphToolExecutor, SharedEmbeddingService,
@@ -46,6 +46,7 @@ use nodespace_types::{DatabaseSettingsNodeUpdate, DATABASE_SETTINGS_NODE_ID};
 
 use crate::services::ai_chat_title;
 use crate::services::bound_chat::{self, BoundChatError, ChatModel};
+use crate::services::chat_card::ChatCardUi;
 use crate::services::chat_idle_gate::ChatIdleGate;
 use crate::services::chat_messages::{
     self, clip_summary, flatten_label, write_target, CompletedWrite, NewMessage, ResolvedEntity,
@@ -525,10 +526,8 @@ struct LocalAgentServiceInner {
     confirmations: PendingConfirmations,
     /// Who may answer one: not the daemon or a program it started.
     answer_gate: Arc<dyn AnswerGate>,
-    /// Where a confirmation is shown and recorded. Unset until the chat card
-    /// exists; with none, no confirmer is built and nothing that needs
-    /// confirmation is offered.
-    confirmation_ui: std::sync::OnceLock<Arc<dyn ConfirmationUi>>,
+    /// Writes and updates the chat card a confirmation is shown on.
+    chat_cards: Arc<ChatCardUi>,
     /// Cancels this database's background event watcher, and gates new turns,
     /// once the database is closed (ADR-053: per-database compute scoping).
     /// Shared across the cheap `Arc` clones tonic hands to request handlers, so
@@ -550,6 +549,50 @@ pub struct LocalAgentServiceImpl {
     inner: Arc<LocalAgentServiceInner>,
 }
 
+/// What started a turn. Only a turn started by a message the user wrote has a
+/// confirmer: it is the only kind with someone there to answer. "A message the
+/// user wrote" means a trailing user message on a native chat: anything that can
+/// write that node (the CLI, MCP, a sync peer, a script) starts a turn with the
+/// confirmer installed, so the real gate is a human's click through the app plus
+/// the peer gate on the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnOrigin {
+    UserMessage,
+    /// Found stuck in `processing` at startup and run again.
+    Recovered,
+}
+
+impl TurnOrigin {
+    pub(crate) fn is_interactive(self) -> bool {
+        matches!(self, TurnOrigin::UserMessage)
+    }
+}
+
+/// Ends a turn's unanswered questions when the turn is over, on every path
+/// including a dropped future: the entries leave the table and any card still
+/// pending is marked cancelled.
+struct TurnQuestions {
+    service: LocalAgentServiceImpl,
+    chat_node_id: String,
+    turn_id: String,
+}
+
+impl Drop for TurnQuestions {
+    fn drop(&mut self) {
+        self.service
+            .inner
+            .confirmations
+            .clear_turn(&self.chat_node_id, &self.turn_id);
+        let service = self.service.clone();
+        let chat = self.chat_node_id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                service.inner.chat_cards.cancel_pending_in(&chat).await;
+            });
+        }
+    }
+}
+
 impl LocalAgentServiceImpl {
     /// Build the local-agent service for one database, running against the
     /// process-global engine in `shared`.
@@ -560,6 +603,7 @@ impl LocalAgentServiceImpl {
     ) -> Self {
         // Channel capacity: enough headroom for burst token output (~256 tokens per broadcast).
         let (token_tx, _) = broadcast::channel(512);
+        let node_service_for_cards = node_service.clone();
 
         Self {
             inner: Arc::new(LocalAgentServiceInner {
@@ -571,7 +615,7 @@ impl LocalAgentServiceImpl {
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 confirmations: PendingConfirmations::default(),
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
-                confirmation_ui: std::sync::OnceLock::new(),
+                chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: None,
             }),
@@ -592,6 +636,7 @@ impl LocalAgentServiceImpl {
         >,
     ) -> Self {
         let (token_tx, _) = broadcast::channel(512);
+        let node_service_for_cards = node_service.clone();
 
         Self {
             inner: Arc::new(LocalAgentServiceInner {
@@ -603,7 +648,7 @@ impl LocalAgentServiceImpl {
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 confirmations: PendingConfirmations::default(),
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
-                confirmation_ui: std::sync::OnceLock::new(),
+                chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: Some(playbook_lifecycle),
             }),
@@ -639,12 +684,9 @@ impl LocalAgentServiceImpl {
     }
 
     /// The confirmer for one turn, or `None` when the turn is not interactive
-    /// (scheduled, headless: nobody could answer, and an unanswerable question
-    /// must not be a way to offer a tool) or no card is installed. With `None`,
-    /// a tool whose calls need confirmation is not offered.
-    ///
-    /// Not called yet: installing it on a turn comes with the chat card.
-    #[allow(dead_code)]
+    /// (recovered after a restart, scheduled, headless: nobody is there to
+    /// answer, and an unanswerable question must not be a way to offer a tool).
+    /// With `None`, a tool whose calls need confirmation is not offered.
     pub(crate) fn confirmer_for_turn(
         &self,
         chat_node_id: &str,
@@ -655,7 +697,7 @@ impl LocalAgentServiceImpl {
         if !interactive {
             return None;
         }
-        let ui = self.inner.confirmation_ui.get()?.clone();
+        let ui: Arc<dyn ConfirmationUi> = self.inner.chat_cards.clone();
         Some(Arc::new(DaemonCallConfirmer::new(
             self.inner.confirmations.clone(),
             ui,
@@ -735,7 +777,7 @@ impl LocalAgentServiceImpl {
     /// ended within the turn, so a cache would buy nothing — while keeping a
     /// stale one alive would pin the previously-loaded model's weights in a
     /// database that simply hasn't been chatted with since the swap.
-    async fn get_service(&self) -> AgentService {
+    async fn get_service(&self, confirmer: Option<Arc<dyn CallConfirmer>>) -> AgentService {
         let engine = self.inner.shared.engine().await;
         // Hand the executor the *shared* embedding handle, not a snapshot. The
         // executor reads the current value per call, so search_semantic and
@@ -756,21 +798,25 @@ impl LocalAgentServiceImpl {
         });
         // Remote tools (tool-mcp, tool-rest, tool-cli) are offered and run only
         // through this host. The `tool-cli`, `tool-rest` and `tool-mcp` runners
-        // are installed; no confirmer is (the question put to the user is wired
-        // separately), so a tool whose calls need confirmation (every `tool-cli`
+        // are installed. A tool whose calls need confirmation (every `tool-cli`
         // and `tool-mcp` call and every `tool-rest` call but a `GET` with no
-        // credential) is not offered yet.
+        // credential) is offered only when the turn has a confirmer, which is
+        // an interactive turn's (see `confirmer_for_turn`).
         let secrets = Arc::new(nodespace_core::secrets::SecretStore::keychain());
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(
-            RemoteToolHost::new(
-                graph_tools,
-                self.inner.node_service.clone(),
-                Arc::clone(&secrets),
-            )
-            .with_runner(Arc::new(CliRunner::new(Arc::clone(&secrets))))
-            .with_runner(Arc::new(RestRunner::new(Arc::clone(&secrets))))
-            .with_runner(Arc::new(McpRunner::new(secrets))),
-        );
+        let mut host = RemoteToolHost::new(
+            graph_tools,
+            self.inner.node_service.clone(),
+            Arc::clone(&secrets),
+        )
+        .with_runner(Arc::new(CliRunner::new(Arc::clone(&secrets))))
+        .with_runner(Arc::new(RestRunner::new(Arc::clone(&secrets))))
+        .with_runner(Arc::new(McpRunner::new(secrets)));
+        // A confirmer only on an interactive turn: with none, a tool whose calls
+        // need confirmation is not offered at all.
+        if let Some(confirmer) = confirmer {
+            host = host.with_confirmer(confirmer);
+        }
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(host);
 
         let prompt_assembler = Some(Arc::new(
             nodespace_agent::prompt_assembler::PromptAssembler::new(
@@ -954,7 +1000,9 @@ impl LocalAgentServiceImpl {
         }
 
         tracing::info!(node_id, "ai-chat turn triggered");
-        self.run_ai_chat_turn(node_id.to_string(), cancel).await;
+        // A turn started by a message the user wrote is interactive.
+        self.run_ai_chat_turn(node_id.to_string(), cancel, TurnOrigin::UserMessage)
+            .await;
     }
 
     /// Whether the chat's latest message is the user's: the half of a turn
@@ -974,7 +1022,12 @@ impl LocalAgentServiceImpl {
     /// The caller is responsible for having already set status: processing
     /// before triggering this turn — writing it again here would re-emit a
     /// nodeUpdated event and cause a re-entry loop.
-    async fn run_ai_chat_turn(&self, node_id: String, cancel: CancellationToken) {
+    async fn run_ai_chat_turn(
+        &self,
+        node_id: String,
+        cancel: CancellationToken,
+        origin: TurnOrigin,
+    ) {
         // Mark the chat model busy for as long as this turn runs, so background
         // work (title generation) defers to it. Process-global rather than
         // per-database: the engine is shared across databases, so a per-database
@@ -1054,7 +1107,18 @@ impl LocalAgentServiceImpl {
         let pins = chat_pins::load_chat_pins(&self.inner.node_service, &node_id).await;
         prior_history.extend(chat_pins::pinned_nodes_message(&pins.nodes));
 
-        let service = self.get_service().await;
+        // What a turn asks the user, it asks on a card in this chat; the
+        // questions it leaves unanswered are dropped, and their cards ended,
+        // however the turn ends.
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let confirmer =
+            self.confirmer_for_turn(&node_id, &turn_id, cancel.clone(), origin.is_interactive());
+        let _turn_questions = TurnQuestions {
+            service: self.clone(),
+            chat_node_id: node_id.clone(),
+            turn_id: turn_id.clone(),
+        };
+        let service = self.get_service(confirmer).await;
 
         // Refresh workspace context before creating the session.
         //
@@ -1502,6 +1566,9 @@ impl LocalAgentServiceImpl {
     /// Scan for ai-chat nodes stuck in `status: 'processing'` at daemon startup
     /// and retry their turns (handles daemon restart mid-turn).
     async fn recover_stuck_turns(&self) {
+        // No question survives a restart: every card this daemon wrote that is
+        // still pending, in any chat, cannot be answered any more.
+        self.inner.chat_cards.cancel_all_local_pending().await;
         // Recovery is about a turn left running, not about a list: a chat
         // archived mid-turn is recovered like any other. Only a native chat
         // takes turns.
@@ -1540,7 +1607,9 @@ impl LocalAgentServiceImpl {
                 };
                 let this = self.clone();
                 tokio::spawn(async move {
-                    this.run_ai_chat_turn(node_id, cancel).await;
+                    // Recovered after a restart: no one is known to be there to answer.
+                    this.run_ai_chat_turn(node_id, cancel, TurnOrigin::Recovered)
+                        .await;
                 });
             } else {
                 // Stuck in processing but no trailing user message — reset to idle.
@@ -9734,37 +9803,13 @@ mod tests {
 
     // -- remote-tool confirmation wiring ------------------------------------
 
-    struct AlwaysShows;
-
-    #[async_trait::async_trait]
-    impl ConfirmationUi for AlwaysShows {
-        async fn present(&self, _: &crate::services::remote_confirmation::ConfirmationAsk) -> bool {
-            true
-        }
-        async fn resolved(
-            &self,
-            _: &crate::services::remote_confirmation::ConfirmationAsk,
-            _: crate::services::remote_confirmation::ConfirmationOutcome,
-        ) {
-        }
-    }
-
     #[tokio::test]
-    async fn no_confirmer_is_built_for_a_turn_that_is_not_interactive_or_has_no_card() {
+    async fn a_confirmer_is_built_for_an_interactive_turn_and_never_for_any_other() {
         let (svc, _ns, _tmp) = test_service().await;
-        // No card installed: none, even for an interactive turn.
-        assert!(svc
-            .confirmer_for_turn("chat", "t", CancellationToken::new(), true)
-            .is_none());
-        svc.inner
-            .confirmation_ui
-            .set(Arc::new(AlwaysShows))
-            .ok()
-            .expect("set once");
         assert!(svc
             .confirmer_for_turn("chat", "t", CancellationToken::new(), true)
             .is_some());
-        // A scheduled or headless turn never gets one.
+        // A recovered, scheduled or headless turn never gets one.
         assert!(svc
             .confirmer_for_turn("chat", "t", CancellationToken::new(), false)
             .is_none());
@@ -9946,6 +9991,7 @@ mod tests {
                 arguments: serde_json::json!({}),
                 arguments_bytes: 2,
                 arguments_json,
+                credentials: vec![],
             };
             let task = tokio::spawn(async move { confirmer.confirm(&request).await });
             let ask = loop {
@@ -9973,5 +10019,11 @@ mod tests {
                 .unwrap();
             assert!(!again.into_inner().accepted);
         }
+    }
+
+    #[test]
+    fn only_a_turn_started_by_a_user_message_is_interactive() {
+        assert!(TurnOrigin::UserMessage.is_interactive());
+        assert!(!TurnOrigin::Recovered.is_interactive());
     }
 }
