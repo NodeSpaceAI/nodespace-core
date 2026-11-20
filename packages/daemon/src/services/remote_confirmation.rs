@@ -360,6 +360,16 @@ impl AnswerGate for DaemonTreeGate {
 /// Whether `pid` is `ancestor` or descends from it. `None` when the chain cannot
 /// be read.
 pub fn is_descendant_of(pid: u32, ancestor: u32) -> Option<bool> {
+    is_descendant_with(pid, ancestor, parent_pid)
+}
+
+/// [`is_descendant_of`] over a supplied parent lookup, so the walk can be driven
+/// with a made-up process table.
+fn is_descendant_with(
+    pid: u32,
+    ancestor: u32,
+    parent_pid: impl Fn(u32) -> Option<u32>,
+) -> Option<bool> {
     let mut current = pid;
     // A process tree is shallow; the bound only stops a loop in bad data.
     for _ in 0..256 {
@@ -866,14 +876,33 @@ mod tests {
             let pid = child.id();
             assert_eq!(is_descendant_of(pid, me), Some(true));
             assert!(!gate.may_answer(Some(pid)), "a program the daemon started");
-            // A process that is not under the daemon may answer: the child is
-            // not an ancestor of this test process, so for a daemon pid that is
-            // the child's, this process is outside its tree.
-            let other = DaemonTreeGate::for_pid(pid);
-            assert!(other.may_answer(Some(me)));
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+
+    #[test]
+    fn a_peer_outside_the_daemons_tree_may_answer_and_an_unreadable_chain_may_not() {
+        // A made-up table: 500 -> 400 -> 300 -> 1, and 900 -> 1.
+        let parents = |pid: u32| match pid {
+            500 => Some(400),
+            400 => Some(300),
+            300 => Some(1),
+            900 => Some(1),
+            _ => None,
+        };
+        assert_eq!(is_descendant_with(500, 300, parents), Some(true));
+        assert_eq!(is_descendant_with(300, 300, parents), Some(true));
+        assert_eq!(is_descendant_with(900, 300, parents), Some(false));
+        assert_eq!(is_descendant_with(300, 500, parents), Some(false));
+        // A link that cannot be read: not known, so not allowed.
+        assert_eq!(is_descendant_with(700, 300, parents), None);
+        assert_eq!(is_descendant_with(1, 300, parents), Some(false));
+        // A loop in the data ends instead of spinning.
+        assert_eq!(
+            is_descendant_with(5, 9, |p| Some(if p == 5 { 6 } else { 5 })),
+            None
+        );
     }
 
     #[test]
