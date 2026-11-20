@@ -2150,8 +2150,6 @@ const NAMED_WITHOUT_BEING_LISTED: &[(&str, &str)] = &[
     ("Schema Creation", "create_node"),
     ("Schema Creation", "delete_node"),
     ("Play Authoring", "update_node"),
-    ("Organization", "create_node"),
-    ("Organization", "update_node"),
     ("Answering a Question", "update_node"),
     ("Authoring a Skill", "update_task_status"),
 ];

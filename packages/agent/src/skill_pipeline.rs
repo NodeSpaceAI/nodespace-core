@@ -810,7 +810,17 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `control_prompt_still_routes_organization_every_rep` and
         // `organization_not_for_leaves_filing_scores_unchanged`.
         use_for: "Organize nodes into collections, folders and categories: file them under one, move them into it, add them to a collection, categorize, or group them.",
-        tools: &["create_relationship", "delete_relationship", "get_node", "search_semantic", "search_nodes"],
+        // `update_node` and `create_node` are here because the shared rules
+        // tell the model to call them: add an existing node to a collection
+        // with `update_node` and the collection path, and pass the collection
+        // to `create_node` when creating. The turn refuses a call to a tool it
+        // did not offer, so a whitelist without them left both instructions
+        // unreachable when this skill led retrieval.
+        //
+        // Blast radius is unchanged: `create_relationship` already makes this
+        // skill mutating, so `score_bar_for` returns the same bar, and neither
+        // added tool is destructive.
+        tools: &["create_relationship", "delete_relationship", "get_node", "search_semantic", "search_nodes", "update_node", "create_node"],
         max_iterations: 3,
         not_for: Some("Start keeping track of a kind of thing. Explain how something works."),
         applies_to: &[],
@@ -2938,6 +2948,33 @@ mod tests {
         // by one, so there is no single command to name.
         crate::local_agent::tools::Tool::CreateTask,
     ];
+
+    /// Organization's rules tell the model to call `update_node` (add an
+    /// existing node to a collection) and `create_node` (create with a
+    /// collection path). The turn refuses a call to a tool it did not offer,
+    /// so both must be on its whitelist, and it must stay in the mutating
+    /// score band rather than moving to the destructive one.
+    #[test]
+    fn organization_whitelist_holds_the_tools_its_rules_call() {
+        let tools = tmpl_tool_whitelist(
+            &seed_skill_nodes()
+                .into_iter()
+                .find(|s| s.title == "Organization")
+                .expect("Organization is seeded"),
+        );
+        for needed in ["update_node", "create_node"] {
+            assert!(
+                tools.iter().any(|t| t == needed),
+                "Organization's rules call `{needed}` but its whitelist {tools:?} omits it"
+            );
+        }
+        assert!(
+            !tools
+                .iter()
+                .any(|t| crate::local_agent::tools::removes_user_data_tool(t)),
+            "Organization must not become destructive: {tools:?}"
+        );
+    }
 
     /// Every built-in tool a seeded skill names, in its tool list or in its
     /// body, carries the CLI command an agent outside the app runs in its
