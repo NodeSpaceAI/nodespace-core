@@ -3868,6 +3868,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // disabled — the routing-reliability matrix measured the *prompt
         // block* suppressing tool-calling, not the scoped tool list, so only
         // the mechanism actually implicated is turned off.
+        // A whitelist only narrows what the gate already offers, so a name that
+        // is not on the surface (a remote tool that is unknown, off, unapproved
+        // or changed on this device) is simply not offered. One warning per
+        // turn, names only.
+        if let Some(warning) =
+            routing::unavailable_whitelist_warning(&routed.candidates, &all_tools)
+        {
+            tracing::warn!(session_id = %session.id, "{warning}");
+        }
         let scoped = routing::stage2_scoped_tools(&routed.candidates, &all_tools);
         let scoped_surface = scoped.is_some();
         let mut tools = scoped.unwrap_or_else(|| routing::fail_open_surface(&all_tools));

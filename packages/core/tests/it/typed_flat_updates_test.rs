@@ -185,6 +185,33 @@ async fn create_skill(svc: &NodeService) -> Node {
     stored(svc, &id).await
 }
 
+/// A remote tool is device-local and may not exist on this device, so a skill
+/// may list a name that is not a built-in tool: the save is accepted, and the
+/// name is checked at turn time against what the gate offers.
+#[tokio::test]
+async fn a_skill_whitelist_may_name_a_tool_this_device_does_not_have() {
+    let (svc, _tmp) = test_service().await;
+    let skill = create_skill(&svc).await;
+    let updated = svc
+        .update_skill_node(
+            &skill.id,
+            skill.version,
+            SkillNodeUpdate {
+                tool_whitelist: Some(vec![
+                    "get_node".to_string(),
+                    "some_remote_tool_from_a_peer".to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("an unknown tool name is accepted at save time");
+    assert_eq!(
+        SkillFields::from_node(&updated).unwrap().tool_whitelist,
+        vec!["get_node", "some_remote_tool_from_a_peer"]
+    );
+}
+
 #[tokio::test]
 async fn a_skill_update_writes_and_clears_its_fields() {
     let (svc, _tmp) = test_service().await;
