@@ -719,6 +719,15 @@ pub fn repair_tool_call_arguments(arguments_json: &mut String) {
 /// the model sent could not be read as arguments at all.
 const MALFORMED_CALL_ERROR: &str = "malformed_tool_call";
 
+/// The result of a call to a tool this turn did not offer: an error that says
+/// so, names the tool and carries none of the call's arguments.
+fn tool_not_offered_result(tool: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": "tool_not_offered",
+        "message": format!("`{tool}` is not available on this turn. Use one of the tools you were given."),
+    })
+}
+
 /// The result recorded, and fed back to the model, for a malformed call.
 ///
 /// Flagged as an error, with a code rather than only prose so the turn-end
@@ -5535,6 +5544,33 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: refused,
+                                        is_error: true,
+                                    }),
+                                )
+                            } else if !tools.iter().any(|t| t.name == tc.function_name) {
+                                // The model may call only what this turn offered it.
+                                // A skill's whitelist, the lookup rules and the
+                                // offered-types hold narrow the surface the model
+                                // is shown, and the executor's own gate (for a
+                                // remote tool: enabled, approved, a runner, a
+                                // confirmer) decides what exists at all; neither
+                                // says what THIS turn scoped out. A call to a
+                                // tool that was not offered is refused here,
+                                // before the executor, whatever the tool is. The
+                                // refusal names the tool the model asked for and
+                                // nothing of its arguments.
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    iteration = iteration,
+                                    tool = %tc.function_name,
+                                    "call to a tool this turn did not offer refused"
+                                );
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: tool_not_offered_result(&tc.function_name),
                                         is_error: true,
                                     }),
                                 )
@@ -22784,5 +22820,104 @@ mod tests {
         assert!(log.contains("WARN"), "{log}");
         assert!(log.contains("remote_one"), "{log}");
         assert!(!log.contains('\u{1b}') && !log.contains('\0') && !log.contains('\u{202E}'));
+    }
+
+    // -- a call is refused unless this turn offered the tool ---------------------
+
+    /// Offers only some of what it can run: the executor's own gate says a tool
+    /// exists and may run; what this turn offered the model is narrower.
+    struct ScopedExecutor {
+        inner: RecordingToolExecutor,
+        offered: Vec<String>,
+    }
+
+    #[async_trait]
+    impl AgentToolExecutor for ScopedExecutor {
+        async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+            Ok(self
+                .inner
+                .available_tools()
+                .await?
+                .into_iter()
+                .filter(|t| self.offered.contains(&t.name))
+                .collect())
+        }
+
+        async fn execute(
+            &self,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            self.inner.execute(name, args).await
+        }
+    }
+
+    /// Runs one turn in which the model calls `tool` with `args`; returns what
+    /// the executor was asked to run and the tool message the model saw.
+    async fn scoped_turn(tool: &str, args: &str) -> (Vec<String>, String, Vec<bool>) {
+        let inner = RecordingToolExecutor::new(
+            MockToolExecutor::new()
+                .with_tool("visible", json!({"type": "object"}), json!({"ok": true}))
+                .with_tool(
+                    "hidden_remote",
+                    json!({"type": "object"}),
+                    json!({"ran": true}),
+                ),
+        );
+        let calls = inner.calls_handle();
+        let executor = Arc::new(ScopedExecutor {
+            inner,
+            offered: vec!["visible".to_string()],
+        });
+        let engine = Arc::new(MockEngine::tool_then_text(tool, args, "done"));
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "Use the tool",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let errors = result.tool_calls_made.iter().map(|t| t.is_error).collect();
+        let ran = calls.lock().unwrap().clone();
+        let seen = session
+            .messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        (ran, seen, errors)
+    }
+
+    #[tokio::test]
+    async fn a_call_to_an_approved_tool_this_turn_did_not_offer_is_refused_and_never_reaches_the_executor(
+    ) {
+        let (ran, seen, errors) = scoped_turn("hidden_remote", r#"{"q":"ARGSECRET-9"}"#).await;
+        assert!(ran.is_empty(), "the executor ran {ran:?}");
+        assert!(seen.contains("tool_not_offered"), "{seen}");
+        assert!(seen.contains("hidden_remote"), "{seen}");
+        // The refusal names the tool and nothing of the arguments.
+        assert!(!seen.contains("ARGSECRET-9"), "{seen}");
+        assert_eq!(errors, [true], "the refusal is an error result");
+    }
+
+    #[tokio::test]
+    async fn a_built_in_the_turn_did_not_offer_is_refused_too() {
+        let (ran, seen, errors) = scoped_turn("get_node", r#"{"id":"abc123"}"#).await;
+        assert_eq!(errors, [true]);
+        assert!(ran.is_empty(), "the executor ran {ran:?}");
+        assert!(seen.contains("tool_not_offered"), "{seen}");
+    }
+
+    #[tokio::test]
+    async fn a_call_to_an_offered_tool_runs() {
+        let (ran, seen, errors) = scoped_turn("visible", "{}").await;
+        assert_eq!(errors, [false]);
+        assert_eq!(ran, ["visible"]);
+        assert!(!seen.contains("tool_not_offered"), "{seen}");
     }
 }
