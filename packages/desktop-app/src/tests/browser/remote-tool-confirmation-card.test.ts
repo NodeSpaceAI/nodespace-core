@@ -42,8 +42,8 @@ function mount(message: AiChatMessageNode, onAnswer?: (...a: unknown[]) => Promi
   return render(RemoteToolConfirmationCard, { props: { message, onAnswer } });
 }
 
-function choice(container: HTMLElement, which: 'allow' | 'deny'): HTMLButtonElement {
-  return container.querySelector(`[data-choice="${which}"]`) as HTMLButtonElement;
+function choice(container: HTMLElement, which: 'allow' | 'deny'): HTMLElement & { disabled: boolean } {
+  return container.querySelector(`[data-choice="${which}"]`) as HTMLElement & { disabled: boolean };
 }
 
 afterEach(() => cleanup());

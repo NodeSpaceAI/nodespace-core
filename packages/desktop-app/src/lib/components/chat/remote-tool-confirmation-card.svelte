@@ -85,7 +85,7 @@
   let failure = $state<string | null>(null);
   let refused = $state(false);
 
-  let denyButton: HTMLButtonElement | undefined = $state();
+  let denyButton: HTMLElement | undefined = $state();
   let sectionEl: HTMLElement | undefined = $state();
 
   const uid = $props.id();
@@ -130,7 +130,6 @@
   };
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section
   bind:this={sectionEl}
   tabindex="-1"
@@ -320,11 +319,6 @@
 
   .confirmation-button:hover:not(:disabled) {
     background: hsl(var(--accent));
-  }
-
-  .confirmation-button:focus-visible {
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 2px;
   }
 
   .confirmation-button:disabled {
