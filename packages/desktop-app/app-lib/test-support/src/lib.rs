@@ -88,6 +88,71 @@ impl SpawnedDaemon {
         Self::spawn_with_socket(tmp_dir, socket_path)
     }
 
+    /// Spawn a real headless `nodespaced` with no socket or database override,
+    /// so it resolves every path itself the way a launched install does:
+    /// `HOME` is `account_home`, and `NODESPACE_HOME` is `redirect` when given
+    /// and unset otherwise.
+    ///
+    /// `socket_path` is where that daemon binds, derived from the state
+    /// directory it should resolve (`redirect`, else `account_home`). The model
+    /// path is a FIFO nobody writes to, so the daemon reaches "serving" without
+    /// loading any model. Does NOT wait for the socket.
+    #[cfg(unix)]
+    pub fn spawn_in_homes(account_home: &Path, redirect: Option<&Path>) -> Self {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let tmp_dir = tempfile::tempdir().expect("create temp dir for daemon fixture");
+        let fifo = tmp_dir.path().join("model.gguf");
+        let c_path = CString::new(fifo.as_os_str().as_bytes()).expect("path has no NUL");
+        // SAFETY: `c_path` is a valid NUL-terminated path for the call's duration.
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo: {}", std::io::Error::last_os_error());
+
+        let socket_path =
+            redirect
+                .unwrap_or(account_home)
+                .join(nodespace_proto::socket::daemon_socket_relative(cfg!(
+                    debug_assertions
+                )));
+
+        let binary = resolve_daemon_binary();
+        let mut command = Command::new(&binary);
+        command
+            .env("HOME", account_home)
+            .env_remove("NODESPACE_HOME")
+            .env_remove("NODESPACED_SOCKET")
+            .env_remove("NODESPACED_DB_PATH")
+            .env("NODESPACED_MODEL_PATH", &fifo)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".to_string()),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(redirect) = redirect {
+            command.env("NODESPACE_HOME", redirect);
+        }
+        let mut child = command
+            .spawn()
+            .unwrap_or_else(|e| panic!("failed to spawn {}: {e}", binary.display()));
+
+        let captured_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        if let Some(stdout) = child.stdout.take() {
+            spawn_drain_thread(stdout, "stdout", false, captured_log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_drain_thread(stderr, "stderr", false, captured_log.clone());
+        }
+        Self {
+            child,
+            socket_path,
+            _tmp_dir: tmp_dir,
+            captured_log,
+        }
+    }
+
     /// Like [`Self::spawn`], with the model file `filename` from the user's
     /// own `~/.nodespace/models/` made available to the daemon, or `None`
     /// when the user has not downloaded it, so the caller skips.

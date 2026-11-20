@@ -17,6 +17,7 @@ mod daemon_binary_freshness_test;
 mod daemon_custom_socket_test;
 mod daemon_extensions_check_test;
 mod daemon_readiness_test;
+mod default_registry_agreement_test;
 mod extension_daemon_profile_test;
 mod extension_hooks_test;
 mod indent_outdent_rapid_ordering_test;

@@ -11,3 +11,5 @@ tauri = { version = "2", features = ["test"] }
 tokio = { workspace = true }
 tempfile = "3"
 tracing = "0.1"
+libc = "0.2"
+nodespace-proto = { workspace = true }

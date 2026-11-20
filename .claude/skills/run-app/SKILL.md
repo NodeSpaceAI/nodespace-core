@@ -58,14 +58,53 @@ older build lacks them and would create `databases.toml` and `nodespace.db` unde
 the real `~/.nodespace`. After a scratch launch, check that `~/.nodespace` gained no
 `databases.toml`, `database/` or `.model-verify-key`.
 
-The webview's storage is **not** relocated by `HOME`: WKWebView keeps
-`localStorage` under the account's real home, so a scratch launch starts with the
-previous install's tab state and active database id. The app discards a remembered
-database id the daemon has not registered, and tabs saved for another database are
-never restored into this one; to start from empty storage regardless, run
-`localStorage.clear()` in the app's web inspector (or `webview-execute-js`).
-Pre-seeding the sidecars only avoids re-registration while they stay unchanged
-and validly signed, and `dev:tauri` rebuilds them first, so do not rely on it.
+### What a scratch launch isolates, and what it still shares
+
+| Thing | Moved by a scratch `HOME` / `NODESPACE_HOME`? |
+|---|---|
+| Daemon state: `databases.toml`, database files, embedding model, logs, marker | Yes, by `NODESPACE_HOME` (the parent of `.nodespace/`, so `NODESPACE_HOME=/tmp/nsh` gives `/tmp/nsh/.nodespace/...`) |
+| The socket the app dials, the sidecar install, the app's own files | Only by `HOME`. The app never reads `NODESPACE_HOME` for its socket, so `NODESPACE_HOME` alone leaves the app dialing the account's own daemon |
+| launchd label `app.nodespace.daemon.dev` | No. Per user |
+| Chat models | No. They load from `$HOME` |
+| Webview storage (`localStorage`, IndexedDB, cookies, cache) | No. See below |
+
+Use `HOME` and `NODESPACE_HOME` set to the same scratch directory (`/tmp/nsh`),
+so the app's socket and the daemon's state agree: the socket is
+`/tmp/nsh/.nodespace/daemon-dev.sock` for both, and the registry is
+`/tmp/nsh/.nodespace/databases.toml`. A test pins this
+(`default_registry_agreement_test`): with one home both sides use the same
+socket and the same registry default; with `NODESPACE_HOME` apart from `HOME`
+only the daemon moves, and the app does not reach it.
+
+The webview's storage is **not** relocated by `HOME`. WKWebView's default data
+store lives under the account's real home, in
+`~/Library/WebKit/<bundle id>/WebsiteData/` and `~/Library/Caches/<bundle id>/`
+(the bundle id is `com.nodespace.desktop`; a dev run is keyed by it, and
+`localStorage` by its origin, `http://localhost:1422` under `dev:tauri`). The
+storage process is started by the system, not by the app, so it does not see the
+app's environment. A scratch launch therefore starts with the previous install's
+tab state, active database id, theme and settings. The app discards a remembered
+database id the daemon has not registered, and tabs saved for another database
+are never restored into this one, so the carry-over does not break the launch; to
+start from empty storage regardless, run `localStorage.clear()` in the app's web
+inspector (or `webview-execute-js`). Clearing it also clears the real install's
+dev-origin storage: the store is shared, not copied. The way to a separate store
+is a window built with a data store identifier (macOS 14 and later; not
+available through `HOME`); the app does not build its window that way yet.
+
+**Linux, `systemctl --user` (not yet checked on a host).** A scratch `HOME` alone
+is not expected to isolate it: the user manager starts the unit with its own
+environment and the unit file lives under the account's `~/.config/systemd/user`.
+Things to check on a Linux host with a user session: (1) the unit's
+`Environment=HOME=` and `Environment=NODESPACE_HOME=` lines are written when set
+(tests cover the lines, not a run); (2) after a launch with a scratch `HOME`,
+`systemctl --user cat <unit>` shows which unit is loaded and whether it replaced
+the account's own; (3) the daemon's registry and database are under the scratch
+home, and the real `~/.nodespace` gained no `databases.toml`, `database/` or
+`.model-verify-key`; (4) the webview (WebKitGTK) is expected to keep its storage under
+`$XDG_DATA_HOME` / `$XDG_CACHE_HOME`, which `HOME` moves only if those are
+unset, so set them too; (5) restore the unit afterwards.
+
 Get the user's go-ahead before launching it, and restore afterwards.
 
 1. Note the user's job: `launchctl print gui/$(id -u)/app.nodespace.daemon.dev`
@@ -74,7 +113,7 @@ Get the user's go-ahead before launching it, and restore afterwards.
    `target/debug/binaries/nodespaced-<triple>` and `nodespace-<triple>` to
    `/tmp/nsh/.nodespace/bin-dev/nodespaced` and `nodespace`.
 3. Start that daemon with `HOME=/tmp/nsh`,
-   `NODESPACED_SOCKET=/tmp/nsh/.nodespace/daemon-dev.sock`, `NODESPACE_HOME=/tmp/nsh/.nodespace`.
+   `NODESPACED_SOCKET=/tmp/nsh/.nodespace/daemon-dev.sock`, `NODESPACE_HOME=/tmp/nsh`.
    The log must say `/tmp/nsh/...`, never `/Users/<you>/.nodespace/`.
 4. Launch with `HOME=/tmp/nsh CARGO_HOME=… RUSTUP_HOME=… bun run dev:tauri`
    (literal paths for the two; a scratch HOME otherwise downloads a toolchain).

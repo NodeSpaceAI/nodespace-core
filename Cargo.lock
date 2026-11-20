@@ -3547,8 +3547,10 @@ dependencies = [
 name = "nodespace-app-test-support"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nodespace-app-build",
  "nodespace-app-lib",
+ "nodespace-proto",
  "tauri",
  "tempfile",
  "tokio",
