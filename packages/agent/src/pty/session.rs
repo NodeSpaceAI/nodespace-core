@@ -322,6 +322,11 @@ impl PtySession {
         }
 
         let child = pair.slave.spawn_command(cmd)?;
+        // A PTY child leads its own session and group: recorded so the daemon
+        // can tell it from the user's applications (see `crate::spawned`).
+        if let Some(pid) = child.process_id() {
+            crate::spawned::record(pid);
+        }
         // `portable-pty` recommends dropping the slave handle once the child
         // is spawned so closing the master tears down the PTY cleanly.
         drop(pair.slave);

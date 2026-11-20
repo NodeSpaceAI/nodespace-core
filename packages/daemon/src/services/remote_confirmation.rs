@@ -33,14 +33,18 @@
 //! - **At most [`MAX_PENDING_PER_CHAT`] questions per chat at once**; another is
 //!   a no without being shown.
 //! - **Not reachable from a tool.** The answer is a gRPC call on the daemon's
-//!   same-user socket. A program the daemon spawned for a tool call (cli, or an
-//!   MCP server) runs as the same user and could dial that socket, so
-//!   [`DaemonTreeGate`] refuses an answer from any peer process that is the
-//!   daemon or one of its descendants, and from a peer whose identity cannot be
-//!   read (fail closed; that includes platforms where the transport carries no
-//!   peer credentials). A process that detaches from the daemon's tree is
-//!   indistinguishable from any other program of the same user: this narrows
-//!   the channel, it is not a sandbox.
+//!   same-user socket. A program the daemon started for a tool (cli, an MCP
+//!   server, an ACP agent, a PTY) runs as the same user and could dial that
+//!   socket, so [`SpawnedProcessGate`] refuses a peer that is one of those
+//!   programs, shares a process group with one (a background process, an orphan,
+//!   a grandchild) or descends from one, plus the daemon itself and any peer it
+//!   cannot identify. It runs BEFORE the request is routed, so a refused peer
+//!   sees the same answer whatever header it sent. Which launch paths of the real
+//!   UI pass: the installed app (Finder, Dock), `bun run dev:tauri`, and the app
+//!   the tray starts (the daemon's child, but not a tool's) all pass; the CLI and
+//!   headless runs have no answer command; on Windows the named-pipe transport
+//!   carries no peer pid, so every answer is refused there (the feature is inert
+//!   until that is solved). See [`SpawnedProcessGate`] for the limits.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -199,15 +203,33 @@ impl PendingConfirmations {
 }
 
 /// Removes its entry when dropped, so a question never outlives the await that
-/// asked it (a turn dropped mid-question included).
+/// asked it. If the await was dropped (the turn was) before the question
+/// ended, the card is also ended as cancelled, so none is left pending.
 struct EntryGuard {
     pending: PendingConfirmations,
     request_id: String,
+    ui: Arc<dyn ConfirmationUi>,
+    ask: ConfirmationAsk,
+    /// Set once the question has ended and the card was told.
+    done: bool,
 }
 
 impl Drop for EntryGuard {
     fn drop(&mut self) {
         self.pending.remove(&self.request_id);
+        if self.done {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let (ui, ask) = (self.ui.clone(), self.ask.clone());
+            handle.spawn(async move {
+                let _ = tokio::time::timeout(
+                    RESOLVE_LIMIT,
+                    ui.resolved(&ask, ConfirmationOutcome::Cancelled),
+                )
+                .await;
+            });
+        }
     }
 }
 
@@ -273,10 +295,6 @@ impl CallConfirmer for DaemonCallConfirmer {
                 },
             );
         }
-        let _guard = EntryGuard {
-            pending: self.pending.clone(),
-            request_id: request_id.clone(),
-        };
         let ask = ConfirmationAsk {
             request_id: request_id.clone(),
             chat_node_id: self.chat_node_id.clone(),
@@ -288,9 +306,46 @@ impl CallConfirmer for DaemonCallConfirmer {
             arguments_bytes: request.arguments_bytes,
             digest: request.digest.clone(),
         };
-        if !self.ui.present(&ask).await {
-            // Nothing was asked: the entry goes (guard) and the call is a no.
-            return false;
+        let mut guard = EntryGuard {
+            pending: self.pending.clone(),
+            request_id: request_id.clone(),
+            ui: self.ui.clone(),
+            ask: ask.clone(),
+            done: false,
+        };
+        // One deadline for the whole question, the card's write included: a card
+        // that hangs must not hold the turn past its cancellation or the limit.
+        let deadline = tokio::time::sleep(self.timeout);
+        tokio::pin!(deadline);
+        let shown = {
+            let present = self.ui.present(&ask);
+            tokio::pin!(present);
+            tokio::select! {
+                shown = &mut present => Some(shown),
+                _ = &mut deadline => None,
+                _ = self.turn_cancel.cancelled() => None,
+                _ = self.shutdown.cancelled() => None,
+            }
+        };
+        match shown {
+            Some(true) => {}
+            Some(false) => {
+                // Nothing was asked: the entry goes and the call is a no.
+                guard.done = true;
+                return false;
+            }
+            None => {
+                // The card did not come up in time or the turn ended meanwhile;
+                // it may have been written, so it is ended too.
+                self.pending.remove(&request_id);
+                let _ = tokio::time::timeout(
+                    RESOLVE_LIMIT,
+                    self.ui.resolved(&ask, ConfirmationOutcome::Cancelled),
+                )
+                .await;
+                guard.done = true;
+                return false;
+            }
         }
         let waited = tokio::select! {
             answer = &mut rx => match answer {
@@ -298,7 +353,7 @@ impl CallConfirmer for DaemonCallConfirmer {
                 Ok(false) => ConfirmationOutcome::Denied,
                 Err(_) => ConfirmationOutcome::Cancelled,
             },
-            _ = tokio::time::sleep(self.timeout) => ConfirmationOutcome::Expired,
+            _ = &mut deadline => ConfirmationOutcome::Expired,
             _ = self.turn_cancel.cancelled() => ConfirmationOutcome::Cancelled,
             _ = self.shutdown.cancelled() => ConfirmationOutcome::Cancelled,
         };
@@ -314,6 +369,7 @@ impl CallConfirmer for DaemonCallConfirmer {
             }
         };
         let _ = tokio::time::timeout(RESOLVE_LIMIT, self.ui.resolved(&ask, outcome)).await;
+        guard.done = true;
         outcome == ConfirmationOutcome::Allowed
     }
 }
@@ -329,13 +385,26 @@ pub trait AnswerGate: Send + Sync {
     fn may_answer(&self, peer_pid: Option<u32>) -> bool;
 }
 
-/// Refuses the daemon itself and every process descended from it (the programs
-/// it runs for tool calls), and any peer it cannot identify.
-pub struct DaemonTreeGate {
+/// Refuses every peer that is, or descends from, a program the daemon started
+/// for a tool (see [`nodespace_agent::spawned`]): a `tool-cli` program, an MCP
+/// stdio server, an ACP agent, a PTY session; the daemon itself; and any peer it
+/// cannot identify (no pid, pid 0 or 1, an unreadable process, a platform whose
+/// transport or kernel interface gives no pid: Windows named pipes, and Linux
+/// with `/proc` hidden). A program the daemon started that is not a tool's, such
+/// as the app the tray opens, is allowed.
+///
+/// **Limits.** A recorded program that leaves its process group (`setpgid`,
+/// `setsid`) and whose parent has exited cannot be told from another program of
+/// the same user; closing that needs the peer's audit token and a code-signature
+/// check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity` against the NodeSpace
+/// team id), which is not done here. The peer's pid is captured when it connects
+/// and judged on each request; a connector that has died reads as unknown and is
+/// refused. This narrows the channel; it is not a sandbox.
+pub struct SpawnedProcessGate {
     daemon_pid: u32,
 }
 
-impl DaemonTreeGate {
+impl SpawnedProcessGate {
     pub fn for_this_process() -> Self {
         Self {
             daemon_pid: std::process::id(),
@@ -347,72 +416,16 @@ impl DaemonTreeGate {
     }
 }
 
-impl AnswerGate for DaemonTreeGate {
+impl AnswerGate for SpawnedProcessGate {
     fn may_answer(&self, peer_pid: Option<u32>) -> bool {
-        match peer_pid.map(|pid| is_descendant_of(pid, self.daemon_pid)) {
-            Some(Some(false)) => true,
-            // A descendant, or a chain that cannot be read: refused.
-            _ => false,
+        let Some(pid) = peer_pid else {
+            return false;
+        };
+        if pid == self.daemon_pid {
+            return false;
         }
+        nodespace_agent::spawned::classify_peer(pid) == Some(false)
     }
-}
-
-/// Whether `pid` is `ancestor` or descends from it. `None` when the chain cannot
-/// be read.
-pub fn is_descendant_of(pid: u32, ancestor: u32) -> Option<bool> {
-    is_descendant_with(pid, ancestor, parent_pid)
-}
-
-/// [`is_descendant_of`] over a supplied parent lookup, so the walk can be driven
-/// with a made-up process table.
-fn is_descendant_with(
-    pid: u32,
-    ancestor: u32,
-    parent_pid: impl Fn(u32) -> Option<u32>,
-) -> Option<bool> {
-    let mut current = pid;
-    // A process tree is shallow; the bound only stops a loop in bad data.
-    for _ in 0..256 {
-        if current == ancestor {
-            return Some(true);
-        }
-        if current <= 1 {
-            return Some(false);
-        }
-        current = parent_pid(current)?;
-    }
-    None
-}
-
-#[cfg(target_os = "linux")]
-fn parent_pid(pid: u32) -> Option<u32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // "pid (comm) state ppid ...": comm may hold spaces and parentheses, so the
-    // fields are read after the LAST closing parenthesis.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(1)?.parse().ok()
-}
-
-#[cfg(target_os = "macos")]
-fn parent_pid(pid: u32) -> Option<u32> {
-    // SAFETY: proc_pidinfo writes at most `size` bytes into the struct we own.
-    unsafe {
-        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
-        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-        let written = libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            &mut info as *mut _ as *mut libc::c_void,
-            size,
-        );
-        (written == size).then_some(info.pbi_ppid)
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn parent_pid(_pid: u32) -> Option<u32> {
-    None
 }
 
 #[cfg(test)]
@@ -859,76 +872,172 @@ mod tests {
         assert!(task.await.unwrap());
     }
 
-    // -- who may answer ------------------------------------------------------
-
-    #[test]
-    fn a_peer_is_refused_when_it_is_the_daemon_or_descends_from_it_or_is_unknown() {
-        let me = std::process::id();
-        let gate = DaemonTreeGate::for_pid(me);
-        assert!(!gate.may_answer(None), "unknown peers fail closed");
-        assert!(!gate.may_answer(Some(me)), "the daemon itself");
-        #[cfg(unix)]
-        {
-            let mut child = std::process::Command::new("sleep")
-                .arg("5")
-                .spawn()
-                .unwrap();
-            let pid = child.id();
-            assert_eq!(is_descendant_of(pid, me), Some(true));
-            assert!(!gate.may_answer(Some(pid)), "a program the daemon started");
-            let _ = child.kill();
-            let _ = child.wait();
+    #[tokio::test]
+    async fn a_card_that_hangs_does_not_hold_the_turn_past_its_cancellation() {
+        struct Hangs(Mutex<Vec<ConfirmationOutcome>>);
+        #[async_trait]
+        impl ConfirmationUi for Hangs {
+            async fn present(&self, _: &ConfirmationAsk) -> bool {
+                std::future::pending::<()>().await;
+                true
+            }
+            async fn resolved(&self, _: &ConfirmationAsk, o: ConfirmationOutcome) {
+                self.0.lock().unwrap().push(o);
+            }
         }
-    }
-
-    #[test]
-    fn a_peer_outside_the_daemons_tree_may_answer_and_an_unreadable_chain_may_not() {
-        // A made-up table: 500 -> 400 -> 300 -> 1, and 900 -> 1.
-        let parents = |pid: u32| match pid {
-            500 => Some(400),
-            400 => Some(300),
-            300 => Some(1),
-            900 => Some(1),
-            _ => None,
-        };
-        assert_eq!(is_descendant_with(500, 300, parents), Some(true));
-        assert_eq!(is_descendant_with(300, 300, parents), Some(true));
-        assert_eq!(is_descendant_with(900, 300, parents), Some(false));
-        assert_eq!(is_descendant_with(300, 500, parents), Some(false));
-        // A link that cannot be read: not known, so not allowed.
-        assert_eq!(is_descendant_with(700, 300, parents), None);
-        assert_eq!(is_descendant_with(1, 300, parents), Some(false));
-        // A loop in the data ends instead of spinning.
-        assert_eq!(
-            is_descendant_with(5, 9, |p| Some(if p == 5 { 6 } else { 5 })),
-            None
+        let ui = Arc::new(Hangs(Mutex::new(Vec::new())));
+        let pending = PendingConfirmations::default();
+        let cancel = CancellationToken::new();
+        let c = DaemonCallConfirmer::new(
+            pending.clone(),
+            ui.clone(),
+            "chat".into(),
+            "turn".into(),
+            cancel.clone(),
+            CancellationToken::new(),
+            LONG,
         );
+        let task = tokio::spawn(async move { c.confirm(&request("a")).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+        let ended = tokio::time::timeout(Duration::from_secs(5), task).await;
+        assert!(!ended.expect("cancellation was not held up").unwrap());
+        assert!(pending.is_empty());
+        // The card may have been written, so it is ended too.
+        assert_eq!(*ui.0.lock().unwrap(), [ConfirmationOutcome::Cancelled]);
     }
 
-    #[test]
-    fn a_grandchild_is_a_descendant_too() {
-        #[cfg(unix)]
-        {
-            let me = std::process::id();
-            // sh starts sleep: sleep is a grandchild of this process.
-            let mut child = std::process::Command::new("sh")
-                .args(["-c", "sleep 5 & echo $!; wait"])
-                .stdout(std::process::Stdio::piped())
+    #[tokio::test]
+    async fn a_card_that_hangs_ends_at_the_timeout() {
+        struct Hangs;
+        #[async_trait]
+        impl ConfirmationUi for Hangs {
+            async fn present(&self, _: &ConfirmationAsk) -> bool {
+                std::future::pending::<()>().await;
+                true
+            }
+            async fn resolved(&self, _: &ConfirmationAsk, _: ConfirmationOutcome) {}
+        }
+        let c = DaemonCallConfirmer::new(
+            PendingConfirmations::default(),
+            Arc::new(Hangs),
+            "chat".into(),
+            "turn".into(),
+            CancellationToken::new(),
+            CancellationToken::new(),
+            Duration::from_millis(100),
+        );
+        let ended = tokio::time::timeout(Duration::from_secs(5), c.confirm(&request("a"))).await;
+        assert!(!ended.expect("the question outlived its timeout"));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_question_ends_its_card_as_cancelled() {
+        let rig = Rig::new();
+        let c = rig.confirmer("chat", "turn", LONG);
+        let task = tokio::spawn({
+            let c = c.clone();
+            async move { c.confirm(&request("a")).await }
+        });
+        rig.shown(1).await;
+        task.abort();
+        let _ = task.await;
+        for _ in 0..200 {
+            if !rig.ui.resolved.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let resolved = rig.ui.resolved.lock().unwrap().clone();
+        assert_eq!(resolved.len(), 1, "no card is left pending");
+        assert_eq!(resolved[0].1, ConfirmationOutcome::Cancelled);
+    }
+
+    // -- who may answer ------------------------------------------------------
+    //
+    // The classification itself is tested in `nodespace_agent::spawned`; these
+    // drive the gate over real processes.
+
+    #[cfg(unix)]
+    mod real_processes {
+        use super::*;
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        /// Starts `sh -c script` the way a tool program is started (its own
+        /// process group) and records it, as the runners do.
+        fn tool(script: &str) -> std::process::Child {
+            let child = Command::new("sh")
+                .args(["-c", script])
+                .stdout(Stdio::piped())
+                .process_group(0)
                 .spawn()
                 .unwrap();
-            let mut line = String::new();
+            nodespace_agent::spawned::record(child.id());
+            child
+        }
+
+        fn grandchild_pid(child: &mut std::process::Child) -> u32 {
             use std::io::BufRead;
+            let mut line = String::new();
             std::io::BufReader::new(child.stdout.take().unwrap())
                 .read_line(&mut line)
                 .unwrap();
-            let grandchild: u32 = line.trim().parse().unwrap();
-            assert_eq!(is_descendant_of(grandchild, me), Some(true));
-            assert!(!DaemonTreeGate::for_pid(me).may_answer(Some(grandchild)));
+            line.trim().parse().unwrap()
+        }
+
+        fn kill(pid: u32) {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+
+        #[test]
+        fn a_recorded_program_its_grandchild_and_its_orphan_are_refused() {
+            let gate = SpawnedProcessGate::for_pid(std::process::id());
+            let mut child = tool("sleep 20 & echo $!; wait");
+            let sleeper = grandchild_pid(&mut child);
+            assert!(!gate.may_answer(Some(child.id())), "the recorded program");
+            assert!(!gate.may_answer(Some(sleeper)), "its grandchild");
+            // The parent exits: the sleeper is an orphan, reparented to init.
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::process::Command::new("kill")
-                .arg(grandchild.to_string())
-                .status();
+            assert!(!gate.may_answer(Some(sleeper)), "an orphan keeps its group");
+            kill(sleeper);
+        }
+
+        #[test]
+        fn a_process_outside_the_tree_and_one_the_daemon_started_but_did_not_record_may_answer() {
+            let gate = SpawnedProcessGate::for_pid(std::process::id() + 1_000_000);
+            // This test process is not a tool's.
+            assert!(gate.may_answer(Some(std::process::id())));
+            // A program started like the tray starts the app: a child that is not
+            // recorded and shares no recorded group.
+            let mut ui = Command::new("sleep").arg("20").spawn().unwrap();
+            assert!(
+                gate.may_answer(Some(ui.id())),
+                "a started, unrecorded program"
+            );
+            let _ = ui.kill();
+            let _ = ui.wait();
+        }
+
+        #[test]
+        fn the_daemon_pid_zero_a_dead_peer_and_no_pid_are_refused() {
+            let gate = SpawnedProcessGate::for_this_process();
+            assert!(
+                !gate.may_answer(Some(std::process::id())),
+                "the daemon itself"
+            );
+            assert!(!gate.may_answer(Some(0)), "another pid namespace reads 0");
+            assert!(!gate.may_answer(Some(1)));
+            assert!(!gate.may_answer(None));
+            let mut child = Command::new("true").spawn().unwrap();
+            let dead = child.id();
+            child.wait().unwrap();
+            let other = SpawnedProcessGate::for_pid(std::process::id() + 1_000_000);
+            assert!(
+                !other.may_answer(Some(dead)),
+                "a peer that is gone is unknown"
+            );
         }
     }
 }

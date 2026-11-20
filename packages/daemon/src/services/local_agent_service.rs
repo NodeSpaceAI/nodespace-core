@@ -53,8 +53,8 @@ use crate::services::chat_messages::{
 };
 use crate::services::chat_pins;
 use crate::services::remote_confirmation::{
-    Answer, AnswerGate, AnswerResult, ConfirmationUi, DaemonCallConfirmer, DaemonTreeGate,
-    PendingConfirmations, DEFAULT_CONFIRMATION_TIMEOUT,
+    Answer, AnswerGate, AnswerResult, ConfirmationUi, DaemonCallConfirmer, PendingConfirmations,
+    SpawnedProcessGate, DEFAULT_CONFIRMATION_TIMEOUT,
 };
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
@@ -570,7 +570,7 @@ impl LocalAgentServiceImpl {
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 confirmations: PendingConfirmations::default(),
-                answer_gate: Arc::new(DaemonTreeGate::for_this_process()),
+                answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
                 confirmation_ui: std::sync::OnceLock::new(),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: None,
@@ -602,7 +602,7 @@ impl LocalAgentServiceImpl {
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 confirmations: PendingConfirmations::default(),
-                answer_gate: Arc::new(DaemonTreeGate::for_this_process()),
+                answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
                 confirmation_ui: std::sync::OnceLock::new(),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: Some(playbook_lifecycle),
@@ -669,6 +669,20 @@ impl LocalAgentServiceImpl {
 
     /// The answer entry point behind `AnswerConfirmation`. `peer_pid` is the
     /// connection's process id when the transport reports one.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn check_answer_peer(&self, peer_pid: Option<u32>) -> Result<(), Status> {
+        if self.inner.answer_gate.may_answer(peer_pid) {
+            return Ok(());
+        }
+        tracing::warn!(
+            ?peer_pid,
+            "a confirmation answer from this peer was refused"
+        );
+        Err(Status::permission_denied(
+            "this client may not answer a confirmation",
+        ))
+    }
+
     #[allow(clippy::result_large_err)]
     pub(crate) fn answer_confirmation_from(
         &self,
@@ -1731,18 +1745,21 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         &self,
         request: Request<AnswerConfirmationRequest>,
     ) -> Result<Response<AnswerConfirmationResponse>, Status> {
-        let this = self.route(&request).await?;
-        // The peer's process id, as the kernel reports it for the socket. Absent
-        // on a transport that has none, which the gate refuses.
+        // The peer is judged BEFORE the request is routed or read, so a refused
+        // peer sees the same answer whatever database header it sent. The pid is
+        // the kernel's for the socket; a transport with none (a Windows named
+        // pipe) gives `None`, which the gate refuses.
         #[cfg(unix)]
         let peer_pid = request
             .extensions()
             .get::<tonic::transport::server::UdsConnectInfo>()
             .and_then(|info| info.peer_cred.as_ref())
             .and_then(|cred| cred.pid())
-            .map(|pid| pid as u32);
+            .and_then(|pid| u32::try_from(pid).ok());
         #[cfg(not(unix))]
         let peer_pid: Option<u32> = None;
+        self.check_answer_peer(peer_pid)?;
+        let this = self.route(&request).await?;
         let req = request.into_inner();
         let accepted = this.answer_confirmation_from(
             peer_pid,
@@ -9792,5 +9809,169 @@ mod tests {
         };
         assert!(!svc.answer_confirmation_from(Some(4242), &answer).unwrap());
         assert!(svc.answer_confirmation_from(Some(4243), &answer).is_err());
+    }
+
+    // -- the real socket path ------------------------------------------------
+
+    #[cfg(unix)]
+    mod over_a_socket {
+        use super::*;
+        use crate::nodespace::local_agent_service_client::LocalAgentServiceClient;
+        use crate::nodespace::local_agent_service_server::LocalAgentServiceServer;
+        use crate::services::remote_confirmation::{
+            ConfirmationAsk, ConfirmationOutcome, DaemonCallConfirmer,
+        };
+        use hyper_util::rt::TokioIo;
+        use nodespace_agent::local_agent::remote_tools::{
+            confirmation_digest, CallConfirmer, ConfirmationRequest, RemoteToolKind,
+        };
+        use tonic::transport::{Endpoint, Server, Uri};
+        use tower::service_fn;
+
+        #[derive(Default)]
+        struct Shows(std::sync::Mutex<Vec<ConfirmationAsk>>);
+
+        #[async_trait::async_trait]
+        impl ConfirmationUi for Shows {
+            async fn present(&self, ask: &ConfirmationAsk) -> bool {
+                self.0.lock().unwrap().push(ask.clone());
+                true
+            }
+            async fn resolved(&self, _: &ConfirmationAsk, _: ConfirmationOutcome) {}
+        }
+
+        fn short_tempdir() -> tempfile::TempDir {
+            tempfile::Builder::new()
+                .prefix("ns-cf-")
+                .tempdir_in("/private/tmp")
+                .unwrap_or_else(|_| tempfile::tempdir().unwrap())
+        }
+
+        async fn serve(
+            svc: LocalAgentServiceImpl,
+        ) -> (
+            LocalAgentServiceClient<tonic::transport::Channel>,
+            tempfile::TempDir,
+        ) {
+            let dir = short_tempdir();
+            let sock = dir.path().join("s.sock");
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            tokio::spawn(async move {
+                Server::builder()
+                    .add_service(LocalAgentServiceServer::new(svc))
+                    .serve_with_incoming(crate::peer_auth::owner_only_incoming(listener))
+                    .await
+            });
+            let path = sock.clone();
+            let channel = Endpoint::from_static("http://localhost")
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    let path = path.clone();
+                    async move {
+                        tokio::net::UnixStream::connect(&path)
+                            .await
+                            .map(TokioIo::new)
+                    }
+                }))
+                .await
+                .unwrap();
+            (LocalAgentServiceClient::new(channel), dir)
+        }
+
+        fn answer(id: &str, digest: &str, allow: bool) -> AnswerConfirmationRequest {
+            AnswerConfirmationRequest {
+                node_id: "chat".into(),
+                request_id: id.into(),
+                digest: digest.into(),
+                allow,
+            }
+        }
+
+        #[tokio::test]
+        async fn the_default_gate_refuses_a_peer_that_is_the_daemon_whatever_header_it_sends() {
+            let (svc, _ns, _tmp) = test_service().await;
+            let (mut client, _dir) = serve(svc).await;
+            // This process is both client and "daemon": its pid is the daemon's.
+            let plain = client.answer_confirmation(answer("x", "d", true)).await;
+            assert_eq!(plain.unwrap_err().code(), tonic::Code::PermissionDenied);
+            // A database header that names nothing changes nothing: the peer is
+            // judged before the request is routed.
+            let mut request = tonic::Request::new(answer("x", "d", true));
+            request.metadata_mut().insert(
+                nodespace_proto::DATABASE_ID_HEADER,
+                "no-such-database".parse().unwrap(),
+            );
+            let with_header = client.answer_confirmation(request).await;
+            assert_eq!(
+                with_header.unwrap_err().code(),
+                tonic::Code::PermissionDenied
+            );
+        }
+
+        #[tokio::test]
+        async fn an_allowed_peer_answers_a_live_question_over_the_socket_with_its_pid_judged() {
+            let (mut svc, _ns, _tmp) = test_service().await;
+            // The gate sees the peer pid the kernel reports for this very
+            // connection: this process.
+            Arc::get_mut(&mut svc.inner)
+                .expect("sole owner")
+                .answer_gate = Arc::new(Lets(std::process::id()));
+            let pending = svc.inner.confirmations.clone();
+            let (mut client, _dir) = serve(svc).await;
+
+            // An unknown question is not accepted, and says nothing more.
+            let unknown = client
+                .answer_confirmation(answer("nothing", "d", true))
+                .await
+                .unwrap();
+            assert!(!unknown.into_inner().accepted);
+
+            // A live question is answered with the id and digest it was shown with.
+            let ui = Arc::new(Shows::default());
+            let confirmer = Arc::new(DaemonCallConfirmer::new(
+                pending,
+                ui.clone(),
+                "chat".into(),
+                "turn".into(),
+                CancellationToken::new(),
+                CancellationToken::new(),
+                std::time::Duration::from_secs(30),
+            ));
+            let destination = "run it".to_string();
+            let arguments_json = "{}".to_string();
+            let request = ConfirmationRequest {
+                tool_name: "t".into(),
+                kind: RemoteToolKind::Cli,
+                digest: confirmation_digest(&destination, &arguments_json),
+                destination,
+                arguments: serde_json::json!({}),
+                arguments_bytes: 2,
+                arguments_json,
+            };
+            let task = tokio::spawn(async move { confirmer.confirm(&request).await });
+            let ask = loop {
+                if let Some(ask) = ui.0.lock().unwrap().first().cloned() {
+                    break ask;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            // A wrong digest is refused over the wire and the question stays.
+            let wrong = client
+                .answer_confirmation(answer(&ask.request_id, "wrong", true))
+                .await
+                .unwrap();
+            assert!(!wrong.into_inner().accepted);
+            let right = client
+                .answer_confirmation(answer(&ask.request_id, &ask.digest, true))
+                .await
+                .unwrap();
+            assert!(right.into_inner().accepted);
+            assert!(task.await.unwrap());
+            // Used once.
+            let again = client
+                .answer_confirmation(answer(&ask.request_id, &ask.digest, true))
+                .await
+                .unwrap();
+            assert!(!again.into_inner().accepted);
+        }
     }
 }
