@@ -17,15 +17,15 @@ use tokio::time::Instant;
 use zeroize::Zeroizing;
 
 use super::events::{
-    bounded, parse_permission, parse_stop_reason, parse_update, AcpEvent, EndReason,
-    PermissionOption, PermissionRequest, PermissionResolution,
+    bounded, clean, parse_permission, parse_stop_reason, parse_update, redact, AcpEvent, EndReason,
+    Needles, PermissionOption, PermissionRequest, PermissionResolution,
 };
 use super::launch::AcpLaunch;
 use super::wire::{write_message, AcpError, AcpLimits, Frame, LineReader};
 use crate::local_agent::process::{
     credentials_within, reap, resolve_env_credentials, spawn_isolated, stop, EnvLookup, Isolated,
 };
-use crate::local_agent::redaction::{cut, sanitize, MIN_REDACTABLE_BYTES};
+use crate::local_agent::redaction::{sanitize, MIN_REDACTABLE_BYTES};
 
 /// The protocol version this client speaks.
 const PROTOCOL_VERSION: u64 = 1;
@@ -60,18 +60,6 @@ pub enum PermissionChoice {
     Select(String),
     /// None of them: the agent is told the request was cancelled.
     Cancel,
-}
-
-type Needles = Arc<Vec<Zeroizing<String>>>;
-
-fn clean(needles: &Needles, text: &str, max: usize) -> String {
-    let mut out = if needles.is_empty() {
-        text.to_string()
-    } else {
-        sanitize(text.as_bytes(), needles, false)
-    };
-    cut(&mut out, max);
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -329,12 +317,20 @@ async fn handshake(conn: &mut Conn, cwd: &str) -> Result<SessionInfo, AcpError> 
             methods
                 .iter()
                 .take(MAX_AUTH_METHODS)
-                .filter_map(|m| bounded(m.get("id"), 128))
+                .filter_map(|m| bounded(m.get("id"), 128, &conn.needles))
                 .collect()
         })
         .unwrap_or_default();
-    let agent_name = bounded(init.get("agentInfo").and_then(|i| i.get("name")), 128);
-    let agent_version = bounded(init.get("agentInfo").and_then(|i| i.get("version")), 128);
+    let agent_name = bounded(
+        init.get("agentInfo").and_then(|i| i.get("name")),
+        128,
+        &conn.needles,
+    );
+    let agent_version = bounded(
+        init.get("agentInfo").and_then(|i| i.get("version")),
+        128,
+        &conn.needles,
+    );
 
     conn.send(&request(
         2,
@@ -354,8 +350,8 @@ async fn handshake(conn: &mut Conn, cwd: &str) -> Result<SessionInfo, AcpError> 
         .to_string();
     Ok(SessionInfo {
         session_id,
-        agent_name: agent_name.map(|n| clean(&conn.needles, &n, 128)),
-        agent_version: agent_version.map(|n| clean(&conn.needles, &n, 128)),
+        agent_name,
+        agent_version,
         load_session,
         resume,
         auth_methods,
@@ -434,6 +430,14 @@ impl Actor {
             Err(_) => Err(EndReason::Fault(
                 "the reader of the session's events stopped reading".into(),
             )),
+        }
+    }
+
+    /// The idle clock restarts when a waiting permission request is resolved:
+    /// the agent gets the idle period to act on the answer.
+    fn touch(&mut self) {
+        if let Some(turn) = &mut self.turn {
+            turn.last_input = Instant::now();
         }
     }
 
@@ -570,6 +574,7 @@ impl Actor {
                     }
                 };
                 let pending = self.pending.remove(&request).expect("checked above");
+                self.touch();
                 let _ = reply.send(Ok(()));
                 self.write(&json!({"jsonrpc": "2.0", "id": pending.agent_id, "result": {"outcome": outcome}}))
                     .await?;
@@ -641,6 +646,7 @@ impl Actor {
             .collect();
         for request in expired {
             if let Some(pending) = self.pending.remove(&request) {
+                self.touch();
                 self.write(&cancelled_outcome(&pending.agent_id)).await?;
                 self.emit(AcpEvent::PermissionResolved {
                     request,
@@ -683,7 +689,7 @@ impl Actor {
                     }
                     None => self.conn.note_unrelated().map_err(fault)?,
                 }
-                match parse_update(&params, &self.session_id) {
+                match parse_update(&params, &self.session_id, &self.conn.needles) {
                     Some(update) => self.emit(AcpEvent::Update(update)).await,
                     None => Ok(()),
                 }
@@ -737,11 +743,11 @@ impl Actor {
         if turn.cancel_deadline.is_some() || self.pending.len() >= limits.pending_permissions {
             return self.reply_cancelled(&id).await;
         }
-        let (tool_call_id, title, kind, options) = match parse_permission(params, &self.session_id)
-        {
-            Ok(parsed) => parsed,
-            Err(why) => return self.conn.refuse(&id, -32602, why).await.map_err(fault),
-        };
+        let (tool_call_id, title, kind, options) =
+            match parse_permission(params, &self.session_id, &self.conn.needles) {
+                Ok(parsed) => parsed,
+                Err(why) => return self.conn.refuse(&id, -32602, why).await.map_err(fault),
+            };
         if options.is_empty() {
             return self.reply_cancelled(&id).await;
         }
@@ -916,14 +922,15 @@ impl AcpSession {
         &self.info
     }
 
-    /// `text` with any credential the agent was given removed: for text that
-    /// was assembled from several updates, which no single message can show.
+    /// `text` with any credential the agent was given removed.
+    ///
+    /// BINDING for every consumer of the event stream: a credential split
+    /// across two streamed chunks is invisible to the per-line and per-string
+    /// passes, so text assembled from several updates MUST be passed through
+    /// this before it is stored or shown, and raw updates must never be logged
+    /// or stored.
     pub fn redact(&self, text: &str) -> String {
-        if self.needles.is_empty() {
-            text.to_string()
-        } else {
-            sanitize(text.as_bytes(), &self.needles, false)
-        }
+        redact(&self.needles, text)
     }
 
     async fn ask(

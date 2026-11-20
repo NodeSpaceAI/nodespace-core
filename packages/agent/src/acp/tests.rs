@@ -108,6 +108,19 @@ def turn(i):
         chunk("token is " + os.environ.get("ACP_TOKEN", "")); error(i, -32001, "bad " + os.environ.get("ACP_TOKEN", ""))
     elif mode == "foreign":
         chunk("not yours", "other-session"); chunk("yours"); reply(i, {"stopReason": "end_turn"})
+    elif mode == "escaped":
+        tok = os.environ.get("ACP_TOKEN", "")
+        e = "".join("\\u%04x" % ord(c) for c in tok)
+        def rawupd(body):
+            raw('{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-1","update":' + body + '}}')
+        rawupd('{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a ' + e + ' b"},"messageId":"m' + e + '"}')
+        rawupd('{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"' + e + '"}}')
+        rawupd('{"sessionUpdate":"plan","entries":[{"content":"' + e + '","priority":"high","status":"pending"}]}')
+        rawupd('{"sessionUpdate":"session_info_update","title":"' + e + '"}')
+        rawupd('{"sessionUpdate":"tool_call","toolCallId":"t' + e + '","title":"' + e + '","kind":"read"}')
+        rawupd('{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"' + e + '"}]}')
+        raw('{"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":"sess-1","toolCall":{"toolCallId":"tc","title":"' + e + '"},"options":[{"optionId":"o' + e + '","name":"' + e + '","kind":"allow_once"}]}}')
+        readmsg(); reply(i, {"stopReason": "end_turn"})
     elif mode == "turnerror":
         error(i, -32000, "Authentication required")
     elif mode == "badstop":
@@ -1152,4 +1165,99 @@ async fn a_hung_credential_store_ends_startup_at_the_limit_before_anything_runs(
         !f.log.exists(),
         "the agent was started before the credential was read"
     );
+}
+
+#[tokio::test]
+async fn a_credential_sent_as_json_escapes_is_removed_from_every_surfaced_string() {
+    let f = fixture();
+    let secrets = store();
+    let token = "TOK\"EN\\/VALUE-\u{e9}9";
+    secrets.set("tok", token).unwrap();
+    let mut launch = f.launch("escaped");
+    launch.secrets = vec![EnvSecret {
+        name: "ACP_TOKEN".into(),
+        secret: "keychain:tok".into(),
+    }];
+    let (session, mut rx) = AcpSession::start(&launch, &secrets, daemon_env, limits())
+        .await
+        .unwrap();
+    session.prompt("hi").await.unwrap();
+    let mut events = Vec::new();
+    loop {
+        let event = next(&mut rx).await;
+        if let AcpEvent::PermissionRequest(r) = &event {
+            session
+                .answer_permission(r.request, PermissionChoice::Cancel)
+                .await
+                .unwrap();
+        }
+        let done = matches!(
+            event,
+            AcpEvent::TurnEnded { .. } | AcpEvent::SessionEnded(_)
+        );
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    // Text, thought, plan, title, tool call, command name, permission option name.
+    assert!(events.len() >= 8, "{events:?}");
+    let shown = format!("{events:?}");
+    let chars: Vec<char> = token.chars().collect();
+    for window in chars.windows(4) {
+        let piece: String = window.iter().collect();
+        assert!(
+            !shown.contains(&piece),
+            "a prefix of the credential leaked: {piece}\n{shown}"
+        );
+        assert!(
+            !shown.contains(&piece.escape_debug().to_string()),
+            "{piece}"
+        );
+    }
+    assert!(shown.contains("[redacted]"));
+    session.close().await;
+}
+
+#[tokio::test]
+async fn the_idle_clock_does_not_run_while_a_permission_waits_and_restarts_when_it_resolves() {
+    let f = fixture();
+    let (session, mut rx) = f
+        .start(
+            "perm",
+            AcpLimits {
+                idle: Duration::from_millis(400),
+                permission: Duration::from_millis(1500),
+                ..limits()
+            },
+        )
+        .await
+        .unwrap();
+    session.prompt("hi").await.unwrap();
+    let AcpEvent::PermissionRequest(request) = next(&mut rx).await else {
+        panic!()
+    };
+    // Past the idle limit, the session is still up and nothing has ended it.
+    let quiet = tokio::time::timeout(Duration::from_millis(900), rx.recv()).await;
+    assert!(
+        quiet.is_err(),
+        "the session ended while a permission waited: {quiet:?}"
+    );
+    // It ends on the permission timeout: answered cancelled, and the agent then
+    // gets the idle period to finish the turn.
+    assert_eq!(
+        next(&mut rx).await,
+        AcpEvent::PermissionResolved {
+            request: request.request,
+            resolution: PermissionResolution::TimedOut
+        }
+    );
+    let events = until_end(&mut rx).await;
+    assert_eq!(
+        events.last(),
+        Some(&AcpEvent::TurnEnded {
+            stop_reason: StopReason::EndTurn
+        })
+    );
+    session.close().await;
 }

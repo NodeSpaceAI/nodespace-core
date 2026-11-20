@@ -2,9 +2,12 @@
 //! into them. Only what the client needs is read: tool input and output, file
 //! diffs and locations are never copied out of a message.
 
-use serde_json::Value;
+use std::sync::Arc;
 
-use crate::local_agent::redaction::cut;
+use serde_json::Value;
+use zeroize::Zeroizing;
+
+use crate::local_agent::redaction::{cut, sanitize};
 
 const MAX_ID: usize = 256;
 const MAX_TITLE: usize = 1024;
@@ -193,16 +196,35 @@ pub enum AcpEvent {
     SessionEnded(EndReason),
 }
 
-pub(super) fn bounded(value: Option<&Value>, max: usize) -> Option<String> {
-    let mut text = value?.as_str()?.to_string();
-    cut(&mut text, max);
-    Some(text)
+/// The credentials the agent was given, to be removed from everything it says.
+pub(super) type Needles = Arc<Vec<Zeroizing<String>>>;
+
+/// `text` with every credential removed, whole, and only then cut: a credential
+/// that straddles the cut is removed before it can be halved.
+pub(super) fn clean(needles: &Needles, text: &str, max: usize) -> String {
+    let mut out = redact(needles, text);
+    cut(&mut out, max);
+    out
 }
 
-fn id_of(value: Option<&Value>) -> Option<String> {
-    let text = value?.as_str()?;
+pub(super) fn redact(needles: &Needles, text: &str) -> String {
+    if needles.is_empty() {
+        text.to_string()
+    } else {
+        sanitize(text.as_bytes(), needles, false)
+    }
+}
+
+/// A string the agent sent, decoded (so JSON escapes are resolved), cleaned of
+/// credentials, then cut. Every string that is surfaced goes through here.
+pub(super) fn bounded(value: Option<&Value>, max: usize, needles: &Needles) -> Option<String> {
+    Some(clean(needles, value?.as_str()?, max))
+}
+
+fn id_of(value: Option<&Value>, needles: &Needles) -> Option<String> {
+    let text = redact(needles, value?.as_str()?);
     (!text.is_empty() && text.len() <= MAX_ID && !text.chars().any(char::is_control))
-        .then(|| text.to_string())
+        .then_some(text)
 }
 
 pub(super) fn parse_stop_reason(value: &str) -> StopReason {
@@ -220,19 +242,19 @@ pub(super) fn parse_stop_reason(value: &str) -> StopReason {
     }
 }
 
-fn chunk_text(update: &Value) -> Option<String> {
+fn chunk_text(update: &Value, needles: &Needles) -> Option<String> {
     let content = update.get("content")?;
     if content.get("type").and_then(Value::as_str) != Some("text") {
         return None;
     }
-    bounded(content.get("text"), MAX_CHUNK)
+    bounded(content.get("text"), MAX_CHUNK, needles)
 }
 
-fn plan_markdown(update: &Value) -> Option<String> {
+fn plan_markdown(update: &Value, needles: &Needles) -> Option<String> {
     let entries = update.get("entries")?.as_array()?;
     let mut lines = Vec::new();
     for entry in entries.iter().take(MAX_PLAN_ENTRIES) {
-        let content = bounded(entry.get("content"), MAX_PLAN_ENTRY)?;
+        let content = bounded(entry.get("content"), MAX_PLAN_ENTRY, needles)?;
         let mark = match entry.get("status").and_then(Value::as_str) {
             Some("completed") => "x",
             Some("in_progress") => "~",
@@ -246,7 +268,11 @@ fn plan_markdown(update: &Value) -> Option<String> {
 /// The update inside a `session/update` notification's params, or `None` when
 /// it is for another session, is malformed, or is of a kind that is not kept
 /// (the echo of the user's own message among them).
-pub(super) fn parse_update(params: &Value, session_id: &str) -> Option<AcpUpdate> {
+pub(super) fn parse_update(
+    params: &Value,
+    session_id: &str,
+    needles: &Needles,
+) -> Option<AcpUpdate> {
     if params.get("sessionId").and_then(Value::as_str) != Some(session_id) {
         return None;
     }
@@ -254,16 +280,16 @@ pub(super) fn parse_update(params: &Value, session_id: &str) -> Option<AcpUpdate
     let kind = update.get("sessionUpdate")?.as_str()?;
     match kind {
         "agent_message_chunk" => Some(AcpUpdate::AgentText {
-            text: chunk_text(update)?,
-            message_id: id_of(update.get("messageId")),
+            text: chunk_text(update, needles)?,
+            message_id: id_of(update.get("messageId"), needles),
         }),
         "agent_thought_chunk" => Some(AcpUpdate::AgentThought {
-            text: chunk_text(update)?,
-            message_id: id_of(update.get("messageId")),
+            text: chunk_text(update, needles)?,
+            message_id: id_of(update.get("messageId"), needles),
         }),
         "tool_call" => Some(AcpUpdate::ToolCall {
-            tool_call_id: id_of(update.get("toolCallId"))?,
-            title: bounded(update.get("title"), MAX_TITLE).unwrap_or_default(),
+            tool_call_id: id_of(update.get("toolCallId"), needles)?,
+            title: bounded(update.get("title"), MAX_TITLE, needles).unwrap_or_default(),
             kind: ToolKind::parse(update.get("kind").and_then(Value::as_str).unwrap_or("")),
             status: update
                 .get("status")
@@ -271,8 +297,8 @@ pub(super) fn parse_update(params: &Value, session_id: &str) -> Option<AcpUpdate
                 .and_then(ToolStatus::parse),
         }),
         "tool_call_update" => Some(AcpUpdate::ToolCallUpdate {
-            tool_call_id: id_of(update.get("toolCallId"))?,
-            title: bounded(update.get("title"), MAX_TITLE),
+            tool_call_id: id_of(update.get("toolCallId"), needles)?,
+            title: bounded(update.get("title"), MAX_TITLE, needles),
             kind: update
                 .get("kind")
                 .and_then(Value::as_str)
@@ -283,7 +309,7 @@ pub(super) fn parse_update(params: &Value, session_id: &str) -> Option<AcpUpdate
                 .and_then(ToolStatus::parse),
         }),
         "plan" => Some(AcpUpdate::Plan {
-            markdown: plan_markdown(update)?,
+            markdown: plan_markdown(update, needles)?,
         }),
         "available_commands_update" => {
             let names = update
@@ -291,15 +317,15 @@ pub(super) fn parse_update(params: &Value, session_id: &str) -> Option<AcpUpdate
                 .as_array()?
                 .iter()
                 .take(MAX_COMMANDS)
-                .filter_map(|c| bounded(c.get("name"), MAX_NAME))
+                .filter_map(|c| bounded(c.get("name"), MAX_NAME, needles))
                 .collect();
             Some(AcpUpdate::Commands { names })
         }
         "current_mode_update" => Some(AcpUpdate::Mode {
-            mode_id: id_of(update.get("currentModeId"))?,
+            mode_id: id_of(update.get("currentModeId"), needles)?,
         }),
         "session_info_update" => Some(AcpUpdate::SessionTitle {
-            title: bounded(update.get("title"), MAX_TITLE),
+            title: bounded(update.get("title"), MAX_TITLE, needles),
         }),
         "usage_update" => Some(AcpUpdate::Usage {
             used: update.get("used")?.as_u64()?,
@@ -316,6 +342,7 @@ pub(super) fn parse_update(params: &Value, session_id: &str) -> Option<AcpUpdate
 pub(super) fn parse_permission(
     params: &Value,
     session_id: &str,
+    needles: &Needles,
 ) -> Result<(String, String, ToolKind, Vec<PermissionOption>), &'static str> {
     if params.get("sessionId").and_then(Value::as_str) != Some(session_id) {
         return Err("the request is for another session");
@@ -323,8 +350,9 @@ pub(super) fn parse_permission(
     let tool = params
         .get("toolCall")
         .ok_or("the request names no tool call")?;
-    let tool_call_id = id_of(tool.get("toolCallId")).ok_or("the tool call has no usable id")?;
-    let title = bounded(tool.get("title"), MAX_TITLE).unwrap_or_default();
+    let tool_call_id =
+        id_of(tool.get("toolCallId"), needles).ok_or("the tool call has no usable id")?;
+    let title = bounded(tool.get("title"), MAX_TITLE, needles).unwrap_or_default();
     let kind = ToolKind::parse(tool.get("kind").and_then(Value::as_str).unwrap_or(""));
     let offered = params
         .get("options")
@@ -339,8 +367,8 @@ pub(super) fn parse_permission(
             _ => continue,
         };
         let (Some(option_id), Some(name)) = (
-            id_of(option.get("optionId")),
-            bounded(option.get("name"), MAX_NAME),
+            id_of(option.get("optionId"), needles),
+            bounded(option.get("name"), MAX_NAME, needles),
         ) else {
             continue;
         };
@@ -358,6 +386,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn none() -> Needles {
+        Arc::new(Vec::new())
+    }
+
     fn upd(update: Value) -> Value {
         json!({"sessionId": "s1", "update": update})
     }
@@ -369,6 +401,7 @@ mod tests {
                 json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"},"messageId":"m1"}),
             ),
             "s1",
+            &none(),
         );
         assert_eq!(
             t,
@@ -382,6 +415,7 @@ mod tests {
                 {"content":"a\nb","priority":"high","status":"completed"},
                 {"content":"c","priority":"low","status":"pending"}]})),
             "s1",
+            &none(),
         );
         assert_eq!(
             p,
@@ -394,7 +428,8 @@ mod tests {
                 &upd(
                     json!({"sessionUpdate":"tool_call","toolCallId":"t","title":"Run","kind":"execute","status":"pending","rawInput":{"secret":"x"}})
                 ),
-                "s1"
+                "s1",
+                &none()
             ),
             Some(AcpUpdate::ToolCall {
                 kind: ToolKind::Execute,
@@ -405,7 +440,8 @@ mod tests {
         assert_eq!(
             parse_update(
                 &upd(json!({"sessionUpdate":"usage_update","used":5,"size":9})),
-                "s1"
+                "s1",
+                &none()
             ),
             Some(AcpUpdate::Usage { used: 5, size: 9 })
         );
@@ -419,10 +455,10 @@ mod tests {
             json!({"sessionUpdate":"from_the_future"}),
             json!({"sessionUpdate":"tool_call","title":"no id"}),
         ] {
-            assert_eq!(parse_update(&upd(u), "s1"), None);
+            assert_eq!(parse_update(&upd(u), "s1", &none()), None);
         }
         let other = json!({"sessionId":"s2","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}});
-        assert_eq!(parse_update(&other, "s1"), None);
+        assert_eq!(parse_update(&other, "s1", &none()), None);
     }
 
     #[test]
@@ -433,8 +469,44 @@ mod tests {
             {"optionId":"c","name":"Never","kind":"reject_always"},
             {"optionId":"d","name":"Deny","kind":"reject_once"},
             {"optionId":"e","name":"Odd","kind":"something_else"}]});
-        let (_, _, _, options) = parse_permission(&params, "s1").unwrap();
+        let (_, _, _, options) = parse_permission(&params, "s1", &none()).unwrap();
         let ids: Vec<_> = options.iter().map(|o| o.option_id.as_str()).collect();
         assert_eq!(ids, ["b", "d"]);
+    }
+
+    fn needles(values: &[&str]) -> Needles {
+        Arc::new(
+            values
+                .iter()
+                .map(|v| Zeroizing::new(v.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_credential_straddling_the_cut_is_removed_at_every_offset() {
+        let n = needles(&["TOKENVALUE-123"]);
+        for pad in 0..20 {
+            let text = format!("{}TOKENVALUE-123 tail", "a".repeat(pad));
+            for max in 0..text.len() + 2 {
+                let out = clean(&n, &text, max);
+                assert!(!out.contains("TOKE"), "pad {pad} max {max}: {out}");
+            }
+        }
+        // Redacted, then cut: the marker may be cut, the credential never shows.
+        assert_eq!(clean(&n, "xxTOKENVALUE-123", 100), "xx[redacted]");
+    }
+
+    #[test]
+    fn every_surfaced_string_is_redacted_after_json_decoding() {
+        let n = needles(&["sec\"ret/\u{e9}tok"]);
+        let tok = "sec\"ret/\u{e9}tok";
+        let params = json!({"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk",
+            "content":{"type":"text","text":format!("a {tok} b")},"messageId":format!("m{tok}")}});
+        let shown = format!("{:?}", parse_update(&params, "s1", &n));
+        assert!(
+            !shown.contains("sec") && shown.contains("[redacted]"),
+            "{shown}"
+        );
     }
 }
