@@ -458,14 +458,16 @@ pub struct ConfirmationRequest {
 /// shows them whole, so a call over this is refused instead of shown cut.
 pub const MAX_CONFIRMED_ARGUMENT_BYTES: usize = 16 * 1024;
 
-/// SHA-256, as lowercase hex, of the confirmation text, a zero byte and the
-/// arguments text: what the user saw. An answer carries it; an answer for text
-/// that is not the live request's is refused.
+/// SHA-256, as lowercase hex, of the length of the confirmation text (8 bytes,
+/// big endian), the text and the arguments text: what the user saw. The length
+/// prefix makes the split between the two parts unambiguous, so no pair of
+/// texts moves a byte across it and keeps the digest. An answer carries it; an
+/// answer for text that is not the live request's is refused.
 pub fn confirmation_digest(destination: &str, arguments_json: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
+    hasher.update((destination.len() as u64).to_be_bytes());
     hasher.update(destination.as_bytes());
-    hasher.update([0u8]);
     hasher.update(arguments_json.as_bytes());
     hasher
         .finalize()
@@ -662,7 +664,13 @@ impl RemoteToolHost {
                 ));
             };
             // The arguments are shown whole (see `MAX_CONFIRMED_ARGUMENT_BYTES`).
-            let arguments_json = serde_json::to_string(&args).unwrap_or_default();
+            let Ok(arguments_json) = serde_json::to_string(&args) else {
+                return Ok(Self::failure(
+                    &name,
+                    "the arguments could not be written out to be shown".to_string(),
+                    false,
+                ));
+            };
             if arguments_json.len() > MAX_CONFIRMED_ARGUMENT_BYTES {
                 return Ok(Self::failure(
                     &name,
@@ -2390,6 +2398,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_argument_cap_is_exact_16384_is_asked_and_16385_is_refused() {
+        let f = fixture().await;
+        f.tool("tool-cli", "c_tool", true).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = f
+            .host_without_confirmer(&all_kinds(), &Arc::new(AtomicUsize::new(0)))
+            .with_confirmer(Arc::new(Capturing(seen.clone())));
+        // `{"q":"..."}` is 8 bytes around the value.
+        let exact = "x".repeat(MAX_CONFIRMED_ARGUMENT_BYTES - 8);
+        assert_eq!(
+            serde_json::to_string(&json!({"q": exact})).unwrap().len(),
+            MAX_CONFIRMED_ARGUMENT_BYTES
+        );
+        let out = host.execute("c_tool", json!({"q": exact})).await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        let over = "x".repeat(MAX_CONFIRMED_ARGUMENT_BYTES - 7);
+        let out = host.execute("c_tool", json!({"q": over})).await.unwrap();
+        assert!(out.is_error, "{out:?}");
+        assert_eq!(seen.lock().unwrap().len(), 1, "the second was not asked");
+    }
+
+    #[tokio::test]
     async fn arguments_too_large_to_show_whole_are_refused_before_the_user_is_asked() {
         let f = fixture().await;
         f.tool("tool-cli", "c_tool", true).await;
@@ -2488,6 +2519,10 @@ mod tests {
             "a\u{E007F}b",
             "a\u{FE0F}b",
             "a\u{FE00}b",
+            "a\u{E0100}b",
+            "a\u{E01EF}b",
+            "a\u{180B}b",
+            "a\u{180F}b",
         ];
         for name in hostile {
             let skills = [skill_naming(&[name])];

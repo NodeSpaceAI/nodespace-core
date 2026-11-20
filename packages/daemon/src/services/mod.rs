@@ -18,6 +18,7 @@ pub mod extensions;
 pub mod import_service;
 pub mod local_agent_service;
 pub mod node_service;
+pub mod remote_confirmation;
 #[cfg(test)]
 pub(crate) mod required_extensions_tests;
 pub mod secret_service;

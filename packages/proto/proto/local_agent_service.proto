@@ -14,6 +14,10 @@ service LocalAgentService {
   rpc SubscribeTokenStream(SubscribeTokenStreamRequest) returns (stream AgentChunk);
   // Cancel an in-progress inference turn for a given node.
   rpc CancelTurn(CancelTurnRequest)              returns (CancelTurnResponse);
+  // Answer a remote-tool confirmation the agent is waiting on. Accepted only for
+  // the exact request id, chat and digest of what the user was shown, once, from a
+  // client that is not the daemon or a program it started.
+  rpc AnswerConfirmation(AnswerConfirmationRequest) returns (AnswerConfirmationResponse);
   // Open a chat bound to a node: a native chat that pins the node and the
   // skill for its type, opened by a message the system writes with no model
   // call.
@@ -105,6 +109,26 @@ message CancelTurnRequest {
 }
 
 message CancelTurnResponse {}
+
+// ---------------------------------------------------------------------------
+// AnswerConfirmation
+// ---------------------------------------------------------------------------
+
+message AnswerConfirmationRequest {
+  // The ai-chat node whose turn asked.
+  string node_id = 1;
+  // The random id of the question.
+  string request_id = 2;
+  // The digest of the text and arguments the user was shown (mandatory).
+  string digest = 3;
+  // true = allow this one call; false = do not.
+  bool allow = 4;
+}
+
+message AnswerConfirmationResponse {
+  // false for every refusal; the reason is not said.
+  bool accepted = 1;
+}
 
 // ---------------------------------------------------------------------------
 // OpenBoundChat

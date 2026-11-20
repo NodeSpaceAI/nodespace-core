@@ -52,6 +52,10 @@ use crate::services::chat_messages::{
     StoredMessage,
 };
 use crate::services::chat_pins;
+use crate::services::remote_confirmation::{
+    Answer, AnswerGate, AnswerResult, ConfirmationUi, DaemonCallConfirmer, DaemonTreeGate,
+    PendingConfirmations, DEFAULT_CONFIRMATION_TIMEOUT,
+};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -59,10 +63,11 @@ use tonic::{Request, Response, Status};
 
 use crate::nodespace::{
     local_agent_service_server::LocalAgentService as GrpcLocalAgentService, AgentChunk,
-    CancelModelDownloadRequest, CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse,
-    DeleteModelRequest, DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest,
-    GetLocalStatusRequest, GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest,
-    ListModelsResponse, LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
+    AnswerConfirmationRequest, AnswerConfirmationResponse, CancelModelDownloadRequest,
+    CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse, DeleteModelRequest,
+    DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest, GetLocalStatusRequest,
+    GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest, ListModelsResponse,
+    LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
     ModelLoadProgressEvent, OpenBoundChatRequest, OpenBoundChatResponse, RecommendedModelRequest,
     RecommendedModelResponse, SubscribeTokenStreamRequest, UnloadModelRequest, UnloadModelResponse,
 };
@@ -515,6 +520,15 @@ struct LocalAgentServiceInner {
     token_tx: broadcast::Sender<AgentChunk>,
     /// Cancellation tokens keyed by node_id.
     turn_tokens: TurnTokens,
+    /// Remote-tool confirmation questions waiting for an answer (see
+    /// `remote_confirmation`).
+    confirmations: PendingConfirmations,
+    /// Who may answer one: not the daemon or a program it started.
+    answer_gate: Arc<dyn AnswerGate>,
+    /// Where a confirmation is shown and recorded. Unset until the chat card
+    /// exists; with none, no confirmer is built and nothing that needs
+    /// confirmation is offered.
+    confirmation_ui: std::sync::OnceLock<Arc<dyn ConfirmationUi>>,
     /// Cancels this database's background event watcher, and gates new turns,
     /// once the database is closed (ADR-053: per-database compute scoping).
     /// Shared across the cheap `Arc` clones tonic hands to request handlers, so
@@ -555,6 +569,9 @@ impl LocalAgentServiceImpl {
                 openai_compat_discovery_cache: Mutex::new(None),
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
+                confirmations: PendingConfirmations::default(),
+                answer_gate: Arc::new(DaemonTreeGate::for_this_process()),
+                confirmation_ui: std::sync::OnceLock::new(),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: None,
             }),
@@ -584,6 +601,9 @@ impl LocalAgentServiceImpl {
                 openai_compat_discovery_cache: Mutex::new(None),
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
+                confirmations: PendingConfirmations::default(),
+                answer_gate: Arc::new(DaemonTreeGate::for_this_process()),
+                confirmation_ui: std::sync::OnceLock::new(),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: Some(playbook_lifecycle),
             }),
@@ -616,6 +636,55 @@ impl LocalAgentServiceImpl {
     /// reaper, which must not evict a database mid-turn.
     pub async fn has_active_turns(&self) -> bool {
         !self.inner.turn_tokens.lock().await.is_empty()
+    }
+
+    /// The confirmer for one turn, or `None` when the turn is not interactive
+    /// (scheduled, headless: nobody could answer, and an unanswerable question
+    /// must not be a way to offer a tool) or no card is installed. With `None`,
+    /// a tool whose calls need confirmation is not offered.
+    ///
+    /// Not called yet: installing it on a turn comes with the chat card.
+    #[allow(dead_code)]
+    pub(crate) fn confirmer_for_turn(
+        &self,
+        chat_node_id: &str,
+        turn_id: &str,
+        turn_cancel: CancellationToken,
+        interactive: bool,
+    ) -> Option<Arc<dyn nodespace_agent::local_agent::remote_tools::CallConfirmer>> {
+        if !interactive {
+            return None;
+        }
+        let ui = self.inner.confirmation_ui.get()?.clone();
+        Some(Arc::new(DaemonCallConfirmer::new(
+            self.inner.confirmations.clone(),
+            ui,
+            chat_node_id.to_string(),
+            turn_id.to_string(),
+            turn_cancel,
+            self.inner.shutdown_token.clone(),
+            DEFAULT_CONFIRMATION_TIMEOUT,
+        )))
+    }
+
+    /// The answer entry point behind `AnswerConfirmation`. `peer_pid` is the
+    /// connection's process id when the transport reports one.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn answer_confirmation_from(
+        &self,
+        peer_pid: Option<u32>,
+        answer: &Answer,
+    ) -> Result<bool, Status> {
+        if !self.inner.answer_gate.may_answer(peer_pid) {
+            tracing::warn!(
+                ?peer_pid,
+                "a confirmation answer from this peer was refused"
+            );
+            return Err(Status::permission_denied(
+                "this client may not answer a confirmation",
+            ));
+        }
+        Ok(self.inner.confirmations.answer(answer) == AnswerResult::Accepted)
     }
 
     /// Claim `node_id` for a turn, returning the cancellation token to run it
@@ -1656,6 +1725,35 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             tracing::info!(node_id, "ai-chat turn cancelled");
         }
         Ok(Response::new(CancelTurnResponse {}))
+    }
+
+    async fn answer_confirmation(
+        &self,
+        request: Request<AnswerConfirmationRequest>,
+    ) -> Result<Response<AnswerConfirmationResponse>, Status> {
+        let this = self.route(&request).await?;
+        // The peer's process id, as the kernel reports it for the socket. Absent
+        // on a transport that has none, which the gate refuses.
+        #[cfg(unix)]
+        let peer_pid = request
+            .extensions()
+            .get::<tonic::transport::server::UdsConnectInfo>()
+            .and_then(|info| info.peer_cred.as_ref())
+            .and_then(|cred| cred.pid())
+            .map(|pid| pid as u32);
+        #[cfg(not(unix))]
+        let peer_pid: Option<u32> = None;
+        let req = request.into_inner();
+        let accepted = this.answer_confirmation_from(
+            peer_pid,
+            &Answer {
+                request_id: req.request_id,
+                chat_node_id: req.node_id,
+                digest: req.digest,
+                allow: req.allow,
+            },
+        )?;
+        Ok(Response::new(AnswerConfirmationResponse { accepted }))
     }
 
     async fn open_bound_chat(
@@ -9615,5 +9713,84 @@ mod tests {
         assert_eq!(after.envelope.content, ai_chat_title::UNTITLED_CHAT_TITLE);
         assert_eq!(after.messages.len(), before.messages.len());
         assert_eq!(after.envelope.version, before.envelope.version);
+    }
+
+    // -- remote-tool confirmation wiring ------------------------------------
+
+    struct AlwaysShows;
+
+    #[async_trait::async_trait]
+    impl ConfirmationUi for AlwaysShows {
+        async fn present(&self, _: &crate::services::remote_confirmation::ConfirmationAsk) -> bool {
+            true
+        }
+        async fn resolved(
+            &self,
+            _: &crate::services::remote_confirmation::ConfirmationAsk,
+            _: crate::services::remote_confirmation::ConfirmationOutcome,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn no_confirmer_is_built_for_a_turn_that_is_not_interactive_or_has_no_card() {
+        let (svc, _ns, _tmp) = test_service().await;
+        // No card installed: none, even for an interactive turn.
+        assert!(svc
+            .confirmer_for_turn("chat", "t", CancellationToken::new(), true)
+            .is_none());
+        svc.inner
+            .confirmation_ui
+            .set(Arc::new(AlwaysShows))
+            .ok()
+            .expect("set once");
+        assert!(svc
+            .confirmer_for_turn("chat", "t", CancellationToken::new(), true)
+            .is_some());
+        // A scheduled or headless turn never gets one.
+        assert!(svc
+            .confirmer_for_turn("chat", "t", CancellationToken::new(), false)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn an_answer_from_the_daemon_tree_or_an_unknown_peer_is_refused_before_it_is_looked_at() {
+        let (svc, _ns, _tmp) = test_service().await;
+        let answer = Answer {
+            request_id: "x".into(),
+            chat_node_id: "chat".into(),
+            digest: "d".into(),
+            allow: true,
+        };
+        let denied = svc.answer_confirmation_from(None, &answer).unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        let denied = svc
+            .answer_confirmation_from(Some(std::process::id()), &answer)
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    }
+
+    /// A gate that lets one peer through, to drive the refusal path of the table
+    /// and the acceptance path through the service.
+    struct Lets(u32);
+    impl AnswerGate for Lets {
+        fn may_answer(&self, pid: Option<u32>) -> bool {
+            pid == Some(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_allowed_peer_reaches_the_table_and_an_unknown_question_is_not_accepted() {
+        let (mut svc, _ns, _tmp) = test_service().await;
+        let inner = Arc::get_mut(&mut svc.inner).expect("sole owner in a test");
+        inner.answer_gate = Arc::new(Lets(4242));
+        let answer = Answer {
+            request_id: "nothing".into(),
+            chat_node_id: "chat".into(),
+            digest: "d".into(),
+            allow: true,
+        };
+        assert!(!svc.answer_confirmation_from(Some(4242), &answer).unwrap());
+        assert!(svc.answer_confirmation_from(Some(4243), &answer).is_err());
     }
 }
