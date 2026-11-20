@@ -549,6 +549,25 @@ pub struct LocalAgentServiceImpl {
     inner: Arc<LocalAgentServiceInner>,
 }
 
+/// What started a turn. Only a turn started by a message the user wrote has a
+/// confirmer: it is the only kind with someone there to answer. "A message the
+/// user wrote" means a trailing user message on a native chat: anything that can
+/// write that node (the CLI, MCP, a sync peer, a script) starts a turn with the
+/// confirmer installed, so the real gate is a human's click through the app plus
+/// the peer gate on the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnOrigin {
+    UserMessage,
+    /// Found stuck in `processing` at startup and run again.
+    Recovered,
+}
+
+impl TurnOrigin {
+    pub(crate) fn is_interactive(self) -> bool {
+        matches!(self, TurnOrigin::UserMessage)
+    }
+}
+
 /// Ends a turn's unanswered questions when the turn is over, on every path
 /// including a dropped future: the entries leave the table and any card still
 /// pending is marked cancelled.
@@ -982,7 +1001,7 @@ impl LocalAgentServiceImpl {
 
         tracing::info!(node_id, "ai-chat turn triggered");
         // A turn started by a message the user wrote is interactive.
-        self.run_ai_chat_turn(node_id.to_string(), cancel, true)
+        self.run_ai_chat_turn(node_id.to_string(), cancel, TurnOrigin::UserMessage)
             .await;
     }
 
@@ -1007,7 +1026,7 @@ impl LocalAgentServiceImpl {
         &self,
         node_id: String,
         cancel: CancellationToken,
-        interactive: bool,
+        origin: TurnOrigin,
     ) {
         // Mark the chat model busy for as long as this turn runs, so background
         // work (title generation) defers to it. Process-global rather than
@@ -1092,7 +1111,8 @@ impl LocalAgentServiceImpl {
         // questions it leaves unanswered are dropped, and their cards ended,
         // however the turn ends.
         let turn_id = uuid::Uuid::new_v4().to_string();
-        let confirmer = self.confirmer_for_turn(&node_id, &turn_id, cancel.clone(), interactive);
+        let confirmer =
+            self.confirmer_for_turn(&node_id, &turn_id, cancel.clone(), origin.is_interactive());
         let _turn_questions = TurnQuestions {
             service: self.clone(),
             chat_node_id: node_id.clone(),
@@ -1546,6 +1566,9 @@ impl LocalAgentServiceImpl {
     /// Scan for ai-chat nodes stuck in `status: 'processing'` at daemon startup
     /// and retry their turns (handles daemon restart mid-turn).
     async fn recover_stuck_turns(&self) {
+        // No question survives a restart: every card this daemon wrote that is
+        // still pending, in any chat, cannot be answered any more.
+        self.inner.chat_cards.cancel_all_local_pending().await;
         // Recovery is about a turn left running, not about a list: a chat
         // archived mid-turn is recovered like any other. Only a native chat
         // takes turns.
@@ -1574,9 +1597,6 @@ impl LocalAgentServiceImpl {
             if ai_chat.turn_status != AiChatTurnStatus::Processing {
                 continue;
             }
-            // A question the interrupted turn left on a card cannot be answered
-            // any more.
-            self.inner.chat_cards.cancel_pending_in(&node_id).await;
             // Verify last message is from user before retrying.
             let is_trailing_user = self.last_message_is_from_user(&node_id).await;
 
@@ -1588,7 +1608,8 @@ impl LocalAgentServiceImpl {
                 let this = self.clone();
                 tokio::spawn(async move {
                     // Recovered after a restart: no one is known to be there to answer.
-                    this.run_ai_chat_turn(node_id, cancel, false).await;
+                    this.run_ai_chat_turn(node_id, cancel, TurnOrigin::Recovered)
+                        .await;
                 });
             } else {
                 // Stuck in processing but no trailing user message — reset to idle.
@@ -9998,5 +10019,11 @@ mod tests {
                 .unwrap();
             assert!(!again.into_inner().accepted);
         }
+    }
+
+    #[test]
+    fn only_a_turn_started_by_a_user_message_is_interactive() {
+        assert!(TurnOrigin::UserMessage.is_interactive());
+        assert!(!TurnOrigin::Recovered.is_interactive());
     }
 }

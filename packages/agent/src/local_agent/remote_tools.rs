@@ -2620,4 +2620,121 @@ mod tests {
         assert_eq!(listed.len(), 32);
         assert!(listed.iter().all(|r| r.len() <= 300));
     }
+
+    /// The credential line lists every credential; the summary lists the first
+    /// eight and counts the rest. The card checks the one against the other, so
+    /// the two must agree on exactly this.
+    #[test]
+    fn the_credential_references_and_the_summarys_credential_note_agree() {
+        use crate::local_agent::process::environment_note;
+        let env: Vec<Value> = (0..12)
+            .map(|i| json!({"name": format!("T{i}"), "secret": format!("keychain:k{i}")}))
+            .collect();
+        let tool = RemoteTool {
+            node_id: "n".into(),
+            name: "t".into(),
+            kind: RemoteToolKind::Cli,
+            description: String::new(),
+            parameter_schema: json!({}),
+            properties: json!({"tool-cli": {"program": "p", "env": env.clone()}}),
+            approval_tag: String::new(),
+        };
+        let references = credential_references(&tool);
+        assert_eq!(references.len(), 12);
+        let entries: Vec<nodespace_types::EnvSecret> = env
+            .iter()
+            .map(|e| nodespace_types::EnvSecret {
+                name: e["name"].as_str().unwrap().to_string(),
+                secret: e["secret"].as_str().unwrap().to_string(),
+            })
+            .collect();
+        let note = environment_note(&entries);
+        for shown in &references[..8] {
+            assert!(note.contains(shown.as_str()), "{shown} not in {note}");
+        }
+        assert!(!note.contains(references[8].as_str()));
+        assert!(note.ends_with(", and 4 more"), "{note}");
+    }
+
+    /// The same digests the card computes in the browser (`confirmationDigest` in
+    /// `utils/confirmation-card.ts`, pinned there by the same two constants).
+    #[test]
+    fn the_digest_matches_the_constants_the_card_pins() {
+        assert_eq!(
+            confirmation_digest(
+                "run `git`; credentials in the environment: T from keychain:t",
+                r#"{"q":"x"}"#
+            ),
+            "563fe7bbff2b124c9a14943c7bb8806a125ea123cf4c64c4f6dca928fb08c9af"
+        );
+        assert_eq!(
+            confirmation_digest("a\u{e9}", "b\0c"),
+            "8cd5d2d5358425ebd2b6e8fdd49957e52fec3fedc01c99891e256262481de6fe"
+        );
+    }
+
+    /// The characters the card escapes (`CONFIRMATION_UNSAFE_VECTOR` in the
+    /// card's utility) are all unsafe here too.
+    #[test]
+    fn every_character_the_card_escapes_is_unsafe_for_the_log() {
+        use crate::local_agent::routing::is_unsafe_for_log;
+        for c in SHARED_UNSAFE_VECTOR {
+            assert!(
+                is_unsafe_for_log(*c),
+                "U+{:04X} is not unsafe for the log",
+                *c as u32
+            );
+        }
+        for ok in ['a', 'Z', '0', ' ', '\u{e9}', '\u{4e2d}', '\u{1f600}'] {
+            assert!(!is_unsafe_for_log(ok));
+        }
+    }
+
+    /// One character of each unsafe class, kept in step with the card's vector.
+    const SHARED_UNSAFE_VECTOR: &[char] = &[
+        '\u{0}',
+        '\n',
+        '\r',
+        '\u{1b}',
+        '\u{7f}',
+        '\u{85}',
+        '\u{ad}',
+        '\u{34f}',
+        '\u{115f}',
+        '\u{1160}',
+        '\u{17b4}',
+        '\u{17b5}',
+        '\u{180b}',
+        '\u{180f}',
+        '\u{200b}',
+        '\u{200c}',
+        '\u{200d}',
+        '\u{200e}',
+        '\u{200f}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{202a}',
+        '\u{202e}',
+        '\u{2060}',
+        '\u{2061}',
+        '\u{2064}',
+        '\u{2066}',
+        '\u{2069}',
+        '\u{206a}',
+        '\u{206f}',
+        '\u{3164}',
+        '\u{fe00}',
+        '\u{fe0f}',
+        '\u{feff}',
+        '\u{ffa0}',
+        '\u{fff9}',
+        '\u{fffc}',
+        '\u{1d173}',
+        '\u{1d17a}',
+        '\u{e0041}',
+        '\u{e007f}',
+        '\u{e0100}',
+        '\u{e01ef}',
+        '\u{61c}',
+    ];
 }

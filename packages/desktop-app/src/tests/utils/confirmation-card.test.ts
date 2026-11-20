@@ -71,6 +71,31 @@ describe('credentialsMatchSummary', () => {
   });
 });
 
+describe('credentialsMatchSummary with many or long credentials', () => {
+  it('a summary that lists the first eight and counts the rest matches the full list', () => {
+    const credentials = Array.from({ length: 12 }, (_, i) => `T${i} from keychain:k${i}`);
+    const summary =
+      'run `git`; credentials in the environment: ' +
+      credentials.slice(0, 8).join(', ') +
+      ', and 4 more; arguments';
+    expect(credentialsMatchSummary(summary, credentials)).toBe(true);
+  });
+  it('a count that disagrees with the list does not match', () => {
+    const credentials = Array.from({ length: 12 }, (_, i) => `T${i} from keychain:k${i}`);
+    const summary = 'x ' + credentials.slice(0, 8).join(', ') + ', and 3 more';
+    expect(credentialsMatchSummary(summary, credentials)).toBe(false);
+  });
+  it('a reference of 300 bytes or more that the summary cut differently still matches', () => {
+    const reference = 'keychain:' + 'k'.repeat(300);
+    // The list entry is cut at 300 bytes behind a short prefix; the summary's
+    // line carries a longer prefix, so it is cut earlier.
+    const listed = `bearer from ${reference}`.slice(0, 300);
+    const inSummary = `; credential (bearer) from ${reference}`.slice(0, 300);
+    expect(credentialsMatchSummary(inSummary, [listed])).toBe(true);
+    expect(credentialsMatchSummary(inSummary, ['bearer from keychain:other'])).toBe(false);
+  });
+});
+
 describe('argumentPreview', () => {
   it('shows short arguments whole', () => {
     expect(argumentPreview('{"q":"x"}')).toEqual({ text: '{"q":"x"}', moreBytes: 0 });

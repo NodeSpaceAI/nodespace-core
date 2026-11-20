@@ -13,6 +13,7 @@ import { userEvent } from '@vitest/browser/context';
 import RemoteToolConfirmationCard from '$lib/components/chat/remote-tool-confirmation-card.svelte';
 import type { AiChatMessageNode } from '$lib/types/ai-chat-node';
 import { confirmationDigest } from '$lib/utils/confirmation-card';
+import { ENABLE_DELAY_MS } from '$lib/components/chat/remote-tool-confirmation-card.svelte';
 
 const SUMMARY = 'run `git`; credentials in the environment: TOKEN from keychain:tok';
 const ARGS = '{"q":"status"}';
@@ -58,7 +59,45 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     expect(container.textContent).toContain(`Arguments (${ARGS.length} bytes)`);
   });
 
-  it('puts focus on Don\'t allow, never on Allow', async () => {
+  it('the choices wait a moment after the card is shown and intact', async () => {
+    const onAnswer = vi.fn(async () => true);
+    const { container } = mount(await cardMessage(), onAnswer);
+    // Intact, shown, but not yet armed: the choices are disabled and a forced
+    // activation answers nothing.
+    await vi.waitUntil(() => container.querySelector('[data-choice]'));
+    expect(choice(container, 'allow').disabled).toBe(true);
+    choice(container, 'allow').disabled = false;
+    choice(container, 'allow').click();
+    await tick();
+    expect(onAnswer).not.toHaveBeenCalled();
+    await vi.waitUntil(() => !choice(container, 'allow').disabled, { timeout: 3000 });
+    expect(ENABLE_DELAY_MS).toBe(500);
+  });
+
+  it('focus is taken once and not taken again when the card re-checks itself', async () => {
+    const message = await cardMessage();
+    const { container, rerender } = mount(message, async () => true);
+    await vi.waitUntil(() => document.activeElement === choice(container, 'deny'));
+    // The user moves on to Allow; a re-render with the same message must not pull
+    // focus back to Don't allow.
+    choice(container, 'allow').focus();
+    await rerender({ message: { ...message }, onAnswer: async () => true });
+    await new Promise((r) => setTimeout(r, 700));
+    expect(document.activeElement).toBe(choice(container, 'allow'));
+  });
+
+  it('a card that cannot be answered does not take focus', async () => {
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    outside.focus();
+    const message = await cardMessage({ confirmationId: undefined, confirmationDigest: undefined });
+    mount(message, async () => true);
+    await new Promise((r) => setTimeout(r, 700));
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
+  it("puts focus on Don't allow, never on Allow", async () => {
     const { container } = mount(await cardMessage(), async () => true);
     await vi.waitUntil(() => document.activeElement === choice(container, 'deny'));
     expect(document.activeElement).not.toBe(choice(container, 'allow'));
@@ -68,7 +107,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     const message = await cardMessage();
     const onAnswer = vi.fn(async () => true);
     const { container } = mount(message, onAnswer);
-    await vi.waitUntil(() => !choice(container, 'allow').disabled);
+    await vi.waitUntil(() => !choice(container, 'allow').disabled, { timeout: 3000 });
     await userEvent.click(choice(container, 'allow'));
     // A second activation, made from script because the button is now disabled.
     choice(container, 'allow').click();
@@ -85,6 +124,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     const onAnswer = vi.fn(async () => true);
     const { container } = mount(message, onAnswer);
     await vi.waitUntil(() => document.activeElement === choice(container, 'deny'));
+    await vi.waitUntil(() => !choice(container, 'deny').disabled, { timeout: 3000 });
     await userEvent.keyboard('{Escape}');
     expect(onAnswer).toHaveBeenCalledWith('req-1', message.confirmationDigest, false);
   });
@@ -94,6 +134,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     const onAnswer = vi.fn(async () => true);
     const { container } = mount(message, onAnswer);
     await vi.waitUntil(() => document.activeElement === choice(container, 'deny'));
+    await vi.waitUntil(() => !choice(container, 'deny').disabled, { timeout: 3000 });
     await userEvent.keyboard('{Enter}');
     expect(onAnswer).toHaveBeenCalledWith('req-1', message.confirmationDigest, false);
   });
@@ -103,7 +144,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
       throw new Error('socket closed');
     });
     const { container } = mount(await cardMessage(), onAnswer);
-    await vi.waitUntil(() => !choice(container, 'allow').disabled);
+    await vi.waitUntil(() => !choice(container, 'allow').disabled, { timeout: 3000 });
     await userEvent.click(choice(container, 'allow'));
     await vi.waitUntil(() => container.textContent?.includes('socket closed'));
     expect(choice(container, 'allow').disabled).toBe(false);
@@ -111,7 +152,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
 
   it('an answer the daemon did not accept says the question has ended', async () => {
     const { container } = mount(await cardMessage(), async () => false);
-    await vi.waitUntil(() => !choice(container, 'allow').disabled);
+    await vi.waitUntil(() => !choice(container, 'allow').disabled, { timeout: 3000 });
     await userEvent.click(choice(container, 'allow'));
     await vi.waitUntil(() => container.textContent?.includes('already ended'));
   });
@@ -138,6 +179,30 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     await vi.waitUntil(() => container.textContent?.includes('cannot be answered'));
   });
 
+  it('a resolved card with no id says it came from another device, not that the user answered', async () => {
+    for (const status of ['allowed', 'denied', 'expired', 'cancelled']) {
+      cleanup();
+      const message = await cardMessage({
+        confirmationId: undefined,
+        confirmationDigest: undefined,
+        confirmationStatus: status as never
+      });
+      const { container } = mount(message, async () => true);
+      expect(container.textContent).toContain('recorded on another device');
+      expect(container.textContent).not.toContain('You allowed');
+      expect(container.querySelector('[data-choice]')).toBeNull();
+    }
+  });
+
+  it('shows text with strong right-to-left letters in its own isolated left-to-right run', async () => {
+    const { container } = mount(await cardMessage(), async () => true);
+    for (const id of ['credentials', 'summary', 'arguments-preview']) {
+      const el = container.querySelector(`[data-testid="${id}"]`) as HTMLElement;
+      expect(el.getAttribute('dir'), id).toBe('ltr');
+      expect(getComputedStyle(el).unicodeBidi, id).toBe('isolate');
+    }
+  });
+
   it("another device's card has no id or digest and is a record only", async () => {
     const message = await cardMessage({ confirmationId: undefined, confirmationDigest: undefined });
     const { container } = mount(message, async () => true);
@@ -155,7 +220,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
   it('answers once even if a disabled choice is forced back on', async () => {
     const onAnswer = vi.fn(async () => true);
     const { container } = mount(await cardMessage(), onAnswer);
-    await vi.waitUntil(() => !choice(container, 'allow').disabled);
+    await vi.waitUntil(() => !choice(container, 'allow').disabled, { timeout: 3000 });
     await userEvent.click(choice(container, 'allow'));
     // Script re-enables the choices and activates them again: the card's own
     // guard, not only the `disabled` attribute, holds.
@@ -204,7 +269,7 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
   });
 
   it.each([
-    ['allowed', 'You allowed this call'],
+    ['allowed', 'You allowed this call. Whether it ran is in the reply below.'],
     ['denied', 'You did not allow this call'],
     ['expired', 'No answer in time'],
     ['cancelled', 'ended without an answer']

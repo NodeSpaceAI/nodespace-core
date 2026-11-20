@@ -16,11 +16,15 @@
 const UNSAFE = new RegExp(
   '[' +
     '\\u0000-\\u001F\\u007F-\\u009F' + // control characters (C0, DEL, C1)
+    '\\u00AD\\u034F' + // soft hyphen, combining grapheme joiner
+    '\\u115F\\u1160\\u17B4\\u17B5\\u3164\\uFFA0' + // Hangul and Khmer fillers
     '\\u2028\\u2029' + // line and paragraph separators
-    '\\u200B-\\u200D\\u2060\\uFEFF' + // zero-width and invisible formatting
+    '\\u200B-\\u200D\\u2060-\\u2064\\uFEFF' + // zero-width, invisible operators, BOM
     '\\u200E\\u200F\\u061C\\u202A-\\u202E\\u2066-\\u2069' + // bidirectional controls
+    '\\u206A-\\u206F' + // deprecated formatting controls
+    '\\uFFF9-\\uFFFC' + // interlinear annotation, object replacement
     '\\uFE00-\\uFE0F\\u180B-\\u180F' + // variation selectors
-    ']|[\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]', // tag block, variation selectors supplement
+    ']|[\\u{1D173}-\\u{1D17A}\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]', // musical formatting, tags, selectors
   'gu'
 );
 
@@ -32,6 +36,22 @@ export const CONFIRMATION_UNSAFE_VECTOR: readonly string[] = [
   '\u001b',
   '\u007f',
   '\u0085',
+  '\u00ad',
+  '\u034f',
+  '\u115f',
+  '\u1160',
+  '\u17b4',
+  '\u17b5',
+  '\u3164',
+  '\uffa0',
+  '\u2061',
+  '\u2064',
+  '\u206a',
+  '\u206f',
+  '\ufff9',
+  '\ufffc',
+  '\u{1d173}',
+  '\u{1d17a}',
   ' ',
   ' ',
   '​',
@@ -95,18 +115,28 @@ export async function confirmationDigest(summary: string, argumentsJson: string)
   return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** How many credential references the summary lists before it counts the rest. */
+export const SUMMARY_CREDENTIALS_SHOWN = 8;
+
 /**
- * Whether the credential line agrees with the summary: every reference on it
- * (the text after ` from `) appears in the summary the daemon wrote. A card
- * whose separate credential list was changed to say less than the summary does
- * not pass.
+ * Whether the credential line agrees with the summary. The summary lists the
+ * first {@link SUMMARY_CREDENTIALS_SHOWN} credentials and then says how many
+ * more there are, so: each of those first entries has its reference in the
+ * summary (the start of it: the summary may cut a long reference differently
+ * from the list), and when there are more, the summary says exactly how many
+ * more. A card whose credential line was changed to say less than the summary
+ * does not pass.
  */
 export function credentialsMatchSummary(summary: string, credentials: readonly string[]): boolean {
-  return credentials.every((entry) => {
+  const listed = credentials.slice(0, SUMMARY_CREDENTIALS_SHOWN).every((entry) => {
     const at = entry.lastIndexOf(' from ');
     const reference = at >= 0 ? entry.slice(at + ' from '.length) : entry;
-    return reference.length > 0 && summary.includes(reference);
+    const start = Array.from(reference).slice(0, 64).join('');
+    return start.length > 0 && summary.includes(start);
   });
+  if (!listed) return false;
+  const more = credentials.length - SUMMARY_CREDENTIALS_SHOWN;
+  return more <= 0 || summary.includes(`and ${more} more`);
 }
 
 /** How much of the arguments is shown before the expander. */

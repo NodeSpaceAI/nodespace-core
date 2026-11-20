@@ -22,8 +22,12 @@
   most once; a failed answer is shown and the choices come back.
 -->
 
+<script module lang="ts">
+  /** How long after it is shown and intact before the choices can be used. */
+  export const ENABLE_DELAY_MS = 500;
+</script>
+
 <script lang="ts">
-  import { onMount } from 'svelte';
   import type { AiChatMessageNode } from '$lib/types/ai-chat-node';
   import {
     argumentPreview,
@@ -32,6 +36,7 @@
     toDisplaySafe,
     utf8Length
   } from '$lib/utils/confirmation-card';
+
 
   let {
     message,
@@ -80,28 +85,46 @@
     });
   });
 
+  /**
+   * The choices are enabled a moment after the card is shown and intact, so a
+   * click aimed at something else that lands as the card appears cannot answer
+   * it.
+   */
+  let armed = $state(false);
+  $effect(() => {
+    if (!(answerable && intact === true)) {
+      armed = false;
+      return;
+    }
+    const timer = setTimeout(() => (armed = true), ENABLE_DELAY_MS);
+    return () => clearTimeout(timer);
+  });
+
   let answeredFor = $state<string | null>(null);
   const answered = $derived(answeredFor !== null && answeredFor === requestId);
   let failure = $state<string | null>(null);
   let refused = $state(false);
 
   let denyButton: HTMLElement | undefined = $state();
-  let sectionEl: HTMLElement | undefined = $state();
 
   const uid = $props.id();
   const titleId = `${uid}-title`;
 
-  // Focus lands on the safe choice, never on Allow.
+  // Focus lands on the safe choice, never on Allow, once: a later re-render
+  // (the card re-checking itself) does not take it back, and a card that cannot
+  // be answered never takes it.
+  let focusTaken = false;
   $effect(() => {
-    if (answerable && intact === true) denyButton?.focus();
-  });
-  onMount(() => {
-    if (!answerable) return;
-    sectionEl?.focus();
+    // A disabled button cannot take focus, so this waits for the choices to be armed.
+    if (armed && answerable && intact === true && !focusTaken && denyButton) {
+      focusTaken = true;
+      denyButton.focus();
+    }
   });
 
   async function answer(allow: boolean): Promise<void> {
-    if (!answerable || intact !== true || answered || !onAnswer || !requestId || !digest) return;
+    if (!armed || !answerable || intact !== true || answered || !onAnswer || !requestId || !digest)
+      return;
     const id = requestId;
     answeredFor = id;
     failure = null;
@@ -116,14 +139,14 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape' && answerable && intact === true && !answered) {
+    if (event.key === 'Escape' && armed && answerable && intact === true && !answered) {
       event.preventDefault();
       void answer(false);
     }
   }
 
   const RESOLVED_TEXT: Record<string, string> = {
-    allowed: 'You allowed this call.',
+    allowed: 'You allowed this call. Whether it ran is in the reply below.',
     denied: 'You did not allow this call.',
     expired: 'No answer in time. The call was not run.',
     cancelled: 'The question ended without an answer. The call was not run.'
@@ -131,7 +154,6 @@
 </script>
 
 <section
-  bind:this={sectionEl}
   tabindex="-1"
   class="confirmation"
   class:pending={status === 'pending'}
@@ -145,7 +167,7 @@
     {status === 'pending' ? 'Run a tool?' : 'Tool call'}
   </h3>
 
-  <p class="confirmation-credentials" data-testid="credentials">
+  <p class="confirmation-credentials" dir="ltr" data-testid="credentials">
     {#if credentials.length > 0}
       <span class="confirmation-label">Credentials:</span>
       {#each credentials as entry, i (i)}
@@ -156,17 +178,17 @@
     {/if}
   </p>
 
-  <p class="confirmation-summary" data-testid="summary">{toDisplaySafe(summary)}</p>
+  <p class="confirmation-summary" dir="ltr" data-testid="summary">{toDisplaySafe(summary)}</p>
 
   <div class="confirmation-arguments">
     <span class="confirmation-label">Arguments ({argumentBytes} bytes)</span>
-    <pre class="confirmation-preview" data-testid="arguments-preview">{toDisplaySafe(
+    <pre class="confirmation-preview" dir="ltr" data-testid="arguments-preview">{toDisplaySafe(
         preview.text
       )}{preview.moreBytes > 0 ? ` … (${preview.moreBytes} more bytes)` : ''}</pre>
     {#if preview.moreBytes > 0}
       <details>
         <summary>Show all arguments</summary>
-        <pre class="confirmation-full" data-testid="arguments-full">{toDisplaySafe(argumentsJson)}</pre>
+        <pre class="confirmation-full" dir="ltr" data-testid="arguments-full">{toDisplaySafe(argumentsJson)}</pre>
       </details>
     {/if}
   </div>
@@ -187,7 +209,7 @@
           class="confirmation-button"
           data-choice="deny"
           bind:this={denyButton}
-          disabled={answered || intact !== true}
+          disabled={answered || intact !== true || !armed}
           onclick={() => answer(false)}
         >
           Don't allow
@@ -196,7 +218,7 @@
           type="button"
           class="confirmation-button allow"
           data-choice="allow"
-          disabled={answered || intact !== true}
+          disabled={answered || intact !== true || !armed}
           onclick={() => answer(true)}
         >
           Allow once
@@ -216,6 +238,13 @@
         </p>
       {/if}
     {/if}
+  {:else if !requestId}
+    <!-- Only a card this device wrote carries an id. A resolved card without one
+         came from another device (or was written by something else): its status
+         is not shown as something this device's user answered. -->
+    <p class="confirmation-note" role="status" data-testid="foreign">
+      A question recorded on another device.
+    </p>
   {:else}
     <p class="confirmation-note" role="status" data-testid="resolved">
       {RESOLVED_TEXT[status] ?? 'This question has ended.'}
@@ -249,6 +278,13 @@
     font-size: 0.75rem;
     font-weight: 600;
     color: hsl(var(--muted-foreground));
+  }
+
+  .confirmation-credentials,
+  .confirmation-summary,
+  .confirmation-preview,
+  .confirmation-full {
+    unicode-bidi: isolate;
   }
 
   .confirmation-credentials {

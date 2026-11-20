@@ -56,7 +56,10 @@ impl ChatCardUi {
     /// Sets a card's status, once: a card that is no longer pending is left as
     /// it is. Retries on a version conflict (the viewer may write the node).
     async fn set_status(&self, card_id: &str, status: AiChatConfirmationStatus) {
-        for _ in 0..3 {
+        for attempt in 0..8u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(20 * attempt)).await;
+            }
             let Ok(Some(node)) = self.node_service.get_node(card_id).await else {
                 return;
             };
@@ -85,8 +88,9 @@ impl ChatCardUi {
         }
     }
 
-    /// Ends every card of `chat_id` that is still pending as cancelled: the
-    /// turn stopped without answering them (a restart, a crash).
+    /// Ends every card of `chat_id` that this daemon wrote and that is still
+    /// pending as cancelled: the turn stopped without answering them. A card
+    /// with no id was not written here (a peer's), and is left alone.
     pub async fn cancel_pending_in(&self, chat_id: &str) {
         let Ok(children) = self.node_service.get_children(chat_id).await else {
             return;
@@ -100,6 +104,7 @@ impl ChatCardUi {
                 continue;
             };
             if card.part_kind == Some(AiChatPartKind::Confirmation)
+                && card.confirmation_id.is_some()
                 && card.confirmation_status == Some(AiChatConfirmationStatus::Pending)
             {
                 self.set_status(&id, AiChatConfirmationStatus::Cancelled)
@@ -109,8 +114,30 @@ impl ChatCardUi {
     }
 }
 
+impl ChatCardUi {
+    /// At startup: ends every card this daemon wrote that is still pending, in
+    /// every chat. No question survives a restart, so none of them can be
+    /// answered (a crash can leave one in a chat that is idle).
+    pub async fn cancel_all_local_pending(&self) {
+        let Ok(chats) = self
+            .node_service
+            .query_nodes_by_type(CoreNodeType::AiChatNative.as_str(), true)
+            .await
+        else {
+            return;
+        };
+        for chat in chats {
+            self.cancel_pending_in(&chat.id).await;
+        }
+    }
+}
+
 #[async_trait]
 impl ConfirmationUi for ChatCardUi {
+    /// Writes the card. Not cancel-safe between the write and remembering its id
+    /// (a future dropped there leaves a card the status update cannot find): the
+    /// turn's end and the next start end any such card as cancelled
+    /// (`cancel_pending_in`, `cancel_all_local_pending`).
     async fn present(&self, ask: &ConfirmationAsk) -> bool {
         let params = CreateNodeParams {
             id: None,
@@ -425,6 +452,85 @@ mod tests {
         assert_eq!(
             card.confirmation_status,
             Some(AiChatConfirmationStatus::Allowed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_card_in_any_chat_is_ended_at_startup_but_a_peers_card_is_left() {
+        let (ns, chat, ui, _tmp) = rig().await;
+        ui.present(&ask(&chat, "mine")).await;
+        // A card with no id, as a synced peer's arrives (the id is device-local).
+        ns.create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "ai-chat-message".to_string(),
+            content: "run `rm`".to_string(),
+            parent_id: Some(chat.clone()),
+            position: InsertPositionOwned::End,
+            properties: json!({"role": "assistant", "part_kind": "confirmation",
+                               "confirmation_status": "pending"}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap();
+        ui.cancel_all_local_pending().await;
+        let mut by_id = Vec::new();
+        for n in ns.get_children(&chat).await.unwrap() {
+            let m = card(&ns, &n.id).await;
+            by_id.push((m.confirmation_id.is_some(), m.confirmation_status.unwrap()));
+        }
+        by_id.sort_by_key(|(local, _)| *local);
+        assert_eq!(
+            by_id,
+            [
+                (false, AiChatConfirmationStatus::Pending),
+                (true, AiChatConfirmationStatus::Cancelled)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_conflicting_write_by_a_viewer_does_not_leave_the_card_pending() {
+        let (ns, chat, ui, _tmp) = rig().await;
+        let a = ask(&chat, "r");
+        ui.present(&a).await;
+        let (id, _) = the_card_of(&ns, &chat).await;
+        // The viewer writes the node meanwhile, moving its version.
+        let node = ns.get_node(&id).await.unwrap().unwrap();
+        ns.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_content("run `git`".to_string()),
+        )
+        .await
+        .unwrap();
+        ui.resolved(&a, ConfirmationOutcome::Denied).await;
+        assert_eq!(
+            card_status(&ns, &id).await,
+            Some(AiChatConfirmationStatus::Denied)
+        );
+    }
+
+    /// What the card shows is exactly what the daemon asked, and the digest of it
+    /// is the daemon's digest.
+    #[tokio::test]
+    async fn the_cards_content_is_the_summary_and_its_digest_is_recomputable() {
+        use nodespace_agent::local_agent::remote_tools::confirmation_digest;
+        let (ns, chat, ui, _tmp) = rig().await;
+        let mut a = ask(&chat, "r");
+        a.digest = confirmation_digest(&a.summary, &a.arguments_json);
+        ui.present(&a).await;
+        let (_, c) = the_card_of(&ns, &chat).await;
+        assert_eq!(c.envelope.content, a.summary);
+        assert_eq!(
+            c.confirmation_arguments.as_deref(),
+            Some(a.arguments_json.as_str())
+        );
+        assert_eq!(
+            confirmation_digest(
+                &c.envelope.content,
+                c.confirmation_arguments.as_deref().unwrap()
+            ),
+            c.confirmation_digest.unwrap()
         );
     }
 }

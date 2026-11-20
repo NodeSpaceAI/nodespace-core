@@ -474,7 +474,9 @@
       {:else}
         {#each timeline as item, index (item.kind === 'card' ? item.card.id : item.message.id)}
           {#if item.kind === 'card'}
-            <RemoteToolConfirmationCard message={item.card} onAnswer={answerConfirmation} />
+            <div role="listitem">
+              <RemoteToolConfirmationCard message={item.card} onAnswer={answerConfirmation} />
+            </div>
           {:else}
             <ChatMessage
               message={item.message}
