@@ -67,7 +67,8 @@ use zeroize::Zeroizing;
 
 use super::net_policy::{
     checked_address, credential_note, destination, fail, http_credential, request_error,
-    send_following, HostResolver, Outgoing, SystemResolver, CONNECT_TIMEOUT,
+    send_following, FixedResolver, HostResolver, Outgoing, ResolvedPin, SystemResolver,
+    CONNECT_TIMEOUT,
 };
 use super::process::{
     credentials_within, environment_note, program_note, reap, resolve_env_credentials,
@@ -75,7 +76,8 @@ use super::process::{
 };
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
-    validate_arguments, RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind, RemoteToolRunner,
+    validate_arguments, Confirmation, RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind,
+    RemoteToolRunner,
 };
 
 /// The version this client asks for.
@@ -1041,9 +1043,20 @@ impl RemoteToolRunner for McpRunner {
         tool: &RemoteTool,
         args: &Value,
     ) -> Result<String, RemoteCallError> {
+        Ok(self.confirmation(tool, args).await?.text)
+    }
+
+    async fn confirmation(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+    ) -> Result<Confirmation, RemoteCallError> {
         let fields = read_binding(tool)?;
         if fields.transport.as_deref() == Some("stdio") {
-            return Ok(self.destination(tool, args));
+            return Ok(Confirmation {
+                text: self.destination(tool, args),
+                pin: None,
+            });
         }
         let url = Url::parse(fields.url.as_deref().unwrap_or_default())
             .map_err(|_| RemoteCallError("the tool's binding has no usable url".to_string()))?;
@@ -1057,13 +1070,28 @@ impl RemoteToolRunner for McpRunner {
                 ))
             })??;
         let remote_tool = fields.remote_tool_name.clone().unwrap_or_default();
-        Ok(describe_http(
-            &fields,
-            &url,
-            Some(&ip.to_string()),
-            &remote_tool,
-            args,
-        ))
+        Ok(Confirmation {
+            text: describe_http(&fields, &url, Some(&ip.to_string()), &remote_tool, args),
+            pin: Some(ResolvedPin {
+                host: target.host.clone(),
+                address: ip,
+            }),
+        })
+    }
+
+    async fn run_pinned(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+        pin: &ResolvedPin,
+    ) -> Result<RemoteOutput, RemoteCallError> {
+        let pinned = McpRunner {
+            secrets: Arc::clone(&self.secrets),
+            daemon_env: Arc::clone(&self.daemon_env),
+            resolver: Arc::new(FixedResolver { pin: pin.clone() }),
+            pinned_lookups: Arc::clone(&self.pinned_lookups),
+        };
+        pinned.run(tool, args).await
     }
 
     async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError> {
@@ -2190,5 +2218,40 @@ for line in sys.stdin:
         assert!(shown.contains("call tool `echo`"));
         assert!(shown.len() <= MAX_DESTINATION_BYTES + 8);
         assert!(shown.ends_with('\u{2026}'));
+    }
+
+    #[tokio::test]
+    async fn http_the_run_uses_the_address_the_confirmation_resolved() {
+        let server = mcp_server("2025-06-18", || {
+            ok_json(&rpc(
+                2,
+                json!({"content": [{"type": "text", "text": "ok"}]}),
+            ))
+        })
+        .await;
+        let resolver = FakeResolver::with(
+            "localhost",
+            vec![
+                vec!["127.0.0.1".parse().unwrap()],
+                vec!["10.0.0.5".parse().unwrap()],
+            ],
+        );
+        let r = McpRunner::with_parts(store(), |_| None, resolver.clone());
+        let mut binding = http_binding(server.port);
+        binding["url"] = json!(format!("http://localhost:{}/mcp", server.port));
+        let t = tool(binding);
+        let confirmation = r.confirmation(&t, &json!({"q": "x"})).await.unwrap();
+        let pin = confirmation.pin.expect("an http server is pinned");
+        let out = r.run_pinned(&t, &json!({"q": "x"}), &pin).await.unwrap();
+        assert_eq!(out.text, "ok");
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        // A stdio server resolves nothing and has nothing to pin.
+        let stdio = tool(json!({"transport": "stdio", "command": "x", "remote_tool_name": "y"}));
+        assert!(r
+            .confirmation(&stdio, &json!({}))
+            .await
+            .unwrap()
+            .pin
+            .is_none());
     }
 }

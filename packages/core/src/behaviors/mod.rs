@@ -6891,4 +6891,33 @@ mod tests {
             Some("Plain line\n\nNested line\n\n## Section\n\nA note")
         );
     }
+
+    /// The approval covers the credential references: editing only a reference
+    /// (an `env` entry or the `auth` secret) invalidates the tag, so a secret
+    /// swapped between the question and the run is caught by the re-check.
+    #[test]
+    fn the_approval_tag_covers_credential_references() {
+        let key = [3u8; 32];
+        let chain = ["tool-cli", "tool"];
+        let props = |secret: &str| {
+            json!({
+                "tool": {"description": "d", "parameter_schema": {"type": "object"}},
+                "tool-cli": {"program": "p", "env": [{"name": "T", "secret": secret}]},
+            })
+        };
+        let a = tool_approval_tag(&key, "n", "t", &chain, &props("keychain:one"));
+        let b = tool_approval_tag(&key, "n", "t", &chain, &props("keychain:two"));
+        assert_ne!(a, b);
+        let chain = ["tool-rest", "tool"];
+        let rest = |secret: &str| {
+            json!({
+                "tool": {"description": "d", "parameter_schema": {"type": "object"}},
+                "tool-rest": {"auth": {"scheme": "bearer", "secret": secret}},
+            })
+        };
+        assert_ne!(
+            tool_approval_tag(&key, "n", "t", &chain, &rest("env:A")),
+            tool_approval_tag(&key, "n", "t", &chain, &rest("env:B")),
+        );
+    }
 }

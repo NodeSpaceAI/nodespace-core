@@ -78,12 +78,13 @@ use zeroize::Zeroizing;
 
 use super::net_policy::{
     checked_address, credential_note, destination, http_credential, request_error, send_following,
-    HostResolver, HttpCredential, Outgoing, SystemResolver, CONNECT_TIMEOUT,
+    FixedResolver, HostResolver, HttpCredential, Outgoing, ResolvedPin, SystemResolver,
+    CONNECT_TIMEOUT,
 };
 use super::process::EnvLookup;
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
-    RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind, RemoteToolRunner,
+    Confirmation, RemoteCallError, RemoteOutput, RemoteTool, RemoteToolKind, RemoteToolRunner,
 };
 
 /// Characters left as they are in a placeholder value: the URL's unreserved set.
@@ -445,6 +446,14 @@ impl RemoteToolRunner for RestRunner {
         tool: &RemoteTool,
         args: &Value,
     ) -> Result<String, RemoteCallError> {
+        Ok(self.confirmation(tool, args).await?.text)
+    }
+
+    async fn confirmation(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+    ) -> Result<Confirmation, RemoteCallError> {
         let fields = read_binding(tool)?;
         let plan = plan(&fields, args)?;
         let destination = destination(&plan.url)?;
@@ -461,7 +470,29 @@ impl RemoteToolRunner for RestRunner {
                 destination.host
             ))
         })??;
-        Ok(describe(&fields, &plan, Some(&ip.to_string())))
+        Ok(Confirmation {
+            text: describe(&fields, &plan, Some(&ip.to_string())),
+            // The run uses this address, not a second lookup.
+            pin: Some(ResolvedPin {
+                host: destination.host.clone(),
+                address: ip,
+            }),
+        })
+    }
+
+    async fn run_pinned(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+        pin: &ResolvedPin,
+    ) -> Result<RemoteOutput, RemoteCallError> {
+        let pinned = RestRunner {
+            secrets: Arc::clone(&self.secrets),
+            daemon_env: Arc::clone(&self.daemon_env),
+            resolver: Arc::new(FixedResolver { pin: pin.clone() }),
+            pinned_lookups: Arc::clone(&self.pinned_lookups),
+        };
+        pinned.run(tool, args).await
     }
 
     async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError> {
@@ -1453,5 +1484,50 @@ mod tests {
         .expect("the confirmation waited for a lookup that never answered");
         let err = result.unwrap_err();
         assert!(err.0.contains("could not be resolved in time"), "{}", err.0);
+    }
+
+    #[tokio::test]
+    async fn the_run_uses_the_address_the_confirmation_resolved_not_a_second_lookup() {
+        let server = serve(|_| ok_json("{}")).await;
+        // The name answers loopback for the question and a private address after
+        // (a rebinding): a second lookup would be refused, the pin is not.
+        let resolver = FakeResolver::with(
+            "localhost",
+            vec![vec![ip("127.0.0.1")], vec![ip("10.0.0.5")]],
+        );
+        let r = RestRunner::with_parts(store(), |_| None, resolver.clone());
+        let t = tool(json!({
+            "method": "GET",
+            "url_template": format!("http://localhost:{}/x", server.port),
+        }));
+        let confirmation = r.confirmation(&t, &json!({})).await.unwrap();
+        let pin = confirmation.pin.expect("a resolving runner pins");
+        assert_eq!(pin.address, ip("127.0.0.1"));
+        let out = r.run_pinned(&t, &json!({}), &pin).await.unwrap();
+        assert_eq!(out.text, "{}");
+        assert_eq!(server.hits(), 1);
+        // Only the question resolved the name.
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        // Without the pin, the rebound answer is what the run would have used.
+        let e = r.run(&t, &json!({})).await.unwrap_err().0;
+        assert!(!e.is_empty());
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pin_for_another_host_is_not_a_resolution_for_this_one() {
+        let server = serve(|_| ok_json("{}")).await;
+        let resolver = FakeResolver::with("localhost", vec![vec![ip("127.0.0.1")]]);
+        let r = RestRunner::with_parts(store(), |_| None, resolver);
+        let t = tool(json!({
+            "method": "GET",
+            "url_template": format!("http://localhost:{}/x", server.port),
+        }));
+        let wrong = ResolvedPin {
+            host: "other.example".into(),
+            address: ip("127.0.0.1"),
+        };
+        assert!(r.run_pinned(&t, &json!({}), &wrong).await.is_err());
+        assert_eq!(server.hits(), 0);
     }
 }
