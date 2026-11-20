@@ -449,9 +449,53 @@ pub struct ConfirmationRequest {
     pub arguments_json: String,
     /// The real size of `arguments_json`, in bytes.
     pub arguments_bytes: usize,
+    /// The credentials the call uses, as references (never values), one per
+    /// entry: `NAME from keychain:x`, `bearer from env:Y`. Shown on their own line.
+    pub credentials: Vec<String>,
     /// [`confirmation_digest`] of `destination` and `arguments_json`: what an
     /// answer is bound to.
     pub digest: String,
+}
+
+/// Most credential references a confirmation lists, and the longest one.
+const MAX_CREDENTIAL_REFERENCES: usize = 32;
+const MAX_CREDENTIAL_REFERENCE_BYTES: usize = 300;
+
+/// The credential references a tool's binding uses, for the confirmation's own
+/// credential line: each `env` entry as `NAME from <reference>` and the `auth`
+/// secret as `<scheme> from <reference>` (`header X-Key from <reference>` for a
+/// named header). References only: a value is never read here.
+pub fn credential_references(tool: &RemoteTool) -> Vec<String> {
+    let binding = tool.binding();
+    let mut out: Vec<String> = Vec::new();
+    if let Some(entries) = binding.get("env").and_then(Value::as_array) {
+        for entry in entries {
+            if let (Some(name), Some(secret)) = (
+                entry.get("name").and_then(Value::as_str),
+                entry.get("secret").and_then(Value::as_str),
+            ) {
+                out.push(format!("{name} from {secret}"));
+            }
+        }
+    }
+    if let Some(auth) = binding.get("auth") {
+        let scheme = auth.get("scheme").and_then(Value::as_str).unwrap_or("");
+        if scheme != "none" {
+            if let Some(secret) = auth.get("secret").and_then(Value::as_str) {
+                out.push(
+                    match (scheme, auth.get("header_name").and_then(Value::as_str)) {
+                        ("header", Some(name)) => format!("header {name} from {secret}"),
+                        _ => format!("{scheme} from {secret}"),
+                    },
+                );
+            }
+        }
+    }
+    out.truncate(MAX_CREDENTIAL_REFERENCES);
+    for reference in &mut out {
+        super::redaction::cut(reference, MAX_CREDENTIAL_REFERENCE_BYTES);
+    }
+    out
 }
 
 /// The largest arguments a call that needs confirmation may carry. The card
@@ -698,6 +742,7 @@ impl RemoteToolHost {
                 arguments: args.clone(),
                 arguments_bytes: arguments_json.len(),
                 arguments_json,
+                credentials: credential_references(&tool),
             };
             if !confirmer.confirm(&request).await {
                 return Ok(Self::failure(
@@ -2530,5 +2575,49 @@ mod tests {
             let shown = text.rsplit(": ").next().unwrap();
             assert_eq!(shown, "a\u{FFFD}b", "{name:?} -> {shown:?}");
         }
+    }
+
+    #[test]
+    fn the_credential_references_of_a_binding_are_listed_without_values() {
+        let cli = |env: Value| RemoteTool {
+            node_id: "n".into(),
+            name: "t".into(),
+            kind: RemoteToolKind::Cli,
+            description: String::new(),
+            parameter_schema: json!({}),
+            properties: json!({"tool-cli": {"program": "p", "env": env}}),
+            approval_tag: String::new(),
+        };
+        assert_eq!(
+            credential_references(&cli(json!([
+                {"name": "A", "secret": "keychain:one"},
+                {"name": "B", "secret": "env:TWO"}
+            ]))),
+            ["A from keychain:one", "B from env:TWO"]
+        );
+        assert!(credential_references(&cli(json!([]))).is_empty());
+        let rest = |auth: Value| RemoteTool {
+            kind: RemoteToolKind::Rest,
+            properties: json!({"tool-rest": {"auth": auth}}),
+            ..cli(json!([]))
+        };
+        assert_eq!(
+            credential_references(&rest(json!({"scheme": "bearer", "secret": "keychain:t"}))),
+            ["bearer from keychain:t"]
+        );
+        assert_eq!(
+            credential_references(&rest(
+                json!({"scheme": "header", "header_name": "X-Key", "secret": "env:K"})
+            )),
+            ["header X-Key from env:K"]
+        );
+        assert!(credential_references(&rest(json!({"scheme": "none"}))).is_empty());
+        // Bounded: at most 32, each cut.
+        let many: Vec<Value> = (0..40)
+            .map(|i| json!({"name": format!("N{i}"), "secret": format!("keychain:{}", "k".repeat(500))}))
+            .collect();
+        let listed = credential_references(&cli(json!(many)));
+        assert_eq!(listed.len(), 32);
+        assert!(listed.iter().all(|r| r.len() <= 300));
     }
 }

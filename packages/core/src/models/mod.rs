@@ -29,11 +29,11 @@ pub use node::{
     NodeRelationship, NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
 };
 pub use nodespace_types::{
-    AiChatAcpNode, AiChatBase, AiChatMessageNode, AiChatMessageRole, AiChatNativeNode,
-    AiChatPartKind, AiChatPendingDeleteEdge, AiChatProvider, AiChatPtyNode, AiChatResolvedEdge,
-    AiChatSessionStatus, AiChatToolKind, AiChatToolStatus, AiChatTurnOutcome, AiChatTurnStatus,
-    AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_PINS, AI_CHAT_RESOLVED,
-    AI_CHAT_WROTE, NODESPACE_AGENT,
+    AiChatAcpNode, AiChatBase, AiChatConfirmationStatus, AiChatMessageNode, AiChatMessageRole,
+    AiChatNativeNode, AiChatPartKind, AiChatPendingDeleteEdge, AiChatProvider, AiChatPtyNode,
+    AiChatResolvedEdge, AiChatSessionStatus, AiChatToolKind, AiChatToolStatus, AiChatTurnOutcome,
+    AiChatTurnStatus, AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_PINS,
+    AI_CHAT_RESOLVED, AI_CHAT_WROTE, NODESPACE_AGENT,
 };
 pub use schema::{
     LinkValue, RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel,

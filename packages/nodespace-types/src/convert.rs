@@ -539,6 +539,11 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("tool_title", "toolTitle"),
                     F::text("tool_kind", "toolKind"),
                     F::text("tool_status", "toolStatus"),
+                    F::text("confirmation_id", "confirmationId"),
+                    F::text("confirmation_digest", "confirmationDigest"),
+                    F::text("confirmation_status", "confirmationStatus"),
+                    F::text("confirmation_arguments", "confirmationArguments"),
+                    F::new("confirmation_credentials", "confirmationCredentials", Array),
                 ]
             }
         }

@@ -87,6 +87,8 @@ pub struct ConfirmationAsk {
     pub summary: String,
     pub arguments_json: String,
     pub arguments_bytes: usize,
+    /// The credential references the call uses, one per entry.
+    pub credentials: Vec<String>,
     pub digest: String,
 }
 
@@ -304,6 +306,7 @@ impl CallConfirmer for DaemonCallConfirmer {
             summary: request.destination.clone(),
             arguments_json: request.arguments_json.clone(),
             arguments_bytes: request.arguments_bytes,
+            credentials: request.credentials.clone(),
             digest: request.digest.clone(),
         };
         let mut guard = EntryGuard {
@@ -473,6 +476,7 @@ mod tests {
             arguments,
             arguments_bytes: arguments_json.len(),
             arguments_json,
+            credentials: vec!["TOKEN from keychain:t".to_string()],
         }
     }
 
@@ -582,6 +586,7 @@ mod tests {
         assert_eq!(ask.summary, req.destination);
         assert_eq!(ask.arguments_json, req.arguments_json);
         assert_eq!(ask.digest, req.digest);
+        assert_eq!(ask.credentials, req.credentials);
         assert_eq!(ask.tool_name, "a");
         assert_eq!(ask.kind, "tool-cli");
         assert_eq!(ask.chat_node_id, "chat");

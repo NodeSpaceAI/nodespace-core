@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { AiChatConfirmationStatus } from './ai-chat-confirmation-status';
 import type { AiChatMessageRole } from './ai-chat-message-role';
 import type { AiChatPartKind } from './ai-chat-part-kind';
 import type { AiChatToolKind } from './ai-chat-tool-kind';
@@ -62,6 +63,29 @@ export type AiChatMessageNode = {
    * Where the tool call stands.
    */
   toolStatus?: AiChatToolStatus;
+  /**
+   * The id of the question a `confirmation` part records. Device-local: it is
+   * how this device's answer finds the waiting call.
+   */
+  confirmationId?: string;
+  /**
+   * The daemon's digest of what the question showed; an answer carries it back.
+   * Device-local.
+   */
+  confirmationDigest?: string;
+  /**
+   * How the question stands.
+   */
+  confirmationStatus?: AiChatConfirmationStatus;
+  /**
+   * The call's arguments as JSON text, whole (up to the confirmation bound).
+   */
+  confirmationArguments?: string;
+  /**
+   * The credential references the call uses, one per entry. References only,
+   * never a value.
+   */
+  confirmationCredentials?: Array<string>;
   id: string;
   nodeType: string;
   content: string;

@@ -130,6 +130,22 @@
       "class": "refuse",
       "summary": "The ai-chat-message schema gains five optional fields that record one part of an ACP chat turn: part_kind, tool_call_id, tool_title, tool_kind and tool_status. A database created by an earlier build holds a message schema without them, which the core-type comparison reports as missing fields, so that database is refused at open (a schema mismatch) until it is reset.",
       "userProducible": false
+    },
+    {
+      "id": "ai-chat-message-confirmation-fields",
+      "after": "0.3.11",
+      "covers": [
+        "schemas.ai-chat-message.fields.part_kind",
+        "schemas.ai-chat-message.fields.confirmation_id",
+        "schemas.ai-chat-message.fields.confirmation_digest",
+        "schemas.ai-chat-message.fields.confirmation_status",
+        "schemas.ai-chat-message.fields.confirmation_arguments",
+        "schemas.ai-chat-message.fields.confirmation_credentials"
+      ],
+      "area": "core_schema",
+      "class": "refuse",
+      "summary": "The ai-chat-message schema gains a confirmation part kind and five optional fields that record a question put to the user before a remote tool call runs: confirmation_id and confirmation_digest (device-local), confirmation_status, confirmation_arguments and confirmation_credentials. A database created by an earlier build holds a message schema without them, which the core-type comparison reports as missing fields and a part_kind without the new value, so that database is refused at open (a schema mismatch) until it is reset.",
+      "userProducible": false
     }
   ]
 }

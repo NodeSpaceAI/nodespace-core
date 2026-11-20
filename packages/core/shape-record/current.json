@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "51f97a77e76d5720edb7061194518760763bf4458ac264a31aad7846ca601aa0",
+  "hash": "81645863a88501cd63bea9f0c9a7c755f1fc4689faa43982161d4185cbda4b0e",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -949,6 +949,78 @@
       },
       "contextPaths": [],
       "fields": {
+        "confirmation_arguments": {
+          "description": "The call's arguments as JSON text, whole",
+          "friendlyName": "Confirmation arguments",
+          "indexed": false,
+          "name": "confirmation_arguments",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "confirmation_credentials": {
+          "description": "The credential references the call uses, one per entry; references only, never a value",
+          "friendlyName": "Confirmation credentials",
+          "indexed": false,
+          "itemType": "text",
+          "name": "confirmation_credentials",
+          "protection": "system",
+          "required": false,
+          "type": "array"
+        },
+        "confirmation_digest": {
+          "description": "The daemon's digest of what the question showed; an answer carries it back; it stays on this device",
+          "friendlyName": "Confirmation digest",
+          "indexed": false,
+          "localOnly": true,
+          "name": "confirmation_digest",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "confirmation_id": {
+          "description": "The id of the question a confirmation part records; it stays on this device",
+          "friendlyName": "Confirmation id",
+          "indexed": false,
+          "localOnly": true,
+          "name": "confirmation_id",
+          "protection": "system",
+          "required": false,
+          "type": "text"
+        },
+        "confirmation_status": {
+          "coreValues": [
+            {
+              "label": "Pending",
+              "value": "pending"
+            },
+            {
+              "label": "Allowed",
+              "value": "allowed"
+            },
+            {
+              "label": "Denied",
+              "value": "denied"
+            },
+            {
+              "label": "Expired",
+              "value": "expired"
+            },
+            {
+              "label": "Cancelled",
+              "value": "cancelled"
+            }
+          ],
+          "description": "How the question stands",
+          "extensible": false,
+          "friendlyName": "Confirmation status",
+          "indexed": false,
+          "name": "confirmation_status",
+          "protection": "system",
+          "required": false,
+          "type": "enum",
+          "userValues": []
+        },
         "options": {
           "description": "The choices offered with a clarifying question; the question is the content",
           "friendlyName": "Options",
@@ -1001,6 +1073,10 @@
             {
               "label": "Plan",
               "value": "plan"
+            },
+            {
+              "label": "Confirmation",
+              "value": "confirmation"
             }
           ],
           "description": "Which part of an agent's turn an ACP chat message is; absent on a whole message",

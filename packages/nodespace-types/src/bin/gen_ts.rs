@@ -196,6 +196,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         AiChatTurnOutcome,
         AiChatMessageRole,
         AiChatPartKind,
+        AiChatConfirmationStatus,
         AiChatToolKind,
         AiChatToolStatus,
         AiChatMessageNode,

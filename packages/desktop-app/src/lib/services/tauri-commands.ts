@@ -20,6 +20,20 @@ export async function localAgentCancelTurn(nodeId: string): Promise<void> {
 }
 
 /**
+ * Answer a remote-tool confirmation. `requestId` and `digest` are the ones the
+ * daemon put on the card, sent back unchanged. Resolves to whether the daemon
+ * accepted the answer (a refusal gives no reason).
+ */
+export async function localAgentAnswerConfirmation(
+  nodeId: string,
+  requestId: string,
+  digest: string,
+  allow: boolean
+): Promise<boolean> {
+  return invoke<boolean>('local_agent_answer_confirmation', { nodeId, requestId, digest, allow });
+}
+
+/**
  * Open a chat bound to a node (ADR-100 §1) and return its id. The daemon
  * creates the chat, its pins to the node and the skill for its type, and its
  * opening message; `model` is the model the chat starts on. A node whose type

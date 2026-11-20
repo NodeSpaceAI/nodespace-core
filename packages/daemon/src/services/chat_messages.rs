@@ -192,6 +192,12 @@ async fn message_nodes(
         .into_iter()
         .filter(|child| CoreNodeType::AiChatMessage.is_exactly(&child.node_type))
         .filter_map(|child| AiChatMessageNode::from_node(child).ok())
+        // A confirmation card is a question to the user, not part of the
+        // conversation: the model never sees it, and it does not decide whose
+        // turn it is.
+        .filter(|message| {
+            message.part_kind != Some(nodespace_core::models::AiChatPartKind::Confirmation)
+        })
         .collect())
 }
 

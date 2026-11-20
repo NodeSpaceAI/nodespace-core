@@ -1956,6 +1956,21 @@ impl NodeBehavior for AiChatMessageNodeBehavior {
                 "tool fields are recorded on a tool_call part only".to_string(),
             ));
         }
+        let confirmation = serde_json::json!(crate::models::AiChatPartKind::Confirmation);
+        let has_confirmation_field = [
+            "confirmation_id",
+            "confirmation_digest",
+            "confirmation_status",
+            "confirmation_arguments",
+            "confirmation_credentials",
+        ]
+        .iter()
+        .any(|name| field(name).is_some());
+        if has_confirmation_field && field("part_kind") != Some(&confirmation) {
+            return Err(NodeValidationError::InvalidProperties(
+                "confirmation fields are recorded on a confirmation part only".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -5429,6 +5444,64 @@ mod tests {
             ),
             (
                 json!({ "role": "assistant", "tool_kind": "read" }),
+                "tool_call part only",
+            ),
+        ] {
+            let err = registry
+                .validate_node(&message(properties.clone()), &chain)
+                .expect_err("must be refused");
+            assert!(err.to_string().contains(needle), "{properties}: {err}");
+        }
+    }
+
+    /// Confirmation fields belong to a confirmation part of an assistant message.
+    #[test]
+    fn test_ai_chat_message_confirmation_fields_follow_their_rules() {
+        let registry = NodeBehaviorRegistry::new();
+        let chain = ["ai-chat-message"];
+        let message = |properties: serde_json::Value| {
+            Node::new(
+                "ai-chat-message".to_string(),
+                "run it".to_string(),
+                properties,
+            )
+        };
+        for properties in [
+            json!({ "role": "assistant", "part_kind": "confirmation" }),
+            json!({ "role": "assistant", "part_kind": "confirmation",
+                    "confirmation_id": "i", "confirmation_digest": "d",
+                    "confirmation_status": "pending", "confirmation_arguments": "{}",
+                    "confirmation_credentials": ["keychain:tok"] }),
+            json!({ "ai-chat-message": { "role": "assistant", "part_kind": "confirmation",
+                    "confirmation_status": "denied" } }),
+            json!({ "role": "assistant", "confirmation_status": null }),
+        ] {
+            assert!(
+                registry
+                    .validate_node(&message(properties.clone()), &chain)
+                    .is_ok(),
+                "{properties} must be accepted"
+            );
+        }
+        for (properties, needle) in [
+            (
+                json!({ "part_kind": "confirmation" }),
+                "assistant message only",
+            ),
+            (
+                json!({ "role": "assistant", "confirmation_status": "allowed" }),
+                "confirmation part only",
+            ),
+            (
+                json!({ "role": "assistant", "part_kind": "text", "confirmation_arguments": "{}" }),
+                "confirmation part only",
+            ),
+            (
+                json!({ "role": "assistant", "part_kind": "tool_call", "confirmation_id": "x" }),
+                "confirmation part only",
+            ),
+            (
+                json!({ "role": "assistant", "part_kind": "confirmation", "tool_title": "x" }),
                 "tool_call part only",
             ),
         ] {
