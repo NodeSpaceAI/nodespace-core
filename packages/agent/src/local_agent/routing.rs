@@ -1951,6 +1951,79 @@ pub fn stage2_scoped_tools(
     (!scoped.is_empty()).then_some(scoped)
 }
 
+/// Most names the whitelist warning lists, and the longest one shown.
+const MAX_UNAVAILABLE_SHOWN: usize = 10;
+const MAX_UNAVAILABLE_NAME_BYTES: usize = 64;
+
+/// Control characters and the bidirectional formatting characters: neither
+/// belongs in a log line.
+fn is_unsafe_for_log(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// The warning for a turn whose matched skills whitelist tools that are not on
+/// the surface and are not built-in tools: a remote tool (`tool-mcp`,
+/// `tool-rest`, `tool-cli` node) that is unknown, disabled, not approved on this
+/// device, changed since it was approved, or has no runner or confirmer here.
+///
+/// A whitelist only NARROWS the surface the gate already offers (`all`); it can
+/// never add a tool, so a skill that names a remote tool (including one synced
+/// from a peer) brings nothing into reach. This reports the names that therefore
+/// match nothing, so the absence is visible. Names only: no description, schema
+/// or arguments. `None` when every name resolved. Built-in names are left out
+/// (their absence has its own reasons, such as the lookup rules).
+pub fn unavailable_whitelist_warning(
+    candidates: &[SkillCandidate],
+    all: &[ToolDefinition],
+) -> Option<String> {
+    let offered: std::collections::HashSet<&str> = all.iter().map(|t| t.name.as_str()).collect();
+    let names: Vec<&str> = candidates
+        .iter()
+        .filter(|c| clears_score_gate(c))
+        .flat_map(|c| c.tools.iter().map(|t| t.as_str()))
+        .filter(|t| !offered.contains(t) && super::tools::Tool::from_name(t).is_none())
+        .collect();
+    // The names are authored by users and peers: control characters (a newline
+    // or an escape sequence would forge or hide log lines) and bidirectional
+    // controls (they reorder what a reader sees) are replaced BEFORE the name
+    // is cut, and the names are de-duplicated AFTER the cut, so two long names
+    // that differ only past the cut are not printed twice.
+    let mut names: Vec<String> = names
+        .into_iter()
+        .map(|n| {
+            let mut n: String = n
+                .chars()
+                .map(|c| if is_unsafe_for_log(c) { '\u{FFFD}' } else { c })
+                .collect();
+            super::redaction::cut(&mut n, MAX_UNAVAILABLE_NAME_BYTES);
+            n
+        })
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = names
+        .iter()
+        .take(MAX_UNAVAILABLE_SHOWN)
+        .map(String::as_str)
+        .collect();
+    let more = names.len().saturating_sub(MAX_UNAVAILABLE_SHOWN);
+    let mut text = format!(
+        "a matched skill's tool_whitelist names tools that are not available on this device and are not offered: {}",
+        shown.join(", ")
+    );
+    if more > 0 {
+        text.push_str(&format!(", and {more} more"));
+    }
+    Some(text)
+}
+
 /// Add `route_clarify` to a Stage-2 surface when the registry offers it and
 /// the surface does not already carry it.
 ///
