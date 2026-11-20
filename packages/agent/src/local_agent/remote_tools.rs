@@ -398,17 +398,80 @@ pub trait RemoteToolRunner: Send + Sync {
         Ok(self.destination(tool, args))
     }
 
+    /// The question for the user and, for a runner that resolves a host, what
+    /// it resolved to. The default has no pin.
+    async fn confirmation(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+    ) -> Result<Confirmation, RemoteCallError> {
+        Ok(Confirmation {
+            text: self.confirmation_text(tool, args).await?,
+            pin: None,
+        })
+    }
+
     /// Runs one validated, confirmed call.
     async fn run(&self, tool: &RemoteTool, args: &Value) -> Result<RemoteOutput, RemoteCallError>;
+
+    /// Runs a confirmed call using the address the confirmation resolved, so the
+    /// name is not looked up again. The default ignores the pin; a runner that
+    /// returns one from [`confirmation`](Self::confirmation) overrides this.
+    async fn run_pinned(
+        &self,
+        tool: &RemoteTool,
+        args: &Value,
+        _pin: &ResolvedPin,
+    ) -> Result<RemoteOutput, RemoteCallError> {
+        self.run(tool, args).await
+    }
 }
+
+/// A runner's confirmation: the text the user is asked and the address pin.
+#[derive(Debug, Clone)]
+pub struct Confirmation {
+    pub text: String,
+    pub pin: Option<ResolvedPin>,
+}
+
+pub use super::net_policy::ResolvedPin;
 
 /// What the user is asked before a call.
 #[derive(Debug, Clone)]
 pub struct ConfirmationRequest {
     pub tool_name: String,
     pub kind: RemoteToolKind,
+    /// The runner's text: credentials first, then where the call goes. It may
+    /// cut what the arguments turn into; the arguments below are whole.
     pub destination: String,
     pub arguments: Value,
+    /// The arguments as the JSON text the card shows, never cut.
+    pub arguments_json: String,
+    /// The real size of `arguments_json`, in bytes.
+    pub arguments_bytes: usize,
+    /// [`confirmation_digest`] of `destination` and `arguments_json`: what an
+    /// answer is bound to.
+    pub digest: String,
+}
+
+/// The largest arguments a call that needs confirmation may carry. The card
+/// shows them whole, so a call over this is refused instead of shown cut.
+pub const MAX_CONFIRMED_ARGUMENT_BYTES: usize = 16 * 1024;
+
+/// SHA-256, as lowercase hex, of the confirmation text, a zero byte and the
+/// arguments text: what the user saw. An answer carries it; an answer for text
+/// that is not the live request's is refused.
+pub fn confirmation_digest(destination: &str, arguments_json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(destination.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(arguments_json.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Asks the user whether a call may run.
@@ -589,6 +652,7 @@ impl RemoteToolHost {
             .get(&tool.kind)
             .cloned()
             .ok_or_else(|| ToolError::UnknownTool(name.clone()))?;
+        let mut pin: Option<ResolvedPin> = None;
         if tool.needs_confirmation() {
             let Some(confirmer) = &self.confirmer else {
                 return Ok(Self::failure(
@@ -597,17 +661,35 @@ impl RemoteToolHost {
                     false,
                 ));
             };
+            // The arguments are shown whole (see `MAX_CONFIRMED_ARGUMENT_BYTES`).
+            let arguments_json = serde_json::to_string(&args).unwrap_or_default();
+            if arguments_json.len() > MAX_CONFIRMED_ARGUMENT_BYTES {
+                return Ok(Self::failure(
+                    &name,
+                    format!(
+                        "the arguments are {} bytes, more than the {} a confirmation can show in full",
+                        arguments_json.len(),
+                        MAX_CONFIRMED_ARGUMENT_BYTES
+                    ),
+                    false,
+                ));
+            }
             // What the user is shown comes from the runner, which may look
-            // something up first; if it refuses, the user is not asked.
-            let destination = match runner.confirmation_text(&tool, &args).await {
-                Ok(text) => text,
+            // something up first; if it refuses, the user is not asked. What it
+            // resolved is kept, and the run uses it.
+            let confirmation = match runner.confirmation(&tool, &args).await {
+                Ok(confirmation) => confirmation,
                 Err(error) => return Ok(Self::failure(&name, error.0, false)),
             };
+            pin = confirmation.pin.clone();
             let request = ConfirmationRequest {
                 tool_name: name.clone(),
                 kind: tool.kind,
-                destination,
+                digest: confirmation_digest(&confirmation.text, &arguments_json),
+                destination: confirmation.text,
                 arguments: args.clone(),
+                arguments_bytes: arguments_json.len(),
+                arguments_json,
             };
             if !confirmer.confirm(&request).await {
                 return Ok(Self::failure(
@@ -630,7 +712,11 @@ impl RemoteToolHost {
                 ));
             }
         }
-        match runner.run(&tool, &args).await {
+        let ran = match &pin {
+            Some(pin) => runner.run_pinned(&tool, &args, pin).await,
+            None => runner.run(&tool, &args).await,
+        };
+        match ran {
             Ok(mut output) => {
                 let cap = MAX_RESPONSE_BYTES as usize;
                 if output.text.len() > cap {
@@ -2254,5 +2340,160 @@ mod tests {
         assert!(text.ends_with("remote_09, and 15 more"), "{text}");
         assert!(!text.contains("MARKER"));
         assert!(!text.contains("remote_10"));
+    }
+
+    // -- what a confirmation carries, and the pin ---------------------------
+
+    struct Capturing(Arc<std::sync::Mutex<Vec<ConfirmationRequest>>>);
+
+    #[async_trait]
+    impl CallConfirmer for Capturing {
+        async fn confirm(&self, request: &ConfirmationRequest) -> bool {
+            self.0.lock().unwrap().push(request.clone());
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn the_request_carries_the_whole_arguments_their_size_and_a_digest_of_what_is_shown() {
+        let f = fixture().await;
+        f.tool("tool-cli", "c_tool", true).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = f
+            .host_without_confirmer(&all_kinds(), &Arc::new(AtomicUsize::new(0)))
+            .with_confirmer(Arc::new(Capturing(seen.clone())));
+        let q = "x".repeat(5000);
+        host.execute("c_tool", json!({"q": q})).await.unwrap();
+        let request = seen.lock().unwrap()[0].clone();
+        assert_eq!(
+            request.arguments_json,
+            serde_json::to_string(&json!({"q": q})).unwrap()
+        );
+        assert_eq!(request.arguments_bytes, request.arguments_json.len());
+        assert_eq!(
+            request.digest,
+            confirmation_digest(&request.destination, &request.arguments_json)
+        );
+        // The digest moves with either part.
+        assert_ne!(
+            request.digest,
+            confirmation_digest("other", &request.arguments_json)
+        );
+        assert_ne!(
+            request.digest,
+            confirmation_digest(&request.destination, "{}")
+        );
+        assert_ne!(
+            confirmation_digest("a", "bc"),
+            confirmation_digest("ab", "c")
+        );
+    }
+
+    #[tokio::test]
+    async fn arguments_too_large_to_show_whole_are_refused_before_the_user_is_asked() {
+        let f = fixture().await;
+        f.tool("tool-cli", "c_tool", true).await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = f
+            .host_without_confirmer(&all_kinds(), &runs)
+            .with_confirmer(Arc::new(Capturing(seen.clone())));
+        let q = "x".repeat(MAX_ARGUMENT_STRING_BYTES);
+        let out = host.execute("c_tool", json!({"q": q})).await.unwrap();
+        assert!(out.is_error, "{out:?}");
+        assert!(out.result.to_string().contains("more than the"), "{out:?}");
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    /// A runner that resolves: it hands back a pin and records which entry the
+    /// host used for the run.
+    struct Pinning {
+        pinned_runs: Arc<std::sync::Mutex<Vec<ResolvedPin>>>,
+        plain_runs: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl RemoteToolRunner for Pinning {
+        fn kind(&self) -> RemoteToolKind {
+            RemoteToolKind::Cli
+        }
+        fn destination(&self, _: &RemoteTool, _: &Value) -> String {
+            "dest".into()
+        }
+        async fn confirmation(
+            &self,
+            _: &RemoteTool,
+            _: &Value,
+        ) -> Result<Confirmation, RemoteCallError> {
+            Ok(Confirmation {
+                text: "dest (resolved to 1.2.3.4)".into(),
+                pin: Some(ResolvedPin {
+                    host: "h.example".into(),
+                    address: "1.2.3.4".parse().unwrap(),
+                }),
+            })
+        }
+        async fn run(&self, _: &RemoteTool, _: &Value) -> Result<RemoteOutput, RemoteCallError> {
+            self.plain_runs.fetch_add(1, Ordering::SeqCst);
+            Ok(RemoteOutput {
+                text: "plain".into(),
+                truncated: false,
+            })
+        }
+        async fn run_pinned(
+            &self,
+            _: &RemoteTool,
+            _: &Value,
+            pin: &ResolvedPin,
+        ) -> Result<RemoteOutput, RemoteCallError> {
+            self.pinned_runs.lock().unwrap().push(pin.clone());
+            Ok(RemoteOutput {
+                text: "pinned".into(),
+                truncated: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_runs_with_the_address_its_confirmation_resolved() {
+        let f = fixture().await;
+        f.tool("tool-cli", "c_tool", true).await;
+        let pinned = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let plain = Arc::new(AtomicUsize::new(0));
+        let host = RemoteToolHost::new(f.inner.clone(), f.ns.clone(), f.secrets.clone())
+            .with_runner(Arc::new(Pinning {
+                pinned_runs: pinned.clone(),
+                plain_runs: plain.clone(),
+            }))
+            .with_confirmer(Arc::new(Capturing(Arc::default())));
+        let out = host.execute("c_tool", json!({"q": "x"})).await.unwrap();
+        assert_eq!(out.result["output"], "pinned");
+        assert_eq!(pinned.lock().unwrap().len(), 1);
+        assert_eq!(pinned.lock().unwrap()[0].address.to_string(), "1.2.3.4");
+        assert_eq!(plain.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn names_are_cleaned_of_every_invisible_and_separator_character() {
+        let hostile = [
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{200B}b",
+            "a\u{200C}b",
+            "a\u{200D}b",
+            "a\u{2060}b",
+            "a\u{FEFF}b",
+            "a\u{E0041}b",
+            "a\u{E007F}b",
+            "a\u{FE0F}b",
+            "a\u{FE00}b",
+        ];
+        for name in hostile {
+            let skills = [skill_naming(&[name])];
+            let text = unavailable_whitelist_warning(&skills, &[]).unwrap();
+            let shown = text.rsplit(": ").next().unwrap();
+            assert_eq!(shown, "a\u{FFFD}b", "{name:?} -> {shown:?}");
+        }
     }
 }

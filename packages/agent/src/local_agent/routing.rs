@@ -1961,7 +1961,14 @@ fn is_unsafe_for_log(c: char) -> bool {
     c.is_control()
         || matches!(
             c,
-            '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            // line and paragraph separators
+            '\u{2028}' | '\u{2029}'
+            // zero-width and invisible formatting: space, non-joiner, joiner, word joiner, BOM
+            | '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}'
+            // bidirectional controls
+            | '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            // the tag block (invisible text) and variation selectors
+            | '\u{E0000}'..='\u{E007F}' | '\u{FE00}'..='\u{FE0F}'
         )
 }
 

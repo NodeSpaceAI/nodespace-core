@@ -555,3 +555,32 @@ pub(crate) fn credential_note(auth: Option<&HttpAuth>) -> String {
         _ => "; no credential".to_string(),
     }
 }
+
+/// What a confirmation resolved a host to: the address the user's question named,
+/// to be used by the run that follows so a name that changes its answer between
+/// the question and the call (DNS rebinding) is not followed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPin {
+    pub host: String,
+    pub address: IpAddr,
+}
+
+/// A resolver that knows one host and one address: the pinned one. Anything
+/// else is not found. The address policy still runs on the answer.
+pub(crate) struct FixedResolver {
+    pub(crate) pin: ResolvedPin,
+}
+
+#[async_trait]
+impl HostResolver for FixedResolver {
+    async fn resolve(&self, host: &str, _port: u16) -> std::io::Result<Vec<IpAddr>> {
+        if host.eq_ignore_ascii_case(&self.pin.host) {
+            Ok(vec![self.pin.address])
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not the host that was confirmed",
+            ))
+        }
+    }
+}
