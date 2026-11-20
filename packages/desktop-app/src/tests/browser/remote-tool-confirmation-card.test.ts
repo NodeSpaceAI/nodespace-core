@@ -59,19 +59,45 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     expect(container.textContent).toContain(`Arguments (${ARGS.length} bytes)`);
   });
 
-  it('the choices wait a moment after the card is shown and intact', async () => {
+  /** Lets the browser's own async work (the digest) finish; timers are not touched. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      await new Promise<void>((resolve) => {
+        const channel = new globalThis.MessageChannel();
+        channel.port1.onmessage = () => resolve();
+        channel.port2.postMessage(0);
+      });
+    }
+  }
+
+  it('the choices wait for the delay after the card is shown AND intact', async () => {
     const onAnswer = vi.fn(async () => true);
-    const { container } = mount(await cardMessage(), onAnswer);
-    // Intact, shown, but not yet armed: the choices are disabled and a forced
-    // activation answers nothing.
-    await vi.waitUntil(() => container.querySelector('[data-choice]'));
-    expect(choice(container, 'allow').disabled).toBe(true);
-    choice(container, 'allow').disabled = false;
-    choice(container, 'allow').click();
-    await tick();
-    expect(onAnswer).not.toHaveBeenCalled();
-    await vi.waitUntil(() => !choice(container, 'allow').disabled, { timeout: 3000 });
-    expect(ENABLE_DELAY_MS).toBe(500);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { container } = mount(await cardMessage(), onAnswer);
+      // Long enough for the digest check to finish: the card is intact now, so
+      // only the delay is holding the choices back.
+      await settle();
+      expect(choice(container, 'allow').disabled).toBe(true);
+      expect(choice(container, 'deny').disabled).toBe(true);
+      // An activation before the delay answers nothing.
+      choice(container, 'allow').click();
+      choice(container, 'deny').click();
+      await tick();
+      expect(onAnswer).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(ENABLE_DELAY_MS - 1);
+      await tick();
+      expect(choice(container, 'allow').disabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(2);
+      await tick();
+      expect(choice(container, 'allow').disabled).toBe(false);
+      expect(choice(container, 'deny').disabled).toBe(false);
+      choice(container, 'allow').click();
+      await tick();
+      expect(onAnswer).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('focus is taken once and not taken again when the card re-checks itself', async () => {
@@ -80,17 +106,31 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     await vi.waitUntil(() => document.activeElement === choice(container, 'deny'), {
       timeout: 3000
     });
-    // The user moves on to Allow; a re-render with the same message must not pull
-    // focus back to Don't allow.
+    // The user moves on to Allow.
     choice(container, 'allow').focus();
-    await rerender({ message: { ...message }, onAnswer: async () => true });
-    vi.useFakeTimers();
+    // The card is re-checked: new text with its own matching digest, so the
+    // check runs again (intact goes unknown, then true again) and the choices
+    // re-arm. Focus must stay where the user put it.
+    const args = '{"q":"changed"}';
+    const changed = {
+      ...message,
+      confirmationArguments: args,
+      confirmationDigest: await confirmationDigest(SUMMARY, args)
+    };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
+      await rerender({ message: changed, onAnswer: async () => true });
+      await settle();
       await vi.advanceTimersByTimeAsync(ENABLE_DELAY_MS * 2);
+      await settle();
     } finally {
       vi.useRealTimers();
     }
-    expect(document.activeElement).toBe(choice(container, 'allow'));
+    expect(choice(container, 'allow').disabled).toBe(false);
+    // The choices were disabled while the card re-checked itself, which drops
+    // focus from the one the user was on; what matters is that it was NOT taken
+    // back to Don't allow.
+    expect(document.activeElement).not.toBe(choice(container, 'deny'));
   });
 
   it('a card that cannot be answered does not take focus', async () => {

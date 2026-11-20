@@ -443,7 +443,15 @@ async fn refuse_conversation_record(
     node_type: &str,
     tool_name: &str,
 ) -> Result<(), ToolError> {
-    let is_message = nodespace_core::models::CoreNodeType::AiChatMessage.is_exactly(node_type);
+    // A message, or a subtype of one (it does not render as a card, but nothing an
+    // agent writes should be a conversation record).
+    let is_message = ns
+        .type_is_a(
+            node_type,
+            nodespace_core::models::CoreNodeType::AiChatMessage,
+        )
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("{tool_name}: {e}")))?;
     if is_message || is_conversation_type(ns, node_type, tool_name).await? {
         return Err(ToolError::InvalidArguments {
             tool: tool_name.to_string(),
@@ -12117,6 +12125,23 @@ mod tests {
                 if tool == "create_node" && reason.contains("written by NodeSpace")),
                 "{err:?}"
             );
+            // A spelling that is not the type's own is not another way in: it is
+            // refused as the type or as an unknown one.
+            for alias in [
+                "AI-CHAT-MESSAGE",
+                "Ai-Chat-Message",
+                " ai-chat-message",
+                "ai-chat-message ",
+            ] {
+                let attempt = executor
+                    .execute(
+                        "create_node",
+                        json!({"node_type": alias, "content": "x",
+                               "field_values": {"role": "assistant"}}),
+                    )
+                    .await;
+                assert!(attempt.is_err(), "{alias:?} was accepted: {attempt:?}");
+            }
             let chat = executor
                 .execute(
                     "create_node",
