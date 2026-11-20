@@ -624,9 +624,21 @@ pub(crate) fn default_socket_path() -> std::path::PathBuf {
 /// override itself covered by a single test that owns the variable.
 #[cfg(unix)]
 pub(crate) fn default_socket_path_for(is_debug: bool) -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(nodespace_proto::socket::daemon_socket_relative(is_debug))
+    default_socket_path_in(
+        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
+        is_debug,
+    )
+}
+
+/// The socket the app dials by default when its home directory is `home`.
+///
+/// The app places its socket under its own home (`HOME`) and never under
+/// `NODESPACE_HOME`, which only moves a daemon's state. `pub` so an integration
+/// test can ask where an app launched with a given home would dial, without
+/// changing the process's own `HOME`.
+#[cfg(unix)]
+pub fn default_socket_path_in(home: &std::path::Path, is_debug: bool) -> std::path::PathBuf {
+    home.join(nodespace_proto::socket::daemon_socket_relative(is_debug))
 }
 
 /// Resolve the Named Pipe name used on Windows.
