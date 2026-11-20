@@ -3856,7 +3856,12 @@ mod tests {
                 "tool_call_id",
                 "tool_title",
                 "tool_kind",
-                "tool_status"
+                "tool_status",
+                "confirmation_id",
+                "confirmation_digest",
+                "confirmation_status",
+                "confirmation_arguments",
+                "confirmation_credentials"
             ]
         );
         assert_eq!(message.extends, None);

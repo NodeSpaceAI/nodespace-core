@@ -145,6 +145,29 @@ describe('RemoteToolConfirmationCard (real browser)', () => {
     expect(container.querySelector('[data-choice]')).toBeNull();
   });
 
+  it('a card with an id but no digest is a record only', async () => {
+    const message = await cardMessage({ confirmationDigest: undefined });
+    const { container } = mount(message, async () => true);
+    expect(container.textContent).toContain('Waiting on the device that is running this chat');
+    expect(container.querySelector('[data-choice]')).toBeNull();
+  });
+
+  it('answers once even if a disabled choice is forced back on', async () => {
+    const onAnswer = vi.fn(async () => true);
+    const { container } = mount(await cardMessage(), onAnswer);
+    await vi.waitUntil(() => !choice(container, 'allow').disabled);
+    await userEvent.click(choice(container, 'allow'));
+    // Script re-enables the choices and activates them again: the card's own
+    // guard, not only the `disabled` attribute, holds.
+    for (const which of ['allow', 'deny'] as const) {
+      const button = choice(container, which);
+      button.disabled = false;
+      button.click();
+    }
+    await tick();
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+  });
+
   it('a viewer that cannot answer shows the choices nowhere', async () => {
     const { container } = mount(await cardMessage(), undefined);
     expect(container.querySelector('[data-choice]')).toBeNull();

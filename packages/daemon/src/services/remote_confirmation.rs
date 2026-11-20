@@ -400,7 +400,14 @@ pub trait AnswerGate: Send + Sync {
 /// `setsid`) and whose parent has exited cannot be told from another program of
 /// the same user; closing that needs the peer's audit token and a code-signature
 /// check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity` against the NodeSpace
-/// team id), which is not done here. The peer's pid is captured when it connects
+/// team id), which is not done here.
+///
+/// Two more facts. The question's id and digest are stored on the chat card, so
+/// any same-user program can read them (`nodespace get`): the id is not a secret
+/// from tools, and this gate is the only barrier. And a UI started from the
+/// in-app PTY terminal or by an ACP agent descends from a recorded program, so
+/// it is refused (fail closed; the user answers from the app as started
+/// normally). The peer's pid is captured when it connects
 /// and judged on each request; a connector that has died reads as unknown and is
 /// refused. This narrows the channel; it is not a sandbox.
 pub struct SpawnedProcessGate {
@@ -978,7 +985,7 @@ mod tests {
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            nodespace_agent::spawned::record(child.id());
+            nodespace_agent::spawned::record(child.id(), true);
             child
         }
 

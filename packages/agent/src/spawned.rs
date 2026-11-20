@@ -52,12 +52,18 @@ fn with_registry<T>(f: impl FnOnce(&mut Registry) -> T) -> T {
     f(guard.get_or_insert_with(Registry::default))
 }
 
-/// Records a program the daemon has just started. A program that is already
-/// gone (it cannot be read) is not recorded: nothing of it can connect.
-pub fn record(pid: u32) {
-    let Some(info) = proc_info(pid) else {
-        return;
-    };
+/// Records a program the daemon has just started.
+///
+/// `leads_own_group` is true for a program started in a process group of its
+/// own (`process_group(0)`, or a PTY child, which leads its session): its group
+/// is then recorded as the program's pid WITHOUT reading anything from the
+/// kernel, so a program that exits before it can be read still leaves its group
+/// recorded for the orphans it started. It is false for a program that shares
+/// the daemon's own group: only its pid is recorded, never the group, because
+/// recording the daemon's group would refuse every program the daemon starts,
+/// the app the tray opens included.
+pub fn record(pid: u32, leads_own_group: bool) {
+    let info = proc_info(pid);
     with_registry(|r| {
         prune(r, &proc_info, &group_alive);
         if r.pids.len() >= MAX_RECORDED {
@@ -67,10 +73,10 @@ pub fn record(pid: u32) {
                 r.pids.remove(&oldest);
             }
         }
-        r.pids.insert(pid, info.start);
-        // A tool program leads its own group (started with `process_group(0)`, or
-        // as a session leader on a PTY); a group is recorded only when it does.
-        if info.pgid == pid {
+        if let Some(info) = info {
+            r.pids.insert(pid, info.start);
+        }
+        if leads_own_group {
             r.groups.insert(pid);
         }
     });
@@ -296,5 +302,43 @@ mod tests {
         let pid = child.id();
         child.wait().unwrap();
         assert_eq!(proc_info(pid), None, "a reaped process is not readable");
+    }
+
+    #[cfg(unix)]
+    mod real_processes {
+        use super::*;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        #[test]
+        fn a_program_sharing_the_daemons_group_does_not_make_that_group_a_tools() {
+            // Started WITHOUT process_group(0): it is in this process's group.
+            let mut child = Command::new("sleep").arg("20").spawn().unwrap();
+            record(child.id(), false);
+            // An unrelated process in the same group, and this process itself,
+            // are not tool programs: the group was not recorded.
+            let mut sibling = Command::new("sleep").arg("20").spawn().unwrap();
+            assert_eq!(classify_peer(sibling.id()), Some(false));
+            assert_eq!(classify_peer(std::process::id()), Some(false));
+            // The program itself is still known by its pid.
+            assert_eq!(classify_peer(child.id()), Some(true));
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = sibling.kill();
+            let _ = sibling.wait();
+        }
+
+        #[test]
+        fn a_program_that_leads_its_group_is_recorded_even_if_it_is_gone_before_it_can_be_read() {
+            let mut child = Command::new("true").process_group(0).spawn().unwrap();
+            let pid = child.id();
+            child.wait().unwrap();
+            assert_eq!(proc_info(pid), None, "gone: nothing can be read");
+            record(pid, true);
+            with_registry(|r| assert!(r.groups.contains(&pid), "its group is recorded"));
+            // Nothing lives in the group, so the next look forgets it.
+            let _ = classify_peer(std::process::id());
+            with_registry(|r| assert!(!r.groups.contains(&pid), "an empty group is forgotten"));
+        }
     }
 }

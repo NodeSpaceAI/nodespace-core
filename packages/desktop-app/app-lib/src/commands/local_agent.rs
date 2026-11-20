@@ -9,8 +9,8 @@ use crate::agent_events;
 use crate::commands::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{
-    AnswerConfirmationRequest, CancelTurnRequest, EnsureModelReadyRequest, GetLocalStatusRequest, ListModelsRequest,
-    OpenBoundChatRequest, SubscribeTokenStreamRequest,
+    AnswerConfirmationRequest, CancelTurnRequest, EnsureModelReadyRequest, GetLocalStatusRequest,
+    ListModelsRequest, OpenBoundChatRequest, SubscribeTokenStreamRequest,
 };
 use serde::Serialize;
 use std::future::Future;

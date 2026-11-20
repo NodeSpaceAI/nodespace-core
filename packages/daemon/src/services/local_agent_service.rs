@@ -9970,6 +9970,7 @@ mod tests {
                 arguments: serde_json::json!({}),
                 arguments_bytes: 2,
                 arguments_json,
+                credentials: vec![],
             };
             let task = tokio::spawn(async move { confirmer.confirm(&request).await });
             let ask = loop {
