@@ -5,6 +5,7 @@
 //! out. Proto types are provided by the `nodespace-proto` crate; this lib
 //! re-exports them alongside the service implementations.
 
+pub mod code_identity;
 pub mod db_routing;
 pub(crate) mod durable_write;
 pub mod incompatible_database;

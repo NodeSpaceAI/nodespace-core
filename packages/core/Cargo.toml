@@ -46,6 +46,9 @@ sha2 = "0.10"
 hmac = "0.12"
 # Overwrites a credential value when it is dropped.
 zeroize = "1"
+# The approval key: 32 bytes from the operating system's random source. The
+# version uuid already uses, so nothing new is built.
+getrandom = "0.4"
 
 # Logging
 tracing = { workspace = true }
@@ -65,10 +68,6 @@ cron = "0.16"
 # there the store reports itself unavailable and `env:` references apply.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
-# The keychain's add-only write (`SecKeychainAddGenericPassword`), which the
-# keyring crate does not expose: the approval key is written with it. The same
-# major version keyring uses, so no second copy is built.
-security-framework = "3"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

@@ -306,7 +306,17 @@ pub struct SharedLocalAgent {
     /// installed (tests, an embedding host), nothing can be confirmed, so
     /// those changes are refused.
     user_presence: std::sync::OnceLock<Arc<crate::user_presence::UserPresence>>,
+    /// The approval key this daemon made when it started (kept only in this
+    /// process's memory, shared by every database), or why it has none:
+    /// installed once at startup ([`Self::install_approval_key`]). Never
+    /// installed (tests, an embedding host) means no key: nothing is approved
+    /// or offered.
+    approval_key: std::sync::OnceLock<ApprovalKeySlot>,
 }
+
+/// The daemon's approval key, or why it has none (the message an approval
+/// gets).
+pub type ApprovalKeySlot = Result<Arc<nodespace_core::secrets::ApprovalKey>, String>;
 
 impl SharedLocalAgent {
     /// Build the process-global inference state. Called once, from
@@ -363,7 +373,22 @@ impl SharedLocalAgent {
             model_spec_snapshot_timeout,
             idle_gate: ChatIdleGate::new(),
             user_presence: std::sync::OnceLock::new(),
+            approval_key: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Installs the daemon's approval key (or why it has none). Once only,
+    /// before any database is opened: a second call, or one after the first
+    /// use, is refused and returns `false`.
+    pub fn install_approval_key(&self, key: ApprovalKeySlot) -> bool {
+        self.approval_key.set(key).is_ok()
+    }
+
+    /// The daemon's approval key, or why it has none.
+    pub fn approval_key(&self) -> ApprovalKeySlot {
+        self.approval_key
+            .get_or_init(|| Err("this daemon holds no approval key".to_string()))
+            .clone()
     }
 
     /// Installs the way the person at the screen is asked. Once only, before
@@ -553,8 +578,10 @@ struct LocalAgentServiceInner {
     answer_gate: Arc<dyn AnswerGate>,
     /// Writes and updates the chat card a confirmation is shown on.
     chat_cards: Arc<ChatCardUi>,
-    /// This device's credential store: where the approval key lives.
+    /// This device's credential store, for the runners' credentials.
     secrets: Arc<nodespace_core::secrets::SecretStore>,
+    /// The daemon's approval key, or why it has none.
+    approval_key: ApprovalKeySlot,
     /// Asks the person at the screen before an approval is written (the
     /// daemon's one instance, shared with the credential service).
     presence: Arc<crate::user_presence::UserPresence>,
@@ -579,9 +606,7 @@ fn approval_status(error: ApprovalError) -> Status {
         ApprovalError::Changed | ApprovalError::Conflict | ApprovalError::NotInEffect => {
             Status::aborted(error.to_string())
         }
-        ApprovalError::Read(_) | ApprovalError::Key(_) | ApprovalError::Write(_) => {
-            Status::unavailable(error.to_string())
-        }
+        ApprovalError::Read(_) | ApprovalError::Write(_) => Status::unavailable(error.to_string()),
         _ => Status::failed_precondition(error.to_string()),
     }
 }
@@ -649,6 +674,7 @@ impl LocalAgentServiceImpl {
         let (token_tx, _) = broadcast::channel(512);
         let node_service_for_cards = node_service.clone();
         let presence = shared.user_presence();
+        let approval_key = shared.approval_key();
 
         Self {
             inner: Arc::new(LocalAgentServiceInner {
@@ -663,6 +689,7 @@ impl LocalAgentServiceImpl {
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
                 presence,
+                approval_key,
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: None,
             }),
@@ -685,6 +712,7 @@ impl LocalAgentServiceImpl {
         let (token_tx, _) = broadcast::channel(512);
         let node_service_for_cards = node_service.clone();
         let presence = shared.user_presence();
+        let approval_key = shared.approval_key();
 
         Self {
             inner: Arc::new(LocalAgentServiceInner {
@@ -699,6 +727,7 @@ impl LocalAgentServiceImpl {
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
                 presence,
+                approval_key,
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: Some(playbook_lifecycle),
             }),
@@ -776,6 +805,13 @@ impl LocalAgentServiceImpl {
         let reviewed = tool_approval::review(&self.inner.node_service, node_id, digest)
             .await
             .map_err(approval_status)?;
+        // No key (not macOS, or not a signed release): nothing can be approved,
+        // so nobody is asked.
+        let key = self
+            .inner
+            .approval_key
+            .as_ref()
+            .map_err(|why| Status::failed_precondition(why.clone()))?;
         let shown = reviewed.preview();
         let reason = crate::user_presence::approval_reason(&shown.name, &shown.code, &shown.target);
         self.inner
@@ -786,7 +822,7 @@ impl LocalAgentServiceImpl {
                 tracing::info!(node_id, ?refusal, "a tool approval was not confirmed");
                 refusal.status()
             })?;
-        tool_approval::write(&self.inner.node_service, &self.inner.secrets, reviewed)
+        tool_approval::write(&self.inner.node_service, key, reviewed)
             .await
             .map_err(approval_status)
     }
@@ -859,6 +895,36 @@ impl LocalAgentServiceImpl {
     /// ended within the turn, so a cache would buy nothing — while keeping a
     /// stale one alive would pin the previously-loaded model's weights in a
     /// database that simply hasn't been chatted with since the swap.
+    /// The host a turn's tools go through. Remote tools (tool-mcp, tool-rest,
+    /// tool-cli) are offered and run only through it, checked under the
+    /// daemon's approval key (none: nothing is offered). The `tool-cli`,
+    /// `tool-rest` and `tool-mcp` runners are installed. A tool whose calls
+    /// need confirmation (every `tool-cli` and `tool-mcp` call and every
+    /// `tool-rest` call but a `GET` with no credential) is offered only when
+    /// the turn has a confirmer, which is an interactive turn's (see
+    /// `confirmer_for_turn`).
+    fn remote_tool_host(
+        &self,
+        graph_tools: Arc<dyn AgentToolExecutor>,
+        confirmer: Option<Arc<dyn CallConfirmer>>,
+    ) -> RemoteToolHost {
+        let secrets = Arc::clone(&self.inner.secrets);
+        let mut host = RemoteToolHost::new(
+            graph_tools,
+            self.inner.node_service.clone(),
+            self.inner.approval_key.as_ref().ok().cloned(),
+        )
+        .with_runner(Arc::new(CliRunner::new(Arc::clone(&secrets))))
+        .with_runner(Arc::new(RestRunner::new(Arc::clone(&secrets))))
+        .with_runner(Arc::new(McpRunner::new(secrets)));
+        // A confirmer only on an interactive turn: with none, a tool whose calls
+        // need confirmation is not offered at all.
+        if let Some(confirmer) = confirmer {
+            host = host.with_confirmer(confirmer);
+        }
+        host
+    }
+
     async fn get_service(&self, confirmer: Option<Arc<dyn CallConfirmer>>) -> AgentService {
         let engine = self.inner.shared.engine().await;
         // Hand the executor the *shared* embedding handle, not a snapshot. The
@@ -878,27 +944,8 @@ impl LocalAgentServiceImpl {
             inference_engine: Some(engine.clone()),
             playbook_lifecycle: self.inner.playbook_lifecycle.clone(),
         });
-        // Remote tools (tool-mcp, tool-rest, tool-cli) are offered and run only
-        // through this host. The `tool-cli`, `tool-rest` and `tool-mcp` runners
-        // are installed. A tool whose calls need confirmation (every `tool-cli`
-        // and `tool-mcp` call and every `tool-rest` call but a `GET` with no
-        // credential) is offered only when the turn has a confirmer, which is
-        // an interactive turn's (see `confirmer_for_turn`).
-        let secrets = Arc::clone(&self.inner.secrets);
-        let mut host = RemoteToolHost::new(
-            graph_tools,
-            self.inner.node_service.clone(),
-            Arc::clone(&secrets),
-        )
-        .with_runner(Arc::new(CliRunner::new(Arc::clone(&secrets))))
-        .with_runner(Arc::new(RestRunner::new(Arc::clone(&secrets))))
-        .with_runner(Arc::new(McpRunner::new(secrets)));
-        // A confirmer only on an interactive turn: with none, a tool whose calls
-        // need confirmation is not offered at all.
-        if let Some(confirmer) = confirmer {
-            host = host.with_confirmer(confirmer);
-        }
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(host);
+        let executor: Arc<dyn AgentToolExecutor> =
+            Arc::new(self.remote_tool_host(graph_tools, confirmer));
 
         let prompt_assembler = Some(Arc::new(
             nodespace_agent::prompt_assembler::PromptAssembler::new(
@@ -1898,10 +1945,13 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
     ) -> Result<Response<DescribeToolApprovalResponse>, Status> {
         let this = self.route(&request).await?;
         let node_id = request.into_inner().node_id;
-        let preview =
-            tool_approval::preview(&this.inner.node_service, &this.inner.secrets, &node_id)
-                .await
-                .map_err(approval_status)?;
+        let preview = tool_approval::preview(
+            &this.inner.node_service,
+            this.inner.approval_key.as_deref().ok(),
+            &node_id,
+        )
+        .await
+        .map_err(approval_status)?;
         Ok(Response::new(DescribeToolApprovalResponse {
             node_id: preview.node_id,
             name: preview.name,
@@ -10156,6 +10206,23 @@ mod tests {
         )))
     }
 
+    fn a_daemon_key() -> ApprovalKeySlot {
+        Ok(Arc::new(
+            nodespace_core::secrets::ApprovalKey::generate().unwrap(),
+        ))
+    }
+
+    /// What `DescribeToolApproval` would show for `id`.
+    async fn shown(
+        svc: &LocalAgentServiceImpl,
+        ns: &NodeService,
+        id: &str,
+    ) -> tool_approval::ApprovalPreview {
+        tool_approval::preview(ns, svc.inner.approval_key.as_deref().ok(), id)
+            .await
+            .unwrap()
+    }
+
     use crate::user_presence::fake::{Answer as Dialog, FakePresence};
     use crate::user_presence::UserPresence;
 
@@ -10168,6 +10235,7 @@ mod tests {
         let inner = Arc::get_mut(&mut svc.inner).unwrap();
         inner.secrets = in_memory_secrets();
         inner.presence = Arc::new(UserPresence::new(fake.clone()));
+        inner.approval_key = a_daemon_key();
         (svc, ns, tmp)
     }
 
@@ -10199,9 +10267,7 @@ mod tests {
         let fake = FakePresence::new(Dialog::Yes);
         let (svc, ns, _tmp) = approving_service(&fake).await;
         let id = cli_tool(&ns, "lookup").await;
-        let preview = tool_approval::preview(&ns, &svc.inner.secrets, &id)
-            .await
-            .unwrap();
+        let preview = shown(&svc, &ns, &id).await;
 
         let aborted = svc.approve_tool_checked(&id, "wrong").await.unwrap_err();
         assert_eq!(aborted.code(), tonic::Code::Aborted);
@@ -10258,9 +10324,7 @@ mod tests {
             let (svc, ns, _tmp) = approving_service(&fake).await;
             let id = cli_tool(&ns, "lookup").await;
             let before = ns.get_node(&id).await.unwrap().unwrap();
-            let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
-                .await
-                .unwrap();
+            let shown = shown(&svc, &ns, &id).await;
             let refused = svc
                 .approve_tool_checked(&id, &shown.digest)
                 .await
@@ -10270,15 +10334,14 @@ mod tests {
             let after = ns.get_node(&id).await.unwrap().unwrap();
             assert_eq!(before.version, after.version);
             assert!(!touched(&ns, &id).await);
-            assert!(svc.inner.secrets.approval_key().unwrap().is_none());
         }
         // Where nothing was ever installed, nothing can be confirmed.
         let (mut svc, ns, _tmp) = test_service().await;
-        Arc::get_mut(&mut svc.inner).unwrap().secrets = in_memory_secrets();
+        let inner = Arc::get_mut(&mut svc.inner).unwrap();
+        inner.secrets = in_memory_secrets();
+        inner.approval_key = a_daemon_key();
         let id = cli_tool(&ns, "lookup").await;
-        let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
-            .await
-            .unwrap();
+        let shown = shown(&svc, &ns, &id).await;
         let refused = svc
             .approve_tool_checked(&id, &shown.digest)
             .await
@@ -10294,9 +10357,7 @@ mod tests {
         let fake = FakePresence::new(Dialog::Yes);
         let (svc, ns, _tmp) = approving_service(&fake).await;
         let id = cli_tool(&ns, "lookup").await;
-        let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
-            .await
-            .unwrap();
+        let shown = shown(&svc, &ns, &id).await;
         svc.approve_tool_checked(&id, &shown.digest).await.unwrap();
         assert_eq!(
             fake.asked(),
@@ -10318,9 +10379,7 @@ mod tests {
         let fake = FakePresence::new(Dialog::Yes);
         let (svc, ns, _tmp) = approving_service(&fake).await;
         let id = cli_tool(&ns, "lookup").await;
-        let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
-            .await
-            .unwrap();
+        let shown = shown(&svc, &ns, &id).await;
         {
             let (ns, id) = (Arc::clone(&ns), id.clone());
             let runtime = tokio::runtime::Handle::current();
@@ -10356,12 +10415,8 @@ mod tests {
         let (svc, ns, _tmp) = approving_service(&fake).await;
         let first_id = cli_tool(&ns, "lookup").await;
         let second_id = cli_tool(&ns, "other").await;
-        let first = tool_approval::preview(&ns, &svc.inner.secrets, &first_id)
-            .await
-            .unwrap();
-        let second = tool_approval::preview(&ns, &svc.inner.secrets, &second_id)
-            .await
-            .unwrap();
+        let first = shown(&svc, &ns, &first_id).await;
+        let second = shown(&svc, &ns, &second_id).await;
         let waiting = {
             let svc = svc.clone();
             let (id, digest) = (first_id.clone(), first.digest.clone());
@@ -10380,6 +10435,136 @@ mod tests {
         waiting.await.unwrap().unwrap();
         assert_eq!(fake.asked().len(), 1);
         assert!(touched(&ns, &first_id).await);
+    }
+
+    /// A daemon with no key (not macOS, or a release build that is not signed
+    /// as one) approves nothing, and asks nobody: the message says why.
+    #[tokio::test]
+    async fn without_an_approval_key_nothing_is_approved_and_nobody_is_asked() {
+        let fake = FakePresence::new(Dialog::Yes);
+        let (mut svc, ns, _tmp) = approving_service(&fake).await;
+        Arc::get_mut(&mut svc.inner).unwrap().approval_key =
+            Err("approving a remote tool is not available on this platform".to_string());
+        let id = cli_tool(&ns, "lookup").await;
+        let preview = shown(&svc, &ns, &id).await;
+        assert!(!preview.approved);
+        let refused = svc
+            .approve_tool_checked(&id, &preview.digest)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(refused.message().contains("not available on this platform"));
+        assert!(fake.asked().is_empty());
+        assert!(!touched(&ns, &id).await);
+    }
+
+    /// The key is the daemon's, in memory: an approval writes nothing to the
+    /// credential store, and the turn's host checks tags under that key.
+    #[tokio::test]
+    async fn an_approval_stores_nothing_in_the_credential_store() {
+        let fake = FakePresence::new(Dialog::Yes);
+        let (mut svc, ns, _tmp) = approving_service(&fake).await;
+        let backend = Arc::new(nodespace_core::secrets::InMemorySecretBackend::default());
+        Arc::get_mut(&mut svc.inner).unwrap().secrets =
+            Arc::new(nodespace_core::secrets::SecretStore::new(backend.clone()));
+        let id = cli_tool(&ns, "lookup").await;
+        let preview = shown(&svc, &ns, &id).await;
+        svc.approve_tool_checked(&id, &preview.digest)
+            .await
+            .unwrap();
+        assert!(shown(&svc, &ns, &id).await.approved);
+        assert!(
+            backend.snapshot().is_empty(),
+            "{:?}",
+            backend.snapshot().keys()
+        );
+    }
+
+    /// What a turn is offered: the remote tools that pass the gate under the
+    /// daemon's key, through the host the turn is built with.
+    async fn offered_names(svc: &LocalAgentServiceImpl) -> Vec<String> {
+        struct Yes;
+        #[async_trait::async_trait]
+        impl CallConfirmer for Yes {
+            async fn confirm(
+                &self,
+                _: &nodespace_agent::local_agent::remote_tools::ConfirmationRequest,
+            ) -> bool {
+                true
+            }
+        }
+        let graph_tools: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
+            node_service: Some(svc.inner.node_service.clone()),
+            embedding_service: svc.inner.embedding_service.clone(),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        });
+        svc.remote_tool_host(graph_tools, Some(Arc::new(Yes)))
+            .available_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(nodespace_agent::local_agent::remote_tools::is_remote_definition)
+            .map(|d| d.name)
+            .collect()
+    }
+
+    /// A turn offers a tool approved here, under the daemon's key; a tool
+    /// tagged with a key planted in the credential store under its old name is
+    /// not offered.
+    #[tokio::test]
+    async fn a_turn_offers_what_was_approved_here_and_not_what_a_planted_key_tagged() {
+        let fake = FakePresence::new(Dialog::Yes);
+        let (mut svc, ns, _tmp) = approving_service(&fake).await;
+        let backend = Arc::new(nodespace_core::secrets::InMemorySecretBackend::default());
+        let planted = nodespace_core::secrets::ApprovalKey::from_bytes([0x5a; 32]);
+        let hex: String = planted
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        nodespace_core::secrets::SecretBackend::set(&*backend, "approval-key", &hex).unwrap();
+        Arc::get_mut(&mut svc.inner).unwrap().secrets =
+            Arc::new(nodespace_core::secrets::SecretStore::new(backend));
+        let approved = cli_tool(&ns, "lookup").await;
+        let preview = shown(&svc, &ns, &approved).await;
+        svc.approve_tool_checked(&approved, &preview.digest)
+            .await
+            .unwrap();
+        let forged = cli_tool(&ns, "forged").await;
+        let node = ns.get_node(&forged).await.unwrap().unwrap();
+        let chain = ns.resolve_type_chain(&node.node_type).await.unwrap();
+        let tag = nodespace_agent::local_agent::remote_tools::approve(&node, &chain, &planted);
+        ns.update_node(
+            &forged,
+            node.version,
+            nodespace_core::models::NodeUpdate::new()
+                .with_properties(serde_json::json!({"enabled": true, "approved_binding": tag})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(offered_names(&svc).await, ["lookup"]);
+        // A daemon without a key offers neither.
+        Arc::get_mut(&mut svc.inner).unwrap().approval_key = Err("no key".to_string());
+        assert!(offered_names(&svc).await.is_empty());
+    }
+
+    #[test]
+    fn the_approval_key_is_installed_once_and_is_none_until_then() {
+        let shared = SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT);
+        assert!(shared.approval_key().is_err());
+        let shared = SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT);
+        let key = a_daemon_key();
+        assert!(shared.install_approval_key(key.clone()));
+        assert!(Arc::ptr_eq(
+            shared.approval_key().as_ref().unwrap(),
+            key.as_ref().unwrap()
+        ));
+        assert!(!shared.install_approval_key(a_daemon_key()));
+        assert!(Arc::ptr_eq(
+            shared.approval_key().as_ref().unwrap(),
+            key.as_ref().unwrap()
+        ));
     }
 
     #[test]
@@ -10454,7 +10639,6 @@ mod tests {
         async fn the_default_gate_refuses_an_approval_from_the_daemon_and_writes_nothing() {
             let fake = FakePresence::new(Dialog::Yes);
             let (svc, ns, _tmp) = approving_service(&fake).await;
-            let secrets = Arc::clone(&svc.inner.secrets);
             let id = cli_tool(&ns, "lookup").await;
             let (mut client, _dir) = serve(svc).await;
 
@@ -10485,7 +10669,6 @@ mod tests {
             let node = ns.get_node(&id).await.unwrap().unwrap();
             assert_ne!(node.properties["tool"]["enabled"], serde_json::json!(true));
             assert!(node.properties["tool"].get("approved_binding").is_none());
-            assert!(secrets.approval_key().unwrap().is_none());
             // Refused before anyone was asked.
             assert!(fake.asked().is_empty());
         }
@@ -10497,7 +10680,6 @@ mod tests {
         async fn an_allowed_peer_approves_what_it_was_shown_over_the_socket() {
             let fake = FakePresence::new(Dialog::Yes);
             let (mut svc, ns, _tmp) = approving_service(&fake).await;
-            let secrets = Arc::clone(&svc.inner.secrets);
             Arc::get_mut(&mut svc.inner).unwrap().answer_gate = Arc::new(Lets(std::process::id()));
             let id = cli_tool(&ns, "lookup").await;
             let (mut client, _dir) = serve(svc).await;
@@ -10519,7 +10701,6 @@ mod tests {
 
             let node = ns.get_node(&id).await.unwrap().unwrap();
             assert_eq!(node.properties["tool"]["enabled"], serde_json::json!(true));
-            assert!(secrets.approval_key().unwrap().is_some());
             let again = client
                 .describe_tool_approval(describe(&id))
                 .await

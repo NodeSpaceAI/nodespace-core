@@ -190,8 +190,9 @@ fn question(preview: &DescribeToolApprovalResponse) -> String {
     let code = display_line(&preview.code);
     format!(
         "\nApproving lets the model call this tool on this device. Every call except a web \
-         GET without credentials asks you first. Editing the tool, or turning it off, ends \
-         the approval until you approve it again. After you type the name, this Mac asks \
+         GET without credentials asks you first. Editing the tool, turning it off, or a \
+         restart of the NodeSpace daemon ends the approval until you approve it again. \
+         After you type the name, this Mac asks \
          you to confirm in a system dialog that shows code {code}; confirm only a dialog \
          with that code.\n{target}\n\
          Type the tool's name to approve it (anything else cancels): "

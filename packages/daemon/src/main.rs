@@ -71,6 +71,17 @@ fn install_user_presence(
     local_agent.user_presence()
 }
 
+/// Makes this daemon's approval key (only on macOS, and in a release build
+/// only when its own code signature passes; see
+/// `nodespace_daemon::code_identity`) and installs it for every database.
+/// Called once, before any database is opened.
+fn install_approval_key(shared: &nodespace_daemon::SharedServices) {
+    let key = nodespace_daemon::code_identity::approval_key_for_this_process().map(Arc::new);
+    if !shared.context.local_agent.install_approval_key(key) {
+        tracing::error!("the approval key was already set; keeping the one in place");
+    }
+}
+
 /// Keep the tray's Databases submenu in step with the registry for the life of
 /// the daemon.
 ///
@@ -1737,6 +1748,7 @@ async fn serve_headless() -> Result<()> {
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let presence = install_user_presence(&shared);
+    install_approval_key(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared.context.pty_manager.set_daemon_socket(sock.clone());
@@ -1822,6 +1834,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let presence = install_user_presence(&shared);
+    install_approval_key(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared.context.pty_manager.set_daemon_socket(sock.clone());
@@ -1965,6 +1978,7 @@ async fn serve_headless() -> Result<()> {
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let presence = install_user_presence(&shared);
+    install_approval_key(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared
@@ -2085,6 +2099,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let presence = install_user_presence(&shared);
+    install_approval_key(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared
