@@ -138,12 +138,14 @@ pub(crate) const MAX_PROGRAM_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) struct ProgramInspection {
     /// SHA-256 of its content, lowercase hex.
     pub(crate) sha256: String,
-    /// Programs running as this user can replace it, or the interpreter its
-    /// `#!` line names (see [`path_replaceable`]): then the pin does not hold
-    /// against them.
+    /// Programs running as this user can replace it, or an interpreter its
+    /// `#!` line names (that one's own included; see [`path_replaceable`]), or
+    /// that interpreter is a relative path: then the pin does not hold against
+    /// them.
     pub(crate) replaceable: bool,
-    /// For a `#!/usr/bin/env X` script, the `X` it looks up on the `PATH` at
-    /// each start, which is not pinned.
+    /// For a `#!/usr/bin/env X` script (or one whose interpreter is such a
+    /// script), the `X` it looks up on the `PATH` at each start, which is not
+    /// pinned.
     pub(crate) starts_from_path: Option<String>,
 }
 
@@ -160,10 +162,20 @@ pub(crate) fn file_sha256(path: &str) -> std::io::Result<String> {
 /// at most [`MAX_PROGRAM_BYTES`] is read (checked on the open file: a device, a
 /// FIFO or a directory is refused, and so is a file that is too large), as a
 /// stream from that same open file, never past the limit. Its `#!` line, if
-/// any, is read from the same bytes.
+/// any, is read from the same bytes, as far as the system reads one
+/// ([`SHEBANG_BYTES`]), and the interpreter it names is followed (one that is
+/// itself a script too, up to [`MAX_INTERPRETERS`] deep).
 pub(crate) fn inspect_program(path: &str) -> std::io::Result<ProgramInspection> {
     inspect_with(path, &path_replaceable)
 }
+
+/// Most bytes of a `#!` line the system reads (macOS reads 512).
+const SHEBANG_BYTES: usize = 512;
+/// Most `#!` interpreters followed from a program: an interpreter that is
+/// itself a script, and so on.
+const MAX_INTERPRETERS: usize = 4;
+/// Most symbolic links followed in one path (the system's own limit is 32).
+const MAX_LINK_HOPS: usize = 32;
 
 /// [`inspect_program`], with `is_replaceable` saying which files programs of
 /// this user can replace.
@@ -172,12 +184,8 @@ fn inspect_with(
     is_replaceable: &dyn Fn(&std::path::Path) -> bool,
 ) -> std::io::Result<ProgramInspection> {
     let (sha256, head) = hash_program(path)?;
-    let (interpreter, starts_from_path) = shebang(&head);
-    let replaceable = replaceable_with(
-        std::path::Path::new(path),
-        interpreter.as_deref().map(std::path::Path::new),
-        is_replaceable,
-    );
+    let (replaceable, starts_from_path) =
+        replaceable_with(std::path::Path::new(path), head, is_replaceable);
     Ok(ProgramInspection {
         sha256,
         replaceable,
@@ -185,11 +193,10 @@ fn inspect_with(
     })
 }
 
-/// The SHA-256 of the program file at `path` and its first bytes.
-fn hash_program(path: &str) -> std::io::Result<(String, Vec<u8>)> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let refuse = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_string());
+/// Opens the file at `path` without waiting (a FIFO does not block the
+/// thread) and without it becoming a controlling terminal, and refuses
+/// anything but a regular file.
+fn open_regular(path: &std::path::Path) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -200,8 +207,21 @@ fn hash_program(path: &str) -> std::io::Result<(String, Vec<u8>)> {
     let file = options.open(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
-        return Err(refuse("not a regular file"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
     }
+    Ok((file, meta))
+}
+
+/// The SHA-256 of the program file at `path` and its first
+/// [`SHEBANG_BYTES`].
+fn hash_program(path: &str) -> std::io::Result<(String, Vec<u8>)> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let refuse = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_string());
+    let (file, meta) = open_regular(std::path::Path::new(path))?;
     if meta.len() > MAX_PROGRAM_BYTES {
         return Err(refuse("larger than a program file may be"));
     }
@@ -219,8 +239,8 @@ fn hash_program(path: &str) -> std::io::Result<(String, Vec<u8>)> {
         if read > MAX_PROGRAM_BYTES {
             return Err(refuse("larger than a program file may be"));
         }
-        if head.len() < 256 {
-            let take = (256 - head.len()).min(n);
+        if head.len() < SHEBANG_BYTES {
+            let take = (SHEBANG_BYTES - head.len()).min(n);
             head.extend_from_slice(&buffer[..take]);
         }
         hasher.update(&buffer[..n]);
@@ -231,6 +251,16 @@ fn hash_program(path: &str) -> std::io::Result<(String, Vec<u8>)> {
         .map(|b| format!("{b:02x}"))
         .collect();
     Ok((sha256, head))
+}
+
+/// The first [`SHEBANG_BYTES`] of the regular file at `path` (an
+/// interpreter, for its own `#!` line), opened as [`hash_program`] opens one.
+fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let (file, _) = open_regular(path)?;
+    let mut head = Vec::with_capacity(SHEBANG_BYTES);
+    file.take(SHEBANG_BYTES as u64).read_to_end(&mut head)?;
+    Ok(head)
 }
 
 /// What a script's `#!` line names: the interpreter's path, and for
@@ -250,31 +280,98 @@ fn shebang(head: &[u8]) -> (Option<String>, Option<String>) {
     (Some(interpreter.to_string()), from_path)
 }
 
-/// Whether a program file, or the interpreter its `#!` line names, is one
-/// that `is_replaceable` says programs of this user can replace.
+/// Whether `program` (whose first bytes are `head`), the interpreter its
+/// `#!` line names, or that interpreter's own, up to [`MAX_INTERPRETERS`]
+/// deep, is one `is_replaceable` says programs of this user can replace; and
+/// the first program a `#!/usr/bin/env X` line on the way starts from the
+/// `PATH`. A relative interpreter is found from the working folder of
+/// whatever starts the script, not a fixed file: replaceable.
 fn replaceable_with(
     program: &std::path::Path,
-    interpreter: Option<&std::path::Path>,
+    head: Vec<u8>,
     is_replaceable: &dyn Fn(&std::path::Path) -> bool,
-) -> bool {
-    is_replaceable(program) || interpreter.is_some_and(is_replaceable)
+) -> (bool, Option<String>) {
+    let mut replaceable = is_replaceable(program);
+    let mut starts_from_path = None;
+    let mut head = head;
+    for _ in 0..MAX_INTERPRETERS {
+        let (Some(interpreter), from_path) = shebang(&head) else {
+            break;
+        };
+        starts_from_path = starts_from_path.or(from_path);
+        let interpreter = std::path::PathBuf::from(interpreter);
+        if !interpreter.is_absolute() {
+            replaceable = true;
+            break;
+        }
+        replaceable |= is_replaceable(&interpreter);
+        match read_head(&interpreter) {
+            Ok(next) => head = next,
+            Err(_) => break,
+        }
+    }
+    (replaceable, starts_from_path)
 }
 
 /// Whether programs running as this user can replace the file at `path`: the
-/// file or any folder above it, as written (where a symbolic link lies) or as
+/// file or any folder above it, as written, after each symbolic link on the
+/// way is followed (wherever it lies in the path, one hop at a time), or as
 /// it resolves, is owned by this user or writable by this user.
 pub(crate) fn path_replaceable(path: &std::path::Path) -> bool {
     any_above(path, &mine_or_writable)
 }
 
-/// Whether `is_replaceable` holds for `path` or a folder above it, as written
-/// or as it resolves.
+/// Whether `is_replaceable` holds for `path` or a folder above it: as
+/// written, at each hop of its resolution ([`link_hops`]), or as it resolves.
 fn any_above(path: &std::path::Path, is_replaceable: &dyn Fn(&std::path::Path) -> bool) -> bool {
     let resolved = std::fs::canonicalize(path).ok();
-    path.ancestors()
-        .chain(resolved.iter().flat_map(|r| r.ancestors()))
+    let hops = link_hops(path);
+    hops.iter()
+        .chain(resolved.iter())
+        .flat_map(|p| p.ancestors())
         .filter(|p| !p.as_os_str().is_empty())
         .any(is_replaceable)
+}
+
+/// The paths `path` passes through as it resolves: as written, then with its
+/// first symbolic link (in any component) replaced by what the link points
+/// to, and so on, up to [`MAX_LINK_HOPS`] links.
+fn link_hops(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut hops = vec![path.to_path_buf()];
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINK_HOPS {
+        let Some((link, rest)) = first_link(&current) else {
+            break;
+        };
+        let Ok(target) = std::fs::read_link(&link) else {
+            break;
+        };
+        // A relative target is read from the link's own folder.
+        let mut next = link
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("/"))
+            .join(target);
+        if !rest.as_os_str().is_empty() {
+            next.push(rest);
+        }
+        hops.push(next.clone());
+        current = next;
+    }
+    hops
+}
+
+/// The first component of `path`, from its start, that is a symbolic link
+/// (as the path up to it), and the rest of the path after it.
+fn first_link(path: &std::path::Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let mut prefix = std::path::PathBuf::new();
+    let mut components = path.components();
+    while let Some(component) = components.next() {
+        prefix.push(component);
+        if std::fs::symlink_metadata(&prefix).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Some((prefix, components.as_path().to_path_buf()));
+        }
+    }
+    None
 }
 
 /// Whether `path` itself (not what a link there points to) is owned by this
@@ -605,6 +702,100 @@ mod tests {
         std::os::unix::fs::symlink(&real, &via).unwrap();
         assert!(any_above(&via, &only_mine));
         assert!(!any_above(std::path::Path::new("/bin/sh"), &only_mine));
+        // A link in the middle of the chain, in that folder, between a link
+        // elsewhere and a file elsewhere: neither the path as written nor
+        // what it resolves to is in the folder, but the hop is.
+        let far = tempfile::TempDir::new().unwrap();
+        let file = far.path().join("tool");
+        std::fs::write(&file, "x").unwrap();
+        let hop = mine.join("hop");
+        std::os::unix::fs::symlink(&file, &hop).unwrap();
+        let first = elsewhere.path().join("first");
+        std::os::unix::fs::symlink(&hop, &first).unwrap();
+        assert!(any_above(&first, &only_mine));
+        // The same through a folder link in the middle of the path.
+        let far_bin = far.path().join("bin");
+        std::fs::create_dir(&far_bin).unwrap();
+        std::fs::write(far_bin.join("tool"), "x").unwrap();
+        std::os::unix::fs::symlink(&far_bin, mine.join("bin-hop")).unwrap();
+        let first_bin = elsewhere.path().join("first-bin");
+        std::os::unix::fs::symlink(mine.join("bin-hop"), &first_bin).unwrap();
+        assert!(any_above(&first_bin.join("tool"), &only_mine));
+        let unrelated = tempfile::TempDir::new().unwrap();
+        let direct = unrelated.path().join("direct");
+        std::os::unix::fs::symlink(&file, &direct).unwrap();
+        assert!(!any_above(&direct, &only_mine));
+    }
+
+    /// The system reads up to 512 bytes of a `#!` line (macOS): an
+    /// interpreter named past the 256th byte is the one checked.
+    #[test]
+    fn a_shebang_line_is_read_as_far_as_the_system_reads_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let deep = dir.path().join("a".repeat(150)).join("b".repeat(150));
+        std::fs::create_dir_all(&deep).unwrap();
+        let interpreter = deep.join("python3");
+        std::fs::write(&interpreter, "x").unwrap();
+        assert!(interpreter.as_os_str().len() > 300);
+        let script = dir.path().join("tool");
+        std::fs::write(&script, format!("#!{}\nprint(1)\n", interpreter.display())).unwrap();
+        let only_interpreter = |p: &std::path::Path| p == interpreter;
+        assert!(
+            inspect_with(script.to_str().unwrap(), &only_interpreter)
+                .unwrap()
+                .replaceable
+        );
+    }
+
+    /// An interpreter that is itself a script is followed, a few levels deep:
+    /// a replaceable interpreter, or one started from the `PATH`, at any
+    /// level counts. A loop ends.
+    #[test]
+    fn an_interpreter_that_is_itself_a_script_is_followed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let inner = dir.path().join("inner");
+        std::fs::write(&inner, "x").unwrap();
+        let outer = dir.path().join("outer");
+        std::fs::write(&outer, format!("#!{} -x\n", inner.display())).unwrap();
+        let script = dir.path().join("tool");
+        std::fs::write(&script, format!("#!{}\nrun\n", outer.display())).unwrap();
+        let only_inner = |p: &std::path::Path| p == inner;
+        assert!(
+            inspect_with(script.to_str().unwrap(), &only_inner)
+                .unwrap()
+                .replaceable
+        );
+        let by_env = dir.path().join("by-env");
+        std::fs::write(&by_env, "#!/usr/bin/env -S node --flag\n").unwrap();
+        let via_env = dir.path().join("via-env");
+        std::fs::write(&via_env, format!("#!{}\n", by_env.display())).unwrap();
+        let seen = inspect_with(via_env.to_str().unwrap(), &|_| false).unwrap();
+        assert_eq!(seen.starts_from_path.as_deref(), Some("node"));
+        assert!(!seen.replaceable);
+        let looped = dir.path().join("looped");
+        std::fs::write(&looped, format!("#!{}\n", looped.display())).unwrap();
+        assert!(
+            !inspect_with(looped.to_str().unwrap(), &|_| false)
+                .unwrap()
+                .replaceable
+        );
+    }
+
+    /// A relative `#!` interpreter is found from the working folder of
+    /// whatever starts the script, not a fixed file: replaceable.
+    #[test]
+    fn a_relative_interpreter_is_replaceable() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for line in ["#!python3\n", "#!./bin/python3 -u\n"] {
+            let script = dir.path().join("tool");
+            std::fs::write(&script, line).unwrap();
+            assert!(
+                inspect_with(script.to_str().unwrap(), &|_| false)
+                    .unwrap()
+                    .replaceable,
+                "{line}"
+            );
+        }
     }
 
     /// A script the user cannot replace that names an interpreter the user
@@ -632,17 +823,18 @@ mod tests {
         );
         let replaceable = |p: &std::path::Path| p.starts_with("/home/me");
         let script = std::path::Path::new("/usr/local/libexec/tool");
-        assert!(!replaceable_with(script, None, &replaceable));
-        assert!(!replaceable_with(
-            script,
-            Some(std::path::Path::new("/usr/bin/python3")),
-            &replaceable
-        ));
-        assert!(replaceable_with(
-            script,
-            Some(std::path::Path::new("/home/me/bin/python3")),
-            &replaceable
-        ));
+        assert_eq!(
+            replaceable_with(script, b"print(1)\n".to_vec(), &replaceable),
+            (false, None)
+        );
+        assert_eq!(
+            replaceable_with(script, b"#!/usr/bin/python3\n".to_vec(), &replaceable),
+            (false, None)
+        );
+        assert_eq!(
+            replaceable_with(script, b"#!/home/me/bin/python3\n".to_vec(), &replaceable),
+            (true, None)
+        );
         assert_eq!(
             shebang(b"#!/home/me/bin/python3 -u\nprint(1)\n"),
             (Some("/home/me/bin/python3".to_string()), None)

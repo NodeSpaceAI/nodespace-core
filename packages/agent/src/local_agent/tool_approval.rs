@@ -19,9 +19,10 @@
 //!    edited, or a program file replaced, between the two steps is refused, so
 //!    the user never approves what they did not see.
 //! 3. The caller then asks the person at the device to confirm, outside this
-//!    module (the daemon shows a system dialog that starts with the code, then
-//!    the name and what the tool runs or where it sends a call; a program
-//!    cannot answer it). Nothing here writes before that.
+//!    module (the daemon shows a system dialog that starts with the code and
+//!    the name, then any warning about the program's pin, then what the tool
+//!    runs or where it sends a call; a program cannot answer it). Nothing here
+//!    writes before that.
 //! 4. [`write`] writes the approval with the version the review read, so an
 //!    edit made while the person was asked is a conflict and nothing is
 //!    approved, as the approval's own write
@@ -73,10 +74,12 @@
 //!
 //! - Show the person a real dialog for a request of its own and hope they
 //!   confirm it (consent phishing). The dialog starts with a code only the
-//!   daemon can make, then the name and the program or host (the host as a
-//!   call reaches it), whole, before the credentials and the arguments; the
-//!   node's text is shown with the brackets, colons and dashes it could fake a
-//!   code with escaped. So a person who compares the code and the program or
+//!   daemon can make, then the name, any warning about the program's pin, and
+//!   the program or host (the host as a call reaches it; a very long one keeps
+//!   its start and its end), before the credentials (keychain references
+//!   first, in an order the daemon chooses) and the arguments; the node's text
+//!   is shown with the brackets, colons and dashes it could fake a code with
+//!   escaped. So a person who compares the code and the program or
 //!   host with what their own `nodespace tool approve` printed is not fooled by
 //!   a dialog for another tool. That holds only while the
 //!   `nodespace` they ran is the real one: a program of the user can shadow it
@@ -102,10 +105,12 @@
 //!   Homebrew prefix, `~/bin`, `node_modules`) a loop that renames a copy into
 //!   place wins that race on a real share of calls, so the pin is a real control
 //!   only for a file the user cannot write; the preview and the dialog warn
-//!   when the file, a folder above it (as written or as it resolves) or the
-//!   interpreter its `#!` line names is owned by or writable by the user. The
-//!   check is a warning, not a refusal, and it cannot see every way a file can
-//!   be replaced (an admin user can write a root-owned folder through `sudo`).
+//!   when the file, a folder above it (as written, at each symbolic link on
+//!   the way, or as it resolves) or an interpreter its `#!` line names (and
+//!   that interpreter's own, a few levels deep) is owned by or writable by the
+//!   user, or when such an interpreter is a relative path. The check is a
+//!   warning, not a refusal, and it cannot see every way a file can be
+//!   replaced (an admin user can write a root-owned folder through `sudo`).
 //!   A `#!/usr/bin/env X` script starts `X` from the daemon's `PATH`, which is
 //!   not pinned (warned apart), and no pin covers what a program loads.
 //! - Write the database file directly. Such a write is not reported, but every
@@ -165,9 +170,10 @@ pub struct ApprovalPreview {
     /// The program a `#!/usr/bin/env` script starts from the `PATH` (not
     /// pinned); empty when none.
     pub program_starts_from_path: String,
-    /// What the system dialog says the tool does, in parts it keeps whole
-    /// (the verb and the program or host) and a part it may cut (the
-    /// arguments or the rest of the address).
+    /// What the system dialog says the tool does, in parts it keeps (the
+    /// verb, and the program or host, whole up to a bound and else its start
+    /// and its end) and a part it may cut (the arguments or the rest of the
+    /// address).
     pub dialog: DialogTarget,
     /// Digest of what is shown (and of the binding it stands for).
     pub digest: String,
@@ -289,8 +295,9 @@ fn target_of(kind: RemoteToolKind, binding: &Value) -> String {
 /// ASCII), percent-escapes and user names resolved, so text such as
 /// `https://api.example.com%2eevil.com/` or `https://trusted@evil.com/` shows
 /// the host it really names. A text the parser cannot read (a host filled in
-/// from the call's arguments) is shown as it is, saying so. The rest is the
-/// text after the scheme, host and port, as written.
+/// from the call's arguments) is shown as it is up to where the rest begins,
+/// saying so. The rest is the text after the scheme, host and port, as
+/// written.
 fn origin_and_rest(url: &str) -> (String, String) {
     let rest = url
         .find("://")
@@ -309,7 +316,12 @@ fn origin_and_rest(url: &str) -> (String, String) {
                 None => format!("{}://{host}", parsed.scheme()),
             }
         }
-        _ if url.contains("://") => format!("{url} (the host is not a plain address)"),
+        // As written up to where the rest begins, so the rest is not said
+        // twice.
+        _ if url.contains("://") => format!(
+            "{} (the host is not a plain address)",
+            &url[..url.len() - rest.len()]
+        ),
         _ => url.to_string(),
     };
     (origin, rest)
@@ -393,7 +405,7 @@ pub struct DialogTarget {
     /// `runs`, `sends` or `connects to`.
     pub verb: String,
     /// The program's full path, or the method and the scheme, host and port:
-    /// shown whole.
+    /// shown whole up to a bound, and else by its start and its end.
     pub head: String,
     /// The arguments, or the rest of the address (and the MCP tool): may be
     /// cut.
@@ -583,9 +595,10 @@ fn build_preview(
     if let Some(pin) = program {
         if pin.file.replaceable {
             warnings.push(
-                "programs running as you can replace this file (it, a folder above it, or the \
-                 interpreter it names is yours or writable by you): the pin is checked right \
-                 before each start, but a file swapped in at that moment would run"
+                "programs running as you can replace this file (it, a folder above it, or an \
+                 interpreter it names is yours or writable by you, or that interpreter is a \
+                 relative path): the pin is checked right before each start, but a file \
+                 swapped in at that moment would run"
                     .to_string(),
             );
         }
@@ -1746,9 +1759,21 @@ mod tests {
                 "/items/{q}?a=1".to_string()
             )
         );
+        // Text the parser cannot read is shown as written, said so, and the
+        // rest of the address is not repeated in it.
         assert_eq!(
-            host("https://[::1/x"),
-            "https://[::1/x (the host is not a plain address)"
+            origin_and_rest("https://[::1/x?q=1"),
+            (
+                "https://[::1 (the host is not a plain address)".to_string(),
+                "/x?q=1".to_string()
+            )
+        );
+        assert_eq!(
+            origin_and_rest("https://exa mple.com"),
+            (
+                "https://exa mple.com (the host is not a plain address)".to_string(),
+                String::new()
+            )
         );
         assert_eq!(host("(not set)"), "(not set)");
     }

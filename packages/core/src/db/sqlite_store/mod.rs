@@ -521,6 +521,20 @@ impl SqliteStore {
         &self.path
     }
 
+    /// This database's name in the remote-tool approval records
+    /// (`crate::tool_approvals`): its file's path.
+    pub fn approval_scope(&self) -> String {
+        self.path.display().to_string()
+    }
+
+    /// Ends the remote-tool approval a write of `id` (of type `node_type` as
+    /// written) can change, as the write is made: before the read-back whose
+    /// notification reports it, which can fail, find the node gone or be
+    /// cancelled after the write has landed.
+    pub(crate) fn end_tool_approval(&self, id: &str, node_type: &str) {
+        crate::tool_approvals::written(&self.approval_scope(), id, node_type);
+    }
+
     /// Acquire exclusive use of the writer connection. See
     /// [`Connections::write`] — in particular, the guard is NOT re-entrant.
     pub(crate) async fn write(&self) -> WriteGuard<'_> {

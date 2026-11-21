@@ -10,19 +10,32 @@
 //!
 //! - The approval opens it as **pending** ([`begin`]) right before its own
 //!   write, and makes that write inside [`as_own_write`], which marks it as the
-//!   approval's own for this task alone.
+//!   approval's own for this task alone. Only the node service's
+//!   `write_tool_approval` does; nothing outside this crate can.
 //! - The first write the node service reports for the node inside that mark
 //!   **consumes** the token: the record becomes **live**, holding the version
 //!   and creation time that write left. Any other reported write to the node
 //!   (an update outside the mark, a second update inside it, a create, a
 //!   delete, a write reported by the store's notifier, a change to a schema of
 //!   the database) ends the record outright.
-//! - A live record counts only while the stored node has exactly that version
-//!   and creation time; a node that differs in either ends it. A pending record
-//!   never counts.
+//! - A live record counts only while the node has exactly that version and
+//!   creation time. A node at a later version, or with another creation time,
+//!   ends it. A node at an earlier version was read before the approval's
+//!   write landed (a turn's offer or a preview that raced it) or was put back
+//!   below it behind the node service's back: it does not count, and it leaves
+//!   the record, since every reported write since the approval's own has ended
+//!   the record already. A pending record never counts.
 //! - The record is taken back when the approval's write does not land, however
 //!   it ends (a failure, a conflict, a caller that gave up), by the guard
 //!   [`begin`] returns.
+//!
+//! Writes made where they cannot be told apart from another end the record as
+//! they are made ([`written`]): a write through the store itself, before the
+//! read-back that reports it (which can fail, find the node gone or be
+//! cancelled), and a merge, under the write guard, so no approval lands
+//! between the two. A write of a schema ends every record of its database
+//! ([`forget_scope`]), and logs how many, so the re-approvals it causes can be
+//! explained.
 //!
 //! A write that never reaches the node service (to the database file directly)
 //! is not seen; it can only put back the state that is live now, since any
@@ -109,7 +122,7 @@ tokio::task_local! {
 /// Runs `write` as the approval's own write of `node_id` in the database
 /// `scope`: a write reported inside it, on this task, consumes the pending
 /// record. Nothing outside it can.
-pub async fn as_own_write<F: Future>(scope: &str, node_id: &str, write: F) -> F::Output {
+pub(crate) async fn as_own_write<F: Future>(scope: &str, node_id: &str, write: F) -> F::Output {
     OWN_WRITE
         .scope(
             OwnWrite {
@@ -134,7 +147,7 @@ fn is_own_write(scope: &str, node_id: &str) -> bool {
 /// approval's write landed: a write that failed (even after it was reported,
 /// in a transaction that then did not commit) or was given up leaves nothing.
 #[must_use = "dropping the guard takes the record back"]
-pub struct PendingApproval {
+pub(crate) struct PendingApproval {
     scope: String,
     node_id: String,
     tag: String,
@@ -144,7 +157,7 @@ pub struct PendingApproval {
 impl PendingApproval {
     /// The approval's write landed: its record stays (live if the write was
     /// reported as the approval's own, else pending, which never counts).
-    pub fn landed(mut self) {
+    pub(crate) fn landed(mut self) {
         self.landed = true;
     }
 }
@@ -160,7 +173,7 @@ impl Drop for PendingApproval {
 /// Opens a pending record of the approval `tag` of `node_id` in the database
 /// `scope`, replacing any earlier record of the node. It counts only once the
 /// approval's own write, made inside [`as_own_write`], is reported.
-pub fn begin(
+pub(crate) fn begin(
     scope: &str,
     node_id: &str,
     tag: &str,
@@ -202,7 +215,7 @@ pub fn begin(
 /// A write to `node` the node service reports as an update. Inside the
 /// approval's own write (and only the first time) it consumes the pending
 /// record; any other update ends the record.
-pub fn reported_update(scope: &str, node: &Node) {
+pub(crate) fn reported_update(scope: &str, node: &Node) {
     let own = is_own_write(scope, &node.id);
     with(|ledger| {
         let k = key(scope, &node.id);
@@ -223,22 +236,48 @@ pub fn reported_update(scope: &str, node: &Node) {
 
 /// Ends the record of `node_id`, whatever it holds: a create, a delete, or a
 /// write reported where it cannot be told apart.
-pub fn forget(scope: &str, node_id: &str) {
+pub(crate) fn forget(scope: &str, node_id: &str) {
     with(|ledger| {
         ledger.entries.remove(&key(scope, node_id));
     });
 }
 
-/// Ends every record of the database `scope`: a change that can reach any
-/// tool of it (a schema's fields or what it extends).
-pub fn forget_scope(scope: &str) {
-    with(|ledger| ledger.entries.retain(|(s, _), _| s != scope));
+/// Ends every record of the database `scope`: a write of the schema
+/// `schema_id`, whose fields or what it extends can reach any tool of it.
+/// Logs how many records it ended (naming the schema, nothing else of the
+/// database), so the re-approvals it causes can be explained. Returns that
+/// count.
+pub(crate) fn forget_scope(scope: &str, schema_id: &str) -> usize {
+    let ended = with(|ledger| {
+        let before = ledger.entries.len();
+        ledger.entries.retain(|(s, _), _| s != scope);
+        before - ledger.entries.len()
+    });
+    if ended > 0 {
+        tracing::info!(
+            schema = %schema_id,
+            ended,
+            "a write of a schema ended the remote-tool approvals of its database: those tools are off until they are approved again"
+        );
+    }
+    ended
+}
+
+/// A write of `node_id`, of type `node_type` as written, where it cannot be
+/// told apart from another: it ends the node's record, or, for a schema,
+/// every record of the database ([`forget_scope`]).
+pub(crate) fn written(scope: &str, node_id: &str, node_type: &str) {
+    if crate::models::CoreNodeType::Schema.is_exactly(node_type) {
+        forget_scope(scope, node_id);
+    } else {
+        forget(scope, node_id);
+    }
 }
 
 /// Ends the record of `node_id` only if it is the approval `tag` (an
 /// approval whose write did not land takes back its own record and no newer
 /// one).
-pub fn forget_tag(scope: &str, node_id: &str, tag: &str) {
+fn forget_tag(scope: &str, node_id: &str, tag: &str) {
     with(|ledger| {
         let k = key(scope, node_id);
         if ledger.entries.get(&k).is_some_and(|e| e.tag == tag) {
@@ -249,9 +288,11 @@ pub fn forget_tag(scope: &str, node_id: &str, tag: &str) {
 
 /// The approval `tag` of `node` as it is stored now, if it is in effect: a
 /// live record for this database and node, the same tag, and exactly the
-/// version and creation time the approval's write left. A live record the node
-/// no longer matches is ended; a pending one is left and does not count.
-pub fn live(scope: &str, node: &Node, tag: &str) -> Option<Issued> {
+/// version and creation time the approval's write left. A node at a later
+/// version, or with another creation time, ends the record; one at an earlier
+/// version (read before the approval's write landed) leaves it. A pending
+/// record is left and does not count.
+pub(crate) fn live(scope: &str, node: &Node, tag: &str) -> Option<Issued> {
     with(|ledger| {
         let k = key(scope, &node.id);
         let entry = ledger.entries.get(&k)?;
@@ -262,7 +303,13 @@ pub fn live(scope: &str, node: &Node, tag: &str) -> Option<Issued> {
         else {
             return None;
         };
-        if version != node.version || created_at != node.created_at {
+        // Read before the approval's write landed, or put back below it
+        // behind the service's back: not in effect, and nothing to end (every
+        // reported write since the approval's own ended the record already).
+        if node.version < version {
+            return None;
+        }
+        if node.version != version || created_at != node.created_at {
             ledger.entries.remove(&k);
             return None;
         }
@@ -276,7 +323,7 @@ pub fn live(scope: &str, node: &Node, tag: &str) -> Option<Issued> {
 }
 
 /// Whether `node_id` has a record (pending or live) in the database `scope`.
-pub fn recorded(scope: &str, node_id: &str) -> bool {
+pub(crate) fn recorded(scope: &str, node_id: &str) -> bool {
     with(|ledger| ledger.entries.contains_key(&key(scope, node_id)))
 }
 
@@ -311,15 +358,17 @@ mod tests {
         assert!(live(&scope, &n, "t1").is_some());
         assert!(live(&scope, &n, "t2").is_none());
         assert!(live("another-database", &n, "t1").is_none());
-        // The node differs from what the approval left: over, for good, the
-        // version lower as much as higher.
-        for version in [3, 1] {
-            approve(&scope, &n, "t1").await;
-            assert!(live(&scope, &node_with(&n, version), "t1").is_none());
-            assert!(!recorded(&scope, &n.id), "{version}");
-            assert!(live(&scope, &n, "t1").is_none());
-        }
+        // The node is past what the approval left: over, for good.
         approve(&scope, &n, "t1").await;
+        assert!(live(&scope, &node_with(&n, 3), "t1").is_none());
+        assert!(!recorded(&scope, &n.id));
+        assert!(live(&scope, &n, "t1").is_none());
+        // Before it (read before the approval's write landed): not in effect,
+        // and the record is left.
+        approve(&scope, &n, "t1").await;
+        assert!(live(&scope, &node_with(&n, 1), "t1").is_none());
+        assert!(live(&scope, &n, "t1").is_some());
+        // Made again under the same id, at the approved version: over.
         let mut made_again = n.clone();
         made_again.created_at = n.created_at + chrono::Duration::microseconds(1);
         assert!(live(&scope, &made_again, "t1").is_none());
@@ -433,9 +482,212 @@ mod tests {
         approve(&scope, &a, "t").await;
         approve(&scope, &b, "t").await;
         approve(&other, &a, "t").await;
-        forget_scope(&scope);
+        written(&scope, "a-schema", "schema");
         assert!(!recorded(&scope, &a.id) && !recorded(&scope, &b.id));
         assert!(recorded(&other, &a.id));
+        // A write of any other node ends only its own record.
+        approve(&scope, &a, "t").await;
+        approve(&scope, &b, "t").await;
+        written(&scope, &a.id, "text");
+        assert!(!recorded(&scope, &a.id) && recorded(&scope, &b.id));
+    }
+
+    /// A tiny log sink for one test.
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A schema write that ends records says so in the log, with how many,
+    /// naming the schema and nothing else of the database; one that ends
+    /// none says nothing.
+    #[tokio::test]
+    async fn a_schema_write_that_ends_records_says_how_many() {
+        let scope = format!("/Users/me/{}/nodespace.db", uuid::Uuid::new_v4());
+        let (a, b) = (node(1), node(1));
+        approve(&scope, &a, "t").await;
+        approve(&scope, &b, "t").await;
+        let logs = Capture::default();
+        {
+            let sink = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || sink.clone())
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
+            assert_eq!(forget_scope(&scope, "remote-tool"), 2);
+            assert_eq!(forget_scope(&scope, "remote-tool"), 0);
+        }
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = logs.lines().collect();
+        assert_eq!(lines.len(), 1, "{logs}");
+        assert!(lines[0].contains("INFO"), "{logs}");
+        assert!(lines[0].contains("schema=remote-tool"), "{logs}");
+        assert!(lines[0].contains("ended=2"), "{logs}");
+        assert!(!logs.contains(&scope), "{logs}");
+    }
+
+    /// Through the node service: a schema written in a database ends its
+    /// approvals, and the log names that schema.
+    #[tokio::test]
+    async fn a_schema_written_through_the_service_is_named_in_the_log() {
+        let (svc, _tmp) = service().await;
+        let id = text_node(&svc, "a").await;
+        let scope = svc.approval_scope();
+        let n = svc.get_node(&id).await.unwrap().unwrap();
+        approve(&scope, &n, "t").await;
+        let logs = Capture::default();
+        {
+            let sink = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || sink.clone())
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
+            crate::schema::handle_create_schema(
+                &svc,
+                serde_json::json!({ "name": "Logged Kind", "fields": [] }),
+            )
+            .await
+            .unwrap();
+        }
+        assert!(!recorded(&scope, &id));
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let ended: Vec<&str> = logs
+            .lines()
+            .filter(|l| l.contains("remote-tool approvals"))
+            .collect();
+        assert_eq!(ended.len(), 1, "{logs}");
+        assert!(ended[0].contains("schema=logged-kind"), "{logs}");
+        assert!(ended[0].contains("ended=1"), "{logs}");
+    }
+
+    /// A look that read the node before the approval's write landed (a turn's
+    /// offer or a preview, racing a re-approval of a tool that is still
+    /// enabled) finds it not in effect yet, and leaves it: the approval is in
+    /// effect once its write lands, whenever that look gets to the ledger.
+    #[tokio::test]
+    async fn a_look_that_read_the_node_before_the_approvals_write_landed_leaves_it() {
+        let scope = uuid::Uuid::new_v4().to_string();
+        let before = node(1);
+        let after = node_with(&before, 2);
+        let pending = begin(&scope, &before.id, "new", None);
+        as_own_write(&scope, &before.id, async {
+            // Reported in the write's transaction, before it commits.
+            reported_update(&scope, &after);
+            // A look meanwhile reads the committed node, its old tag and all.
+            assert!(live(&scope, &before, "old").is_none());
+        })
+        .await;
+        pending.landed();
+        // One that read it then and gets here only now.
+        assert!(live(&scope, &before, "old").is_none());
+        assert!(live(&scope, &after, "new").is_some());
+    }
+
+    async fn service() -> (
+        std::sync::Arc<crate::services::NodeService>,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = std::sync::Arc::new(
+            crate::db::SqliteStore::new(tmp.path().join("t.db"))
+                .await
+                .unwrap(),
+        );
+        let svc = crate::services::NodeService::new(&mut store).await.unwrap();
+        (std::sync::Arc::new(svc), tmp)
+    }
+
+    async fn text_node(svc: &crate::services::NodeService, content: &str) -> String {
+        svc.create_node(Node::new(
+            "text".into(),
+            content.into(),
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap()
+    }
+
+    /// Through the real node service: a look that reads the committed node
+    /// while the approval's write has been reported in its transaction but
+    /// not committed leaves the approval, which is in effect once the write
+    /// lands.
+    #[tokio::test]
+    async fn a_look_between_the_approvals_write_and_its_commit_leaves_it() {
+        let (svc, _tmp) = service().await;
+        let id = text_node(&svc, "before").await;
+        let scope = svc.approval_scope();
+        let pending = begin(&scope, &id, "t", None);
+        let (looker, at) = (std::sync::Arc::clone(&svc), id.clone());
+        as_own_write(
+            &scope,
+            &id,
+            svc.with_transaction(move |tx| {
+                Box::pin(async move {
+                    looker
+                        .update_node_in_tx(
+                            tx,
+                            &at,
+                            crate::models::NodeUpdate::new().with_content("after".into()),
+                        )
+                        .await?;
+                    let committed = looker.get_node(&at).await?.expect("the node");
+                    assert_eq!(committed.content, "before");
+                    assert!(looker.live_tool_approval(&committed, "t").is_none());
+                    Ok(())
+                })
+            }),
+        )
+        .await
+        .unwrap();
+        pending.landed();
+        let stored = svc.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(stored.content, "after");
+        assert!(svc.live_tool_approval(&stored, "t").is_some());
+    }
+
+    /// A merge ends the approvals of both nodes under the write guard, where
+    /// no approval can land before the merge does: one that lands while the
+    /// merge waits for the guard does not survive it.
+    #[tokio::test]
+    async fn an_approval_landing_while_a_merge_waits_for_the_guard_is_ended_by_it() {
+        let (svc, _tmp) = service().await;
+        let survivor = text_node(&svc, "survivor").await;
+        let loser = text_node(&svc, "loser").await;
+        let scope = svc.approval_scope();
+        let guard = svc.store().write().await;
+        let merging = {
+            let svc = std::sync::Arc::clone(&svc);
+            let (survivor, loser) = (survivor.clone(), loser.clone());
+            tokio::spawn(async move { svc.merge_nodes(&survivor, &loser, None).await })
+        };
+        // The merge runs up to the guard and waits there.
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!merging.is_finished());
+        for id in [&survivor, &loser] {
+            let n = svc.get_node(id).await.unwrap().unwrap();
+            let pending = begin(&scope, id, "t", None);
+            as_own_write(&scope, id, async { reported_update(&scope, &n) }).await;
+            pending.landed();
+            assert!(recorded(&scope, id));
+        }
+        drop(guard);
+        merging.await.unwrap().unwrap();
+        assert!(!recorded(&scope, &survivor), "the survivor");
+        assert!(!recorded(&scope, &loser), "the loser");
     }
 
     #[test]

@@ -812,6 +812,120 @@ async fn a_merge_ends_the_approval_of_both_tools() {
     assert!(!svc.tool_approval_recorded(&loser));
 }
 
+/// A merge of two schemas re-points what extends the loser onto the
+/// survivor: like any schema write, it ends every approval of the database.
+#[tokio::test]
+async fn a_merge_of_two_schemas_ends_every_approval_of_the_database() {
+    let (svc, _tmp) = test_service().await;
+    for name in ["Kind A", "Kind B"] {
+        handle_create_schema(
+            &svc,
+            json!({ "name": name, "extends": "tool-rest", "fields": [] }),
+        )
+        .await
+        .unwrap();
+    }
+    let id = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    approve_here(&svc, &id).await;
+    svc.merge_nodes("kind-a", "kind-b", None).await.unwrap();
+    assert!(!svc.tool_approval_recorded(&id));
+}
+
+/// A write made through the store ends the approval when it is made, not
+/// when its read-back reports it: on each of the store's update paths, a
+/// write that lands but whose read-back fails (here, of a row the read cannot
+/// parse) still leaves no approval.
+#[tokio::test]
+async fn a_store_update_ends_the_approval_even_when_its_read_back_fails() {
+    let (svc, tmp) = test_service().await;
+    let mut ids = Vec::new();
+    let mut versions = Vec::new();
+    for name in ["plain", "versioned", "retyped"] {
+        let id = create(
+            &svc,
+            "tool-rest",
+            name,
+            remote_properties("tool-rest", true),
+        )
+        .await
+        .unwrap();
+        versions.push(approve_here(&svc, &id).await.version);
+        ids.push(id);
+    }
+    // Any later write of these rows lands, and leaves them unreadable (a
+    // modification time the read cannot parse).
+    let db = libsql::Builder::new_local(tmp.path().join("test.db"))
+        .build()
+        .await
+        .unwrap();
+    db.connect()
+        .unwrap()
+        .execute(
+            &format!(
+                "CREATE TRIGGER break_read_back AFTER UPDATE OF version ON node \
+                 WHEN NEW.id IN ('{}', '{}', '{}') \
+                 BEGIN UPDATE node SET modified_at = 'not a time' WHERE id = NEW.id; END",
+                ids[0], ids[1], ids[2]
+            ),
+            (),
+        )
+        .await
+        .unwrap();
+    let store = svc.store();
+    let renamed = || NodeUpdate::new().with_content("renamed".to_string());
+    assert!(store
+        .update_node(
+            &ids[0],
+            renamed(),
+            None,
+            nodespace_core::db::WriteContext::default()
+        )
+        .await
+        .is_err());
+    assert!(store
+        .update_node_with_version_check(
+            &ids[1],
+            versions[1],
+            renamed(),
+            None,
+            nodespace_core::db::WriteContext::default(),
+            None
+        )
+        .await
+        .is_err());
+    let properties = get(&svc, &ids[2]).await.properties;
+    assert!(store
+        .switch_node_type_atomic(&ids[2], "tool-cli", properties, None)
+        .await
+        .is_err());
+    for ((id, version), path) in
+        ids.iter()
+            .zip(&versions)
+            .zip(["update", "versioned update", "type switch"])
+    {
+        // The write landed: the row moved on.
+        let mut rows = db
+            .connect()
+            .unwrap()
+            .query(
+                "SELECT version FROM node WHERE id = ?1",
+                libsql::params![id.clone()],
+            )
+            .await
+            .unwrap();
+        let stored: i64 = rows.next().await.unwrap().unwrap().get(0).unwrap();
+        assert_eq!(stored, version + 1, "{path}");
+        assert!(!svc.tool_approval_recorded(id), "{path}");
+    }
+}
+
 /// A change to a schema can reach any tool of the database (a renamed field
 /// is rewritten in every node of its type without a node event; a type can
 /// change what it extends): it ends every approval of the database.
