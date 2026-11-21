@@ -55,6 +55,22 @@ use nodespace_proto::socket::TRAY_FLAG;
 use tokio::sync::watch;
 use tonic::transport::Server;
 
+/// Installs this platform's way of asking the person at the screen (see
+/// `nodespace_daemon::user_presence`) and returns it, for the credential
+/// service to share: one confirmation at a time across every change that
+/// needs one. Called once, before any database is opened.
+fn install_user_presence(
+    shared: &nodespace_daemon::SharedServices,
+) -> Arc<nodespace_daemon::user_presence::UserPresence> {
+    let local_agent = &shared.context.local_agent;
+    if !local_agent.install_user_presence(Arc::new(
+        nodespace_daemon::user_presence::UserPresence::for_this_platform(),
+    )) {
+        tracing::error!("the user-presence check was already set; keeping the one in place");
+    }
+    local_agent.user_presence()
+}
+
 /// Keep the tray's Databases submenu in step with the registry for the life of
 /// the daemon.
 ///
@@ -1720,6 +1736,7 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let presence = install_user_presence(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared.context.pty_manager.set_daemon_socket(sock.clone());
@@ -1765,7 +1782,7 @@ async fn serve_headless() -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(),
+        secrets: SecretServiceImpl::keychain(presence),
     };
     let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
@@ -1804,6 +1821,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let presence = install_user_presence(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared.context.pty_manager.set_daemon_socket(sock.clone());
@@ -1860,7 +1878,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(),
+        secrets: SecretServiceImpl::keychain(presence),
     };
     let serve_result = build_base_router(
         Server::builder()
@@ -1946,6 +1964,7 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let presence = install_user_presence(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared
@@ -2034,7 +2053,7 @@ async fn serve_headless() -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(),
+        secrets: SecretServiceImpl::keychain(presence),
     };
     let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
@@ -2065,6 +2084,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let presence = install_user_presence(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared
@@ -2154,7 +2174,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(),
+        secrets: SecretServiceImpl::keychain(presence),
     };
     let serve_result = build_base_router(
         Server::builder()

@@ -965,11 +965,11 @@ nodespace secret delete github-token
 nodespace secret list-names
 ```
 
-The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text; on Windows the credential manager is stricter: at most 1280 UTF-16 units (2560 bytes as stored), and the list of names holds roughly 19 names of full length (about 70 of 16 characters), after which `set` refuses a new name with an error saying so. On a platform without an operating system credential store, use an `env:<NAME>` reference instead.
+The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text. Before `set` or `delete` changes anything, the daemon asks the user to confirm in a system dialog on the Mac's own screen (Touch ID, a paired Apple Watch or the login password); a program cannot answer it. Where no such dialog can be shown (a remote login, a locked screen, another user at the console, or a platform without one) the change is refused; on such a platform use an `env:<NAME>` reference instead.
 
 ### Approve a remote tool
 
-A remote tool (`tool-cli`, `tool-rest` or `tool-mcp`) is offered to the model only after the user approves it on this device with `nodespace tool approve <node-id>`. The command shows the tool's name, description, binding, credential references and parameter schema, and approves only after the user types the tool's name at a terminal; editing the tool afterwards, or turning it off, ends the approval until it is approved again. It is the user's step: it refuses to run without a terminal, the MCP passthrough refuses it, and the daemon refuses an approval from any program it started for a tool. Ask the user to run it; never try to approve a tool yourself.
+A remote tool (`tool-cli`, `tool-rest` or `tool-mcp`) is offered to the model only after the user approves it on this device with `nodespace tool approve <node-id>`. The command shows the tool's name, description, binding, credential references, parameter schema and a short code. After the user types the tool's name at a terminal, the daemon asks them to confirm in a system dialog on the Mac's own screen (Touch ID, a paired Apple Watch or the login password) that names the tool, the same code and what it runs or where it sends a call; only that confirmation writes the approval, and a program cannot answer the dialog. A program given by a bare name is approved as its full path on the daemon's `PATH`, which the approval writes into the tool. Editing the tool afterwards, or turning it off, ends the approval until it is approved again. It is the user's step: it refuses to run without a terminal, the MCP passthrough refuses it, the daemon refuses an approval from any program it started for a tool, and where no dialog can be shown (a remote login, a locked screen) it is refused. Ask the user to run it; never try to approve a tool yourself.
 
 ### Database settings
 
@@ -1475,9 +1475,9 @@ Manage the credentials remote tools refer to as `keychain:<name>` (set, delete, 
 
 ### `nodespace tool`
 
-Approve a remote tool on this device (`approve`). Shows exactly what is approved and asks you to type the tool's name; run it yourself at a terminal
+Approve a remote tool on this device (`approve`). Shows exactly what is approved, asks you to type the tool's name, then to confirm in a system dialog; run it yourself at a terminal on the Mac's screen
 
-**`nodespace tool approve`** — Show what approving a remote tool would approve, and approve it after you type its name. Must be run at a terminal
+**`nodespace tool approve`** — Show what approving a remote tool would approve, and approve it after you type its name and confirm in the system dialog. Must be run at a terminal
 
 - `<NODE_ID>` — The id of the tool node (required)
 

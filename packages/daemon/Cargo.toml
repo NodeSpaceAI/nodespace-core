@@ -52,6 +52,16 @@ libc = "0.2"
 # the daemon rather than in the CLI that renders the figure.
 sysinfo = "0.33"
 
+# Asking the user at the screen (LocalAuthentication: Touch ID, a paired
+# Watch or the login password in a system panel) before a remote tool is
+# approved or a credential is changed. The objc2 versions are the ones the
+# lockfile already holds through tao and tray-icon.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
+block2 = "0.6"
+
 # Named Pipe owner-only DACL construction (ADR-052 -- the Windows equivalent
 # of `bind_uds_owner_only`'s 0o600 on Unix). Version pinned to match the one
 # `tokio` itself already resolves to (see `tokio`'s own Cargo.toml), so this

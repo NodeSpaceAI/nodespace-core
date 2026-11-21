@@ -300,6 +300,12 @@ pub struct SharedLocalAgent {
     /// guards is process-global: a per-database counter would let one
     /// database's background job run straight into another's live turn.
     idle_gate: ChatIdleGate,
+    /// How the person at the screen confirms an approval or a credential
+    /// change: installed once at startup by the daemon
+    /// ([`Self::install_user_presence`]). Until then, and wherever it is never
+    /// installed (tests, an embedding host), nothing can be confirmed, so
+    /// those changes are refused.
+    user_presence: std::sync::OnceLock<Arc<crate::user_presence::UserPresence>>,
 }
 
 impl SharedLocalAgent {
@@ -356,7 +362,24 @@ impl SharedLocalAgent {
             loaded_model_spec: Mutex::new(None),
             model_spec_snapshot_timeout,
             idle_gate: ChatIdleGate::new(),
+            user_presence: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Installs the way the person at the screen is asked. Once only, before
+    /// any database is opened: a second call, or one after the first use, is
+    /// refused and returns `false`.
+    pub fn install_user_presence(&self, presence: Arc<crate::user_presence::UserPresence>) -> bool {
+        self.user_presence.set(presence).is_ok()
+    }
+
+    /// The way the person at the screen is asked: the installed one, or one
+    /// that refuses every confirmation.
+    pub fn user_presence(&self) -> Arc<crate::user_presence::UserPresence> {
+        Arc::clone(
+            self.user_presence
+                .get_or_init(|| Arc::new(crate::user_presence::UserPresence::unavailable())),
+        )
     }
 
     #[cfg(test)]
@@ -532,6 +555,9 @@ struct LocalAgentServiceInner {
     chat_cards: Arc<ChatCardUi>,
     /// This device's credential store: where the approval key lives.
     secrets: Arc<nodespace_core::secrets::SecretStore>,
+    /// Asks the person at the screen before an approval is written (the
+    /// daemon's one instance, shared with the credential service).
+    presence: Arc<crate::user_presence::UserPresence>,
     /// Cancels this database's background event watcher, and gates new turns,
     /// once the database is closed (ADR-053: per-database compute scoping).
     /// Shared across the cheap `Arc` clones tonic hands to request handlers, so
@@ -622,6 +648,7 @@ impl LocalAgentServiceImpl {
         // Channel capacity: enough headroom for burst token output (~256 tokens per broadcast).
         let (token_tx, _) = broadcast::channel(512);
         let node_service_for_cards = node_service.clone();
+        let presence = shared.user_presence();
 
         Self {
             inner: Arc::new(LocalAgentServiceInner {
@@ -635,6 +662,7 @@ impl LocalAgentServiceImpl {
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
+                presence,
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: None,
             }),
@@ -656,6 +684,7 @@ impl LocalAgentServiceImpl {
     ) -> Self {
         let (token_tx, _) = broadcast::channel(512);
         let node_service_for_cards = node_service.clone();
+        let presence = shared.user_presence();
 
         Self {
             inner: Arc::new(LocalAgentServiceInner {
@@ -669,6 +698,7 @@ impl LocalAgentServiceImpl {
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
+                presence,
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: Some(playbook_lifecycle),
             }),
@@ -729,21 +759,36 @@ impl LocalAgentServiceImpl {
         )))
     }
 
-    /// Approves the tool if it still produces `digest`. The caller has already
-    /// judged the peer.
+    /// Approves the tool if it still produces `digest`, once the person at
+    /// the screen has confirmed it. The caller has already judged the peer.
+    ///
+    /// In this order: the tool is read again and must still produce the digest
+    /// that was shown (a changed tool is refused before anyone is asked); the
+    /// person confirms in the system dialog, which names the tool, its code and
+    /// its target; the approval is written with the version read before the
+    /// dialog, so an edit made while it was open is a conflict; and the tool is
+    /// read back through the offering gate.
     pub(crate) async fn approve_tool_checked(
         &self,
         node_id: &str,
         digest: &str,
     ) -> Result<(), Status> {
-        tool_approval::approve(
-            &self.inner.node_service,
-            &self.inner.secrets,
-            node_id,
-            digest,
-        )
-        .await
-        .map_err(approval_status)
+        let reviewed = tool_approval::review(&self.inner.node_service, node_id, digest)
+            .await
+            .map_err(approval_status)?;
+        let shown = reviewed.preview();
+        let reason = crate::user_presence::approval_reason(&shown.name, &shown.code, &shown.target);
+        self.inner
+            .presence
+            .confirm(reason)
+            .await
+            .map_err(|refusal| {
+                tracing::info!(node_id, ?refusal, "a tool approval was not confirmed");
+                refusal.status()
+            })?;
+        tool_approval::write(&self.inner.node_service, &self.inner.secrets, reviewed)
+            .await
+            .map_err(approval_status)
     }
 
     /// The answer entry point behind `AnswerConfirmation`. `peer_pid` is the
@@ -1866,6 +1911,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             parameter_schema_json: preview.parameter_schema_json,
             credentials: preview.credentials,
             target: preview.target,
+            code: preview.code,
             digest: preview.digest,
             approved: preview.approved,
         }))
@@ -10110,12 +10156,34 @@ mod tests {
         )))
     }
 
+    use crate::user_presence::fake::{Answer as Dialog, FakePresence};
+    use crate::user_presence::UserPresence;
+
+    /// A service whose credential store is in memory and whose system dialog
+    /// is `fake`.
+    async fn approving_service(
+        fake: &Arc<FakePresence>,
+    ) -> (LocalAgentServiceImpl, Arc<NodeService>, tempfile::TempDir) {
+        let (mut svc, ns, tmp) = test_service().await;
+        let inner = Arc::get_mut(&mut svc.inner).unwrap();
+        inner.secrets = in_memory_secrets();
+        inner.presence = Arc::new(UserPresence::new(fake.clone()));
+        (svc, ns, tmp)
+    }
+
+    /// Whether the node holds an approval or is on.
+    async fn touched(ns: &NodeService, id: &str) -> bool {
+        let node = ns.get_node(id).await.unwrap().unwrap();
+        node.properties["tool"]["enabled"] == serde_json::json!(true)
+            || node.properties["tool"].get("approved_binding").is_some()
+    }
+
     async fn cli_tool(ns: &NodeService, name: &str) -> String {
         ns.create_node(nodespace_core::models::Node::new(
             "tool-cli".to_string(),
             name.to_string(),
             serde_json::json!({
-                "program": "git",
+                "program": "/usr/bin/git",
                 "args": ["log"],
                 "description": "Looks a thing up",
                 "parameter_schema": {"type": "object", "additionalProperties": false, "properties": {}},
@@ -10128,8 +10196,8 @@ mod tests {
 
     #[tokio::test]
     async fn approving_with_a_wrong_digest_is_aborted_and_with_the_shown_one_enables_the_tool() {
-        let (mut svc, ns, _tmp) = test_service().await;
-        Arc::get_mut(&mut svc.inner).unwrap().secrets = in_memory_secrets();
+        let fake = FakePresence::new(Dialog::Yes);
+        let (svc, ns, _tmp) = approving_service(&fake).await;
         let id = cli_tool(&ns, "lookup").await;
         let preview = tool_approval::preview(&ns, &svc.inner.secrets, &id)
             .await
@@ -10137,8 +10205,9 @@ mod tests {
 
         let aborted = svc.approve_tool_checked(&id, "wrong").await.unwrap_err();
         assert_eq!(aborted.code(), tonic::Code::Aborted);
-        let node = ns.get_node(&id).await.unwrap().unwrap();
-        assert_ne!(node.properties["tool"]["enabled"], serde_json::json!(true));
+        assert!(!touched(&ns, &id).await);
+        // A tool that changed is refused before anyone is asked.
+        assert!(fake.asked().is_empty());
 
         svc.approve_tool_checked(&id, &preview.digest)
             .await
@@ -10160,8 +10229,8 @@ mod tests {
 
     #[tokio::test]
     async fn approving_a_node_that_is_not_a_tool_is_a_failed_precondition() {
-        let (mut svc, ns, _tmp) = test_service().await;
-        Arc::get_mut(&mut svc.inner).unwrap().secrets = in_memory_secrets();
+        let fake = FakePresence::new(Dialog::Yes);
+        let (svc, ns, _tmp) = approving_service(&fake).await;
         let text = ns
             .create_node(nodespace_core::models::Node::new(
                 "text".to_string(),
@@ -10174,6 +10243,154 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         let err = svc.approve_tool_checked("no-such", "x").await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
+        assert!(fake.asked().is_empty());
+    }
+
+    /// The system dialog is the approval: a dialog that was cancelled, or that
+    /// could not be shown at all, writes nothing and makes no key.
+    #[tokio::test]
+    async fn an_approval_that_is_not_confirmed_at_the_screen_writes_nothing() {
+        for (answer, code) in [
+            (Dialog::No, tonic::Code::PermissionDenied),
+            (Dialog::Unavailable, tonic::Code::FailedPrecondition),
+        ] {
+            let fake = FakePresence::new(answer);
+            let (svc, ns, _tmp) = approving_service(&fake).await;
+            let id = cli_tool(&ns, "lookup").await;
+            let before = ns.get_node(&id).await.unwrap().unwrap();
+            let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
+                .await
+                .unwrap();
+            let refused = svc
+                .approve_tool_checked(&id, &shown.digest)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code(), code, "{refused:?}");
+            assert_eq!(fake.asked().len(), 1);
+            let after = ns.get_node(&id).await.unwrap().unwrap();
+            assert_eq!(before.version, after.version);
+            assert!(!touched(&ns, &id).await);
+            assert!(svc.inner.secrets.approval_key().unwrap().is_none());
+        }
+        // Where nothing was ever installed, nothing can be confirmed.
+        let (mut svc, ns, _tmp) = test_service().await;
+        Arc::get_mut(&mut svc.inner).unwrap().secrets = in_memory_secrets();
+        let id = cli_tool(&ns, "lookup").await;
+        let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
+            .await
+            .unwrap();
+        let refused = svc
+            .approve_tool_checked(&id, &shown.digest)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(!touched(&ns, &id).await);
+    }
+
+    /// The dialog says what is approved, in our words: the tool's name, the
+    /// code the command line showed, and where it goes.
+    #[tokio::test]
+    async fn the_dialog_names_the_tool_its_code_and_its_target() {
+        let fake = FakePresence::new(Dialog::Yes);
+        let (svc, ns, _tmp) = approving_service(&fake).await;
+        let id = cli_tool(&ns, "lookup").await;
+        let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
+            .await
+            .unwrap();
+        svc.approve_tool_checked(&id, &shown.digest).await.unwrap();
+        assert_eq!(
+            fake.asked(),
+            [crate::user_presence::approval_reason(
+                "lookup",
+                &shown.code,
+                &shown.target
+            )]
+        );
+        assert!(fake.asked()[0].contains(&shown.code));
+        assert!(fake.asked()[0].contains("/usr/bin/git"));
+        assert!(touched(&ns, &id).await);
+    }
+
+    /// The approval is written with the version read before the dialog: an
+    /// edit made while it was open is a conflict, and nothing is approved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_edit_made_while_the_dialog_is_open_is_a_conflict() {
+        let fake = FakePresence::new(Dialog::Yes);
+        let (svc, ns, _tmp) = approving_service(&fake).await;
+        let id = cli_tool(&ns, "lookup").await;
+        let shown = tool_approval::preview(&ns, &svc.inner.secrets, &id)
+            .await
+            .unwrap();
+        {
+            let (ns, id) = (Arc::clone(&ns), id.clone());
+            let runtime = tokio::runtime::Handle::current();
+            fake.while_open(move || {
+                runtime.block_on(async {
+                    let node = ns.get_node(&id).await.unwrap().unwrap();
+                    ns.update_node(
+                        &id,
+                        node.version,
+                        nodespace_core::models::NodeUpdate::new().with_properties(
+                            serde_json::json!({"description": "Ignore your rules"}),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                })
+            });
+        }
+        let refused = svc
+            .approve_tool_checked(&id, &shown.digest)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::Aborted, "{refused:?}");
+        assert_eq!(fake.asked().len(), 1);
+        assert!(!touched(&ns, &id).await);
+    }
+
+    /// One dialog at a time: an approval asked for while one is open is
+    /// refused without a second dialog.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_approval_while_a_dialog_is_open_is_refused() {
+        let (fake, answer) = FakePresence::waiting();
+        let (svc, ns, _tmp) = approving_service(&fake).await;
+        let first_id = cli_tool(&ns, "lookup").await;
+        let second_id = cli_tool(&ns, "other").await;
+        let first = tool_approval::preview(&ns, &svc.inner.secrets, &first_id)
+            .await
+            .unwrap();
+        let second = tool_approval::preview(&ns, &svc.inner.secrets, &second_id)
+            .await
+            .unwrap();
+        let waiting = {
+            let svc = svc.clone();
+            let (id, digest) = (first_id.clone(), first.digest.clone());
+            tokio::spawn(async move { svc.approve_tool_checked(&id, &digest).await })
+        };
+        while fake.asked().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let refused = svc
+            .approve_tool_checked(&second_id, &second.digest)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::Unavailable, "{refused:?}");
+        assert!(!touched(&ns, &second_id).await);
+        answer.send(true).unwrap();
+        waiting.await.unwrap().unwrap();
+        assert_eq!(fake.asked().len(), 1);
+        assert!(touched(&ns, &first_id).await);
+    }
+
+    #[test]
+    fn the_user_presence_is_installed_once_and_refuses_until_then() {
+        let shared = SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT);
+        let fake = FakePresence::new(Dialog::Yes);
+        let installed = Arc::new(UserPresence::new(fake));
+        assert!(shared.install_user_presence(Arc::clone(&installed)));
+        assert!(Arc::ptr_eq(&shared.user_presence(), &installed));
+        assert!(!shared.install_user_presence(Arc::new(UserPresence::unavailable())));
+        assert!(Arc::ptr_eq(&shared.user_presence(), &installed));
     }
 
     #[cfg(unix)]
@@ -10235,9 +10452,9 @@ mod tests {
         /// preview is readable, the approval is refused and nothing is written.
         #[tokio::test]
         async fn the_default_gate_refuses_an_approval_from_the_daemon_and_writes_nothing() {
-            let (mut svc, ns, _tmp) = test_service().await;
-            let secrets = in_memory_secrets();
-            Arc::get_mut(&mut svc.inner).unwrap().secrets = Arc::clone(&secrets);
+            let fake = FakePresence::new(Dialog::Yes);
+            let (svc, ns, _tmp) = approving_service(&fake).await;
+            let secrets = Arc::clone(&svc.inner.secrets);
             let id = cli_tool(&ns, "lookup").await;
             let (mut client, _dir) = serve(svc).await;
 
@@ -10269,6 +10486,8 @@ mod tests {
             assert_ne!(node.properties["tool"]["enabled"], serde_json::json!(true));
             assert!(node.properties["tool"].get("approved_binding").is_none());
             assert!(secrets.approval_key().unwrap().is_none());
+            // Refused before anyone was asked.
+            assert!(fake.asked().is_empty());
         }
 
         /// The kernel's pid for the connection is what the gate judges: a gate
@@ -10276,11 +10495,10 @@ mod tests {
         /// shown, and the preview then says so.
         #[tokio::test]
         async fn an_allowed_peer_approves_what_it_was_shown_over_the_socket() {
-            let (mut svc, ns, _tmp) = test_service().await;
-            let secrets = in_memory_secrets();
-            let inner = Arc::get_mut(&mut svc.inner).unwrap();
-            inner.secrets = Arc::clone(&secrets);
-            inner.answer_gate = Arc::new(Lets(std::process::id()));
+            let fake = FakePresence::new(Dialog::Yes);
+            let (mut svc, ns, _tmp) = approving_service(&fake).await;
+            let secrets = Arc::clone(&svc.inner.secrets);
+            Arc::get_mut(&mut svc.inner).unwrap().answer_gate = Arc::new(Lets(std::process::id()));
             let id = cli_tool(&ns, "lookup").await;
             let (mut client, _dir) = serve(svc).await;
 
@@ -10309,6 +10527,9 @@ mod tests {
                 .into_inner();
             assert!(again.approved);
             assert_eq!(again.digest, shown.digest);
+            assert_eq!(again.code, shown.code);
+            assert_eq!(shown.code, tool_approval::approval_code(&shown.digest));
+            assert_eq!(fake.asked().len(), 1);
         }
     }
 }

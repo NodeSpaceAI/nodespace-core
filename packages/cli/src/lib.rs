@@ -212,7 +212,8 @@ pub enum Command {
         action: commands::secret::SecretAction,
     },
     /// Approve a remote tool on this device (`approve`). Shows exactly what is
-    /// approved and asks you to type the tool's name; run it yourself at a terminal.
+    /// approved, asks you to type the tool's name, then to confirm in a system
+    /// dialog; run it yourself at a terminal on the Mac's screen.
     Tool {
         #[command(subcommand)]
         action: commands::tool::ToolAction,

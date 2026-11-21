@@ -19,8 +19,9 @@ service LocalAgentService {
   // parameter schema, with a digest of it. Writes nothing.
   rpc DescribeToolApproval(DescribeToolApprovalRequest) returns (DescribeToolApprovalResponse);
   // Approve a remote tool on this device (enable it and write the device
-  // approval), only if it still produces the digest that was shown. Refused for
-  // a client that is a program the daemon started for a tool.
+  // approval), only if it still produces the digest that was shown and the
+  // person at the screen confirms it in a system dialog the daemon shows.
+  // Refused for a client that is a program the daemon started for a tool.
   rpc ApproveTool(ApproveToolRequest) returns (ApproveToolResponse);
   // Answer a remote-tool confirmation the agent is waiting on. Accepted only for
   // the exact request id, chat and digest of what the user was shown, once, from a
@@ -145,6 +146,9 @@ message DescribeToolApprovalResponse {
   // One line: what the tool runs or where a call goes (the program and its
   // arguments, the method and URL, or the MCP server).
   string target = 10;
+  // The digest's first eight hex digits as XXXX-XXXX. The system dialog that
+  // ApproveTool shows names the same code.
+  string code = 11;
 }
 
 message ApproveToolRequest {

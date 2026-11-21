@@ -6,9 +6,9 @@
 //! ([`DaemonCallConfirmer`]), the table of questions waiting for an answer
 //! ([`PendingConfirmations`]) and the answer entry point.
 //!
-//! **Not installed yet.** Nothing here is wired into a turn: the card that shows
-//! the question and records the answer is a [`ConfirmationUi`] a later change
-//! supplies, so every remote tool that needs confirmation is still not offered.
+//! An interactive turn installs it (the chat card is the [`ConfirmationUi`]);
+//! a turn with nobody to answer has none, so a tool that needs confirmation is
+//! not offered there.
 //!
 //! The rules, each one tested:
 //!
@@ -45,6 +45,15 @@
 //!   headless runs have no answer command; on Windows the named-pipe transport
 //!   carries no peer pid, so every answer is refused there (the feature is inert
 //!   until that is solved). See [`SpawnedProcessGate`] for the limits.
+//!
+//! **The answer is gated by the peer gate alone.** Approving a tool and
+//! changing a credential also need the person at the screen to confirm in a
+//! system dialog (see [`crate::user_presence`]); an answer to a call's question
+//! does not. A program of the user that the gate does not recognise (an
+//! orphaned descendant of an in-app shell, an agent started outside the app)
+//! can read a pending question's id and digest from its card and answer it.
+//! Closing that needs the peer's audit token and a check that it is the signed
+//! app.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -428,9 +437,14 @@ pub trait AnswerGate: Send + Sync {
 ///
 /// **Limits.** A recorded program that leaves its process group (`setpgid`,
 /// `setsid`) and whose parent has exited cannot be told from another program of
-/// the same user; closing that needs the peer's audit token and a code-signature
-/// check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity` against the NodeSpace
-/// team id), which is not done here.
+/// the same user, and neither can an orphaned descendant of a recorded program
+/// (its parent gone, its group never recorded) or an agent the user started
+/// outside the app; closing that needs the peer's audit token and a
+/// code-signature check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity`
+/// against the NodeSpace team id), which is not done here. Where that matters
+/// most (approving a tool, changing a credential) the daemon also asks the
+/// person at the screen; an answer to a call's question relies on this gate
+/// alone.
 ///
 /// Two more facts. The question's id and digest are stored on the chat card, so
 /// any same-user program can read them (`nodespace get`): the id is not a secret

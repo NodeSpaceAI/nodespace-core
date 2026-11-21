@@ -5,6 +5,10 @@
 //! terminal, or read from standard input when that is not a terminal, so it
 //! never lands in shell history or a process listing. `list` prints names
 //! only; there is no command that prints a value.
+//!
+//! The daemon asks the person at the screen to confirm a `set` or a `delete` in
+//! a system dialog before it changes anything; the command says so on standard
+//! error while it waits.
 
 use std::io::{IsTerminal, Read, Write};
 
@@ -34,6 +38,10 @@ pub enum SecretAction {
     ListNames,
 }
 
+/// Printed while the daemon waits for the person to confirm the change.
+const CONFIRM_NOTE: &str =
+    "Confirm the change in the system dialog on this Mac (Touch ID, your Watch or your password).";
+
 pub async fn run(
     client: &mut SecretServiceClient<Channel>,
     action: SecretAction,
@@ -46,6 +54,7 @@ pub async fn run(
                 bail!("invalid secret name: use 1 to 64 characters from letters, digits, `.`, `_` and `-`");
             }
             let value = read_value(&name)?;
+            eprintln!("{CONFIRM_NOTE}");
             client
                 .set(SetSecretRequest {
                     name: name.clone(),
@@ -62,6 +71,7 @@ pub async fn run(
             Ok(())
         }
         SecretAction::Delete { name } => {
+            eprintln!("{CONFIRM_NOTE}");
             let existed = client
                 .delete(DeleteSecretRequest { name: name.clone() })
                 .await

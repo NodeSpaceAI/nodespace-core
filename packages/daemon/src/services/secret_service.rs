@@ -7,10 +7,18 @@
 //! A value enters only through `Set`. Nothing returned by this service, and no
 //! error it produces, carries a value: failures map to a status whose message
 //! is the [`SecretError`] text, which names the rule or the reference only.
+//!
+//! `Set` and `Delete` change what a tool sends to a remote service, so the
+//! daemon's service asks the person at the screen first (see
+//! [`crate::user_presence`]): a program of the user cannot overwrite or remove
+//! a credential on its own through the daemon. A request that is not confirmed
+//! changes nothing, and a refused `Set` has its value wiped.
 
 use std::sync::Arc;
 
-use nodespace_core::secrets::{SecretError, SecretStore};
+use nodespace_core::secrets::{
+    validate_secret_name, validate_secret_value, SecretError, SecretStore,
+};
 use tonic::{Request, Response, Status};
 use zeroize::Zeroize;
 
@@ -20,6 +28,7 @@ use crate::nodespace::{
     SetSecretRequest, SetSecretResponse,
 };
 use crate::services::remote_confirmation::AnswerGate;
+use crate::user_presence::{credential_reason, UserPresence};
 
 /// What a peer the gate refuses is told.
 fn refused() -> Status {
@@ -39,11 +48,20 @@ pub struct SecretServiceImpl {
     /// Who may change a credential. `None` for a caller that is trusted by
     /// construction (in-process use, tests, a transport with no peer identity).
     gate: Option<Arc<dyn AnswerGate>>,
+    /// Asks the person at the screen before a credential is changed. `None`
+    /// for a caller that is trusted by construction.
+    presence: Option<Arc<UserPresence>>,
 }
 
 impl SecretServiceImpl {
+    /// The service with no gate and no confirmation: for a caller that is
+    /// trusted by construction (in-process use, tests).
     pub fn new(store: Arc<SecretStore>) -> Self {
-        Self { store, gate: None }
+        Self {
+            store,
+            gate: None,
+            presence: None,
+        }
     }
 
     /// The service with a gate on what changes a credential: `Set` and `Delete`
@@ -54,6 +72,31 @@ impl SecretServiceImpl {
         Self {
             store,
             gate: Some(gate),
+            presence: None,
+        }
+    }
+
+    /// The same service, asking the person at the screen before `Set` or
+    /// `Delete` changes anything.
+    pub fn with_presence(self, presence: Arc<UserPresence>) -> Self {
+        Self {
+            presence: Some(presence),
+            ..self
+        }
+    }
+
+    /// Whether the person at the screen confirmed changing `name`: `Ok` when
+    /// they did or this service asks no one.
+    async fn confirmed(&self, name: &str) -> Result<(), Status> {
+        match &self.presence {
+            None => Ok(()),
+            Some(presence) => presence
+                .confirm(credential_reason(name))
+                .await
+                .map_err(|refusal| {
+                    tracing::info!(?refusal, "a credential change was not confirmed");
+                    refusal.status()
+                }),
         }
     }
 
@@ -74,6 +117,17 @@ impl SecretServiceImpl {
         if !self.may_change(request) {
             return Err(refuse_and_wipe(request.get_mut()));
         }
+        // A request the store would refuse is refused before anyone is asked.
+        let checked = validate_secret_name(&request.get_ref().name)
+            .and_then(|()| validate_secret_value(&request.get_ref().value));
+        if let Err(error) = checked {
+            request.get_mut().value.zeroize();
+            return Err(status(error));
+        }
+        if let Err(refused) = self.confirmed(&request.get_ref().name).await {
+            request.get_mut().value.zeroize();
+            return Err(refused);
+        }
         let mut req = std::mem::take(request.get_mut());
         // The OS store can block (a prompt, a locked keychain): keep it off the
         // async worker threads.
@@ -85,24 +139,21 @@ impl SecretServiceImpl {
         Ok(Response::new(SetSecretResponse {}))
     }
 
-    /// The service over the operating system's credential store.
-    pub fn keychain() -> Self {
+    /// The service over the operating system's credential store, asking the
+    /// person at the screen through `presence` before a change. Where the
+    /// platform has no way to ask, every `Set` and `Delete` is refused.
+    pub fn keychain(presence: Arc<UserPresence>) -> Self {
         let store = Arc::new(SecretStore::keychain());
         // A Windows named pipe carries no peer pid, so there is nothing to judge
         // there: the pipe's own access control is the barrier on that platform.
         #[cfg(unix)]
-        {
-            Self::with_gate(
-                store,
-                Arc::new(
-                    crate::services::remote_confirmation::SpawnedProcessGate::for_this_process(),
-                ),
-            )
-        }
+        let service = Self::with_gate(
+            store,
+            Arc::new(crate::services::remote_confirmation::SpawnedProcessGate::for_this_process()),
+        );
         #[cfg(not(unix))]
-        {
-            Self::new(store)
-        }
+        let service = Self::new(store);
+        service.with_presence(presence)
     }
 }
 
@@ -144,6 +195,8 @@ impl GrpcSecretService for SecretServiceImpl {
             return Err(refused());
         }
         let name = request.into_inner().name;
+        validate_secret_name(&name).map_err(status)?;
+        self.confirmed(&name).await?;
         let store = Arc::clone(&self.store);
         let existed = tokio::task::spawn_blocking(move || store.delete(&name))
             .await
@@ -320,7 +373,10 @@ mod tests {
     #[tokio::test]
     async fn a_refused_peer_can_neither_set_nor_delete_a_credential() {
         let store = Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())));
-        let s = SecretServiceImpl::with_gate(Arc::clone(&store), Arc::new(Peer(Some(4242))));
+        let fake =
+            crate::user_presence::fake::FakePresence::new(crate::user_presence::fake::Answer::Yes);
+        let s = SecretServiceImpl::with_gate(Arc::clone(&store), Arc::new(Peer(Some(4242))))
+            .with_presence(Arc::new(UserPresence::new(fake.clone())));
         store.set("tok", "ghp_ORIGINALVALUE1").unwrap();
         // A plain in-process request has no peer pid: the gate refuses it.
         let denied = set(&s, "tok", "ghp_OVERWRITTENVALUE").await.unwrap_err();
@@ -342,6 +398,8 @@ mod tests {
             .list_names(Request::new(ListSecretNamesRequest {}))
             .await
             .is_ok());
+        // Refused before anyone was asked.
+        assert!(fake.asked().is_empty());
     }
 
     /// Through the service's own `Set` path: the gate refuses, and the value in
@@ -380,6 +438,114 @@ mod tests {
     async fn an_ungated_service_keeps_working_for_a_trusted_caller() {
         let s = service();
         assert!(set(&s, "tok", TOKEN).await.is_ok());
+    }
+
+    // -- confirmed at the screen --------------------------------------------
+
+    use crate::user_presence::fake::{Answer, FakePresence};
+
+    /// An ungated service (an admitted peer) that asks `fake`.
+    fn asking(fake: &Arc<FakePresence>) -> (SecretServiceImpl, Arc<SecretStore>) {
+        let store = Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())));
+        (asking_over(fake, &store), store)
+    }
+
+    fn asking_over(fake: &Arc<FakePresence>, store: &Arc<SecretStore>) -> SecretServiceImpl {
+        SecretServiceImpl::new(Arc::clone(store))
+            .with_presence(Arc::new(UserPresence::new(fake.clone())))
+    }
+
+    /// A change the person did not confirm (cancelled, or no screen to ask
+    /// at) changes nothing, and a refused `Set` has its value wiped.
+    #[tokio::test]
+    async fn a_change_that_is_not_confirmed_leaves_the_store_unchanged_and_wipes_the_value() {
+        let cases: [(fn() -> Answer, tonic::Code); 2] = [
+            (|| Answer::No, tonic::Code::PermissionDenied),
+            (|| Answer::Unavailable, tonic::Code::FailedPrecondition),
+        ];
+        for (answer, code) in cases {
+            let fake = FakePresence::new(answer());
+            let (s, store) = asking(&fake);
+            store.set("tok", "ghp_ORIGINALVALUE1").unwrap();
+            let mut request = Request::new(SetSecretRequest {
+                name: "tok".into(),
+                value: TOKEN.into(),
+            });
+            let ptr = request.get_ref().value.as_ptr();
+            let len = request.get_ref().value.len();
+            let refused = s.set_in_place(&mut request).await.unwrap_err();
+            assert_eq!(refused.code(), code);
+            assert!(request.get_ref().value.is_empty());
+            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+            assert!(bytes.iter().all(|b| *b == 0), "the value bytes were left");
+            assert!(!refused.message().contains(TOKEN));
+            // A fresh dialog (the one above may have started a cooldown).
+            let s = asking_over(&FakePresence::new(answer()), &store);
+            let refused = s
+                .delete(Request::new(DeleteSecretRequest { name: "tok".into() }))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code(), code);
+            assert_eq!(store.names().unwrap(), ["tok"]);
+            assert_eq!(
+                store.get("tok").unwrap().unwrap().expose(),
+                "ghp_ORIGINALVALUE1"
+            );
+        }
+    }
+
+    /// The dialog names the credential, and a confirmed change goes through.
+    #[tokio::test]
+    async fn a_confirmed_change_goes_through_and_the_dialog_names_the_credential() {
+        let fake = FakePresence::new(Answer::Yes);
+        let (s, store) = asking(&fake);
+        set(&s, "tok", TOKEN).await.unwrap();
+        assert_eq!(store.get("tok").unwrap().unwrap().expose(), TOKEN);
+        let removed = s
+            .delete(Request::new(DeleteSecretRequest { name: "tok".into() }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(removed.existed);
+        let reason = crate::user_presence::credential_reason("tok");
+        assert_eq!(fake.asked(), [reason.clone(), reason]);
+        // Listing names asks no one.
+        s.list_names(Request::new(ListSecretNamesRequest {}))
+            .await
+            .unwrap();
+        assert_eq!(fake.asked().len(), 2);
+    }
+
+    /// A request the store would refuse is refused before the person is asked.
+    #[tokio::test]
+    async fn a_bad_name_or_value_is_refused_before_anyone_is_asked() {
+        let fake = FakePresence::new(Answer::Yes);
+        let (s, store) = asking(&fake);
+        let err = set(&s, "bad name", TOKEN).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let err = set(&s, "ok", "").await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let err = s
+            .delete(Request::new(DeleteSecretRequest { name: "a b".into() }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(fake.asked().is_empty());
+        assert!(store.names().unwrap().is_empty());
+    }
+
+    /// The daemon's service asks: built over the platform store, it keeps the
+    /// way to ask it was given.
+    #[test]
+    fn the_daemon_service_asks_before_a_change() {
+        let presence = Arc::new(UserPresence::unavailable());
+        let service = SecretServiceImpl::keychain(Arc::clone(&presence));
+        assert!(service
+            .presence
+            .as_ref()
+            .is_some_and(|p| Arc::ptr_eq(p, &presence)));
+        #[cfg(unix)]
+        assert!(service.gate.is_some());
     }
 
     #[test]

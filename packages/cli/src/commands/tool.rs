@@ -3,9 +3,13 @@
 //! A remote tool (a `tool-cli`, `tool-mcp` or `tool-rest` node) is offered to the
 //! model only after the user approves it here. The command shows exactly what is
 //! being approved (the name, the description, the kind, every binding field, the
-//! credential references and the parameter schema) and writes the approval only
-//! after the user types the tool's name at a terminal. What is approved is the
-//! digest of what was shown: a tool edited in between is refused.
+//! credential references and the parameter schema) and a short code, and asks
+//! the daemon to approve it only after the user types the tool's name at a
+//! terminal. The daemon then asks the person at the screen to confirm in a
+//! system dialog (Touch ID, a paired Watch or the login password) that names
+//! the tool, the same code and its target; only that writes the approval. What
+//! is approved is the digest of what was shown: a tool edited in between is
+//! refused.
 //!
 //! Everything shown comes from a node that anything could have written, so it
 //! is made safe for the terminal: control, invisible and bidi characters are
@@ -17,10 +21,10 @@
 //! pushes them off the screen.
 //!
 //! It must be run by a person: both standard input and standard output must be a
-//! terminal, and the daemon refuses the request from any program it started for a
-//! tool, so a tool the model runs cannot approve itself or another tool through
-//! the daemon. A program of the same user that does not go through the daemon is
-//! not stopped by this (see the limits in the agent's `tool_approval` module).
+//! terminal, the daemon refuses the request from any program it started for a
+//! tool, and the system dialog can only be answered at the screen. Typing the
+//! name is a check on what the user meant; the dialog is what a program cannot
+//! do for them. See the limits in the agent's `tool_approval` module.
 
 use std::io::{IsTerminal, Write};
 
@@ -36,7 +40,7 @@ use crate::LocalAgentClient;
 #[derive(Subcommand, Debug)]
 pub enum ToolAction {
     /// Show what approving a remote tool would approve, and approve it after you
-    /// type its name. Must be run at a terminal.
+    /// type its name and confirm in the system dialog. Must be run at a terminal.
     Approve {
         /// The id of the tool node.
         node_id: String,
@@ -183,10 +187,13 @@ fn question(preview: &DescribeToolApprovalResponse) -> String {
     let target = escaped(&preview.target, Keep::AsciiLines)
         .0
         .replace('\n', "\\u{A}");
+    let code = display_line(&preview.code);
     format!(
         "\nApproving lets the model call this tool on this device. Every call except a web \
          GET without credentials asks you first. Editing the tool, or turning it off, ends \
-         the approval until you approve it again.\n{target}\n\
+         the approval until you approve it again. After you type the name, this Mac asks \
+         you to confirm in a system dialog that shows code {code}; confirm only a dialog \
+         with that code.\n{target}\n\
          Type the tool's name to approve it (anything else cancels): "
     )
 }
@@ -233,6 +240,10 @@ async fn approve(client: &mut LocalAgentClient, node_id: &str, json: bool) -> Re
         }
         return Ok(());
     }
+    println!(
+        "Confirm in the system dialog (code {}): Touch ID, your Watch or your password.",
+        display_line(&preview.code)
+    );
     client
         .approve_tool(ApproveToolRequest {
             node_id: node_id.to_string(),
@@ -303,6 +314,7 @@ mod tests {
             parameter_schema_json: "{\n  \"type\": \"object\"\n}".into(),
             credentials: vec!["TOKEN from keychain:tok".into()],
             target: "Runs: git [\"log\"]".into(),
+            code: "1A2B-3C4D".into(),
             digest: "d".into(),
             approved: false,
         }
@@ -409,6 +421,22 @@ mod tests {
         let lines: Vec<&str> = asked.lines().collect();
         assert_eq!(lines[lines.len() - 2], "Runs: git [\"log\"]", "{asked}");
         assert!(lines[lines.len() - 1].starts_with("Type the tool's name"));
+    }
+
+    /// The question names the code the system dialog will show, so the user
+    /// confirms only the dialog for what they reviewed.
+    #[test]
+    fn the_question_names_the_code_of_the_system_dialog() {
+        let asked = question(&sample());
+        assert!(
+            asked.contains("system dialog that shows code 1A2B-3C4D"),
+            "{asked}"
+        );
+        let hostile = question(&DescribeToolApprovalResponse {
+            code: "1A2B\nType".into(),
+            ..sample()
+        });
+        assert!(hostile.contains("code 1A2B\\u{A}Type"), "{hostile}");
     }
 
     #[test]
