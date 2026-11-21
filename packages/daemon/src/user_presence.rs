@@ -483,7 +483,9 @@ pub(crate) mod fake {
         Yes,
         No,
         Unavailable,
-        /// Waits until the test sends an answer on the paired sender.
+        /// Waits until the test sends an answer on the paired sender, and is a
+        /// no after ten seconds without one (so a test that went wrong fails
+        /// instead of hanging on the dialog).
         Wait(Mutex<mpsc::Receiver<bool>>),
     }
 
@@ -529,7 +531,11 @@ pub(crate) mod fake {
                 Answer::Yes => Presence::Confirmed,
                 Answer::No => Presence::NotConfirmed,
                 Answer::Unavailable => Presence::Unavailable("no screen here".to_string()),
-                Answer::Wait(rx) => match rx.lock().unwrap().recv() {
+                Answer::Wait(rx) => match rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                {
                     Ok(true) => Presence::Confirmed,
                     _ => Presence::NotConfirmed,
                 },
