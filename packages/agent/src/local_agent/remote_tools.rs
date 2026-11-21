@@ -637,10 +637,9 @@ impl RemoteToolHost {
         if self.runners.is_empty() {
             return Ok(Vec::new());
         }
-        // No key, no approval: fail closed before any node is read.
-        let Some(key) = self.key.as_deref() else {
-            return Ok(Vec::new());
-        };
+        // With no key every tool is refused by the gate below (one check, in
+        // `assess`, not two).
+        let key = self.key.as_deref();
         let nodes = self
             .node_service
             .query_nodes_by_type(CoreNodeType::Tool.as_str(), false)
@@ -662,12 +661,7 @@ impl RemoteToolHost {
                     });
                 chains.insert(node.node_type.clone(), chain);
             }
-            match assess_stored(
-                &self.node_service,
-                node,
-                &chains[&node.node_type],
-                Some(key),
-            ) {
+            match assess_stored(&self.node_service, node, &chains[&node.node_type], key) {
                 Ok(tool) => {
                     if !self.runners.contains_key(&tool.kind) {
                         tracing::debug!(node_id = %node.id, "remote tools: no runner for this kind");
@@ -2093,6 +2087,10 @@ mod tests {
     /// through the node service, and its approval record all in place, the
     /// tool is not offered, and nothing reads the planted item while the turn
     /// is offered tools and runs one (the store is the one the runners use).
+    ///
+    /// The read counter is a tripwire: no code reads that item now, so it
+    /// stays at zero unless something starts reading it again. What keeps the
+    /// forged tool off is that its tag does not verify under the daemon's key.
     #[tokio::test]
     async fn a_key_planted_in_the_credential_store_approves_nothing_and_is_never_read() {
         struct Watching {
@@ -2198,6 +2196,53 @@ mod tests {
         assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
         f.approve(&id).await;
         assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["c_tool"]);
+    }
+
+    /// An approval the user ended through the node service stays ended when
+    /// a program of the user writes the approved row back into the database
+    /// file directly, with its old version, fields and tag: the write that
+    /// ended it took the record with it.
+    #[tokio::test]
+    async fn a_row_written_back_directly_after_the_tool_was_turned_off_is_not_offered() {
+        let f = fixture().await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let id = f.tool("tool-rest", "r_tool", true).await;
+        assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["r_tool"]);
+        let db = libsql::Builder::new_local(f._tmp.path().join("t.db"))
+            .build()
+            .await
+            .unwrap();
+        let read = db.connect().unwrap();
+        let mut rows = read
+            .query(
+                "SELECT properties, version FROM node WHERE id = ?1",
+                libsql::params![id.clone()],
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let (properties, version): (String, i64) = (row.get(0).unwrap(), row.get(1).unwrap());
+        drop(rows);
+        drop(read);
+        write(
+            &f,
+            &id,
+            NodeUpdate::new().with_properties(json!({"enabled": false})),
+        )
+        .await;
+        assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
+        db.connect()
+            .unwrap()
+            .execute(
+                "UPDATE node SET properties = ?1, version = ?2 WHERE id = ?3",
+                libsql::params![properties, version, id.clone()],
+            )
+            .await
+            .unwrap();
+        let back = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(back.version, version);
+        assert_eq!(back.properties["tool"]["enabled"], true);
+        assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
     }
 
     /// An edit to the binding turns the tool off, and reverting the edit does

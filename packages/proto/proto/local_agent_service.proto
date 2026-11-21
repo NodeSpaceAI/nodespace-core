@@ -153,6 +153,9 @@ message DescribeToolApprovalResponse {
   // For a tool that starts a program: the program file the approval pins,
   // "<full path> (SHA-256 <hex>)". Empty for one that starts none.
   string program = 12;
+  // Where that pin does not hold (programs of this user can replace the file;
+  // a script starts a program it finds on the PATH). Empty when none.
+  string program_warning = 13;
 }
 
 message ApproveToolRequest {

@@ -67,11 +67,21 @@
 //!
 //! - Show the person a real dialog for a request of its own and hope they
 //!   confirm it (consent phishing). The dialog starts with a code only the
-//!   daemon can make, which the person's own `nodespace tool approve` prints,
+//!   daemon can make, then the name, the credentials and the program or host,
 //!   and the node's text cannot draw a code of its own, so a person who
-//!   compares the codes is not fooled; one who does not compare can be.
-//! - Keep asking, so dialogs it starts crowd out the person's own (each one
-//!   that is not confirmed keeps the next back longer, up to 15 minutes).
+//!   compares the dialog with what their own `nodespace tool approve` printed
+//!   is not fooled by a dialog for another tool. That holds only while the
+//!   `nodespace` they ran is the real one: a program of the user can shadow it
+//!   (a shell function or alias, an earlier `PATH` entry, a user-writable copy),
+//!   print the code of a tool of its own next to the user's tool, and ask for
+//!   its own; then the codes match. A display the user can trust is the signed
+//!   app's.
+//! - Keep asking. A refusal while another dialog is open, or in the quiet time
+//!   after one, comes back at once, so a program that polls can take the slot
+//!   the moment each quiet time ends, and the person's own request may never
+//!   get a dialog. The 5 seconds after a confirmed dialog only keep back a
+//!   request placed right behind the person's own; after that only the code
+//!   tells them apart.
 //! - Replace the daemon. The `.pkg` installs its LaunchAgent in the root-owned
 //!   `/Library/LaunchAgents`, but the app's own per-user LaunchAgent is
 //!   writable by the user, `launchctl bootout` stops either, an Intel Homebrew
@@ -80,9 +90,17 @@
 //!   likes. A development build is not a boundary at all (a debugger can read
 //!   its key).
 //! - Replace the program file in the moment between the runner's check of its
-//!   SHA-256 and the program's start.
-//! - Put a deleted tool back by writing the database file directly when the
-//!   delete itself did not go through the node service (then nothing saw it).
+//!   SHA-256 and the program's start. For a file the user can write (a
+//!   Homebrew prefix, `~/bin`, `node_modules`) a loop that renames a copy into
+//!   place wins that race on a real share of calls, so the pin is a real control
+//!   only for a file the user cannot write; the preview and the dialog warn
+//!   when the file or its folder is writable by the user. A `#!/usr/bin/env X`
+//!   script starts `X` from the daemon's `PATH`, which is not pinned (warned
+//!   too), and no pin covers what a program loads.
+//! - Write the database file directly. Every write the node service reports
+//!   (an update, a create, a delete) that is not the approval's own ends the
+//!   approval's record on the spot, so a direct write can only put back the
+//!   state that is still approved now; a direct write that changes it ends it.
 //! - Overwrite a credential's value with the system's own tools (`security`
 //!   on macOS): the credentials are still items in the login keychain.
 
@@ -123,6 +141,14 @@ pub struct ApprovalPreview {
     /// file changes afterwards (an update, `brew upgrade`), the tool is not
     /// run until it is approved again.
     pub program: String,
+    /// Where the pin does not hold, said plainly (the file can be replaced by
+    /// programs of this user; a script starts a program it finds on the
+    /// `PATH`); empty when nothing is to be said.
+    pub program_warning: String,
+    /// What the system dialog says the tool does, in parts it keeps whole
+    /// (the verb and the program or host) and a part it may cut (the
+    /// arguments or the rest of the address).
+    pub dialog: DialogTarget,
     /// Digest of what is shown (and of the binding it stands for).
     pub digest: String,
     /// The code the system dialog shows first, `XXXX-XXXX-XXXX`
@@ -156,6 +182,8 @@ pub enum ApprovalError {
     ProgramNotFound(String),
     #[error("the program file `{0}` cannot be read ({1}), so its content cannot be pinned and the tool cannot be approved")]
     ProgramUnreadable(String, String),
+    #[error("the program `{0}` is a relative path: write the program's full path into the tool")]
+    RelativeProgram(String),
     #[error("the tool changed since it was shown: review it again")]
     Changed,
     #[error("the tool was edited while it was being approved: review it again")]
@@ -234,6 +262,59 @@ fn target_of(kind: RemoteToolKind, binding: &Value) -> String {
     }
 }
 
+/// A URL as the dialog splits it: the scheme, host and port, then the rest.
+fn origin_and_rest(url: &str) -> (String, String) {
+    match url.find("://") {
+        Some(at) => match url[at + 3..].find('/') {
+            Some(slash) => (
+                url[..at + 3 + slash].to_string(),
+                url[at + 3 + slash..].to_string(),
+            ),
+            None => (url.to_string(), String::new()),
+        },
+        None => (url.to_string(), String::new()),
+    }
+}
+
+/// What the dialog says a tool of `kind` with `binding` does.
+fn dialog_target(kind: RemoteToolKind, binding: &Value) -> DialogTarget {
+    let field = |name: &str| {
+        binding
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("(not set)")
+            .to_string()
+    };
+    let args = || {
+        binding
+            .get("args")
+            .filter(|a| !a.is_null())
+            .map(|a| a.to_string())
+            .unwrap_or_default()
+    };
+    let target = |verb: &str, head: String, rest: String| DialogTarget {
+        verb: verb.to_string(),
+        head,
+        rest: rest.trim().to_string(),
+    };
+    match kind {
+        RemoteToolKind::Cli => target("runs", field("program"), args()),
+        RemoteToolKind::Rest => {
+            let (origin, rest) = origin_and_rest(&field("url_template"));
+            target("sends", format!("{} {origin}", field("method")), rest)
+        }
+        RemoteToolKind::Mcp => {
+            let tool = format!("MCP tool {}", field("remote_tool_name"));
+            if binding.get("transport").and_then(Value::as_str) == Some("stdio") {
+                target("runs", field("command"), format!("{} {tool}", args()))
+            } else {
+                let (origin, rest) = origin_and_rest(&field("url"));
+                target("connects to", origin, format!("{rest} {tool}"))
+            }
+        }
+    }
+}
+
 /// The binding field that names the program a kind starts, if it starts one:
 /// `program` for `tool-cli`, `command` for a `tool-mcp` server run over stdio.
 fn program_field(kind: RemoteToolKind, bucket: &Value) -> Option<&'static str> {
@@ -252,18 +333,40 @@ fn is_bare_name(program: &str) -> bool {
 }
 
 /// The program file a tool starts, as the approval pins it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProgramFile {
     /// Its full path.
     pub path: String,
     /// SHA-256 of its content, lowercase hex.
     pub sha256: String,
+    /// Programs running as this user can replace it (the file or its folder is
+    /// writable by this user): then the pin does not hold against them.
+    pub replaceable: bool,
+    /// For a `#!/usr/bin/env X` script, the `X` it looks up on the `PATH` at
+    /// each start, which is not pinned.
+    pub starts_from_path: Option<String>,
+}
+
+/// What the system dialog says the tool does.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DialogTarget {
+    /// `runs`, `sends` or `connects to`.
+    pub verb: String,
+    /// The program's full path, or the method and the scheme, host and port:
+    /// shown whole.
+    pub head: String,
+    /// The arguments, or the rest of the address (and the MCP tool): may be
+    /// cut.
+    pub rest: String,
 }
 
 /// The program as the daemon would start it: a bare name looked up on the
 /// daemon's `PATH`, as a call would look it up, and the file's content hashed.
 /// Blocks (a `PATH` search, a file read): call it off the async threads.
 pub fn on_the_daemon_path(program: &str) -> Result<ProgramFile, ApprovalError> {
+    if !is_bare_name(program) && !std::path::Path::new(program).is_absolute() {
+        return Err(ApprovalError::RelativeProgram(program.to_string()));
+    }
     let path = if is_bare_name(program) {
         std::env::var_os("PATH")
             .and_then(|path| which::which_in(program, Some(path), "/").ok())
@@ -273,8 +376,14 @@ pub fn on_the_daemon_path(program: &str) -> Result<ProgramFile, ApprovalError> {
         program.to_string()
     };
     let sha256 = super::process::file_sha256(&path)
-        .map_err(|e| ApprovalError::ProgramUnreadable(path.clone(), e.kind().to_string()))?;
-    Ok(ProgramFile { path, sha256 })
+        .map_err(|e| ApprovalError::ProgramUnreadable(path.clone(), e.to_string()))?;
+    let (replaceable, starts_from_path) = super::process::program_facts(&path);
+    Ok(ProgramFile {
+        path,
+        sha256,
+        replaceable,
+        starts_from_path,
+    })
 }
 
 /// Resolves a program as written in a binding: [`on_the_daemon_path`], or a
@@ -430,6 +539,24 @@ fn build_preview(
             pin.written
         ));
     }
+    let dialog = dialog_target(kind, bucket);
+    let mut warnings = Vec::new();
+    if let Some(pin) = program {
+        if pin.file.replaceable {
+            warnings.push(
+                "programs running as you can replace this file (it or its folder is writable by you): \
+                 the pin is checked right before each start, but a file swapped in at that moment \
+                 would run"
+                    .to_string(),
+            );
+        }
+        if let Some(from_path) = &pin.file.starts_from_path {
+            warnings.push(format!(
+                "the script starts `{from_path}` from the daemon's PATH at each call, and that \
+                 program is not pinned"
+            ));
+        }
+    }
     let digest = digest_of(
         &node.id,
         &node.content,
@@ -449,6 +576,8 @@ fn build_preview(
         program: program
             .map(|pin| format!("{} (SHA-256 {})", pin.file.path, pin.file.sha256))
             .unwrap_or_default(),
+        program_warning: warnings.join("; "),
+        dialog,
         // Filled in under the daemon's key by the caller; none without one.
         code: String::new(),
         digest,
@@ -674,6 +803,7 @@ mod tests {
         Ok(ProgramFile {
             sha256: sha_of(&path),
             path,
+            ..Default::default()
         })
     }
 
@@ -1171,6 +1301,7 @@ mod tests {
             Ok(ProgramFile {
                 sha256: sha_of(&path),
                 path,
+                ..Default::default()
             })
         }
         assert_eq!(
@@ -1457,5 +1588,100 @@ mod tests {
             Err(ApprovalError::Conflict)
         );
         assert!(!ns.tool_approval_recorded(&id));
+    }
+
+    // -- what the dialog and the preview say about the program --------------
+
+    /// A program file programs of this user can replace, or a script that
+    /// starts a program from the `PATH`, is said plainly: the pin does not
+    /// hold there. The approval still works.
+    #[tokio::test]
+    async fn where_the_pin_does_not_hold_the_preview_says_so() {
+        let (ns, key, _tmp) = rig().await;
+        let id = tool(&ns, "lookup").await;
+        fn shaky(program: &str) -> Result<ProgramFile, ApprovalError> {
+            Ok(ProgramFile {
+                replaceable: true,
+                starts_from_path: Some("python3".to_string()),
+                ..on_test_path(program)?
+            })
+        }
+        let p = preview_with(&ns, Some(&key), &id, shaky).await.unwrap();
+        assert!(
+            p.program_warning.contains("can replace this file"),
+            "{}",
+            p.program_warning
+        );
+        assert!(
+            p.program_warning
+                .contains("starts `python3` from the daemon's PATH"),
+            "{}",
+            p.program_warning
+        );
+        let plain = preview(&ns, &key, &id).await.unwrap();
+        assert!(plain.program_warning.is_empty());
+        let reviewed = review_with(&ns, &key, &id, &p.digest, shaky).await.unwrap();
+        write(&ns, &key, reviewed).await.unwrap();
+        assert!(offered(&ns, &key, &id).await);
+    }
+
+    /// The dialog's parts: the verb and the program or the host, kept whole,
+    /// then what may be cut.
+    #[test]
+    fn the_dialog_names_the_program_or_the_host_apart_from_the_rest() {
+        let cli = dialog_target(
+            RemoteToolKind::Cli,
+            &json!({"program": "/usr/bin/git", "args": ["log", "{q}"]}),
+        );
+        assert_eq!(
+            (cli.verb.as_str(), cli.head.as_str(), cli.rest.as_str()),
+            ("runs", "/usr/bin/git", r#"["log","{q}"]"#)
+        );
+        let rest = dialog_target(
+            RemoteToolKind::Rest,
+            &json!({"method": "POST", "url_template": "https://api.example.com:8443/items/{q}?a=1"}),
+        );
+        assert_eq!(
+            (rest.verb.as_str(), rest.head.as_str(), rest.rest.as_str()),
+            (
+                "sends",
+                "POST https://api.example.com:8443",
+                "/items/{q}?a=1"
+            )
+        );
+        let mcp = dialog_target(
+            RemoteToolKind::Mcp,
+            &json!({"transport": "http", "url": "https://mcp.example.com/rpc", "remote_tool_name": "find"}),
+        );
+        assert_eq!(
+            (mcp.verb.as_str(), mcp.head.as_str(), mcp.rest.as_str()),
+            (
+                "connects to",
+                "https://mcp.example.com",
+                "/rpc MCP tool find"
+            )
+        );
+        let stdio = dialog_target(
+            RemoteToolKind::Mcp,
+            &json!({"transport": "stdio", "command": "/usr/bin/npx", "remote_tool_name": "find"}),
+        );
+        assert_eq!(
+            (
+                stdio.verb.as_str(),
+                stdio.head.as_str(),
+                stdio.rest.as_str()
+            ),
+            ("runs", "/usr/bin/npx", "MCP tool find")
+        );
+    }
+
+    /// A relative path would be hashed against the daemon's working folder
+    /// and refused at every call: it cannot be approved.
+    #[test]
+    fn a_relative_program_path_cannot_be_approved() {
+        assert_eq!(
+            on_the_daemon_path("bin/tool"),
+            Err(ApprovalError::RelativeProgram("bin/tool".to_string()))
+        );
     }
 }

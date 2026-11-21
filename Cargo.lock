@@ -3450,6 +3450,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "libc",
+ "libsql",
  "minijinja",
  "nodespace-core",
  "nodespace-nlp-engine",

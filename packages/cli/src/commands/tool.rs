@@ -187,6 +187,12 @@ fn render(preview: &DescribeToolApprovalResponse) -> String {
         line(format!("Program file: {shown}"));
         line(PROGRAM_NOTE.to_string());
     }
+    if !preview.program_warning.is_empty() {
+        line(format!(
+            "WARNING: {}",
+            display_line(&preview.program_warning)
+        ));
+    }
     // The target is shown with the question; a letter in it counts here too.
     let target_non_ascii = escaped(&preview.target, Keep::AsciiLines).1;
     if non_ascii || target_non_ascii {
@@ -340,6 +346,7 @@ mod tests {
             credentials: vec!["TOKEN from keychain:tok".into()],
             target: "Runs: git [\"log\"]".into(),
             program: String::new(),
+            program_warning: String::new(),
             code: "1A2B-3C4D-5E6F".into(),
             digest: "d".into(),
             approved: false,
@@ -479,6 +486,16 @@ mod tests {
         );
         assert!(shown.contains(PROGRAM_NOTE));
         assert!(!render(&sample()).contains("Program file:"));
+        assert!(!render(&sample()).contains("WARNING:"));
+        let warned = render(&DescribeToolApprovalResponse {
+            program: "/opt/homebrew/bin/git (SHA-256 ab12)".into(),
+            program_warning: "programs running as you can replace this file\nBinding:".into(),
+            ..sample()
+        });
+        assert!(
+            warned.contains("WARNING: programs running as you can replace this file\\u{A}Binding:"),
+            "{warned}"
+        );
     }
 
     #[test]

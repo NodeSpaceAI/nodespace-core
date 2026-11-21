@@ -20,7 +20,7 @@ use nodespace_core::secrets::{
     validate_secret_name, validate_secret_value, SecretError, SecretStore,
 };
 use tonic::{Request, Response, Status};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::nodespace::secret_service_server::SecretService as GrpcSecretService;
 use crate::nodespace::{
@@ -132,15 +132,15 @@ impl SecretServiceImpl {
             return Err(status(error));
         }
         self.confirmed(name).await?;
-        let mut req = SetSecretRequest {
-            name: name.clone(),
-            value: std::mem::take(&mut *value.0),
-        };
+        // Moved into memory that is wiped when it is dropped, however the
+        // store task ends (a panic in it included).
+        let name = name.clone();
+        let value_to_store = Zeroizing::new(std::mem::take(&mut *value.0));
         drop(value);
         // The OS store can block (a prompt, a locked keychain): keep it off the
         // async worker threads.
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || store_and_wipe(&store, &mut req))
+        tokio::task::spawn_blocking(move || store.set(&name, &value_to_store))
             .await
             .map_err(|_| Status::internal("credential store task failed"))?
             .map_err(status)?;
@@ -191,15 +191,6 @@ fn status(error: SecretError) -> Status {
         SecretError::Store(_) => Status::unavailable(error.to_string()),
         SecretError::NotRestored { .. } => Status::internal(error.to_string()),
     }
-}
-
-/// Stores the request's value, then overwrites it: the request is the daemon's
-/// last copy of the value, and it is wiped whether the store accepted it or
-/// not.
-fn store_and_wipe(store: &SecretStore, request: &mut SetSecretRequest) -> Result<(), SecretError> {
-    let result = store.set(&request.name, &request.value);
-    request.value.zeroize();
-    result
 }
 
 #[tonic::async_trait]
@@ -273,32 +264,31 @@ mod tests {
         .map(|_| ())
     }
 
-    #[test]
-    fn the_request_value_is_wiped_whether_the_store_accepts_it_or_not() {
-        let store = SecretStore::new(Arc::new(InMemorySecretBackend::default()));
-        // Accepted.
-        let mut ok = SetSecretRequest {
+    /// A store that panics while it writes fails the `Set` with an error,
+    /// not the daemon. The value had already left the request for memory that
+    /// is wiped when dropped (`Zeroizing`), which a panic drops too.
+    #[tokio::test]
+    async fn a_store_that_panics_while_writing_fails_the_set_and_the_request_holds_no_value() {
+        struct Panics;
+        impl nodespace_core::secrets::SecretBackend for Panics {
+            fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+                panic!("the platform store failed in the middle of a write")
+            }
+            fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+                Ok(None)
+            }
+            fn delete(&self, _: &str) -> Result<bool, SecretError> {
+                Ok(false)
+            }
+        }
+        let s = SecretServiceImpl::new(Arc::new(SecretStore::new(Arc::new(Panics))), yes());
+        let mut request = Request::new(SetSecretRequest {
             name: "tok".into(),
             value: TOKEN.into(),
-        };
-        let ptr = ok.value.as_ptr();
-        let len = ok.value.len();
-        assert!(store_and_wipe(&store, &mut ok).is_ok());
-        assert!(ok.value.is_empty());
-        // The buffer that held it is zeroed, not just shortened.
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert!(bytes.iter().all(|b| *b == 0), "the value bytes were left");
-        // Refused (a bad name).
-        let mut bad = SetSecretRequest {
-            name: "bad name".into(),
-            value: TOKEN.into(),
-        };
-        let ptr = bad.value.as_ptr();
-        let len = bad.value.len();
-        assert!(store_and_wipe(&store, &mut bad).is_err());
-        assert!(bad.value.is_empty());
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        assert!(bytes.iter().all(|b| *b == 0), "the value bytes were left");
+        });
+        let failed = s.set_in_place(&mut request).await.unwrap_err();
+        assert_eq!(failed.code(), tonic::Code::Internal);
+        assert!(request.get_ref().value.is_empty());
     }
 
     #[tokio::test]

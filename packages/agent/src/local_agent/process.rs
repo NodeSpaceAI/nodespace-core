@@ -130,22 +130,100 @@ impl Isolated {
     }
 }
 
+/// Largest program file an approval hashes.
+pub(crate) const MAX_PROGRAM_BYTES: u64 = 256 * 1024 * 1024;
+
 /// SHA-256 of the file at `path` (following a symbolic link), as lowercase
-/// hex: what an approval pins for a program.
+/// hex: what an approval pins for a program. Only a regular file of at most
+/// [`MAX_PROGRAM_BYTES`] is hashed: it is opened without waiting (a FIFO does
+/// not block the thread), checked through the open file (a device, a FIFO or
+/// a directory is refused, and so is a file that is too large), and read as a
+/// stream from that same open file, never past the limit.
 pub(crate) fn file_sha256(path: &str) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(path)?;
-    Ok(Sha256::digest(&bytes)
+    use std::io::Read;
+    let refuse = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, why.to_string());
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(refuse("not a regular file"));
+    }
+    if meta.len() > MAX_PROGRAM_BYTES {
+        return Err(refuse("larger than a program file may be"));
+    }
+    let mut hasher = Sha256::new();
+    let mut reader = file.take(MAX_PROGRAM_BYTES + 1);
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut read = 0u64;
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        read += n as u64;
+        if read > MAX_PROGRAM_BYTES {
+            return Err(refuse("larger than a program file may be"));
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(hasher
+        .finalize()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect())
 }
 
+/// What a program file says about how far its pin holds: whether programs
+/// running as this user can replace it (the file or its folder is writable by
+/// this user), and, for a script that starts with `#!/usr/bin/env X`, the
+/// program `X` it looks up on the `PATH` at each start (not pinned).
+pub(crate) fn program_facts(path: &str) -> (bool, Option<String>) {
+    let writable = |p: &std::path::Path| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
+                .unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = p;
+            false
+        }
+    };
+    let file = std::path::Path::new(path);
+    let replaceable = writable(file) || file.parent().is_some_and(writable);
+    let mut head = [0u8; 256];
+    let read = std::fs::File::open(file)
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+        .unwrap_or(0);
+    let first_line = String::from_utf8_lossy(&head[..read]);
+    let first_line = first_line.lines().next().unwrap_or("");
+    let from_path = first_line
+        .strip_prefix("#!")
+        .map(str::trim)
+        .and_then(|line| {
+            let mut words = line.split_whitespace();
+            (words.next() == Some("/usr/bin/env"))
+                .then(|| words.find(|w| !w.starts_with('-')).map(str::to_string))
+                .flatten()
+        });
+    (replaceable, from_path)
+}
+
 /// Checks, right before a program is started, that its file is still the one
-/// the approval pinned: `expected` is the SHA-256 recorded with the approval
-/// (`None` for a tool whose approval pinned none, which the gate never
-/// offers). A file that changed (an update, `brew upgrade`, a replacement) is
-/// refused and the user is told to approve the tool again.
+/// the approval pinned: `expected` is the SHA-256 recorded with the approval.
+/// None recorded is refused (the gate never offers such a tool; this does not
+/// rely on it). A file that changed (an update, `brew upgrade`, a
+/// replacement) is refused and the user is told to approve the tool again.
 ///
 /// The file is read and hashed, then started by its path: a file replaced in
 /// the moment between the two is not caught.
@@ -154,7 +232,9 @@ pub(crate) async fn check_program_file(
     expected: Option<&str>,
 ) -> Result<(), RemoteCallError> {
     let Some(expected) = expected else {
-        return Ok(());
+        return fail(format!(
+            "no file content was pinned for the program `{program}`: approve the tool again with `nodespace tool approve`"
+        ));
     };
     if !std::path::Path::new(program).is_absolute() {
         return fail(format!(
@@ -352,6 +432,75 @@ pub(crate) async fn credentials_within<T>(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// Only a regular file within the size limit is hashed: a device (which
+    /// would be read forever), a FIFO (which would block the thread), a
+    /// directory and an oversized file are refused, and none of them hangs.
+    #[test]
+    fn only_a_regular_file_of_bounded_size_is_hashed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let regular = dir.path().join("prog");
+        std::fs::write(&regular, b"echo hi\n").unwrap();
+        let expected: String = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(b"echo hi\n")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        assert_eq!(file_sha256(regular.to_str().unwrap()).unwrap(), expected);
+        let fifo = dir.path().join("fifo");
+        let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let big = dir.path().join("big");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_PROGRAM_BYTES + 1)
+            .unwrap();
+        for refused in [
+            "/dev/zero",
+            fifo.to_str().unwrap(),
+            dir.path().to_str().unwrap(),
+            big.to_str().unwrap(),
+        ] {
+            let err = file_sha256(refused).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "{refused}: {err}"
+            );
+        }
+    }
+
+    /// A file in a folder this user can write can be replaced by programs of
+    /// this user; a system program cannot. A `#!/usr/bin/env X` script starts
+    /// `X` from the `PATH`.
+    #[test]
+    fn what_a_program_file_says_about_its_pin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let script = dir.path().join("tool");
+        std::fs::write(&script, "#!/usr/bin/env -S python3 -u\nprint(1)\n").unwrap();
+        assert_eq!(
+            program_facts(script.to_str().unwrap()),
+            (true, Some("python3".to_string()))
+        );
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, "#!/bin/sh\necho hi\n").unwrap();
+        assert_eq!(program_facts(plain.to_str().unwrap()), (true, None));
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(program_facts("/bin/sh"), (false, None));
+        }
+    }
+
+    /// A program tool whose approval pinned no content is not started, even
+    /// though the gate already refuses to offer one.
+    #[tokio::test]
+    async fn a_program_with_no_pinned_content_is_not_started() {
+        let err = check_program_file("/bin/sh", None).await.unwrap_err();
+        assert!(err.0.contains("no file content was pinned"), "{}", err.0);
+        let pin = file_sha256("/bin/sh").unwrap();
+        assert!(check_program_file("/bin/sh", Some(&pin)).await.is_ok());
+    }
 
     /// Every program started for a tool is recorded, so the daemon can tell it
     /// from the user's applications when something connects to its socket.

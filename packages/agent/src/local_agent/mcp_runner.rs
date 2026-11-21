@@ -1140,7 +1140,13 @@ mod tests {
         })
     }
 
+    /// A tool as the gate hands it over: a stdio server's program content
+    /// pinned as the approval would pin it (the file as it is now).
     fn tool(binding: Value) -> RemoteTool {
+        let program_sha256 = binding
+            .get("command")
+            .and_then(Value::as_str)
+            .and_then(|p| crate::local_agent::process::file_sha256(p).ok());
         RemoteTool {
             node_id: "node-1".into(),
             name: "m_tool".into(),
@@ -1149,7 +1155,7 @@ mod tests {
             parameter_schema: schema(),
             properties: json!({ "tool-mcp": binding }),
             approval_tag: String::new(),
-            program_sha256: None,
+            program_sha256,
         }
     }
 
@@ -1417,9 +1423,11 @@ for line in sys.stdin:
 
         impl Fixture {
             fn binding(&self, mode: &str) -> Value {
+                // The full path, as an approval writes it.
+                let python = which::which("python3").expect("python3 is on the PATH");
                 json!({
                     "transport": "stdio",
-                    "command": "python3",
+                    "command": python.to_str().unwrap(),
                     "args": [self.script, mode, self.log.display().to_string()],
                     "remote_tool_name": "echo",
                     "timeout_seconds": 10
@@ -1829,8 +1837,12 @@ for line in sys.stdin:
             let t = tool(binding);
             let long = "z".repeat(20_000);
             let shown = runner(store()).destination(&t, &json!({"q": long}));
+            let python = which::which("python3").unwrap();
             assert!(
-                shown.starts_with("MCP server over stdio; credentials in the environment: MCP_TOKEN from keychain:tok; run `python3`"),
+                shown.starts_with(&format!(
+                    "MCP server over stdio; credentials in the environment: MCP_TOKEN from keychain:tok; run `{}`",
+                    python.display()
+                )),
                 "{shown}"
             );
             assert!(shown.contains("MCP_TOKEN from keychain:tok"));

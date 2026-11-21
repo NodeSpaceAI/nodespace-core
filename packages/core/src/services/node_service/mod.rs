@@ -1629,8 +1629,16 @@ impl NodeService {
             let notifier = Arc::new(move |change: StoreChange| {
                 use crate::db::events::{EventEnvelope, EventMetadata};
 
-                if change.operation == StoreOperation::Deleted {
-                    crate::tool_approvals::forget(&approval_scope, &change.node.id);
+                // Any write but the approval's own ends a recorded approval.
+                match change.operation {
+                    StoreOperation::Deleted | StoreOperation::Created => {
+                        crate::tool_approvals::forget(&approval_scope, &change.node.id)
+                    }
+                    StoreOperation::Updated => crate::tool_approvals::forget_unless_version(
+                        &approval_scope,
+                        &change.node.id,
+                        change.node.version,
+                    ),
                 }
 
                 // Compute changed properties for updates
@@ -3110,12 +3118,25 @@ impl NodeService {
     }
 
     /// Wrap `event` with this instance's client id and execution context,
-    /// beside its write context. A delete ends the remote-tool approval of
-    /// the node here, as the delete is reported, not when a subscriber gets to
-    /// it (see `crate::tool_approvals`).
+    /// beside its write context. A write that is not an approval's own ends
+    /// the remote-tool approval of the node here, as the write is reported,
+    /// not when a subscriber gets to it (see `crate::tool_approvals`).
     fn emitted(&self, event: DomainEvent) -> EmittedEvent {
-        if let DomainEvent::NodeDeleted { id, .. } = &event {
-            crate::tool_approvals::forget(&self.approval_scope(), id);
+        match &event {
+            DomainEvent::NodeDeleted { id, .. } => {
+                crate::tool_approvals::forget(&self.approval_scope(), id)
+            }
+            DomainEvent::NodeCreated { node_id, .. } => {
+                crate::tool_approvals::forget(&self.approval_scope(), node_id)
+            }
+            DomainEvent::NodeUpdated { node_id, node, .. } => {
+                crate::tool_approvals::forget_unless_version(
+                    &self.approval_scope(),
+                    node_id,
+                    node.version,
+                )
+            }
+            _ => {}
         }
         EmittedEvent {
             envelope: crate::db::events::EventEnvelope {

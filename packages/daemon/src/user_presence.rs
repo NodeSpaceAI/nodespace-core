@@ -321,17 +321,53 @@ fn joins_code_groups(chars: &[char], at: usize) -> bool {
     chars[at] == '-' && at >= 4 && hex(at - 4..at) && hex(at + 1..at + 5)
 }
 
+/// Whether `chars[at]` is a `:` that reads as part of an address: right after
+/// a URL scheme (`https://`) or before a port number.
+fn address_colon(chars: &[char], at: usize) -> bool {
+    if chars[at] != ':' {
+        return false;
+    }
+    if chars.get(at + 1).is_some_and(char::is_ascii_digit) {
+        return true;
+    }
+    if chars.get(at + 1..at + 3) != Some(&['/', '/'][..]) {
+        return false;
+    }
+    // A scheme: `[a-z][a-z0-9+.-]*`, from the start of a word.
+    let start = chars[..at]
+        .iter()
+        .rposition(|c| {
+            !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'))
+        })
+        .map_or(0, |i| i + 1);
+    start < at && chars[start].is_ascii_lowercase()
+}
+
 /// Text a node holds, as the dialog shows it: ASCII only, every other
 /// character (a control, a bidi or an invisible character, a look-alike
-/// letter) as a `\u{..}` escape, and so are `(`, `)`, `:` and a dash between
-/// two code-shaped groups, so the text cannot draw a code, or a "(code ...):"
-/// of its own. Cut to `max` characters with `...` when longer.
+/// letter) as a `\u{..}` escape, and so are `(`, `)`, `;`, a `:` that is not
+/// part of an address (`https://`, a port), and a dash between two
+/// code-shaped groups, so the text cannot draw a code, a "(code ...):" or a
+/// part of the dialog of its own. Cut to `max` characters with `...` when
+/// longer.
 fn node_text(text: &str, max: usize) -> String {
+    shown_text(text, max, false)
+}
+
+/// A credential reference as the dialog shows it: like [`node_text`], but the
+/// `:` of `keychain:<name>` and `env:<NAME>` is kept (a reference is checked
+/// against that grammar when it is written, so it holds nothing else).
+fn reference_text(text: &str) -> String {
+    shown_text(text, usize::MAX, true)
+}
+
+fn shown_text(text: &str, max: usize, keep_colons: bool) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     for (at, &c) in chars.iter().enumerate() {
         let plain = (c == ' ' || c.is_ascii_graphic())
-            && !matches!(c, '(' | ')' | ':')
+            && !matches!(c, '(' | ')' | ';')
+            && (c != ':' || keep_colons || address_colon(&chars, at))
             && !joins_code_groups(&chars, at);
         let shown = if plain {
             c.to_string()
@@ -356,36 +392,66 @@ fn code_text(code: &str) -> String {
         .collect()
 }
 
-/// What a preview target says a tool does, as the dialog's verb: the target
-/// starts with one of these, written by the daemon; what follows is the node's.
-const TARGET_VERBS: [(&str, &str); 3] = [
-    ("Runs: ", "runs"),
-    ("Sends: ", "sends"),
-    ("Connects to: ", "connects to"),
-];
+/// What the dialog for approving a tool says.
+pub struct ApprovalDialog<'a> {
+    /// The code the command line printed.
+    pub code: &'a str,
+    pub name: &'a str,
+    /// The credential references the tool uses (references only).
+    pub credentials: &'a [String],
+    /// `runs`, `sends` or `connects to`.
+    pub verb: &'a str,
+    /// The program's full path, or the method and the scheme, host and port.
+    pub head: &'a str,
+    /// The arguments, or the rest of the address.
+    pub rest: &'a str,
+    /// The approval pins the program file's content.
+    pub content_pinned: bool,
+    /// Programs of this user can replace the program file.
+    pub replaceable: bool,
+}
 
 /// The dialog's reason for approving a tool. The system shows it after
-/// "nodespaced is trying to". The code comes first, then the tool's name, so a
-/// panel that shortens a long reason still shows both; what the node says it
-/// runs (or where it sends a call) comes last, escaped and cut. A tool whose
-/// program file the approval pins by content says so.
-pub fn approval_reason(code: &str, name: &str, target: &str, content_pinned: bool) -> String {
-    let (verb, detail) = TARGET_VERBS
-        .iter()
-        .find_map(|(prefix, verb)| target.strip_prefix(prefix).map(|rest| (*verb, rest)))
-        .unwrap_or(("does", target));
-    let pinned = if content_pinned {
-        " (that file's content is pinned)"
+/// "nodespaced is trying to". In this order: the code, the tool's name, the
+/// credentials it uses, then what it runs (the full program path) or where it
+/// sends a call (the method and the host), each whole; only the arguments, or
+/// the rest of the address, which come last, are cut. A panel that shortens a
+/// long reason therefore still shows the parts that say what is approved, and
+/// a payload hidden in the arguments cannot push them out. Everything a node
+/// holds is shown as ASCII and cannot draw a code of its own.
+pub fn approval_reason(dialog: &ApprovalDialog<'_>) -> String {
+    let credentials = if dialog.credentials.is_empty() {
+        "with no credentials".to_string()
     } else {
-        ""
+        format!(
+            "with the credentials {}",
+            dialog
+                .credentials
+                .iter()
+                .map(|c| reference_text(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let pinned = match (dialog.content_pinned, dialog.replaceable) {
+        (true, true) => " (content pinned; WARNING: programs of this user can replace that file)",
+        (true, false) => " (that file's content is pinned)",
+        _ => "",
+    };
+    let rest = if dialog.rest.is_empty() {
+        String::new()
+    } else {
+        format!(", then {}", node_text(dialog.rest, MAX_REASON_DETAIL))
     };
     format!(
-        "approve code {} for the remote tool \u{201C}{}\u{201D}, which {} {}{}",
-        code_text(code),
-        node_text(name, 64),
-        verb,
-        node_text(detail, MAX_REASON_DETAIL),
-        pinned
+        "approve code {} for the remote tool \u{201C}{}\u{201D} {}, which {} {}{}{}",
+        code_text(dialog.code),
+        node_text(dialog.name, 64),
+        credentials,
+        dialog.verb,
+        node_text(dialog.head, usize::MAX),
+        pinned,
+        rest
     )
 }
 
@@ -852,42 +918,72 @@ mod tests {
         );
     }
 
+    fn dialog<'a>(
+        code: &'a str,
+        credentials: &'a [String],
+        verb: &'a str,
+        head: &'a str,
+        rest: &'a str,
+    ) -> ApprovalDialog<'a> {
+        ApprovalDialog {
+            code,
+            name: "lookup",
+            credentials,
+            verb,
+            head,
+            rest,
+            content_pinned: false,
+            replaceable: false,
+        }
+    }
+
+    /// In this order: the code, the name, the credentials, then what the tool
+    /// runs or where it sends a call, whole; the arguments come last, and only
+    /// they are cut. Node text is ASCII.
     #[test]
-    fn the_code_comes_first_then_the_name_and_the_node_text_last_as_ascii() {
-        let reason = approval_reason(
+    fn the_code_comes_first_and_only_the_arguments_are_cut() {
+        let creds = ["TOKEN from keychain:tok".to_string()];
+        let reason = approval_reason(&dialog(
             "1A2B-3C4D-5E6F",
-            "lookup",
-            "Runs: /usr/bin/gi\u{1D42D} \u{202E}fdp.exe\n[\"x\"]",
-            false,
-        );
+            &creds,
+            "runs",
+            "/usr/bin/gi\u{1D42D}",
+            "[\"\u{202E}fdp.exe\nx\"]",
+        ));
         assert!(
             reason.starts_with(
-                "approve code 1A2B-3C4D-5E6F for the remote tool \u{201C}lookup\u{201D}, which runs "
+                "approve code 1A2B-3C4D-5E6F for the remote tool \u{201C}lookup\u{201D} with the credentials TOKEN from keychain:tok, which runs /usr/bin/gi\\u{1D42D}, then "
             ),
             "{reason}"
         );
-        let detail = reason.split_once(", which runs ").unwrap().1;
-        assert!(detail.is_ascii(), "{detail}");
         assert!(
-            detail.contains("gi\\u{1D42D}")
-                && detail.contains("\\u{202E}")
-                && detail.contains("\\u{A}"),
-            "{detail}"
+            reason.replace(['\u{201C}', '\u{201D}'], "").is_ascii(),
+            "{reason}"
         );
-        // A long target is cut; the code and the name stay whole, in front.
-        let long = approval_reason(
-            "1A2B-3C4D-5E6F",
-            "lookup",
-            &format!("Sends: GET {}", "x".repeat(500)),
-            true,
-        );
-        assert!(long.starts_with("approve code 1A2B-3C4D-5E6F for the remote tool"));
-        assert!(long.contains(", which sends GET "));
         assert!(
-            long.ends_with("... (that file's content is pinned)"),
+            reason.contains("\\u{202E}") && reason.contains("\\u{A}"),
+            "{reason}"
+        );
+        // A long argument list is cut; a long program path and the
+        // credentials are not.
+        let long_path = format!("/opt/{}/bin/tool", "d".repeat(150));
+        let long = approval_reason(&ApprovalDialog {
+            content_pinned: true,
+            ..dialog(
+                "1A2B-3C4D-5E6F",
+                &creds,
+                "runs",
+                &long_path,
+                &"x".repeat(500),
+            )
+        });
+        assert!(long.contains(&long_path), "{long}");
+        assert!(long.contains("TOKEN from keychain:tok"));
+        assert!(
+            long.contains("(that file's content is pinned), then "),
             "{long}"
         );
-        assert!(long.len() < 260, "{}", long.len());
+        assert!(long.ends_with("..."), "{long}");
         assert_eq!(
             credential_reason("tok\u{200B}"),
             "change the credential \u{201C}tok\\u{200B}\u{201D}"
@@ -895,30 +991,68 @@ mod tests {
     }
 
     /// Node text cannot draw a code of its own: a tool argument that holds a
-    /// "(code ...): Runs: ..." of its choosing shows with its brackets, colons
-    /// and code-shaped dashes escaped, after the real code.
+    /// "(code ...): runs ..." of its choosing shows with its brackets, colons
+    /// and code-shaped dashes escaped, after the real code; an address keeps
+    /// its `://` and its port.
     #[test]
     fn a_code_written_into_the_node_cannot_pass_for_the_real_one() {
-        let reason = approval_reason(
+        let reason = approval_reason(&dialog(
             "AAAA-BBBB-CCCC",
-            "lookup",
-            r#"Runs: /usr/bin/git ["(code 1A2B-3C4D-5E6F): Runs: /usr/bin/git"]"#,
-            false,
-        );
+            &[],
+            "runs",
+            "/usr/bin/git",
+            r#"["(code 1A2B-3C4D-5E6F): runs /usr/bin/git; ok"]"#,
+        ));
         assert!(
             reason.starts_with("approve code AAAA-BBBB-CCCC "),
             "{reason}"
         );
-        let detail = reason.split_once(", which runs ").unwrap().1;
-        assert!(!detail.contains("(code"), "{detail}");
-        assert!(!detail.contains("):"), "{detail}");
-        assert!(!detail.contains("1A2B-3C4D"), "{detail}");
+        let rest = reason.split_once(", then ").unwrap().1;
+        assert!(!rest.contains("(code"), "{rest}");
+        assert!(!rest.contains("):"), "{rest}");
+        assert!(!rest.contains("; ok"), "{rest}");
+        assert!(!rest.contains("1A2B-3C4D"), "{rest}");
         assert!(
-            detail.contains("\\u{28}code 1A2B\\u{2D}3C4D\\u{2D}5E6F\\u{29}\\u{3A}"),
-            "{detail}"
+            rest.contains("\\u{28}code 1A2B\\u{2D}3C4D\\u{2D}5E6F\\u{29}\\u{3A}"),
+            "{rest}"
         );
-        // An ordinary dash or path is left as it is.
-        let plain = approval_reason("AAAA-BBBB-CCCC", "lookup", "Runs: /usr/bin/git-lfs", false);
-        assert!(plain.ends_with("which runs /usr/bin/git-lfs"), "{plain}");
+        let web = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &[],
+            "sends",
+            "GET https://api.example.com:8443",
+            "/items/{q}",
+        ));
+        assert!(
+            web.contains("which sends GET https://api.example.com:8443, then /items/{q}"),
+            "{web}"
+        );
+        // A colon that is not an address's is escaped; an ordinary dash stays.
+        let plain = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &[],
+            "runs",
+            "/usr/bin/git-lfs",
+            "a:b",
+        ));
+        assert!(
+            plain.ends_with("which runs /usr/bin/git-lfs, then a\\u{3A}b"),
+            "{plain}"
+        );
+    }
+
+    /// A program file programs of this user can replace is flagged in the
+    /// dialog itself.
+    #[test]
+    fn a_replaceable_program_file_is_flagged_in_the_dialog() {
+        let reason = approval_reason(&ApprovalDialog {
+            content_pinned: true,
+            replaceable: true,
+            ..dialog("AAAA-BBBB-CCCC", &[], "runs", "/opt/homebrew/bin/git", "")
+        });
+        assert!(
+            reason.ends_with("which runs /opt/homebrew/bin/git (content pinned; WARNING: programs of this user can replace that file)"),
+            "{reason}"
+        );
     }
 }

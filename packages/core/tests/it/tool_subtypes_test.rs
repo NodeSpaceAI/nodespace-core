@@ -670,7 +670,7 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
             assert!(svc.tool_approval_recorded(&id), "{kind} {name}");
             ids.push(id);
         }
-        // An update keeps the record (the version check ends it).
+        // An update is not the approval's own write: it ends the record too.
         let node = get(&svc, &ids[0]).await;
         svc.update_node(
             &ids[0],
@@ -679,8 +679,9 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
         )
         .await
         .unwrap();
-        assert!(svc.tool_approval_recorded(&ids[0]), "{kind}");
+        assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: update");
         let node = get(&svc, &ids[0]).await;
+        record(&svc, &node);
         svc.delete_node(&ids[0], node.version).await.unwrap();
         svc.delete_node_unchecked(&ids[1]).await.unwrap();
         svc.bulk_delete(vec![ids[2].clone()]).await.unwrap();

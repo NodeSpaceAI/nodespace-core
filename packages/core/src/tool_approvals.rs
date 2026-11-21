@@ -7,10 +7,12 @@
 //! So each approval is recorded here with the node's version and creation
 //! time as the approval's own write leaves them, and it counts only while the
 //! stored node still has both: every later write to the node moves its
-//! version, and a node made again has a new creation time. A delete the node
-//! service reports removes the record outright, so a row put back afterwards
-//! with its old version (by writing the database file directly) does not count
-//! either.
+//! version, and a node made again has a new creation time. Every write the node
+//! service reports removes the record as it happens, unless it is the
+//! approval's own (a write that leaves another version, a create, a delete), so
+//! a row put back afterwards with its old version and tag by writing the
+//! database file directly does not count either. A direct write can only put
+//! back the state that is still approved.
 //!
 //! Records are kept per database (by the database file's path) and node: a
 //! copy of an approved node in another database is not approved. They are lost
@@ -96,6 +98,21 @@ pub fn forget(scope: &str, node_id: &str) {
     });
 }
 
+/// Removes the record of `node_id` unless `version` is the one it was given
+/// for: a write the node service reports that is not the approval's own.
+pub fn forget_unless_version(scope: &str, node_id: &str, version: i64) {
+    with(|ledger| {
+        let k = key(scope, node_id);
+        if ledger
+            .entries
+            .get(&k)
+            .is_some_and(|e| e.issued.version != version)
+        {
+            ledger.entries.remove(&k);
+        }
+    });
+}
+
 /// Removes the record of `node_id` only if it is the approval `tag` (an
 /// approval whose write failed takes back its own record and no newer one).
 pub fn forget_tag(scope: &str, node_id: &str, tag: &str) {
@@ -110,17 +127,19 @@ pub fn forget_tag(scope: &str, node_id: &str, tag: &str) {
 /// The approval `tag` of `node` as it is stored now, if it is still in
 /// effect: recorded for this database and node, the same tag, and the node's
 /// version and creation time unchanged since the approval's write. A record
-/// that no longer matches is removed (a version only grows).
+/// the node has moved past (a later version, another creation time) is
+/// removed; one it has not reached yet (the approval's write is still on its
+/// way) is kept and does not count yet.
 pub fn live(scope: &str, node: &Node, tag: &str) -> Option<Issued> {
     with(|ledger| {
         let k = key(scope, &node.id);
         let entry = ledger.entries.get(&k)?;
         let issued = &entry.issued;
-        if issued.tag != tag {
+        if node.version > issued.version || issued.created_at != node.created_at {
+            ledger.entries.remove(&k);
             return None;
         }
-        if issued.version != node.version || issued.created_at != node.created_at {
-            ledger.entries.remove(&k);
+        if issued.tag != tag || node.version != issued.version {
             return None;
         }
         Some(issued.clone())
@@ -175,6 +194,33 @@ mod tests {
         let mut n = n.clone();
         n.version = version;
         n
+    }
+
+    /// The approval's record is written just before its write: a look at the
+    /// node in between (a turn's offer, a preview) finds it not yet in effect
+    /// and leaves it, so the approval is in effect once the write lands.
+    #[test]
+    fn a_look_before_the_approvals_write_lands_leaves_the_record() {
+        let scope = uuid::Uuid::new_v4().to_string();
+        let before = node(1);
+        let after = node_with(&before, 2);
+        record(&scope, &before.id, issued(&after, "t"));
+        assert!(live(&scope, &before, "t").is_none());
+        assert!(recorded(&scope, &before.id));
+        assert!(live(&scope, &after, "t").is_some());
+    }
+
+    /// A write the node service reports that is not the approval's own ends
+    /// the record; the approval's own write keeps it.
+    #[test]
+    fn a_reported_write_at_another_version_ends_the_record() {
+        let scope = uuid::Uuid::new_v4().to_string();
+        let n = node(2);
+        record(&scope, &n.id, issued(&n, "t"));
+        forget_unless_version(&scope, &n.id, 2);
+        assert!(recorded(&scope, &n.id));
+        forget_unless_version(&scope, &n.id, 3);
+        assert!(!recorded(&scope, &n.id));
     }
 
     #[test]

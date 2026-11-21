@@ -601,6 +601,20 @@ struct LocalAgentServiceInner {
         Option<Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>>,
 }
 
+/// What the system dialog says about the tool `shown` describes.
+fn dialog_of(shown: &tool_approval::ApprovalPreview) -> crate::user_presence::ApprovalDialog<'_> {
+    crate::user_presence::ApprovalDialog {
+        code: &shown.code,
+        name: &shown.name,
+        credentials: &shown.credentials,
+        verb: &shown.dialog.verb,
+        head: &shown.dialog.head,
+        rest: &shown.dialog.rest,
+        content_pinned: !shown.program.is_empty(),
+        replaceable: !shown.program_warning.is_empty(),
+    }
+}
+
 /// An approval refusal as a status: what to do about it is in the message.
 fn approval_status(error: ApprovalError) -> Status {
     match error {
@@ -815,12 +829,7 @@ impl LocalAgentServiceImpl {
             .await
             .map_err(approval_status)?;
         let shown = reviewed.preview();
-        let reason = crate::user_presence::approval_reason(
-            &shown.code,
-            &shown.name,
-            &shown.target,
-            !shown.program.is_empty(),
-        );
+        let reason = crate::user_presence::approval_reason(&dialog_of(shown));
         self.inner
             .presence
             .confirm(reason)
@@ -1969,6 +1978,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             credentials: preview.credentials,
             target: preview.target,
             program: preview.program,
+            program_warning: preview.program_warning,
             code: preview.code,
             digest: preview.digest,
             approved: preview.approved,
@@ -10369,12 +10379,7 @@ mod tests {
         svc.approve_tool_checked(&id, &shown.digest).await.unwrap();
         assert_eq!(
             fake.asked(),
-            [crate::user_presence::approval_reason(
-                &shown.code,
-                "lookup",
-                &shown.target,
-                !shown.program.is_empty()
-            )]
+            [crate::user_presence::approval_reason(&dialog_of(&shown))]
         );
         assert!(fake.asked()[0].contains(&shown.code));
         assert!(fake.asked()[0].contains("/usr/bin/git"));
