@@ -1134,6 +1134,9 @@ impl SqliteStore {
         .await
         .context("Failed to bump node version")?;
 
+        // Under the guard, before anything after the write can fail or be
+        // cancelled.
+        self.end_tool_approval(id, &updated_node_type);
         tx.commit()
             .await
             .context("Failed to commit update_node transaction")?;
@@ -1297,6 +1300,7 @@ impl SqliteStore {
         )
         .await
         .context("Failed to switch node type")?;
+        self.end_tool_approval(node_id, new_type);
         drop(db);
 
         let node = self
@@ -1392,6 +1396,7 @@ impl SqliteStore {
 
         // One transaction, so an archiving write and the removal of the
         // node's vectors land together or not at all.
+        let written_type = updated_node_type.clone();
         let rows_affected = {
             let db = self.write().await;
             let tx = db
@@ -1404,6 +1409,9 @@ impl SqliteStore {
             ).await.context("Failed to update node with version check")?;
             if rows_affected > 0 {
                 Self::leave_vector_index_if_archiving(&tx, id, Some(&updated_status)).await?;
+                // Under the guard, before anything after the write can fail
+                // or be cancelled.
+                self.end_tool_approval(id, &written_type);
             }
             tx.commit()
                 .await

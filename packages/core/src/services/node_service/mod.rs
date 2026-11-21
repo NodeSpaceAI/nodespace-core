@@ -1606,10 +1606,10 @@ impl NodeService {
         // Shared batch state — no batch open by default; see `begin_batch_emit`.
         let batch_state: Arc<Mutex<BatchState>> = Arc::default();
 
-        // The database's name in the remote-tool approval records: a delete
+        // The database's name in the remote-tool approval records: a write
         // the store reports ends the approval of the node (see
         // `crate::tool_approvals`), on the write path, not through the bus.
-        let approval_scope = store.path().display().to_string();
+        let approval_scope = store.approval_scope();
 
         // Register store-level notifier for automatic domain event emission
         // This callback converts StoreChange notifications to EventEnvelopes.
@@ -1633,12 +1633,14 @@ impl NodeService {
                 // goes through the node service's transaction and its emitted
                 // event), and what this reads back after the write may not be
                 // what it wrote: it ends a recorded approval, whatever it is.
-                // A schema's write can reach any tool: it ends them all.
-                if crate::models::CoreNodeType::Schema.is_exactly(&change.node.node_type) {
-                    crate::tool_approvals::forget_scope(&approval_scope);
-                } else {
-                    crate::tool_approvals::forget(&approval_scope, &change.node.id);
-                }
+                // A schema's write can reach any tool: it ends them all. (The
+                // store's updates end it already as they write, before the
+                // read-back this reports.)
+                crate::tool_approvals::written(
+                    &approval_scope,
+                    &change.node.id,
+                    &change.node.node_type,
+                );
 
                 // Compute changed properties for updates
                 let changed_properties = if change.operation == StoreOperation::Updated {
@@ -3125,12 +3127,17 @@ impl NodeService {
         let is_schema = |node_type: &str| crate::models::CoreNodeType::Schema.is_exactly(node_type);
         match &event {
             // A schema's fields or what it extends can reach any tool.
-            DomainEvent::NodeUpdated { node_type, .. }
-            | DomainEvent::NodeDeleted { node_type, .. }
-            | DomainEvent::NodeCreated { node_type, .. }
-                if is_schema(node_type) =>
-            {
-                crate::tool_approvals::forget_scope(&scope)
+            DomainEvent::NodeUpdated {
+                node_id: id,
+                node_type,
+                ..
+            }
+            | DomainEvent::NodeDeleted { id, node_type }
+            | DomainEvent::NodeCreated {
+                node_id: id,
+                node_type,
+            } if is_schema(node_type) => {
+                crate::tool_approvals::forget_scope(&scope, id);
             }
             DomainEvent::NodeDeleted { id, .. } => crate::tool_approvals::forget(&scope, id),
             DomainEvent::NodeCreated { node_id, .. } => {
@@ -3160,7 +3167,7 @@ impl NodeService {
 impl NodeService {
     /// This database's name in the approval records: its file's path.
     pub fn approval_scope(&self) -> String {
-        self.store.path().display().to_string()
+        self.store.approval_scope()
     }
 
     /// Writes `update` to `node_id` with `expected_version` as the approval

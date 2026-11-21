@@ -33,8 +33,10 @@
 //! - **Bounded.** An unanswered dialog is closed after [`ANSWER_LIMIT`] and
 //!   counts as not confirmed.
 //! - **The reason is ours.** It is written here from fixed words, the tool's
-//!   name, its code and its target; whatever a node holds is shown as ASCII,
-//!   with `\u{..}` escapes for anything else, and cut to a bounded length.
+//!   name, its code, the warnings about its program and its target, in an
+//!   order of our own (the code, the name and the warnings first); whatever a
+//!   node holds is shown as ASCII, with `\u{..}` escapes for anything else,
+//!   and cut to a bounded length.
 //!
 //! The dialog runs on a blocking thread (never the main thread, which the tray
 //! owns, and never an async worker), inside an autorelease pool.
@@ -55,6 +57,9 @@ pub const PRESSURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 pub const AFTER_CONFIRMED: Duration = Duration::from_secs(5);
 /// Longest part of a reason taken from a node (the target), in characters.
 const MAX_REASON_DETAIL: usize = 120;
+/// Most characters of the program path, or the method and host, the dialog
+/// shows.
+const MAX_DIALOG_TARGET: usize = 160;
 
 /// What one evaluation answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,26 +367,90 @@ fn reference_text(text: &str) -> String {
     shown_text(text, MAX_DIALOG_CREDENTIAL, true)
 }
 
-fn shown_text(text: &str, max: usize, keep_colons: bool) -> String {
+/// Each character of `text` as the dialog shows it (see [`node_text`]): the
+/// character itself, or its `\u{..}` escape.
+fn shown_chars(text: &str, keep_colons: bool) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
+    chars
+        .iter()
+        .enumerate()
+        .map(|(at, &c)| {
+            let plain = (c == ' ' || c.is_ascii_graphic())
+                && !matches!(c, '(' | ')' | ';')
+                && (c != ':' || keep_colons || address_colon(&chars, at))
+                && !joins_code_groups(&chars, at);
+            if plain {
+                c.to_string()
+            } else {
+                format!("\\u{{{:X}}}", c as u32)
+            }
+        })
+        .collect()
+}
+
+fn shown_text(text: &str, max: usize, keep_colons: bool) -> String {
     let mut out = String::new();
-    for (at, &c) in chars.iter().enumerate() {
-        let plain = (c == ' ' || c.is_ascii_graphic())
-            && !matches!(c, '(' | ')' | ';')
-            && (c != ':' || keep_colons || address_colon(&chars, at))
-            && !joins_code_groups(&chars, at);
-        let shown = if plain {
-            c.to_string()
-        } else {
-            format!("\\u{{{:X}}}", c as u32)
-        };
-        if out.chars().count() + shown.chars().count() > max {
+    let mut count = 0;
+    for shown in shown_chars(text, keep_colons) {
+        let n = shown.chars().count();
+        if count + n > max {
             out.push_str("...");
             break;
         }
         out.push_str(&shown);
+        count += n;
     }
     out
+}
+
+/// Of a target longer than [`MAX_DIALOG_TARGET`], the characters kept from
+/// its start; the rest of the limit is kept from its end.
+const DIALOG_TARGET_START: usize = 48;
+
+/// The program path, or the method and host, as the dialog shows it: like
+/// [`node_text`], whole up to [`MAX_DIALOG_TARGET`] characters. A longer one
+/// keeps its start and its end (the program's folder and file name, or the
+/// end of the host and its port) around an ellipsis, `\u{2026}`, which node
+/// text cannot draw (it is shown as an escape), so a long path cannot push
+/// the credentials out of a panel that shortens the reason.
+fn target_text(text: &str) -> String {
+    /// The shown characters `chars` yields while they fit in `budget`.
+    fn fitting<'a>(chars: impl Iterator<Item = &'a String>, budget: usize) -> Vec<&'a str> {
+        let mut kept = Vec::new();
+        let mut used = 0;
+        for c in chars {
+            let width = c.chars().count();
+            if used + width > budget {
+                break;
+            }
+            used += width;
+            kept.push(c.as_str());
+        }
+        kept
+    }
+    let shown = shown_chars(text, false);
+    if shown.iter().map(|c| c.chars().count()).sum::<usize>() <= MAX_DIALOG_TARGET {
+        return shown.concat();
+    }
+    let start = fitting(shown.iter(), DIALOG_TARGET_START);
+    let mut end = fitting(
+        shown.iter().rev(),
+        MAX_DIALOG_TARGET - DIALOG_TARGET_START - 1,
+    );
+    end.reverse();
+    format!("{}\u{2026}{}", start.concat(), end.concat())
+}
+
+/// Where a credential the dialog names comes from, in the order it names
+/// them: keychain items first, then environment variables, then anything
+/// else, each by its reference. An entry is `<what> from <reference>` (as the
+/// approval preview lists it).
+fn credential_order(entry: &str) -> (u8, &str) {
+    match entry.rsplit_once(" from ") {
+        Some((_, reference)) if reference.starts_with("keychain:") => (0, reference),
+        Some((_, reference)) if reference.starts_with("env:") => (1, reference),
+        _ => (2, entry),
+    }
 }
 
 /// The code as the dialog shows it: the daemon made it, so it keeps its
@@ -402,7 +471,8 @@ pub struct ApprovalDialog<'a> {
     pub credentials: &'a [String],
     /// `runs`, `sends` or `connects to`.
     pub verb: &'a str,
-    /// The program's full path, or the method and the scheme, host and port.
+    /// The program's full path, or the method and the scheme, host and port:
+    /// whole up to [`MAX_DIALOG_TARGET`] characters, else its start and end.
     pub head: &'a str,
     /// The arguments, or the rest of the address.
     pub rest: &'a str,
@@ -423,22 +493,31 @@ const MAX_DIALOG_CREDENTIALS: usize = 4;
 const MAX_DIALOG_CREDENTIAL: usize = 64;
 
 /// The dialog's reason for approving a tool. The system shows it after
-/// "nodespaced is trying to". In this order: the code, the tool's name, then
-/// what it runs (the full program path) or where it sends a call (the method
-/// and the host), whole, with what is said about its pin; then the credentials
-/// it uses (at most [`MAX_DIALOG_CREDENTIALS`] named, each cut at
-/// [`MAX_DIALOG_CREDENTIAL`], the others counted); then the arguments, or the
-/// rest of the address, cut. The real code and what is approved therefore come
-/// before anything long, and a panel that shortens a long reason cuts only the
-/// parts after them. Everything a node holds is shown as ASCII, with the
-/// brackets, colons and dashes it could fake a code with escaped.
+/// "nodespaced is trying to". In this order: the code, the tool's name, and
+/// the warnings about the program's pin (a file programs of this user can
+/// replace, a program started from the `PATH`); then what it runs (the full
+/// program path) or where it sends a call (the method and the host), whole up
+/// to [`MAX_DIALOG_TARGET`] characters and else its start and its end, with
+/// what is said about its pin; then the credentials it uses (at most
+/// [`MAX_DIALOG_CREDENTIALS`] named, keychain references first, in an order
+/// of the daemon's, each cut at [`MAX_DIALOG_CREDENTIAL`], the others
+/// counted); then the arguments, or the rest of the address, cut. The real
+/// code, the warnings and what is approved therefore come before anything
+/// long, and a panel that shortens a long reason cuts only the parts after
+/// them. Everything a node holds is shown as ASCII, with the brackets, colons
+/// and dashes it could fake a code with escaped.
 pub fn approval_reason(dialog: &ApprovalDialog<'_>) -> String {
     let credentials = if dialog.credentials.is_empty() {
         "with no credentials".to_string()
     } else {
-        let mut named: Vec<String> = dialog
-            .credentials
-            .iter()
+        let mut ordered: Vec<&String> = dialog.credentials.iter().collect();
+        ordered.sort_by(|a, b| {
+            credential_order(a)
+                .cmp(&credential_order(b))
+                .then_with(|| a.cmp(b))
+        });
+        let mut named: Vec<String> = ordered
+            .into_iter()
             .take(MAX_DIALOG_CREDENTIALS)
             .map(|c| reference_text(c))
             .collect();
@@ -451,18 +530,20 @@ pub fn approval_reason(dialog: &ApprovalDialog<'_>) -> String {
         }
         format!("with the credentials {}", named.join(", "))
     };
-    let pinned = match (dialog.content_pinned, dialog.replaceable) {
-        (true, true) => " (content pinned; WARNING: programs of this user can replace that file)",
-        (true, false) => " (that file's content is pinned)",
-        _ => "",
-    };
-    let from_path = if dialog.starts_from_path.is_empty() {
-        String::new()
-    } else {
-        format!(
+    let mut warnings = String::new();
+    if dialog.replaceable {
+        warnings.push_str(" (WARNING: programs of this user can replace its program file)");
+    }
+    if !dialog.starts_from_path.is_empty() {
+        warnings.push_str(&format!(
             " (WARNING: it starts {} from the PATH, which is not pinned)",
             node_text(dialog.starts_from_path, 64)
-        )
+        ));
+    }
+    let pinned = if dialog.content_pinned {
+        " (that file's content is pinned)"
+    } else {
+        ""
     };
     let rest = if dialog.rest.is_empty() {
         String::new()
@@ -470,13 +551,13 @@ pub fn approval_reason(dialog: &ApprovalDialog<'_>) -> String {
         format!(", then {}", node_text(dialog.rest, MAX_REASON_DETAIL))
     };
     format!(
-        "approve code {} for the remote tool \u{201C}{}\u{201D}, which {} {}{}{}, {}{}",
+        "approve code {} for the remote tool \u{201C}{}\u{201D}{}, which {} {}{}, {}{}",
         code_text(dialog.code),
         node_text(dialog.name, 64),
+        warnings,
         dialog.verb,
-        node_text(dialog.head, usize::MAX),
+        target_text(dialog.head),
         pinned,
-        from_path,
         credentials,
         rest
     )
@@ -994,7 +1075,7 @@ mod tests {
         );
         // A long argument list is cut; a long program path and the
         // credentials are not.
-        let long_path = format!("/opt/{}/bin/tool", "d".repeat(150));
+        let long_path = format!("/opt/{}/bin/tool", "d".repeat(140));
         let long = approval_reason(&ApprovalDialog {
             content_pinned: true,
             ..dialog(
@@ -1070,7 +1151,8 @@ mod tests {
     }
 
     /// A program file programs of this user can replace is flagged in the
-    /// dialog itself.
+    /// dialog itself, right after the code and the name, before the program
+    /// path.
     #[test]
     fn a_replaceable_program_file_is_flagged_in_the_dialog() {
         let reason = approval_reason(&ApprovalDialog {
@@ -1078,9 +1160,9 @@ mod tests {
             replaceable: true,
             ..dialog("AAAA-BBBB-CCCC", &[], "runs", "/opt/homebrew/bin/git", "")
         });
-        assert!(
-            reason.ends_with("which runs /opt/homebrew/bin/git (content pinned; WARNING: programs of this user can replace that file), with no credentials"),
-            "{reason}"
+        assert_eq!(
+            reason,
+            "approve code AAAA-BBBB-CCCC for the remote tool \u{201C}lookup\u{201D} (WARNING: programs of this user can replace its program file), which runs /opt/homebrew/bin/git (that file's content is pinned), with no credentials"
         );
         // A script that starts a program from the PATH says that instead; it
         // is not a replaceable file.
@@ -1089,9 +1171,92 @@ mod tests {
             starts_from_path: "python3",
             ..dialog("AAAA-BBBB-CCCC", &[], "runs", "/usr/local/libexec/tool", "")
         });
+        assert_eq!(
+            script,
+            "approve code AAAA-BBBB-CCCC for the remote tool \u{201C}lookup\u{201D} (WARNING: it starts python3 from the PATH, which is not pinned), which runs /usr/local/libexec/tool (that file's content is pinned), with no credentials"
+        );
+    }
+
+    /// A very long program path cannot push the warnings or the credentials
+    /// out of a panel that shortens the reason: the warnings come before it,
+    /// and it keeps its start and its end (the program's folder and file
+    /// name) around an ellipsis no node text can draw.
+    #[test]
+    fn a_very_long_program_path_keeps_its_start_and_end_after_the_warnings() {
+        let creds = ["TOKEN from keychain:tok".to_string()];
+        let long_path = format!("/Users/me/{}/bin/real-tool", "x".repeat(400));
+        let reason = approval_reason(&ApprovalDialog {
+            content_pinned: true,
+            replaceable: true,
+            starts_from_path: "python3",
+            ..dialog("AAAA-BBBB-CCCC", &creds, "runs", &long_path, "")
+        });
+        let (before, after) = reason
+            .split_once(", which runs ")
+            .unwrap_or_else(|| panic!("{reason}"));
+        assert_eq!(
+            before,
+            "approve code AAAA-BBBB-CCCC for the remote tool \u{201C}lookup\u{201D} (WARNING: programs of this user can replace its program file) (WARNING: it starts python3 from the PATH, which is not pinned)"
+        );
+        let (shown, rest) = after
+            .split_once(" (that file's content is pinned), ")
+            .unwrap_or_else(|| panic!("{reason}"));
+        assert!(shown.starts_with("/Users/me/xxx"), "{shown}");
+        assert!(shown.ends_with("xxx/bin/real-tool"), "{shown}");
+        assert_eq!(shown.matches('\u{2026}').count(), 1, "{shown}");
+        assert!(shown.chars().count() <= MAX_DIALOG_TARGET, "{shown}");
+        assert_eq!(rest, "with the credentials TOKEN from keychain:tok");
+        // A path at the limit is whole; node text cannot draw the ellipsis.
+        let at_limit = format!("/opt/{}", "d".repeat(MAX_DIALOG_TARGET - 5));
+        let whole = approval_reason(&dialog("AAAA-BBBB-CCCC", &[], "runs", &at_limit, ""));
+        assert!(whole.contains(&at_limit), "{whole}");
+        let drawn = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &[],
+            "runs",
+            "/opt/a\u{2026}b",
+            "",
+        ));
+        assert!(drawn.contains("/opt/a\\u{2026}b"), "{drawn}");
+    }
+
+    /// The credentials the dialog names are in an order the daemon chooses,
+    /// not the node: keychain references first, sorted, then environment
+    /// variables, sorted; the rest are counted.
+    #[test]
+    fn the_credentials_named_are_keychain_references_first_in_order() {
+        let creds: Vec<String> = [
+            "Z from env:Z_VAR",
+            "A from env:A_VAR",
+            "T4 from keychain:d",
+            "T1 from keychain:a",
+            "bearer from keychain:c",
+            "header X-Key from keychain:b",
+        ]
+        .map(String::from)
+        .to_vec();
+        let reason = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &creds,
+            "sends",
+            "GET https://api.example.com",
+            "",
+        ));
         assert!(
-            script.ends_with("which runs /usr/local/libexec/tool (that file's content is pinned) (WARNING: it starts python3 from the PATH, which is not pinned), with no credentials"),
-            "{script}"
+            reason.ends_with(
+                ", with the credentials T1 from keychain:a, header X-Key from keychain:b, bearer from keychain:c, T4 from keychain:d, +2 more"
+            ),
+            "{reason}"
+        );
+        let few: Vec<String> = ["Z from env:Z_VAR", "A from env:A_VAR", "T from keychain:t"]
+            .map(String::from)
+            .to_vec();
+        let reason = approval_reason(&dialog("AAAA-BBBB-CCCC", &few, "runs", "/usr/bin/git", ""));
+        assert!(
+            reason.ends_with(
+                ", with the credentials T from keychain:t, A from env:A_VAR, Z from env:Z_VAR"
+            ),
+            "{reason}"
         );
     }
 
