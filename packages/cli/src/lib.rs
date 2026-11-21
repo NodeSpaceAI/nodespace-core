@@ -211,6 +211,12 @@ pub enum Command {
         #[command(subcommand)]
         action: commands::secret::SecretAction,
     },
+    /// Approve a remote tool on this device (`approve`). Shows exactly what is
+    /// approved and asks you to type the tool's name; run it yourself at a terminal.
+    Tool {
+        #[command(subcommand)]
+        action: commands::tool::ToolAction,
+    },
     /// Uninstall NodeSpace: stop daemon, remove binaries and service registration.
     Uninstall(commands::uninstall::UninstallArgs),
     /// Install, remove, or check the NodeSpace skill for detected AI-agent
@@ -829,6 +835,14 @@ async fn dispatch(cli: Cli) -> Result<()> {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
             let mut client = connect_local_agent(&sock, interceptor).await?;
             commands::model::run(&mut client, action, json).await
+        }
+        Command::Tool { action } => {
+            // Every `tool` action is an approval, made by a person at a
+            // terminal: refused before the daemon is contacted.
+            commands::tool::require_terminal()?;
+            let (interceptor, _) = resolve_routing(&sock, selection).await?;
+            let mut client = connect_local_agent(&sock, interceptor).await?;
+            commands::tool::run(&mut client, action, json).await
         }
         Command::Search(args) => {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;

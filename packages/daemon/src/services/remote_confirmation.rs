@@ -381,6 +381,36 @@ impl CallConfirmer for DaemonCallConfirmer {
 // Who may answer
 // ---------------------------------------------------------------------------
 
+/// The process id the kernel reports for the connection a request arrived on, when
+/// the transport has one (a Unix socket does; a Windows named pipe does not).
+pub fn peer_pid<T>(request: &tonic::Request<T>) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        request
+            .extensions()
+            .get::<tonic::transport::server::UdsConnectInfo>()
+            .and_then(|info| info.peer_cred.as_ref())
+            .and_then(|cred| cred.pid())
+            .and_then(|pid| u32::try_from(pid).ok())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        None
+    }
+}
+
+/// Whether `gate` lets the peer of `request` through. A refusal is logged with
+/// what the peer asked to do (`what`) and its pid, nothing from the request.
+pub fn peer_allowed<T>(gate: &dyn AnswerGate, request: &tonic::Request<T>, what: &str) -> bool {
+    let peer_pid = peer_pid(request);
+    if gate.may_answer(peer_pid) {
+        return true;
+    }
+    tracing::warn!(?peer_pid, what, "a request from this peer was refused");
+    false
+}
+
 /// Decides whether a peer of the daemon's socket may answer a question.
 pub trait AnswerGate: Send + Sync {
     /// `peer_pid` is the process id the kernel reports for the connection, when

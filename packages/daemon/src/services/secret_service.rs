@@ -19,21 +19,69 @@ use crate::nodespace::{
     DeleteSecretRequest, DeleteSecretResponse, ListSecretNamesRequest, ListSecretNamesResponse,
     SetSecretRequest, SetSecretResponse,
 };
+use crate::services::remote_confirmation::AnswerGate;
+
+/// What a peer the gate refuses is told.
+fn refused() -> Status {
+    Status::permission_denied("this client may not change credentials")
+}
+
+/// A refused `Set`: its value is wiped like on every other path.
+fn refuse_and_wipe(request: &mut SetSecretRequest) -> Status {
+    request.value.zeroize();
+    refused()
+}
 
 /// gRPC `SecretService` backed by a [`SecretStore`].
 #[derive(Clone)]
 pub struct SecretServiceImpl {
     store: Arc<SecretStore>,
+    /// Who may change a credential. `None` for a caller that is trusted by
+    /// construction (in-process use, tests, a transport with no peer identity).
+    gate: Option<Arc<dyn AnswerGate>>,
 }
 
 impl SecretServiceImpl {
     pub fn new(store: Arc<SecretStore>) -> Self {
-        Self { store }
+        Self { store, gate: None }
+    }
+
+    /// The service with a gate on what changes a credential: `Set` and `Delete`
+    /// are refused for a peer that is a program the daemon started for a tool (it
+    /// could overwrite or remove a credential the user relies on) or one the
+    /// daemon cannot identify. `ListNames` shows names only and is not gated.
+    pub fn with_gate(store: Arc<SecretStore>, gate: Arc<dyn AnswerGate>) -> Self {
+        Self {
+            store,
+            gate: Some(gate),
+        }
+    }
+
+    /// Whether the peer of `request` may change a credential.
+    fn may_change<T>(&self, request: &Request<T>) -> bool {
+        self.gate.as_deref().is_none_or(|gate| {
+            crate::services::remote_confirmation::peer_allowed(gate, request, "change a credential")
+        })
     }
 
     /// The service over the operating system's credential store.
     pub fn keychain() -> Self {
-        Self::new(Arc::new(SecretStore::keychain()))
+        let store = Arc::new(SecretStore::keychain());
+        // A Windows named pipe carries no peer pid, so there is nothing to judge
+        // there: the pipe's own access control is the barrier on that platform.
+        #[cfg(unix)]
+        {
+            Self::with_gate(
+                store,
+                Arc::new(
+                    crate::services::remote_confirmation::SpawnedProcessGate::for_this_process(),
+                ),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            Self::new(store)
+        }
     }
 }
 
@@ -64,7 +112,11 @@ impl GrpcSecretService for SecretServiceImpl {
         &self,
         request: Request<SetSecretRequest>,
     ) -> Result<Response<SetSecretResponse>, Status> {
+        let allowed = self.may_change(&request);
         let mut req = request.into_inner();
+        if !allowed {
+            return Err(refuse_and_wipe(&mut req));
+        }
         // The OS store can block (a prompt, a locked keychain): keep it off the
         // async worker threads.
         let store = Arc::clone(&self.store);
@@ -79,6 +131,9 @@ impl GrpcSecretService for SecretServiceImpl {
         &self,
         request: Request<DeleteSecretRequest>,
     ) -> Result<Response<DeleteSecretResponse>, Status> {
+        if !self.may_change(&request) {
+            return Err(refused());
+        }
         let name = request.into_inner().name;
         let store = Arc::clone(&self.store);
         let existed = tokio::task::spawn_blocking(move || store.delete(&name))
@@ -242,5 +297,174 @@ mod tests {
         let err = set(&s, "tok", TOKEN).await.unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unavailable);
         assert!(!err.message().contains(TOKEN));
+    }
+
+    // -- who may change a credential ----------------------------------------
+
+    struct Peer(Option<u32>);
+    impl AnswerGate for Peer {
+        fn may_answer(&self, pid: Option<u32>) -> bool {
+            pid.is_some() && pid == self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_peer_can_neither_set_nor_delete_a_credential() {
+        let store = Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())));
+        let s = SecretServiceImpl::with_gate(Arc::clone(&store), Arc::new(Peer(Some(4242))));
+        store.set("tok", "ghp_ORIGINALVALUE1").unwrap();
+        // A plain in-process request has no peer pid: the gate refuses it.
+        let denied = set(&s, "tok", "ghp_OVERWRITTENVALUE").await.unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        let denied = set(&s, "new", TOKEN).await.unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        let denied = s
+            .delete(Request::new(DeleteSecretRequest { name: "tok".into() }))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        // Nothing changed, and listing names still works.
+        assert_eq!(store.names().unwrap(), ["tok"]);
+        assert_eq!(
+            store.get("tok").unwrap().unwrap().expose(),
+            "ghp_ORIGINALVALUE1"
+        );
+        assert!(s
+            .list_names(Request::new(ListSecretNamesRequest {}))
+            .await
+            .is_ok());
+    }
+
+    #[test]
+    fn a_refused_set_wipes_its_value() {
+        let mut request = SetSecretRequest {
+            name: "tok".into(),
+            value: TOKEN.into(),
+        };
+        let status = refuse_and_wipe(&mut request);
+        assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        assert!(request.value.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_ungated_service_keeps_working_for_a_trusted_caller() {
+        let s = service();
+        assert!(set(&s, "tok", TOKEN).await.is_ok());
+    }
+
+    #[test]
+    fn the_peer_pid_of_a_request_with_no_connection_is_unknown() {
+        assert_eq!(
+            crate::services::remote_confirmation::peer_pid(&Request::new(())),
+            None
+        );
+    }
+
+    // -- the real socket path ------------------------------------------------
+
+    #[cfg(unix)]
+    mod over_a_socket {
+        use super::*;
+        use crate::nodespace::secret_service_client::SecretServiceClient;
+        use crate::nodespace::secret_service_server::SecretServiceServer;
+        use crate::services::remote_confirmation::SpawnedProcessGate;
+        use hyper_util::rt::TokioIo;
+        use tonic::transport::{Endpoint, Server, Uri};
+        use tower::service_fn;
+
+        async fn serve(
+            svc: SecretServiceImpl,
+        ) -> (
+            SecretServiceClient<tonic::transport::Channel>,
+            tempfile::TempDir,
+        ) {
+            let dir = tempfile::Builder::new()
+                .prefix("ns-sec-")
+                .tempdir_in("/private/tmp")
+                .unwrap_or_else(|_| tempfile::tempdir().unwrap());
+            let sock = dir.path().join("s.sock");
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            tokio::spawn(async move {
+                Server::builder()
+                    .add_service(SecretServiceServer::new(svc))
+                    .serve_with_incoming(crate::peer_auth::owner_only_incoming(listener))
+                    .await
+            });
+            let path = sock.clone();
+            let channel = Endpoint::from_static("http://localhost")
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    let path = path.clone();
+                    async move {
+                        tokio::net::UnixStream::connect(&path)
+                            .await
+                            .map(TokioIo::new)
+                    }
+                }))
+                .await
+                .unwrap();
+            (SecretServiceClient::new(channel), dir)
+        }
+
+        fn set_request(name: &str, value: &str) -> SetSecretRequest {
+            SetSecretRequest {
+                name: name.into(),
+                value: value.into(),
+            }
+        }
+
+        /// The daemon's own gate, over a real socket, with this test process
+        /// as the daemon: the peer is the daemon itself, so it is refused.
+        #[tokio::test]
+        async fn the_daemon_gate_refuses_a_peer_that_is_the_daemon() {
+            let store = Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())));
+            store.set("tok", "ghp_ORIGINALVALUE1").unwrap();
+            let svc = SecretServiceImpl::with_gate(
+                Arc::clone(&store),
+                Arc::new(SpawnedProcessGate::for_this_process()),
+            );
+            let (mut client, _dir) = serve(svc).await;
+            let denied = client
+                .set(set_request("tok", "ghp_OVERWRITTENVALUE"))
+                .await
+                .unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+            let denied = client
+                .delete(DeleteSecretRequest { name: "tok".into() })
+                .await
+                .unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+            assert_eq!(
+                store.get("tok").unwrap().unwrap().expose(),
+                "ghp_ORIGINALVALUE1"
+            );
+            let names = client
+                .list_names(ListSecretNamesRequest {})
+                .await
+                .unwrap()
+                .into_inner()
+                .names;
+            assert_eq!(names, ["tok"]);
+        }
+
+        /// The kernel's pid for the connection is what the gate judges: a gate
+        /// that lets exactly this process through lets the change happen.
+        #[tokio::test]
+        async fn an_allowed_peer_changes_a_credential_over_the_socket() {
+            let store = Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())));
+            let svc = SecretServiceImpl::with_gate(
+                Arc::clone(&store),
+                Arc::new(Peer(Some(std::process::id()))),
+            );
+            let (mut client, _dir) = serve(svc).await;
+            client.set(set_request("tok", TOKEN)).await.unwrap();
+            assert_eq!(store.get("tok").unwrap().unwrap().expose(), TOKEN);
+            let removed = client
+                .delete(DeleteSecretRequest { name: "tok".into() })
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(removed.existed);
+            assert!(store.names().unwrap().is_empty());
+        }
     }
 }

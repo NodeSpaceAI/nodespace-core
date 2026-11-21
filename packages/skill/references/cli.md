@@ -967,6 +967,10 @@ nodespace secret list-names
 
 The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text; on Windows the credential manager is stricter: at most 1280 UTF-16 units (2560 bytes as stored), and the list of names holds roughly 19 names of full length (about 70 of 16 characters), after which `set` refuses a new name with an error saying so. On a platform without an operating system credential store, use an `env:<NAME>` reference instead.
 
+### Approve a remote tool
+
+A remote tool (`tool-cli`, `tool-rest` or `tool-mcp`) is offered to the model only after the user approves it on this device with `nodespace tool approve <node-id>`. The command shows the tool's name, description, binding, credential references and parameter schema, and approves only after the user types the tool's name at a terminal; editing the tool afterwards turns it off until it is approved again. It is the user's step: it refuses to run without a terminal, the MCP passthrough refuses it, and the daemon refuses an approval from any program it started for a tool. Ask the user to run it; never try to approve a tool yourself.
+
 ### Database settings
 
 Each database holds its own settings in its `database-settings` node, id `database-settings-singleton`. There is no machine-wide settings file: a setting applies to the database a command is routed to (`--database`, else the default), and two databases open in one daemon each behave by their own.
@@ -1468,6 +1472,14 @@ Manage the credentials remote tools refer to as `keychain:<name>` (set, delete, 
 - `<NAME>` — The name to remove (required)
 
 **`nodespace secret list-names`** — List the stored names. Values are never shown
+
+### `nodespace tool`
+
+Approve a remote tool on this device (`approve`). Shows exactly what is approved and asks you to type the tool's name; run it yourself at a terminal
+
+**`nodespace tool approve`** — Show what approving a remote tool would approve, and approve it after you type its name. Must be run at a terminal
+
+- `<NODE_ID>` — The id of the tool node (required)
 
 ### `nodespace uninstall`
 

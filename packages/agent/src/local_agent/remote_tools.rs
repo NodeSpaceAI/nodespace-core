@@ -2116,6 +2116,13 @@ mod tests {
             fn delete(&self, a: &str) -> Result<bool, nodespace_core::secrets::SecretError> {
                 self.inner.delete(a)
             }
+            fn add_if_absent(
+                &self,
+                a: &str,
+                v: &str,
+            ) -> Result<bool, nodespace_core::secrets::SecretError> {
+                self.inner.add_if_absent(a, v)
+            }
         }
         let f = fixture().await;
         let backend = Arc::new(Counting {

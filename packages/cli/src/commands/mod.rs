@@ -16,6 +16,7 @@ pub mod secret;
 pub mod seed;
 pub mod session;
 pub mod skill;
+pub mod tool;
 pub mod uninstall;
 #[cfg(windows)]
 mod uninstall_windows;

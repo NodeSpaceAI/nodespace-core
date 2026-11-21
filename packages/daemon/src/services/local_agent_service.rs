@@ -30,6 +30,7 @@ use nodespace_agent::local_agent::mcp_runner::McpRunner;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::remote_tools::{CallConfirmer, RemoteToolHost};
 use nodespace_agent::local_agent::rest_runner::RestRunner;
+use nodespace_agent::local_agent::tool_approval::{self, ApprovalError};
 use nodespace_agent::local_agent::tools::{
     is_cross_turn_guarded_tool, resolves_entities_tool, GraphToolExecutor, SharedEmbeddingService,
 };
@@ -64,11 +65,12 @@ use tonic::{Request, Response, Status};
 
 use crate::nodespace::{
     local_agent_service_server::LocalAgentService as GrpcLocalAgentService, AgentChunk,
-    AnswerConfirmationRequest, AnswerConfirmationResponse, CancelModelDownloadRequest,
-    CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse, DeleteModelRequest,
-    DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest, GetLocalStatusRequest,
-    GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest, ListModelsResponse,
-    LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
+    AnswerConfirmationRequest, AnswerConfirmationResponse, ApproveToolRequest, ApproveToolResponse,
+    CancelModelDownloadRequest, CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse,
+    DeleteModelRequest, DeleteModelResponse, DescribeToolApprovalRequest,
+    DescribeToolApprovalResponse, DownloadModelRequest, EnsureModelReadyRequest,
+    GetLocalStatusRequest, GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest,
+    ListModelsResponse, LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
     ModelLoadProgressEvent, OpenBoundChatRequest, OpenBoundChatResponse, RecommendedModelRequest,
     RecommendedModelResponse, SubscribeTokenStreamRequest, UnloadModelRequest, UnloadModelResponse,
 };
@@ -528,6 +530,8 @@ struct LocalAgentServiceInner {
     answer_gate: Arc<dyn AnswerGate>,
     /// Writes and updates the chat card a confirmation is shown on.
     chat_cards: Arc<ChatCardUi>,
+    /// This device's credential store: where the approval key lives.
+    secrets: Arc<nodespace_core::secrets::SecretStore>,
     /// Cancels this database's background event watcher, and gates new turns,
     /// once the database is closed (ADR-053: per-database compute scoping).
     /// Shared across the cheap `Arc` clones tonic hands to request handlers, so
@@ -540,6 +544,18 @@ struct LocalAgentServiceInner {
     /// constructed without a playbook engine (tests).
     playbook_lifecycle:
         Option<Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>>,
+}
+
+/// An approval refusal as a status: what to do about it is in the message.
+fn approval_status(error: ApprovalError) -> Status {
+    match error {
+        ApprovalError::NotFound => Status::not_found(error.to_string()),
+        ApprovalError::Changed | ApprovalError::Conflict => Status::aborted(error.to_string()),
+        ApprovalError::Read(_) | ApprovalError::Key(_) | ApprovalError::Write(_) => {
+            Status::unavailable(error.to_string())
+        }
+        _ => Status::failed_precondition(error.to_string()),
+    }
 }
 
 /// tonic-compatible handle. `Clone` (cheap Arc clone) so tonic can hand
@@ -616,6 +632,7 @@ impl LocalAgentServiceImpl {
                 confirmations: PendingConfirmations::default(),
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
+                secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: None,
             }),
@@ -649,6 +666,7 @@ impl LocalAgentServiceImpl {
                 confirmations: PendingConfirmations::default(),
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
+                secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
                 shutdown_token: CancellationToken::new(),
                 playbook_lifecycle: Some(playbook_lifecycle),
             }),
@@ -707,6 +725,23 @@ impl LocalAgentServiceImpl {
             self.inner.shutdown_token.clone(),
             DEFAULT_CONFIRMATION_TIMEOUT,
         )))
+    }
+
+    /// Approves the tool if it still produces `digest`. The caller has already
+    /// judged the peer.
+    pub(crate) async fn approve_tool_checked(
+        &self,
+        node_id: &str,
+        digest: &str,
+    ) -> Result<(), Status> {
+        tool_approval::approve(
+            &self.inner.node_service,
+            &self.inner.secrets,
+            node_id,
+            digest,
+        )
+        .await
+        .map_err(approval_status)
     }
 
     /// The answer entry point behind `AnswerConfirmation`. `peer_pid` is the
@@ -802,7 +837,7 @@ impl LocalAgentServiceImpl {
         // and `tool-mcp` call and every `tool-rest` call but a `GET` with no
         // credential) is offered only when the turn has a confirmer, which is
         // an interactive turn's (see `confirmer_for_turn`).
-        let secrets = Arc::new(nodespace_core::secrets::SecretStore::keychain());
+        let secrets = Arc::clone(&self.inner.secrets);
         let mut host = RemoteToolHost::new(
             graph_tools,
             self.inner.node_service.clone(),
@@ -1810,6 +1845,51 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         Ok(Response::new(CancelTurnResponse {}))
     }
 
+    async fn describe_tool_approval(
+        &self,
+        request: Request<DescribeToolApprovalRequest>,
+    ) -> Result<Response<DescribeToolApprovalResponse>, Status> {
+        let this = self.route(&request).await?;
+        let node_id = request.into_inner().node_id;
+        let preview =
+            tool_approval::preview(&this.inner.node_service, &this.inner.secrets, &node_id)
+                .await
+                .map_err(approval_status)?;
+        Ok(Response::new(DescribeToolApprovalResponse {
+            node_id: preview.node_id,
+            name: preview.name,
+            description: preview.description,
+            kind: preview.kind.bucket().to_string(),
+            binding_json: preview.binding_json,
+            parameter_schema_json: preview.parameter_schema_json,
+            credentials: preview.credentials,
+            digest: preview.digest,
+            approved: preview.approved,
+        }))
+    }
+
+    async fn approve_tool(
+        &self,
+        request: Request<ApproveToolRequest>,
+    ) -> Result<Response<ApproveToolResponse>, Status> {
+        // Judged before the request is routed or read, like an answer to a
+        // confirmation: a program the daemon started for a tool must not approve
+        // a tool.
+        if !crate::services::remote_confirmation::peer_allowed(
+            &*self.inner.answer_gate,
+            &request,
+            "approve a tool",
+        ) {
+            return Err(Status::permission_denied(
+                "this client may not approve a tool",
+            ));
+        }
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        this.approve_tool_checked(&req.node_id, &req.digest).await?;
+        Ok(Response::new(ApproveToolResponse {}))
+    }
+
     async fn answer_confirmation(
         &self,
         request: Request<AnswerConfirmationRequest>,
@@ -1818,15 +1898,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         // peer sees the same answer whatever database header it sent. The pid is
         // the kernel's for the socket; a transport with none (a Windows named
         // pipe) gives `None`, which the gate refuses.
-        #[cfg(unix)]
-        let peer_pid = request
-            .extensions()
-            .get::<tonic::transport::server::UdsConnectInfo>()
-            .and_then(|info| info.peer_cred.as_ref())
-            .and_then(|cred| cred.pid())
-            .and_then(|pid| u32::try_from(pid).ok());
-        #[cfg(not(unix))]
-        let peer_pid: Option<u32> = None;
+        let peer_pid = crate::services::remote_confirmation::peer_pid(&request);
         self.check_answer_peer(peer_pid)?;
         let this = self.route(&request).await?;
         let req = request.into_inner();
@@ -10025,5 +10097,205 @@ mod tests {
     fn only_a_turn_started_by_a_user_message_is_interactive() {
         assert!(TurnOrigin::UserMessage.is_interactive());
         assert!(!TurnOrigin::Recovered.is_interactive());
+    }
+
+    // -- approving a remote tool ---------------------------------------------
+
+    fn in_memory_secrets() -> Arc<nodespace_core::secrets::SecretStore> {
+        Arc::new(nodespace_core::secrets::SecretStore::new(Arc::new(
+            nodespace_core::secrets::InMemorySecretBackend::default(),
+        )))
+    }
+
+    async fn cli_tool(ns: &NodeService, name: &str) -> String {
+        ns.create_node(nodespace_core::models::Node::new(
+            "tool-cli".to_string(),
+            name.to_string(),
+            serde_json::json!({
+                "program": "git",
+                "args": ["log"],
+                "description": "Looks a thing up",
+                "parameter_schema": {"type": "object", "additionalProperties": false, "properties": {}},
+                "enabled": false
+            }),
+        ))
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn approving_with_a_wrong_digest_is_aborted_and_with_the_shown_one_enables_the_tool() {
+        let (mut svc, ns, _tmp) = test_service().await;
+        Arc::get_mut(&mut svc.inner).unwrap().secrets = in_memory_secrets();
+        let id = cli_tool(&ns, "lookup").await;
+        let preview = tool_approval::preview(&ns, &svc.inner.secrets, &id)
+            .await
+            .unwrap();
+
+        let aborted = svc.approve_tool_checked(&id, "wrong").await.unwrap_err();
+        assert_eq!(aborted.code(), tonic::Code::Aborted);
+        let node = ns.get_node(&id).await.unwrap().unwrap();
+        assert_ne!(node.properties["tool"]["enabled"], serde_json::json!(true));
+
+        svc.approve_tool_checked(&id, &preview.digest)
+            .await
+            .unwrap();
+        let node = ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(node.properties["tool"]["enabled"], serde_json::json!(true));
+        assert!(node.properties["tool"]["approved_binding"].is_string());
+    }
+
+    #[tokio::test]
+    async fn approving_a_node_that_is_not_a_tool_is_a_failed_precondition() {
+        let (mut svc, ns, _tmp) = test_service().await;
+        Arc::get_mut(&mut svc.inner).unwrap().secrets = in_memory_secrets();
+        let text = ns
+            .create_node(nodespace_core::models::Node::new(
+                "text".to_string(),
+                "hello".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        let err = svc.approve_tool_checked(&text, "x").await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        let err = svc.approve_tool_checked("no-such", "x").await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[cfg(unix)]
+    mod approving_over_a_socket {
+        use super::*;
+        use crate::nodespace::local_agent_service_client::LocalAgentServiceClient;
+        use crate::nodespace::local_agent_service_server::LocalAgentServiceServer;
+        use hyper_util::rt::TokioIo;
+        use tonic::transport::{Endpoint, Server, Uri};
+        use tower::service_fn;
+
+        async fn serve(
+            svc: LocalAgentServiceImpl,
+        ) -> (
+            LocalAgentServiceClient<tonic::transport::Channel>,
+            tempfile::TempDir,
+        ) {
+            let dir = tempfile::Builder::new()
+                .prefix("ns-ap-")
+                .tempdir_in("/private/tmp")
+                .unwrap_or_else(|_| tempfile::tempdir().unwrap());
+            let sock = dir.path().join("s.sock");
+            let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+            tokio::spawn(async move {
+                Server::builder()
+                    .add_service(LocalAgentServiceServer::new(svc))
+                    .serve_with_incoming(crate::peer_auth::owner_only_incoming(listener))
+                    .await
+            });
+            let path = sock.clone();
+            let channel = Endpoint::from_static("http://localhost")
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    let path = path.clone();
+                    async move {
+                        tokio::net::UnixStream::connect(&path)
+                            .await
+                            .map(TokioIo::new)
+                    }
+                }))
+                .await
+                .unwrap();
+            (LocalAgentServiceClient::new(channel), dir)
+        }
+
+        fn describe(id: &str) -> DescribeToolApprovalRequest {
+            DescribeToolApprovalRequest {
+                node_id: id.to_string(),
+            }
+        }
+
+        fn approve(id: &str, digest: &str) -> ApproveToolRequest {
+            ApproveToolRequest {
+                node_id: id.to_string(),
+                digest: digest.to_string(),
+            }
+        }
+
+        /// The daemon's own gate with this test process as the daemon: the
+        /// preview is readable, the approval is refused and nothing is written.
+        #[tokio::test]
+        async fn the_default_gate_refuses_an_approval_from_the_daemon_and_writes_nothing() {
+            let (mut svc, ns, _tmp) = test_service().await;
+            let secrets = in_memory_secrets();
+            Arc::get_mut(&mut svc.inner).unwrap().secrets = Arc::clone(&secrets);
+            let id = cli_tool(&ns, "lookup").await;
+            let (mut client, _dir) = serve(svc).await;
+
+            let shown = client
+                .describe_tool_approval(describe(&id))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(shown.name, "lookup");
+            assert_eq!(shown.kind, "tool-cli");
+            assert!(!shown.approved);
+
+            let denied = client
+                .approve_tool(approve(&id, &shown.digest))
+                .await
+                .unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+            // A database header that names nothing changes nothing: the peer
+            // is judged before the request is routed.
+            let mut request = tonic::Request::new(approve(&id, &shown.digest));
+            request.metadata_mut().insert(
+                nodespace_proto::DATABASE_ID_HEADER,
+                "no-such-database".parse().unwrap(),
+            );
+            let denied = client.approve_tool(request).await.unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+
+            let node = ns.get_node(&id).await.unwrap().unwrap();
+            assert_ne!(node.properties["tool"]["enabled"], serde_json::json!(true));
+            assert!(node.properties["tool"].get("approved_binding").is_none());
+            assert!(secrets.approval_key().unwrap().is_none());
+        }
+
+        /// The kernel's pid for the connection is what the gate judges: a gate
+        /// that lets exactly this process through lets it approve what it was
+        /// shown, and the preview then says so.
+        #[tokio::test]
+        async fn an_allowed_peer_approves_what_it_was_shown_over_the_socket() {
+            let (mut svc, ns, _tmp) = test_service().await;
+            let secrets = in_memory_secrets();
+            let inner = Arc::get_mut(&mut svc.inner).unwrap();
+            inner.secrets = Arc::clone(&secrets);
+            inner.answer_gate = Arc::new(Lets(std::process::id()));
+            let id = cli_tool(&ns, "lookup").await;
+            let (mut client, _dir) = serve(svc).await;
+
+            let shown = client
+                .describe_tool_approval(describe(&id))
+                .await
+                .unwrap()
+                .into_inner();
+            let wrong = client
+                .approve_tool(approve(&id, &"0".repeat(64)))
+                .await
+                .unwrap_err();
+            assert_eq!(wrong.code(), tonic::Code::Aborted);
+            client
+                .approve_tool(approve(&id, &shown.digest))
+                .await
+                .unwrap();
+
+            let node = ns.get_node(&id).await.unwrap().unwrap();
+            assert_eq!(node.properties["tool"]["enabled"], serde_json::json!(true));
+            assert!(secrets.approval_key().unwrap().is_some());
+            let again = client
+                .describe_tool_approval(describe(&id))
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(again.approved);
+            assert_eq!(again.digest, shown.digest);
+        }
     }
 }

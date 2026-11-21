@@ -65,6 +65,10 @@ cron = "0.16"
 # there the store reports itself unavailable and `env:` references apply.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# The keychain's add-only write (`SecKeychainAddGenericPassword`), which the
+# keyring crate does not expose: the approval key is written with it. The same
+# major version keyring uses, so no second copy is built.
+security-framework = "3"
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

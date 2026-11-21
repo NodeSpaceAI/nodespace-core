@@ -16,4 +16,5 @@ pub mod routing;
 pub mod routing_probe;
 #[cfg(test)]
 pub(crate) mod test_http;
+pub mod tool_approval;
 pub mod tools;
