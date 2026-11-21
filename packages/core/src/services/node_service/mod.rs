@@ -1606,6 +1606,11 @@ impl NodeService {
         // Shared batch state — no batch open by default; see `begin_batch_emit`.
         let batch_state: Arc<Mutex<BatchState>> = Arc::default();
 
+        // The database's name in the remote-tool approval records: a delete
+        // the store reports ends the approval of the node (see
+        // `crate::tool_approvals`), on the write path, not through the bus.
+        let approval_scope = store.path().display().to_string();
+
         // Register store-level notifier for automatic domain event emission
         // This callback converts StoreChange notifications to EventEnvelopes.
         // Set here, while this is the store's only owner (`Arc::get_mut`
@@ -1623,6 +1628,17 @@ impl NodeService {
             let batch_state_ref = Arc::clone(&batch_state);
             let notifier = Arc::new(move |change: StoreChange| {
                 use crate::db::events::{EventEnvelope, EventMetadata};
+
+                // A write reported here is never an approval's own (that one
+                // goes through the node service's transaction and its emitted
+                // event), and what this reads back after the write may not be
+                // what it wrote: it ends a recorded approval, whatever it is.
+                // A schema's write can reach any tool: it ends them all.
+                if crate::models::CoreNodeType::Schema.is_exactly(&change.node.node_type) {
+                    crate::tool_approvals::forget_scope(&approval_scope);
+                } else {
+                    crate::tool_approvals::forget(&approval_scope, &change.node.id);
+                }
 
                 // Compute changed properties for updates
                 let changed_properties = if change.operation == StoreOperation::Updated {
@@ -3101,8 +3117,32 @@ impl NodeService {
     }
 
     /// Wrap `event` with this instance's client id and execution context,
-    /// beside its write context.
+    /// beside its write context. A write that is not an approval's own ends
+    /// the remote-tool approval of the node here, as the write is reported,
+    /// not when a subscriber gets to it (see `crate::tool_approvals`).
     fn emitted(&self, event: DomainEvent) -> EmittedEvent {
+        let scope = self.approval_scope();
+        let is_schema = |node_type: &str| crate::models::CoreNodeType::Schema.is_exactly(node_type);
+        match &event {
+            // A schema's fields or what it extends can reach any tool.
+            DomainEvent::NodeUpdated { node_type, .. }
+            | DomainEvent::NodeDeleted { node_type, .. }
+            | DomainEvent::NodeCreated { node_type, .. }
+                if is_schema(node_type) =>
+            {
+                crate::tool_approvals::forget_scope(&scope)
+            }
+            DomainEvent::NodeDeleted { id, .. } => crate::tool_approvals::forget(&scope, id),
+            DomainEvent::NodeCreated { node_id, .. } => {
+                crate::tool_approvals::forget(&scope, node_id)
+            }
+            // The approval's own write consumes its pending record; any other
+            // update ends the record.
+            DomainEvent::NodeUpdated { node, .. } => {
+                crate::tool_approvals::reported_update(&scope, node)
+            }
+            _ => {}
+        }
         EmittedEvent {
             envelope: crate::db::events::EventEnvelope {
                 event,
@@ -3113,6 +3153,57 @@ impl NodeService {
             },
             write_context: self.write_context,
         }
+    }
+}
+
+/// The remote-tool approvals of this database (see `crate::tool_approvals`).
+impl NodeService {
+    /// This database's name in the approval records: its file's path.
+    pub fn approval_scope(&self) -> String {
+        self.store.path().display().to_string()
+    }
+
+    /// Writes `update` to `node_id` with `expected_version` as the approval
+    /// `tag` of it: opens a pending record, makes the write as the approval's
+    /// own (so its reported update, and only that, makes the record live), and
+    /// takes the record back if the write fails or this is dropped before it
+    /// lands. `program_sha256` is the program file's content the approval pins.
+    /// Nothing else opens a record: an approval written any other way is not
+    /// in effect.
+    pub async fn write_tool_approval(
+        &self,
+        node_id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+        tag: &str,
+        program_sha256: Option<String>,
+    ) -> Result<Node, NodeServiceError> {
+        let scope = self.approval_scope();
+        let pending = crate::tool_approvals::begin(&scope, node_id, tag, program_sha256);
+        let written = crate::tool_approvals::as_own_write(
+            &scope,
+            node_id,
+            self.update_node(node_id, expected_version, update),
+        )
+        .await;
+        if written.is_ok() {
+            pending.landed();
+        }
+        written
+    }
+
+    /// The approval `tag` of `node`, as stored now, if it is still in effect.
+    pub fn live_tool_approval(
+        &self,
+        node: &Node,
+        tag: &str,
+    ) -> Option<crate::tool_approvals::Issued> {
+        crate::tool_approvals::live(&self.approval_scope(), node, tag)
+    }
+
+    /// Whether `node_id` has an approval record in this database.
+    pub fn tool_approval_recorded(&self, node_id: &str) -> bool {
+        crate::tool_approvals::recorded(&self.approval_scope(), node_id)
     }
 }
 

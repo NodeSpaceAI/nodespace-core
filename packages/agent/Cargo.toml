@@ -68,6 +68,10 @@ testing = []
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3"
+# Writing a tool's row straight into a test database, as a program of the
+# user could, to show an ended approval stays ended. The workspace's libsql,
+# already built for nodespace-core.
+libsql = { workspace = true }
 # Line-level diff rendering for the prompt-assembly snapshot gate
 # (tests/it/prompt_assembly_snapshot.rs) — the same crate `insta` uses
 # internally for its own diff output. No other test in this crate needs a

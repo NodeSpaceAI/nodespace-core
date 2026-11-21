@@ -19,4 +19,5 @@ mod mcp_integration;
 mod requires_extension;
 mod secret_cli;
 mod skill_md_generation;
+mod tool_cli;
 mod wait;

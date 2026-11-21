@@ -302,6 +302,11 @@ impl NodeService {
         conflict_id: Option<&str>,
     ) -> Result<MergeOutcome, NodeServiceError> {
         refuse_self_merge(survivor_id, loser_id)?;
+        // The merge rewrites the survivor and archives the loser without a
+        // node event: it ends any remote-tool approval of either first.
+        let scope = self.approval_scope();
+        crate::tool_approvals::forget(&scope, survivor_id);
+        crate::tool_approvals::forget(&scope, loser_id);
         let survivor_id = survivor_id.to_string();
         let loser_id = loser_id.to_string();
         let conflict_id = conflict_id.map(|s| s.to_string());

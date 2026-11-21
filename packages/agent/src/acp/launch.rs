@@ -24,6 +24,15 @@ pub struct AcpLaunch {
     pub daemon_env: Vec<String>,
     /// Environment entries whose values are credentials, read from the secret
     /// store inside the startup time limit.
+    ///
+    /// **No approval stands in front of this.** Whatever `program` names gets
+    /// these credential values in its environment: nothing pins the program
+    /// (by path or content), and nobody is asked at the screen. Nothing sets a
+    /// launch from data a model or another program can write today. Before
+    /// anything does, the launch needs the gate a remote tool has: an approval
+    /// confirmed by the person at the screen that pins the program file's
+    /// content, checked again right before the program starts (see
+    /// `local_agent::tool_approval` and `local_agent::process::check_program_file`).
     pub secrets: Vec<EnvSecret>,
 }
 

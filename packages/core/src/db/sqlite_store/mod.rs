@@ -491,6 +491,8 @@ pub struct SqliteStore {
     /// this one cannot reach around them. See that module's doc comment.
     conns: Connections,
     notifier: Option<StoreNotifier>,
+    /// The database file this store opened.
+    path: PathBuf,
 }
 
 impl SqliteStore {
@@ -510,7 +512,13 @@ impl SqliteStore {
         Ok(Self {
             conns,
             notifier: None,
+            path: db_path,
         })
+    }
+
+    /// The database file this store opened.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     /// Acquire exclusive use of the writer connection. See

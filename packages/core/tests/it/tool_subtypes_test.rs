@@ -642,6 +642,330 @@ async fn the_approved_binding_is_a_fingerprint_or_unset() {
     }
 }
 
+/// A well-formed approval tag (64 lowercase hex), for writes that stand in
+/// for an approval.
+const TAG: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// Writes an approval of `id` as the daemon's approval does: its record opened
+/// and made live by this write. Returns the node as it is then.
+async fn approve_here(svc: &Arc<NodeService>, id: &str) -> Node {
+    let node = get(svc, id).await;
+    svc.write_tool_approval(
+        id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "enabled": true, "approved_binding": TAG })),
+        TAG,
+        None,
+    )
+    .await
+    .unwrap();
+    let node = get(svc, id).await;
+    assert!(svc.live_tool_approval(&node, TAG).is_some());
+    node
+}
+
+/// Every write the node service reports after the approval's own ends its
+/// record: an update (through the service or through the store itself) and a
+/// delete, on every delete path.
+#[tokio::test]
+async fn a_delete_ends_the_approval_record_on_every_delete_path() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let mut ids = Vec::new();
+        for name in ["versioned", "unchecked", "bulk", "pruned"] {
+            let id = create(&svc, kind, name, remote_properties(kind, true))
+                .await
+                .unwrap();
+            approve_here(&svc, &id).await;
+            assert!(svc.tool_approval_recorded(&id), "{kind} {name}");
+            ids.push(id);
+        }
+        // An update is not the approval's own write: it ends the record too.
+        let node = get(&svc, &ids[0]).await;
+        svc.update_node(
+            &ids[0],
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "description": "Reworded" })),
+        )
+        .await
+        .unwrap();
+        assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: update");
+        approve_here(&svc, &ids[0]).await;
+        // So does a write made through the store itself (which reports it
+        // through the store's notifier rather than as an emitted event).
+        let mut properties = get(&svc, &ids[0]).await.properties;
+        properties["tool"]["description"] = json!("Again");
+        svc.store()
+            .update_node(
+                &ids[0],
+                NodeUpdate::new().with_properties(properties),
+                None,
+                nodespace_core::db::WriteContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: store update");
+        let node = approve_here(&svc, &ids[0]).await;
+        svc.delete_node(&ids[0], node.version).await.unwrap();
+        svc.delete_node_unchecked(&ids[1]).await.unwrap();
+        svc.bulk_delete(vec![ids[2].clone()]).await.unwrap();
+        // Pruned by an import, in its transaction.
+        svc.bulk_create_hierarchy_trusted_with(
+            vec![(
+                uuid::Uuid::new_v4().to_string(),
+                "text".to_string(),
+                "imported".to_string(),
+                None,
+                1.0,
+                json!({}),
+            )],
+            nodespace_core::services::TrustedImportFollowUp {
+                archive_ids: vec![],
+                refresh_root: None,
+                prune_ids: vec![ids[3].clone()],
+            },
+        )
+        .await
+        .unwrap();
+        for (id, path) in ids.iter().zip(["versioned", "unchecked", "bulk", "pruned"]) {
+            assert!(!svc.tool_approval_recorded(id), "{kind}: {path} delete");
+        }
+    }
+}
+
+/// A tool deleted through the node service and then put back exactly as it was
+/// (its old version and creation time, by writing the database file directly)
+/// is not approved: the delete took the record with it.
+#[tokio::test]
+async fn a_tool_put_back_by_writing_the_database_directly_is_not_approved() {
+    let (svc, tmp) = test_service().await;
+    let id = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    let node = approve_here(&svc, &id).await;
+    let db = libsql::Builder::new_local(tmp.path().join("test.db"))
+        .build()
+        .await
+        .unwrap();
+    let conn = db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT node_type, content, properties, title, lifecycle_status, version, created_at, modified_at \
+             FROM node WHERE id = ?1",
+            libsql::params![id.clone()],
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let columns: Vec<libsql::Value> = (0..8).map(|i| row.get_value(i).unwrap()).collect();
+    drop(rows);
+    drop(conn);
+    svc.delete_node(&id, node.version).await.unwrap();
+    let mut params = vec![libsql::Value::Text(id.clone())];
+    params.extend(columns);
+    // A fresh connection: the read above holds an older snapshot.
+    db.connect().unwrap().execute(
+        "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params,
+    )
+    .await
+    .unwrap();
+    let back = get(&svc, &id).await;
+    assert_eq!(
+        (back.version, back.created_at),
+        (node.version, node.created_at)
+    );
+    assert!(svc.live_tool_approval(&back, TAG).is_none());
+}
+
+/// A merge rewrites the survivor and archives the loser without a node event:
+/// it ends the approval of both.
+#[tokio::test]
+async fn a_merge_ends_the_approval_of_both_tools() {
+    let (svc, _tmp) = test_service().await;
+    let survivor = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    let loser = create(
+        &svc,
+        "tool-rest",
+        "lookup_two",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    approve_here(&svc, &survivor).await;
+    approve_here(&svc, &loser).await;
+    svc.merge_nodes(&survivor, &loser, None).await.unwrap();
+    assert!(!svc.tool_approval_recorded(&survivor));
+    assert!(!svc.tool_approval_recorded(&loser));
+}
+
+/// A change to a schema can reach any tool of the database (a renamed field
+/// is rewritten in every node of its type without a node event; a type can
+/// change what it extends): it ends every approval of the database.
+#[tokio::test]
+async fn a_schema_change_ends_every_approval_of_the_database() {
+    let (svc, _tmp) = test_service().await;
+    seed_remote_subtype(&svc).await;
+    let id = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    approve_here(&svc, &id).await;
+    svc.rename_schema_field(REMOTE, "endpoint", "address")
+        .await
+        .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "a field rename");
+    approve_here(&svc, &id).await;
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({ "schema_id": REMOTE, "add_fields": [{ "name": "extra", "type": "text" }] }),
+    )
+    .await
+    .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "a schema update");
+    approve_here(&svc, &id).await;
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({ "schema_id": REMOTE, "rename_fields": [{ "from": "extra", "to": "more" }] }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !svc.tool_approval_recorded(&id),
+        "a field rename in an update"
+    );
+    approve_here(&svc, &id).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Other Tool", "extends": "tool", "fields": [] }),
+    )
+    .await
+    .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "a new schema");
+    approve_here(&svc, &id).await;
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({ "schema_id": REMOTE, "extends": "other-tool" }),
+    )
+    .await
+    .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "what a type extends");
+    // A schema written through the store itself (reported by its notifier).
+    approve_here(&svc, &id).await;
+    let schema = get(&svc, REMOTE).await;
+    svc.store()
+        .update_node(
+            REMOTE,
+            NodeUpdate::new().with_properties(schema.properties.clone()),
+            None,
+            nodespace_core::db::WriteContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !svc.tool_approval_recorded(&id),
+        "a schema written by the store"
+    );
+}
+
+/// Turning a tool off ends its approval: every write that leaves `enabled`
+/// anything but `true` removes `approved_binding`, so writing `enabled: true`
+/// again brings no approval back with it.
+#[tokio::test]
+async fn turning_a_tool_off_removes_its_approval_on_every_write_path() {
+    let (svc, _tmp) = test_service().await;
+    let tag = "0123456789abcdef".repeat(4);
+    let approval = |svc: Arc<NodeService>, id: String| async move {
+        get(&svc, &id).await.properties["tool"]
+            .get("approved_binding")
+            .cloned()
+    };
+    for kind in REMOTE_KINDS {
+        let mut approved = remote_properties(kind, true);
+        approved["approved_binding"] = json!(tag);
+        let id = create(&svc, kind, "lookup", approved.clone())
+            .await
+            .unwrap();
+        // A write that leaves the tool on keeps the approval.
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "description": "Reworded" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            approval(svc.clone(), id.clone()).await,
+            Some(json!(tag)),
+            "{kind}"
+        );
+
+        // Off through a versioned update, then on again: no approval.
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "enabled": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+
+        // Through a batch update and an unversioned update.
+        let id = create(&svc, kind, "batch", approved.clone()).await.unwrap();
+        svc.bulk_update(vec![(
+            id.clone(),
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )])
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+        let id = create(&svc, kind, "unversioned", approved.clone())
+            .await
+            .unwrap();
+        svc.update_node_unchecked(
+            &id,
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+
+        // A tool created off holds no approval either.
+        let mut off = approved.clone();
+        off["enabled"] = json!(false);
+        let id = create(&svc, kind, "created_off", off).await.unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+    }
+}
+
 #[tokio::test]
 async fn a_remote_tool_takes_only_its_declared_fields() {
     let (svc, _tmp) = test_service().await;

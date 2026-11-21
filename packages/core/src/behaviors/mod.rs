@@ -2436,6 +2436,55 @@ pub fn tool_binding_hash<S: AsRef<str>>(chain: &[S], properties: &Value) -> Stri
         .collect()
 }
 
+/// Ends the approval of a tool that is not on: when `enabled` in the `tool`
+/// bucket is anything but `true`, `approved_binding` is removed. Returns
+/// whether one was removed. A node that is not a tool is left alone.
+///
+/// Every write runs this once the node is validated, so turning a tool off
+/// lasts: writing `enabled: true` again brings no approval back with it, and
+/// the tool is offered again only after this device approves it again. A
+/// writer that kept the old tag and writes it back with `enabled: true` does
+/// not restore it either: an approval counts only while the node's version is
+/// the one its own write left (see `crate::tool_approvals`), and every write
+/// moves it.
+pub fn end_approval_unless_enabled<S: AsRef<str>>(chain: &[S], properties: &mut Value) -> bool {
+    if ToolOrigin::of(chain).is_none() {
+        return false;
+    }
+    let Some(bucket) = properties
+        .get_mut(CoreNodeType::Tool.as_str())
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    if bucket.get("enabled") == Some(&Value::Bool(true)) {
+        return false;
+    }
+    bucket.remove("approved_binding").is_some()
+}
+
+/// The label that keys an approval code's message to its purpose.
+const APPROVAL_CODE_LABEL: &[u8] = b"tool-approval-code-v1";
+
+/// The approval code of a preview digest: the first 48 bits of
+/// `HMAC-SHA256(key, "tool-approval-code-v1" || digest)` as `XXXX-XXXX-XXXX`
+/// (upper-case hex). The command line shows it and the system dialog shows it
+/// first, so the person can tell the dialog is for the tool they reviewed.
+/// Keyed by the daemon's approval key, so nothing without the key can compute
+/// a code, let alone search offline for a second tool that shares one.
+pub fn tool_approval_code(key: &[u8], digest: &str) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(key)
+        .expect("an HMAC accepts a key of any length");
+    mac.update(APPROVAL_CODE_LABEL);
+    mac.update(digest.as_bytes());
+    let hex: String = mac.finalize().into_bytes()[..6]
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    format!("{}-{}-{}", &hex[..4], &hex[4..8], &hex[8..])
+}
+
 /// The label that keys the approval tag's message to its purpose and version.
 const APPROVAL_LABEL: &[u8] = b"tool-approval-v1";
 
@@ -6005,6 +6054,42 @@ mod tests {
         moved["tool"]["enabled"] = json!(false);
         moved["tool"]["approved_binding"] = json!(tag);
         assert!(ok(&key, "node-1", "lookup", &moved));
+    }
+
+    #[test]
+    fn a_tool_that_is_not_on_holds_no_approval() {
+        let chain = ["tool-rest", "tool"];
+        let tag = "ab".repeat(32);
+        let with = |enabled: Option<Value>| {
+            let mut props = approval_node("https://a.test/x", "d");
+            props["tool"]["approved_binding"] = json!(tag);
+            match enabled {
+                Some(value) => props["tool"]["enabled"] = value,
+                None => {
+                    props["tool"].as_object_mut().unwrap().remove("enabled");
+                }
+            }
+            props
+        };
+        // On: kept.
+        let mut on = with(Some(json!(true)));
+        assert!(!end_approval_unless_enabled(&chain, &mut on));
+        assert_eq!(on["tool"]["approved_binding"], json!(tag));
+        // Off, absent, or anything but `true`: removed.
+        for enabled in [
+            Some(json!(false)),
+            None,
+            Some(json!("true")),
+            Some(Value::Null),
+        ] {
+            let mut off = with(enabled.clone());
+            assert!(end_approval_unless_enabled(&chain, &mut off), "{enabled:?}");
+            assert!(off["tool"].get("approved_binding").is_none(), "{enabled:?}");
+        }
+        // A node that is not a tool is left alone.
+        let mut other = with(Some(json!(false)));
+        assert!(!end_approval_unless_enabled(&["text"], &mut other));
+        assert_eq!(other["tool"]["approved_binding"], json!(tag));
     }
 
     /// A pinned tag: a change to the label, the field order or the encoding

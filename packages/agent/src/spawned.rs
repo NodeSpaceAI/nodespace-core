@@ -15,8 +15,11 @@
 //!
 //! What this does not cover: a recorded program that leaves its process group
 //! (`setpgid`, `setsid`) and whose parent has gone is indistinguishable from any
-//! other program of the same user. Closing that needs the peer's audit token and
-//! a code-signature check; it is not done here.
+//! other program of the same user, and so is an agent the user started outside
+//! the app, which is never recorded. Closing that needs the peer's audit token
+//! and a code-signature check; it is not done here. The daemon therefore does
+//! not rely on this alone for approving a tool or changing a credential: those
+//! also need the person at the screen to confirm in a system dialog.
 //!
 //! Identity is read from the kernel (`/proc` on Linux, `proc_pidinfo` on macOS);
 //! a process whose own identity cannot be read is `None`, never "not a tool". On

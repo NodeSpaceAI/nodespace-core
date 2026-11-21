@@ -6,9 +6,9 @@
 //! ([`DaemonCallConfirmer`]), the table of questions waiting for an answer
 //! ([`PendingConfirmations`]) and the answer entry point.
 //!
-//! **Not installed yet.** Nothing here is wired into a turn: the card that shows
-//! the question and records the answer is a [`ConfirmationUi`] a later change
-//! supplies, so every remote tool that needs confirmation is still not offered.
+//! An interactive turn installs it (the chat card is the [`ConfirmationUi`]);
+//! a turn with nobody to answer has none, so a tool that needs confirmation is
+//! not offered there.
 //!
 //! The rules, each one tested:
 //!
@@ -45,6 +45,15 @@
 //!   headless runs have no answer command; on Windows the named-pipe transport
 //!   carries no peer pid, so every answer is refused there (the feature is inert
 //!   until that is solved). See [`SpawnedProcessGate`] for the limits.
+//!
+//! **The answer is gated by the peer gate alone.** Approving a tool and
+//! changing a credential also need the person at the screen to confirm in a
+//! system dialog (see [`crate::user_presence`]); an answer to a call's question
+//! does not. A program of the user that the gate does not recognise (an
+//! orphaned descendant of an in-app shell, an agent started outside the app)
+//! can read a pending question's id and digest from its card and answer it.
+//! Closing that needs the peer's audit token and a check that it is the signed
+//! app.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -381,6 +390,36 @@ impl CallConfirmer for DaemonCallConfirmer {
 // Who may answer
 // ---------------------------------------------------------------------------
 
+/// The process id the kernel reports for the connection a request arrived on, when
+/// the transport has one (a Unix socket does; a Windows named pipe does not).
+pub fn peer_pid<T>(request: &tonic::Request<T>) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        request
+            .extensions()
+            .get::<tonic::transport::server::UdsConnectInfo>()
+            .and_then(|info| info.peer_cred.as_ref())
+            .and_then(|cred| cred.pid())
+            .and_then(|pid| u32::try_from(pid).ok())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        None
+    }
+}
+
+/// Whether `gate` lets the peer of `request` through. A refusal is logged with
+/// what the peer asked to do (`what`) and its pid, nothing from the request.
+pub fn peer_allowed<T>(gate: &dyn AnswerGate, request: &tonic::Request<T>, what: &str) -> bool {
+    let peer_pid = peer_pid(request);
+    if gate.may_answer(peer_pid) {
+        return true;
+    }
+    tracing::warn!(?peer_pid, what, "a request from this peer was refused");
+    false
+}
+
 /// Decides whether a peer of the daemon's socket may answer a question.
 pub trait AnswerGate: Send + Sync {
     /// `peer_pid` is the process id the kernel reports for the connection, when
@@ -398,9 +437,14 @@ pub trait AnswerGate: Send + Sync {
 ///
 /// **Limits.** A recorded program that leaves its process group (`setpgid`,
 /// `setsid`) and whose parent has exited cannot be told from another program of
-/// the same user; closing that needs the peer's audit token and a code-signature
-/// check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity` against the NodeSpace
-/// team id), which is not done here.
+/// the same user, and neither can an orphaned descendant of a recorded program
+/// (its parent gone, its group never recorded) or an agent the user started
+/// outside the app; closing that needs the peer's audit token and a
+/// code-signature check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity`
+/// against the NodeSpace team id), which is not done here. Where that matters
+/// most (approving a tool, changing a credential) the daemon also asks the
+/// person at the screen; an answer to a call's question relies on this gate
+/// alone.
 ///
 /// Two more facts. The question's id and digest are stored on the chat card, so
 /// any same-user program can read them (`nodespace get`): the id is not a secret

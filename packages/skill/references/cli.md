@@ -965,7 +965,11 @@ nodespace secret delete github-token
 nodespace secret list-names
 ```
 
-The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text; on Windows the credential manager is stricter: at most 1280 UTF-16 units (2560 bytes as stored), and the list of names holds roughly 19 names of full length (about 70 of 16 characters), after which `set` refuses a new name with an error saying so. On a platform without an operating system credential store, use an `env:<NAME>` reference instead.
+The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text. Before `set` or `delete` changes anything, the daemon asks the user to confirm in a system dialog on the Mac's own screen (Touch ID, a paired Apple Watch or the login password); a program cannot answer it. Run over SSH, the dialog still appears on the Mac's screen. Where no dialog can be shown (a locked screen, another user at the console, a daemon running outside a logged-in session, or a platform without one) the change is refused; on such a platform use an `env:<NAME>` reference instead.
+
+### Approve a remote tool
+
+A remote tool (`tool-cli`, `tool-rest` or `tool-mcp`) is offered to the model only after the user approves it on this device with `nodespace tool approve <node-id>`. The command shows the tool's name, description, binding, credential references, parameter schema and, for a tool that starts a program, the program file and its SHA-256, and a code (`XXXX-XXXX-XXXX`) only the daemon can make. After the user types the tool's name at a terminal, the daemon asks them to confirm in a system dialog on the Mac's own screen (Touch ID, a paired Apple Watch or the login password) that starts with the same code, then names the tool and the full program path it runs or the host it sends a call to, then the credentials it uses and the arguments; only that confirmation writes the approval, and a program cannot answer the dialog. Confirm only a dialog whose code and program or host match what the command printed, and only one you started. A program given by a bare name is approved as its full path on the daemon's `PATH`, which the approval writes into the tool, and the program file's content is pinned: if the file changes (an update, `brew upgrade`), the tool does not run until it is approved again. The pin holds only against a file the user cannot write: the command and the dialog warn when the program file, a folder above it or the interpreter it names belongs to or is writable by the user, or when a script starts another program from the `PATH`. Any change to the tool afterwards (an edit, even one that is undone, turning it off, archiving it, merging it, deleting it), any change to a schema, and a restart of the daemon (a reboot, an update, Quit in the tray), ends the approval until it is approved again. Only the daemon of a signed release, or a development build, approves tools, and only on macOS; the daemon of a Homebrew formula install is signed ad hoc, so it cannot approve tools (`nodespace secret set` still works there). It is the user's step: it refuses to run without a terminal, the MCP passthrough refuses it, and the daemon refuses an approval from any program it started for a tool. Run over SSH, the dialog appears on the Mac's own screen, so it needs someone there; with the screen locked, or another user at the console, it is refused. Ask the user to run it; never try to approve a tool yourself.
 
 ### Database settings
 
@@ -1468,6 +1472,14 @@ Manage the credentials remote tools refer to as `keychain:<name>` (set, delete, 
 - `<NAME>` — The name to remove (required)
 
 **`nodespace secret list-names`** — List the stored names. Values are never shown
+
+### `nodespace tool`
+
+Approve a remote tool on this device (`approve`). Shows exactly what is approved, asks you to type the tool's name, then to confirm in a system dialog; run it yourself at a terminal on the Mac's screen
+
+**`nodespace tool approve`** — Show what approving a remote tool would approve, and approve it after you type its name and confirm in the system dialog. Must be run at a terminal
+
+- `<NODE_ID>` — The id of the tool node (required)
 
 ### `nodespace uninstall`
 

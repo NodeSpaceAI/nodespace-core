@@ -46,6 +46,9 @@ sha2 = "0.10"
 hmac = "0.12"
 # Overwrites a credential value when it is dropped.
 zeroize = "1"
+# The approval key: 32 bytes from the operating system's random source. The
+# version uuid already uses, so nothing new is built.
+getrandom = "0.4"
 
 # Logging
 tracing = { workspace = true }

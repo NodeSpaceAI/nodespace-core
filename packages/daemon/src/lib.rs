@@ -5,6 +5,7 @@
 //! out. Proto types are provided by the `nodespace-proto` crate; this lib
 //! re-exports them alongside the service implementations.
 
+pub mod code_identity;
 pub mod db_routing;
 pub(crate) mod durable_write;
 pub mod incompatible_database;
@@ -17,6 +18,7 @@ pub mod single_instance;
 #[cfg(unix)]
 pub mod stdio_log_rotation;
 pub mod tray;
+pub mod user_presence;
 
 use std::path::PathBuf;
 
@@ -232,12 +234,12 @@ pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
 pub use nodespace_proto::socket::LAUNCHER_ARGS;
 pub use router::{build_base_router, BaseServices};
 pub use services::{
-    build_database_services, build_shared_services, shared_model_load_in_flight,
-    unrouted_services_if_default_refused, AgentSessionHandler, DaemonExtensions,
-    DaemonExtensionsError, DatabaseManager, DatabaseRequiresExtensions, DatabaseServiceImpl,
-    DatabaseServices, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
-    LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable, SecretServiceImpl,
-    SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
+    build_database_services, build_shared_services, install_approval_services,
+    shared_model_load_in_flight, unrouted_services_if_default_refused, AgentSessionHandler,
+    DaemonExtensions, DaemonExtensionsError, DatabaseManager, DatabaseRequiresExtensions,
+    DatabaseServiceImpl, DatabaseServices, EmbeddingReady, EmbeddingsServiceImpl,
+    ImportServiceImpl, LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable,
+    SecretServiceImpl, SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
 };
 
 #[cfg(test)]

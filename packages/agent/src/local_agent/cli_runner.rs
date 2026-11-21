@@ -67,8 +67,8 @@ use zeroize::Zeroizing;
 
 pub use super::process::BASE_ENV;
 use super::process::{
-    credentials_within, environment_note, program_note, reap, resolve_env_credentials,
-    spawn_isolated, stop, EnvLookup, Isolated,
+    check_program_file, credentials_within, environment_note, program_note, reap,
+    resolve_env_credentials, spawn_isolated, stop, EnvLookup, Isolated,
 };
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
@@ -226,6 +226,8 @@ impl RemoteToolRunner for CliRunner {
         .await?;
         let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
 
+        // The file must still be the one the approval pinned.
+        check_program_file(&call.program, tool.program_sha256.as_deref()).await?;
         let mut process = spawn_isolated(
             &call.program,
             &call.argv,
@@ -359,7 +361,13 @@ mod tests {
         })
     }
 
+    /// A tool as the gate hands it over: its program's content pinned as the
+    /// approval would pin it (the file as it is now, when there is one).
     fn tool(binding: Value) -> RemoteTool {
+        let program_sha256 = binding
+            .get("program")
+            .and_then(Value::as_str)
+            .and_then(|p| crate::local_agent::process::file_sha256(p).ok());
         RemoteTool {
             node_id: "node-1".into(),
             name: "c_tool".into(),
@@ -368,6 +376,7 @@ mod tests {
             parameter_schema: schema(),
             properties: json!({ "tool-cli": binding }),
             approval_tag: String::new(),
+            program_sha256,
         }
     }
 
@@ -740,16 +749,26 @@ mod tests {
         assert!(run(&r, json!(null), json!({})).await.is_err());
     }
 
+    /// A pinned file that cannot be started (not executable) is an error;
+    /// one that is gone is refused before anything is started.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_program_that_cannot_start_is_an_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let not_executable = dir.path().join("prog");
+        std::fs::write(&not_executable, "echo hi\n").unwrap();
         let err = run(
             &runner(store()),
-            json!({"program": "/nonexistent/program"}),
+            json!({"program": not_executable.to_str().unwrap()}),
             json!({}),
         )
         .await
         .unwrap_err();
         assert!(err.0.contains("could not be started"), "{}", err.0);
+        let mut gone = tool(json!({"program": "/nonexistent/program"}));
+        gone.program_sha256 = Some("0".repeat(64));
+        let err = runner(store()).run(&gone, &json!({})).await.unwrap_err();
+        assert!(err.0.contains("cannot be read"), "{}", err.0);
     }
 
     #[test]

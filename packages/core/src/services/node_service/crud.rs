@@ -3615,6 +3615,9 @@ impl NodeService {
                 Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners, chain);
         }
         self.behaviors.validate_node(node, chain)?;
+        // A tool that is not on holds no approval: turning it off ends it.
+        // After validation, so a malformed approval is still refused.
+        crate::behaviors::end_approval_unless_enabled(chain.as_slice(), &mut node.properties);
         Ok(())
     }
 

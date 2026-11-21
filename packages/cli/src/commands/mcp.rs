@@ -1083,6 +1083,7 @@ mod tests {
         "session",
         "database",
         "secret",
+        "tool",
         "uninstall",
         "wait",
         "mcp",
@@ -1095,6 +1096,17 @@ mod tests {
     fn the_secret_commands_are_not_reachable_through_the_passthrough() {
         assert!(!ALLOWED_SUBCOMMANDS.contains(&"secret"));
         assert!(REFUSED.contains(&"secret"));
+    }
+
+    /// Approving a remote tool is never reachable through the passthrough: the
+    /// agent that calls it must not be able to approve a tool for the model.
+    #[test]
+    fn the_tool_approval_command_is_not_reachable_through_the_passthrough() {
+        assert!(!ALLOWED_SUBCOMMANDS.contains(&"tool"));
+        assert!(REFUSED.contains(&"tool"));
+        assert!(
+            check_allowed(&["tool".to_string(), "approve".to_string(), "x".to_string()]).is_err()
+        );
     }
 
     #[test]

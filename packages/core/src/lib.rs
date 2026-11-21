@@ -35,6 +35,7 @@ pub mod schema;
 pub mod secrets;
 pub mod services;
 pub mod shape_record;
+pub mod tool_approvals;
 pub mod utils;
 
 // Re-exports
