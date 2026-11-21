@@ -301,8 +301,8 @@ pub fn assess<S: AsRef<str>>(
 /// The device approval tag to write to `approved_binding` when the tool is
 /// enabled on this device: the one function the offering gate verifies against.
 /// `chain` is the node type's chain, nearest scope first. The approval also
-/// needs its record (`NodeService::record_tool_approval`), which the approval
-/// writes beside it.
+/// needs its record, which the approval's write opens
+/// (`NodeService::write_tool_approval`).
 pub fn approve<S: AsRef<str>>(node: &Node, chain: &[S], key: &ApprovalKey) -> String {
     tool_approval_tag(
         key.as_bytes(),
@@ -1702,15 +1702,8 @@ mod tests {
                                 let node = ns.get_node(&id).await.unwrap().unwrap();
                                 let chain = ns.resolve_type_chain(&node.node_type).await.unwrap();
                                 let tag = approve(&node, &chain, &key);
-                                record_approval(&ns, &node, &chain, &tag);
-                                ns.update_node(
-                                    &id,
-                                    node.version,
-                                    NodeUpdate::new()
-                                        .with_properties(json!({"approved_binding": tag})),
-                                )
-                                .await
-                                .unwrap();
+                                write_approval(&ns, &id, &tag, json!({"approved_binding": tag}))
+                                    .await;
                             }
                         });
                 })
@@ -2004,50 +1997,55 @@ mod tests {
 
     // -- keyed approval at the host --------------------------------------
 
-    /// Records the approval `tag` of `node` as the daemon's approval does, for
-    /// the version the next write leaves, with the program file's SHA-256 (of
-    /// the real file when there is one, else a stand-in a fake runner never
-    /// checks).
-    fn record_approval(ns: &NodeService, node: &Node, chain: &[String], tag: &str) {
+    /// The program file's SHA-256 the approval of `node` pins: of the real
+    /// file when there is one, else a stand-in a fake runner never checks.
+    fn program_pin(node: &Node, chain: &[String]) -> Option<String> {
         let kind = RemoteToolKind::of_chain(chain).unwrap();
         let binding = node
             .properties
             .get(kind.bucket())
             .cloned()
             .unwrap_or(Value::Null);
-        let program_sha256 = starts_a_program(kind, &binding).then(|| {
+        starts_a_program(kind, &binding).then(|| {
             let program = binding
                 .get("program")
                 .or_else(|| binding.get("command"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             crate::local_agent::process::file_sha256(program).unwrap_or_else(|_| "0".repeat(64))
-        });
-        ns.record_tool_approval(
-            &node.id,
-            nodespace_core::tool_approvals::Issued {
-                tag: tag.to_string(),
-                version: node.version + 1,
-                created_at: node.created_at,
-                program_sha256,
-            },
-        );
+        })
     }
 
-    /// Approves `id` under `key` (the fixture's own, or another), with its
-    /// record, as the daemon's approval writes it.
+    /// Writes `properties` to `id` as the approval `tag` of it, as the
+    /// daemon's approval writes it (the record opened and made live by this
+    /// write).
+    async fn write_approval(ns: &NodeService, id: &str, tag: &str, properties: Value) {
+        let node = ns.get_node(id).await.unwrap().unwrap();
+        let chain = ns.resolve_type_chain(&node.node_type).await.unwrap();
+        ns.write_tool_approval(
+            id,
+            node.version,
+            NodeUpdate::new().with_properties(properties),
+            tag,
+            program_pin(&node, &chain),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Approves `id` under `key` (the fixture's own, or another), as the
+    /// daemon's approval writes it.
     async fn approve_with(f: &Fixture, id: &str, key: &ApprovalKey) {
         let node = f.ns.get_node(id).await.unwrap().unwrap();
         let chain = f.ns.resolve_type_chain(&node.node_type).await.unwrap();
         let tag = approve(&node, &chain, key);
-        record_approval(&f.ns, &node, &chain, &tag);
-        f.ns.update_node(
+        write_approval(
+            &f.ns,
             id,
-            node.version,
-            NodeUpdate::new().with_properties(json!({"enabled": true, "approved_binding": tag})),
+            &tag,
+            json!({"enabled": true, "approved_binding": tag}),
         )
-        .await
-        .unwrap();
+        .await;
     }
 
     #[tokio::test]
@@ -2243,6 +2241,117 @@ mod tests {
         assert_eq!(back.version, version);
         assert_eq!(back.properties["tool"]["enabled"], true);
         assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
+    }
+
+    /// The version is not what decides whether a write is the approval's own.
+    /// A program of the user lowers the stored version behind the node
+    /// service's back; the user turns the tool off through the service, whose
+    /// write then lands on exactly the version the approval left; the program
+    /// writes the approved row back at that version. Not offered: the user's
+    /// write was not the approval's own, so it ended the approval.
+    #[tokio::test]
+    async fn a_version_lowered_directly_does_not_let_a_turned_off_tool_back() {
+        let f = fixture().await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let id = f.tool("tool-rest", "r_tool", true).await;
+        assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["r_tool"]);
+        let db = libsql::Builder::new_local(f._tmp.path().join("t.db"))
+            .build()
+            .await
+            .unwrap();
+        let read = db.connect().unwrap();
+        let mut rows = read
+            .query(
+                "SELECT properties, version FROM node WHERE id = ?1",
+                libsql::params![id.clone()],
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let (properties, approved_version): (String, i64) =
+            (row.get(0).unwrap(), row.get(1).unwrap());
+        drop(rows);
+        drop(read);
+        db.connect()
+            .unwrap()
+            .execute(
+                "UPDATE node SET version = ?1 WHERE id = ?2",
+                libsql::params![approved_version - 1, id.clone()],
+            )
+            .await
+            .unwrap();
+        write(
+            &f,
+            &id,
+            NodeUpdate::new().with_properties(json!({"enabled": false})),
+        )
+        .await;
+        assert_eq!(
+            f.ns.get_node(&id).await.unwrap().unwrap().version,
+            approved_version
+        );
+        db.connect()
+            .unwrap()
+            .execute(
+                "UPDATE node SET properties = ?1, version = ?2 WHERE id = ?3",
+                libsql::params![properties, approved_version, id.clone()],
+            )
+            .await
+            .unwrap();
+        let back = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(back.properties["tool"]["enabled"], true);
+        assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
+    }
+
+    /// An approval whose write was given up before it landed (the caller
+    /// dropped it while the write waited for the database) leaves no record
+    /// behind.
+    #[tokio::test]
+    async fn an_approval_given_up_before_its_write_lands_leaves_no_record() {
+        use std::future::Future;
+        let f = fixture().await;
+        let id = f.tool("tool-rest", "r_tool", false).await;
+        let node = f.ns.get_node(&id).await.unwrap().unwrap();
+        let chain = f.ns.resolve_type_chain(&node.node_type).await.unwrap();
+        let tag = approve(&node, &chain, &f.key);
+        // Another write holds the database while the approval's write starts.
+        let store = f.ns.store().clone();
+        let (held, is_held) = tokio::sync::oneshot::channel::<()>();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let holder = tokio::spawn(async move {
+            store
+                .with_transaction(move |_tx| {
+                    Box::pin(async move {
+                        let _ = held.send(());
+                        let _ = released.await;
+                        anyhow::Ok(())
+                    })
+                })
+                .await
+        });
+        is_held.await.unwrap();
+        {
+            let write = f.ns.write_tool_approval(
+                &id,
+                node.version,
+                NodeUpdate::new()
+                    .with_properties(json!({"enabled": true, "approved_binding": tag})),
+                &tag,
+                None,
+            );
+            let mut write = std::pin::pin!(write);
+            let finished = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(write.as_mut().poll(cx).is_ready())
+            })
+            .await;
+            assert!(!finished, "the write did not wait for the database");
+            assert!(f.ns.tool_approval_recorded(&id), "opened, still pending");
+        }
+        assert!(!f.ns.tool_approval_recorded(&id));
+        release.send(()).unwrap();
+        holder.await.unwrap().unwrap();
+        let node = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_ne!(node.properties["tool"]["approved_binding"], tag.as_str());
     }
 
     /// An edit to the binding turns the tool off, and reverting the edit does
@@ -2461,16 +2570,18 @@ mod tests {
             tool.program_sha256.as_deref(),
             Some("0".repeat(64).as_str())
         );
+        // Approved again, by a write that pins no program file.
         let tag = tool.approval_tag.clone();
-        f.ns.record_tool_approval(
+        f.ns.write_tool_approval(
             &id,
-            nodespace_core::tool_approvals::Issued {
-                tag,
-                version: node.version,
-                created_at: node.created_at,
-                program_sha256: None,
-            },
-        );
+            node.version,
+            NodeUpdate::new().with_properties(json!({"approved_binding": tag})),
+            &tag,
+            None,
+        )
+        .await
+        .unwrap();
+        let node = f.ns.get_node(&id).await.unwrap().unwrap();
         assert_eq!(
             assess_stored(&f.ns, &node, &chain, Some(&f.key)).unwrap_err(),
             Refusal::NotLive

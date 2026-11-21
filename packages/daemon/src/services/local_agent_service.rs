@@ -611,7 +611,8 @@ fn dialog_of(shown: &tool_approval::ApprovalPreview) -> crate::user_presence::Ap
         head: &shown.dialog.head,
         rest: &shown.dialog.rest,
         content_pinned: !shown.program.is_empty(),
-        replaceable: !shown.program_warning.is_empty(),
+        replaceable: shown.program_replaceable,
+        starts_from_path: &shown.program_starts_from_path,
     }
 }
 
@@ -10386,6 +10387,35 @@ mod tests {
         assert!(touched(&ns, &id).await);
     }
 
+    /// The dialog's two program warnings follow what the review found, apart:
+    /// a script that starts a program from the PATH is not called a
+    /// replaceable file, and a replaceable file is not called a PATH lookup.
+    #[tokio::test]
+    async fn the_dialog_warns_of_a_replaceable_file_and_a_path_lookup_apart() {
+        let fake = FakePresence::new(Dialog::Yes);
+        let (svc, ns, _tmp) = approving_service(&fake).await;
+        let id = cli_tool(&ns, "lookup").await;
+        let shown = shown(&svc, &ns, &id).await;
+        let from_path = tool_approval::ApprovalPreview {
+            program_warning: "the script starts `python3` from the daemon's PATH".to_string(),
+            program_replaceable: false,
+            program_starts_from_path: "python3".to_string(),
+            ..shown.clone()
+        };
+        let dialog = dialog_of(&from_path);
+        assert!(!dialog.replaceable);
+        assert_eq!(dialog.starts_from_path, "python3");
+        let replaceable = tool_approval::ApprovalPreview {
+            program_warning: "programs running as you can replace this file".to_string(),
+            program_replaceable: true,
+            program_starts_from_path: String::new(),
+            ..shown
+        };
+        let dialog = dialog_of(&replaceable);
+        assert!(dialog.replaceable);
+        assert_eq!(dialog.starts_from_path, "");
+    }
+
     /// The approval is written with the version read before the dialog: an
     /// edit made while it was open is a conflict, and nothing is approved.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10519,20 +10549,14 @@ mod tests {
         let node = ns.get_node(&forged).await.unwrap().unwrap();
         let chain = ns.resolve_type_chain(&node.node_type).await.unwrap();
         let tag = nodespace_agent::local_agent::remote_tools::approve(&node, &chain, &planted);
-        ns.record_tool_approval(
-            &forged,
-            nodespace_core::tool_approvals::Issued {
-                tag: tag.clone(),
-                version: node.version + 1,
-                created_at: node.created_at,
-                program_sha256: Some("0".repeat(64)),
-            },
-        );
-        ns.update_node(
+        // Written as an approval is, record and all: only the key differs.
+        ns.write_tool_approval(
             &forged,
             node.version,
             nodespace_core::models::NodeUpdate::new()
                 .with_properties(serde_json::json!({"enabled": true, "approved_binding": tag})),
+            &tag,
+            Some("0".repeat(64)),
         )
         .await
         .unwrap();

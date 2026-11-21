@@ -642,31 +642,41 @@ async fn the_approved_binding_is_a_fingerprint_or_unset() {
     }
 }
 
-/// A delete the node service reports ends a tool's approval record on the
-/// write path, on every delete path; a write that is not a delete leaves it to
-/// the version check.
+/// A well-formed approval tag (64 lowercase hex), for writes that stand in
+/// for an approval.
+const TAG: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// Writes an approval of `id` as the daemon's approval does: its record opened
+/// and made live by this write. Returns the node as it is then.
+async fn approve_here(svc: &Arc<NodeService>, id: &str) -> Node {
+    let node = get(svc, id).await;
+    svc.write_tool_approval(
+        id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "enabled": true, "approved_binding": TAG })),
+        TAG,
+        None,
+    )
+    .await
+    .unwrap();
+    let node = get(svc, id).await;
+    assert!(svc.live_tool_approval(&node, TAG).is_some());
+    node
+}
+
+/// Every write the node service reports after the approval's own ends its
+/// record: an update (through the service or through the store itself) and a
+/// delete, on every delete path.
 #[tokio::test]
 async fn a_delete_ends_the_approval_record_on_every_delete_path() {
-    use nodespace_core::tool_approvals::Issued;
     let (svc, _tmp) = test_service().await;
-    let record = |svc: &Arc<NodeService>, node: &Node| {
-        svc.record_tool_approval(
-            &node.id,
-            Issued {
-                tag: "t".to_string(),
-                version: node.version,
-                created_at: node.created_at,
-                program_sha256: None,
-            },
-        )
-    };
     for kind in REMOTE_KINDS {
         let mut ids = Vec::new();
         for name in ["versioned", "unchecked", "bulk", "pruned"] {
             let id = create(&svc, kind, name, remote_properties(kind, true))
                 .await
                 .unwrap();
-            record(&svc, &get(&svc, &id).await);
+            approve_here(&svc, &id).await;
             assert!(svc.tool_approval_recorded(&id), "{kind} {name}");
             ids.push(id);
         }
@@ -680,22 +690,22 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
         .await
         .unwrap();
         assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: update");
-        let node = get(&svc, &ids[0]).await;
-        record(&svc, &node);
+        approve_here(&svc, &ids[0]).await;
         // So does a write made through the store itself (which reports it
         // through the store's notifier rather than as an emitted event).
+        let mut properties = get(&svc, &ids[0]).await.properties;
+        properties["tool"]["description"] = json!("Again");
         svc.store()
             .update_node(
                 &ids[0],
-                NodeUpdate::new().with_properties(json!({ "tool": { "description": "Again" } })),
+                NodeUpdate::new().with_properties(properties),
                 None,
                 nodespace_core::db::WriteContext::default(),
             )
             .await
             .unwrap();
         assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: store update");
-        let node = get(&svc, &ids[0]).await;
-        record(&svc, &node);
+        let node = approve_here(&svc, &ids[0]).await;
         svc.delete_node(&ids[0], node.version).await.unwrap();
         svc.delete_node_unchecked(&ids[1]).await.unwrap();
         svc.bulk_delete(vec![ids[2].clone()]).await.unwrap();
@@ -728,7 +738,6 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
 /// is not approved: the delete took the record with it.
 #[tokio::test]
 async fn a_tool_put_back_by_writing_the_database_directly_is_not_approved() {
-    use nodespace_core::tool_approvals::Issued;
     let (svc, tmp) = test_service().await;
     let id = create(
         &svc,
@@ -738,17 +747,7 @@ async fn a_tool_put_back_by_writing_the_database_directly_is_not_approved() {
     )
     .await
     .unwrap();
-    let node = get(&svc, &id).await;
-    svc.record_tool_approval(
-        &id,
-        Issued {
-            tag: "t".to_string(),
-            version: node.version,
-            created_at: node.created_at,
-            program_sha256: None,
-        },
-    );
-    assert!(svc.live_tool_approval(&node, "t").is_some());
+    let node = approve_here(&svc, &id).await;
     let db = libsql::Builder::new_local(tmp.path().join("test.db"))
         .build()
         .await
@@ -782,7 +781,108 @@ async fn a_tool_put_back_by_writing_the_database_directly_is_not_approved() {
         (back.version, back.created_at),
         (node.version, node.created_at)
     );
-    assert!(svc.live_tool_approval(&back, "t").is_none());
+    assert!(svc.live_tool_approval(&back, TAG).is_none());
+}
+
+/// A merge rewrites the survivor and archives the loser without a node event:
+/// it ends the approval of both.
+#[tokio::test]
+async fn a_merge_ends_the_approval_of_both_tools() {
+    let (svc, _tmp) = test_service().await;
+    let survivor = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    let loser = create(
+        &svc,
+        "tool-rest",
+        "lookup_two",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    approve_here(&svc, &survivor).await;
+    approve_here(&svc, &loser).await;
+    svc.merge_nodes(&survivor, &loser, None).await.unwrap();
+    assert!(!svc.tool_approval_recorded(&survivor));
+    assert!(!svc.tool_approval_recorded(&loser));
+}
+
+/// A change to a schema can reach any tool of the database (a renamed field
+/// is rewritten in every node of its type without a node event; a type can
+/// change what it extends): it ends every approval of the database.
+#[tokio::test]
+async fn a_schema_change_ends_every_approval_of_the_database() {
+    let (svc, _tmp) = test_service().await;
+    seed_remote_subtype(&svc).await;
+    let id = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    approve_here(&svc, &id).await;
+    svc.rename_schema_field(REMOTE, "endpoint", "address")
+        .await
+        .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "a field rename");
+    approve_here(&svc, &id).await;
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({ "schema_id": REMOTE, "add_fields": [{ "name": "extra", "type": "text" }] }),
+    )
+    .await
+    .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "a schema update");
+    approve_here(&svc, &id).await;
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({ "schema_id": REMOTE, "rename_fields": [{ "from": "extra", "to": "more" }] }),
+    )
+    .await
+    .unwrap();
+    assert!(
+        !svc.tool_approval_recorded(&id),
+        "a field rename in an update"
+    );
+    approve_here(&svc, &id).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Other Tool", "extends": "tool", "fields": [] }),
+    )
+    .await
+    .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "a new schema");
+    approve_here(&svc, &id).await;
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({ "schema_id": REMOTE, "extends": "other-tool" }),
+    )
+    .await
+    .unwrap();
+    assert!(!svc.tool_approval_recorded(&id), "what a type extends");
+    // A schema written through the store itself (reported by its notifier).
+    approve_here(&svc, &id).await;
+    let schema = get(&svc, REMOTE).await;
+    svc.store()
+        .update_node(
+            REMOTE,
+            NodeUpdate::new().with_properties(schema.properties.clone()),
+            None,
+            nodespace_core::db::WriteContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !svc.tool_approval_recorded(&id),
+        "a schema written by the store"
+    );
 }
 
 /// Turning a tool off ends its approval: every write that leaves `enabled`

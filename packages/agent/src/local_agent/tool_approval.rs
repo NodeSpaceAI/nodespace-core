@@ -20,12 +20,15 @@
 //!    the user never approves what they did not see.
 //! 3. The caller then asks the person at the device to confirm, outside this
 //!    module (the daemon shows a system dialog that starts with the code, then
-//!    the name and what the tool runs; a program cannot answer it). Nothing
-//!    here writes before that.
+//!    the name and what the tool runs or where it sends a call; a program
+//!    cannot answer it). Nothing here writes before that.
 //! 4. [`write`] writes the approval with the version the review read, so an
 //!    edit made while the person was asked is a conflict and nothing is
-//!    approved, and records it (`nodespace_core::tool_approvals`) with the
-//!    version that write leaves and the program file's SHA-256. The tag is made
+//!    approved, as the approval's own write
+//!    (`NodeService::write_tool_approval`): that opens the approval's record
+//!    (`nodespace_core::tool_approvals`, with the program file's SHA-256) as a
+//!    one-shot token, which the write consumes when it is reported, and which
+//!    is taken back if the write fails or is given up. The tag is made
 //!    under the daemon's approval key, which exists only in the daemon's
 //!    memory (made from the operating system's random source when it starts,
 //!    never stored). The node is then read back and run through the offering
@@ -45,11 +48,14 @@
 //! not run until the tool is approved again. A name that is not on the daemon's
 //! `PATH`, or a file that cannot be read, cannot be approved.
 //!
-//! Any write to the node after the approval's own ends it: an edit (reverting
-//! it does not bring the approval back), turning it off (which also removes the
-//! tag, `nodespace_core::behaviors::end_approval_unless_enabled`), archiving,
-//! a change of type; so does a delete, and a node made again under the same id
-//! or copied into another database is not approved there.
+//! Any write to the node the node service reports after the approval's own
+//! ends it, whatever version it leaves: an edit (reverting it does not bring
+//! the approval back), turning it off (which also removes the tag,
+//! `nodespace_core::behaviors::end_approval_unless_enabled`), archiving, a
+//! change of type, a merge, a delete; so does any change to a schema of the
+//! database (a schema can change what a tool's type extends, or rewrite its
+//! fields). A node made again under the same id, or copied into another
+//! database, is not approved there.
 //!
 //! # What the approval defends against, and what it does not
 //!
@@ -67,10 +73,12 @@
 //!
 //! - Show the person a real dialog for a request of its own and hope they
 //!   confirm it (consent phishing). The dialog starts with a code only the
-//!   daemon can make, then the name, the credentials and the program or host,
-//!   and the node's text cannot draw a code of its own, so a person who
-//!   compares the dialog with what their own `nodespace tool approve` printed
-//!   is not fooled by a dialog for another tool. That holds only while the
+//!   daemon can make, then the name and the program or host (the host as a
+//!   call reaches it), whole, before the credentials and the arguments; the
+//!   node's text is shown with the brackets, colons and dashes it could fake a
+//!   code with escaped. So a person who compares the code and the program or
+//!   host with what their own `nodespace tool approve` printed is not fooled by
+//!   a dialog for another tool. That holds only while the
 //!   `nodespace` they ran is the real one: a program of the user can shadow it
 //!   (a shell function or alias, an earlier `PATH` entry, a user-writable copy),
 //!   print the code of a tool of its own next to the user's tool, and ask for
@@ -94,13 +102,19 @@
 //!   Homebrew prefix, `~/bin`, `node_modules`) a loop that renames a copy into
 //!   place wins that race on a real share of calls, so the pin is a real control
 //!   only for a file the user cannot write; the preview and the dialog warn
-//!   when the file or its folder is writable by the user. A `#!/usr/bin/env X`
-//!   script starts `X` from the daemon's `PATH`, which is not pinned (warned
-//!   too), and no pin covers what a program loads.
-//! - Write the database file directly. Every write the node service reports
-//!   (an update, a create, a delete) that is not the approval's own ends the
-//!   approval's record on the spot, so a direct write can only put back the
-//!   state that is still approved now; a direct write that changes it ends it.
+//!   when the file, a folder above it (as written or as it resolves) or the
+//!   interpreter its `#!` line names is owned by or writable by the user. The
+//!   check is a warning, not a refusal, and it cannot see every way a file can
+//!   be replaced (an admin user can write a root-owned folder through `sudo`).
+//!   A `#!/usr/bin/env X` script starts `X` from the daemon's `PATH`, which is
+//!   not pinned (warned apart), and no pin covers what a program loads.
+//! - Write the database file directly. Such a write is not reported, but every
+//!   write the node service reports since the approval's own (an update at any
+//!   version, a create, a delete, a schema change) has ended the approval's
+//!   record, and a record counts only while the node has exactly the version
+//!   and creation time the approval's write left. So a direct write can only
+//!   put back the state that is approved now; one that moves the version ends
+//!   it, and one that changes what the tag covers fails the tag.
 //! - Overwrite a credential's value with the system's own tools (`security`
 //!   on macOS): the credentials are still items in the login keychain.
 
@@ -145,6 +159,12 @@ pub struct ApprovalPreview {
     /// programs of this user; a script starts a program it finds on the
     /// `PATH`); empty when nothing is to be said.
     pub program_warning: String,
+    /// Programs of this user can replace the program file (or its
+    /// interpreter), so the pin does not hold against them.
+    pub program_replaceable: bool,
+    /// The program a `#!/usr/bin/env` script starts from the `PATH` (not
+    /// pinned); empty when none.
+    pub program_starts_from_path: String,
     /// What the system dialog says the tool does, in parts it keeps whole
     /// (the verb and the program or host) and a part it may cut (the
     /// arguments or the rest of the address).
@@ -263,17 +283,36 @@ fn target_of(kind: RemoteToolKind, binding: &Value) -> String {
 }
 
 /// A URL as the dialog splits it: the scheme, host and port, then the rest.
+///
+/// The scheme, host and port are those a URL parser reads from the text, as a
+/// call reaches them: the host in its ASCII form (punycode for a name outside
+/// ASCII), percent-escapes and user names resolved, so text such as
+/// `https://api.example.com%2eevil.com/` or `https://trusted@evil.com/` shows
+/// the host it really names. A text the parser cannot read (a host filled in
+/// from the call's arguments) is shown as it is, saying so. The rest is the
+/// text after the scheme, host and port, as written.
 fn origin_and_rest(url: &str) -> (String, String) {
-    match url.find("://") {
-        Some(at) => match url[at + 3..].find('/') {
-            Some(slash) => (
-                url[..at + 3 + slash].to_string(),
-                url[at + 3 + slash..].to_string(),
-            ),
-            None => (url.to_string(), String::new()),
-        },
-        None => (url.to_string(), String::new()),
-    }
+    let rest = url
+        .find("://")
+        .and_then(|at| {
+            url[at + 3..]
+                .find(['/', '\\', '?', '#'])
+                .map(|end| at + 3 + end)
+        })
+        .map(|end| url[end..].to_string())
+        .unwrap_or_default();
+    let origin = match url::Url::parse(url) {
+        Ok(parsed) if parsed.host_str().is_some() => {
+            let host = parsed.host_str().unwrap_or_default();
+            match parsed.port() {
+                Some(port) => format!("{}://{host}:{port}", parsed.scheme()),
+                None => format!("{}://{host}", parsed.scheme()),
+            }
+        }
+        _ if url.contains("://") => format!("{url} (the host is not a plain address)"),
+        _ => url.to_string(),
+    };
+    (origin, rest)
 }
 
 /// What the dialog says a tool of `kind` with `binding` does.
@@ -339,8 +378,9 @@ pub struct ProgramFile {
     pub path: String,
     /// SHA-256 of its content, lowercase hex.
     pub sha256: String,
-    /// Programs running as this user can replace it (the file or its folder is
-    /// writable by this user): then the pin does not hold against them.
+    /// Programs running as this user can replace it (the file, a folder above
+    /// it or the interpreter it names is this user's or writable by this
+    /// user): then the pin does not hold against them.
     pub replaceable: bool,
     /// For a `#!/usr/bin/env X` script, the `X` it looks up on the `PATH` at
     /// each start, which is not pinned.
@@ -375,14 +415,13 @@ pub fn on_the_daemon_path(program: &str) -> Result<ProgramFile, ApprovalError> {
     } else {
         program.to_string()
     };
-    let sha256 = super::process::file_sha256(&path)
+    let seen = super::process::inspect_program(&path)
         .map_err(|e| ApprovalError::ProgramUnreadable(path.clone(), e.to_string()))?;
-    let (replaceable, starts_from_path) = super::process::program_facts(&path);
     Ok(ProgramFile {
         path,
-        sha256,
-        replaceable,
-        starts_from_path,
+        sha256: seen.sha256,
+        replaceable: seen.replaceable,
+        starts_from_path: seen.starts_from_path,
     })
 }
 
@@ -544,9 +583,9 @@ fn build_preview(
     if let Some(pin) = program {
         if pin.file.replaceable {
             warnings.push(
-                "programs running as you can replace this file (it or its folder is writable by you): \
-                 the pin is checked right before each start, but a file swapped in at that moment \
-                 would run"
+                "programs running as you can replace this file (it, a folder above it, or the \
+                 interpreter it names is yours or writable by you): the pin is checked right \
+                 before each start, but a file swapped in at that moment would run"
                     .to_string(),
             );
         }
@@ -577,6 +616,10 @@ fn build_preview(
             .map(|pin| format!("{} (SHA-256 {})", pin.file.path, pin.file.sha256))
             .unwrap_or_default(),
         program_warning: warnings.join("; "),
+        program_replaceable: program.is_some_and(|pin| pin.file.replaceable),
+        program_starts_from_path: program
+            .and_then(|pin| pin.file.starts_from_path.clone())
+            .unwrap_or_default(),
         dialog,
         // Filled in under the daemon's key by the caller; none without one.
         code: String::new(),
@@ -712,9 +755,10 @@ pub async fn write(
     in_effect(node_service, key, &node_id).await
 }
 
-/// The write itself: the record first (for the version the write will leave),
-/// then the tag, `enabled` and the pin, with the reviewed version. A write
-/// that fails takes its record back.
+/// The write itself: the tag, `enabled` and the pin, with the reviewed version,
+/// made as the approval's own write (`NodeService::write_tool_approval`), which
+/// opens the approval's record and makes it live when this write, and no
+/// other, is reported; a write that fails takes the record back.
 async fn commit(
     node_service: &NodeService,
     key: &ApprovalKey,
@@ -727,33 +771,24 @@ async fn commit(
         ..
     } = reviewed;
     let tag = remote_tools::approve(&pinned, &chain, key);
-    node_service.record_tool_approval(
-        &pinned.id,
-        nodespace_core::tool_approvals::Issued {
-            tag: tag.clone(),
-            version: pinned.version + 1,
-            created_at: pinned.created_at,
-            program_sha256: program.as_ref().map(|pin| pin.file.sha256.clone()),
-        },
-    );
+    let program_sha256 = program.as_ref().map(|pin| pin.file.sha256.clone());
     let mut properties = json!({"enabled": true, "approved_binding": tag});
     if let Some(pin) = program.filter(|pin| is_bare_name(&pin.written)) {
         properties[pin.field] = Value::String(pin.file.path);
     }
-    let written = node_service
-        .update_node(
+    node_service
+        .write_tool_approval(
             &pinned.id,
             pinned.version,
             NodeUpdate::new().with_properties(properties),
+            &tag,
+            program_sha256,
         )
-        .await;
-    if let Err(e) = written {
-        node_service.forget_tool_approval(&pinned.id, &tag);
-        return Err(match e {
+        .await
+        .map_err(|e| match e {
             NodeServiceError::VersionConflict { .. } => ApprovalError::Conflict,
             other => ApprovalError::Write(other.to_string()),
-        });
-    }
+        })?;
     Ok(())
 }
 
@@ -1673,6 +1708,49 @@ mod tests {
             ),
             ("runs", "/usr/bin/npx", "MCP tool find")
         );
+    }
+
+    /// The host the dialog names is the one a call reaches, not the template
+    /// text: an escaped dot, a user name before an `@`, a backslash and a name
+    /// outside ASCII each show the real host.
+    #[test]
+    fn the_dialog_names_the_host_a_call_reaches() {
+        let host = |url: &str| origin_and_rest(url).0;
+        assert_eq!(
+            host("https://api.github.com%2eevil.com/x"),
+            "https://api.github.com.evil.com"
+        );
+        assert_eq!(
+            host("https://api.github.com@evil.com/x"),
+            "https://evil.com"
+        );
+        assert_eq!(
+            origin_and_rest("https://evil.com\\@api.github.com/x"),
+            (
+                "https://evil.com".to_string(),
+                "\\@api.github.com/x".to_string()
+            )
+        );
+        assert_eq!(
+            host("https://B\u{FC}cher.example/"),
+            "https://xn--bcher-kva.example"
+        );
+        assert_eq!(
+            host("HTTPS://API.Example.COM:443/x"),
+            "https://api.example.com"
+        );
+        assert_eq!(
+            origin_and_rest("https://api.example.com:8443/items/{q}?a=1"),
+            (
+                "https://api.example.com:8443".to_string(),
+                "/items/{q}?a=1".to_string()
+            )
+        );
+        assert_eq!(
+            host("https://[::1/x"),
+            "https://[::1/x (the host is not a plain address)"
+        );
+        assert_eq!(host("(not set)"), "(not set)");
     }
 
     /// A relative path would be hashed against the daemon's working folder

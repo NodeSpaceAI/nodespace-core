@@ -956,7 +956,10 @@ impl NodeService {
                         .validate_schema_field_rename(&type_id, &from, &to)
                         .await?;
 
-                    // Step 1: Migrate all node property data
+                    // Step 1: Migrate all node property data. It rewrites the
+                    // nodes of the type without a node event; the schema node
+                    // written in this same transaction ends every remote-tool
+                    // approval of the database (`NodeService::emitted`).
                     let affected = crate::db::SqliteStore::rename_schema_field_in_tx(
                         tx.store_tx(),
                         &type_id,
@@ -1065,6 +1068,9 @@ impl NodeService {
             .validate_schema_field_rename_against(working.clone(), from, to)
             .await?;
 
+        // The rename rewrites the nodes of the type without a node event; the
+        // schema node the caller writes in this same transaction ends every
+        // remote-tool approval of the database (`NodeService::emitted`).
         let affected =
             crate::db::SqliteStore::rename_schema_field_in_tx(tx.store_tx(), &type_id, from, to)
                 .await
