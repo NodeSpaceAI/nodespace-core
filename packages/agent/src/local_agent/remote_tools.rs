@@ -2296,8 +2296,10 @@ mod tests {
         assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
     }
 
-    /// A tool deleted and made again under the same id, its old tag and all,
-    /// is not the tool that was approved.
+    /// A tool deleted (here behind the node service's back, so nothing saw the
+    /// delete) and made again under the same id, its old tag and all, and
+    /// written up to the version the approval left, is not the tool that was
+    /// approved: it was created at another time.
     #[tokio::test]
     async fn a_tool_made_again_under_the_same_id_is_not_offered() {
         let f = fixture().await;
@@ -2305,7 +2307,10 @@ mod tests {
         let id = f.tool("tool-rest", "r_tool", true).await;
         let approved = f.ns.get_node(&id).await.unwrap().unwrap();
         assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["r_tool"]);
-        f.ns.delete_node_unchecked(&id).await.unwrap();
+        f.ns.store()
+            .delete_nodes_by_ids_unchecked(std::slice::from_ref(&id))
+            .await
+            .unwrap();
         let mut again = Node::new(
             approved.node_type.clone(),
             approved.content.clone(),
@@ -2313,11 +2318,24 @@ mod tests {
         );
         again.id = id.clone();
         f.ns.create_node(again).await.unwrap();
+        while f.ns.get_node(&id).await.unwrap().unwrap().version < approved.version {
+            write(
+                &f,
+                &id,
+                NodeUpdate::new().with_properties(json!({
+                    "enabled": true,
+                    "approved_binding": approved.properties["tool"]["approved_binding"]
+                })),
+            )
+            .await;
+        }
         let stored = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(stored.version, approved.version);
         assert_eq!(
             stored.properties["tool"]["approved_binding"],
             approved.properties["tool"]["approved_binding"]
         );
+        assert_ne!(stored.created_at, approved.created_at);
         assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
     }
 

@@ -159,13 +159,16 @@ mod tests {
         assert!(live(&scope, &n, "t1").is_some());
         assert!(live(&scope, &n, "t2").is_none());
         assert!(live("another-database", &n, "t1").is_none());
-        let mut made_again = n.clone();
-        made_again.created_at = n.created_at + chrono::Duration::microseconds(1);
-        assert!(live(&scope, &made_again, "t1").is_none());
         // A later write moved the version: over, for good.
         assert!(live(&scope, &node_with(&n, 3), "t1").is_none());
         assert!(!recorded(&scope, &n.id));
         assert!(live(&scope, &n, "t1").is_none());
+        // A node made again under the same id, at the same version.
+        record(&scope, &n.id, issued(&n, "t1"));
+        let mut made_again = n.clone();
+        made_again.created_at = n.created_at + chrono::Duration::microseconds(1);
+        assert!(live(&scope, &made_again, "t1").is_none());
+        assert!(!recorded(&scope, &n.id));
     }
 
     fn node_with(n: &Node, version: i64) -> Node {

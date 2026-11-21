@@ -662,7 +662,7 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
     };
     for kind in REMOTE_KINDS {
         let mut ids = Vec::new();
-        for name in ["versioned", "unchecked", "bulk"] {
+        for name in ["versioned", "unchecked", "bulk", "pruned"] {
             let id = create(&svc, kind, name, remote_properties(kind, true))
                 .await
                 .unwrap();
@@ -684,7 +684,25 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
         svc.delete_node(&ids[0], node.version).await.unwrap();
         svc.delete_node_unchecked(&ids[1]).await.unwrap();
         svc.bulk_delete(vec![ids[2].clone()]).await.unwrap();
-        for (id, path) in ids.iter().zip(["versioned", "unchecked", "bulk"]) {
+        // Pruned by an import, in its transaction.
+        svc.bulk_create_hierarchy_trusted_with(
+            vec![(
+                uuid::Uuid::new_v4().to_string(),
+                "text".to_string(),
+                "imported".to_string(),
+                None,
+                1.0,
+                json!({}),
+            )],
+            nodespace_core::services::TrustedImportFollowUp {
+                archive_ids: vec![],
+                refresh_root: None,
+                prune_ids: vec![ids[3].clone()],
+            },
+        )
+        .await
+        .unwrap();
+        for (id, path) in ids.iter().zip(["versioned", "unchecked", "bulk", "pruned"]) {
             assert!(!svc.tool_approval_recorded(id), "{kind}: {path} delete");
         }
     }
