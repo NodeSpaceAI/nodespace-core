@@ -64,6 +64,27 @@ impl SecretServiceImpl {
         })
     }
 
+    /// `Set`, on the request in place: a request the gate refuses has its value
+    /// wiped where it lies, and an accepted one has its value moved out and
+    /// wiped once stored, so no copy of the value outlives the call.
+    async fn set_in_place(
+        &self,
+        request: &mut Request<SetSecretRequest>,
+    ) -> Result<Response<SetSecretResponse>, Status> {
+        if !self.may_change(request) {
+            return Err(refuse_and_wipe(request.get_mut()));
+        }
+        let mut req = std::mem::take(request.get_mut());
+        // The OS store can block (a prompt, a locked keychain): keep it off the
+        // async worker threads.
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || store_and_wipe(&store, &mut req))
+            .await
+            .map_err(|_| Status::internal("credential store task failed"))?
+            .map_err(status)?;
+        Ok(Response::new(SetSecretResponse {}))
+    }
+
     /// The service over the operating system's credential store.
     pub fn keychain() -> Self {
         let store = Arc::new(SecretStore::keychain());
@@ -110,21 +131,9 @@ fn store_and_wipe(store: &SecretStore, request: &mut SetSecretRequest) -> Result
 impl GrpcSecretService for SecretServiceImpl {
     async fn set(
         &self,
-        request: Request<SetSecretRequest>,
+        mut request: Request<SetSecretRequest>,
     ) -> Result<Response<SetSecretResponse>, Status> {
-        let allowed = self.may_change(&request);
-        let mut req = request.into_inner();
-        if !allowed {
-            return Err(refuse_and_wipe(&mut req));
-        }
-        // The OS store can block (a prompt, a locked keychain): keep it off the
-        // async worker threads.
-        let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || store_and_wipe(&store, &mut req))
-            .await
-            .map_err(|_| Status::internal("credential store task failed"))?
-            .map_err(status)?;
-        Ok(Response::new(SetSecretResponse {}))
+        self.set_in_place(&mut request).await
     }
 
     async fn delete(
@@ -333,6 +342,27 @@ mod tests {
             .list_names(Request::new(ListSecretNamesRequest {}))
             .await
             .is_ok());
+    }
+
+    /// Through the service's own `Set` path: the gate refuses, and the value in
+    /// the request is overwritten where it lies.
+    #[tokio::test]
+    async fn a_set_the_gate_refuses_has_its_value_wiped_on_the_service_path() {
+        let store = Arc::new(SecretStore::new(Arc::new(InMemorySecretBackend::default())));
+        let s = SecretServiceImpl::with_gate(Arc::clone(&store), Arc::new(Peer(Some(4242))));
+        let mut request = Request::new(SetSecretRequest {
+            name: "tok".into(),
+            value: TOKEN.into(),
+        });
+        let ptr = request.get_ref().value.as_ptr();
+        let len = request.get_ref().value.len();
+        let denied = s.set_in_place(&mut request).await.unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        assert!(request.get_ref().value.is_empty());
+        // The buffer that held it is zeroed, not just shortened.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert!(bytes.iter().all(|b| *b == 0), "the value bytes were left");
+        assert!(store.names().unwrap().is_empty());
     }
 
     #[test]

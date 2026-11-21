@@ -969,7 +969,7 @@ The value is never an argument, so it does not land in shell history. A name is 
 
 ### Approve a remote tool
 
-A remote tool (`tool-cli`, `tool-rest` or `tool-mcp`) is offered to the model only after the user approves it on this device with `nodespace tool approve <node-id>`. The command shows the tool's name, description, binding, credential references and parameter schema, and approves only after the user types the tool's name at a terminal; editing the tool afterwards turns it off until it is approved again. It is the user's step: it refuses to run without a terminal, the MCP passthrough refuses it, and the daemon refuses an approval from any program it started for a tool. Ask the user to run it; never try to approve a tool yourself.
+A remote tool (`tool-cli`, `tool-rest` or `tool-mcp`) is offered to the model only after the user approves it on this device with `nodespace tool approve <node-id>`. The command shows the tool's name, description, binding, credential references and parameter schema, and approves only after the user types the tool's name at a terminal; editing the tool afterwards, or turning it off, ends the approval until it is approved again. It is the user's step: it refuses to run without a terminal, the MCP passthrough refuses it, and the daemon refuses an approval from any program it started for a tool. Ask the user to run it; never try to approve a tool yourself.
 
 ### Database settings
 

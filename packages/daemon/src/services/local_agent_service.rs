@@ -550,7 +550,9 @@ struct LocalAgentServiceInner {
 fn approval_status(error: ApprovalError) -> Status {
     match error {
         ApprovalError::NotFound => Status::not_found(error.to_string()),
-        ApprovalError::Changed | ApprovalError::Conflict => Status::aborted(error.to_string()),
+        ApprovalError::Changed | ApprovalError::Conflict | ApprovalError::NotInEffect => {
+            Status::aborted(error.to_string())
+        }
         ApprovalError::Read(_) | ApprovalError::Key(_) | ApprovalError::Write(_) => {
             Status::unavailable(error.to_string())
         }
@@ -1863,6 +1865,7 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             binding_json: preview.binding_json,
             parameter_schema_json: preview.parameter_schema_json,
             credentials: preview.credentials,
+            target: preview.target,
             digest: preview.digest,
             approved: preview.approved,
         }))
@@ -10143,6 +10146,16 @@ mod tests {
         let node = ns.get_node(&id).await.unwrap().unwrap();
         assert_eq!(node.properties["tool"]["enabled"], serde_json::json!(true));
         assert!(node.properties["tool"]["approved_binding"].is_string());
+    }
+
+    /// An approval that was written but is not in effect, like one refused for
+    /// a change, asks the user to look at the tool again.
+    #[test]
+    fn an_approval_not_in_effect_is_aborted() {
+        assert_eq!(
+            approval_status(ApprovalError::NotInEffect).code(),
+            tonic::Code::Aborted
+        );
     }
 
     #[tokio::test]

@@ -9,14 +9,18 @@
 //! - its nearest core type is one of the three executable kinds (a bare
 //!   `extends tool` subtype has nothing to run it);
 //! - its name is a plain identifier and not a built-in tool's name;
-//! - `enabled` is exactly `true` in the `tool` bucket (absent means off);
+//! - `enabled` is exactly `true` in the `tool` bucket (absent means off).
+//!   Turning a tool off also ends its approval: every write that leaves
+//!   `enabled` anything but `true` removes `approved_binding`
+//!   (`nodespace_core::behaviors::end_approval_unless_enabled`);
 //! - `approved_binding` in the `tool` bucket is the **device approval tag** of
 //!   the node as it is now: a keyed MAC (key kept on this device, outside every
 //!   node) over the node id, name, description and binding. Absent, malformed,
 //!   made under another key, copied from another node or stale after any edit
 //!   all mean off;
-//! - this device has an approval key: with none (the store is unavailable or
-//!   the key is unreadable) nothing is offered, so the gate fails closed;
+//! - this device has an approval key: with none (the store is unavailable,
+//!   the key is unreadable, or the store has no add-only write and so never
+//!   holds one, as on Windows) nothing is offered, so the gate fails closed;
 //! - its `parameter_schema` has a closed root;
 //! - a runner for its kind is installed, and, when its calls need the user's
 //!   confirmation, a confirmer is installed, so a tool is never offered that
@@ -26,7 +30,9 @@
 //!
 //! `enabled` and `approved_binding` are declared local-only, but this gate does
 //! not depend on anything keeping a peer's value out: a peer cannot make a tag
-//! that verifies under this device's key, and anything else is off.
+//! that verifies under this device's key, and anything else is off. A process
+//! running as the same user on this device is another matter: it can reach the
+//! key's store directly (see `tool_approval`'s limits).
 //!
 //! What the gate does **not** check: that the binding is well formed (a runner
 //! parses it through the typed readers, `ToolRestFields::from_bucket` and the
@@ -2122,6 +2128,9 @@ mod tests {
                 v: &str,
             ) -> Result<bool, nodespace_core::secrets::SecretError> {
                 self.inner.add_if_absent(a, v)
+            }
+            fn has_add_only_write(&self) -> bool {
+                true
             }
         }
         let f = fixture().await;

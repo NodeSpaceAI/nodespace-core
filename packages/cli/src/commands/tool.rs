@@ -7,9 +7,20 @@
 //! after the user types the tool's name at a terminal. What is approved is the
 //! digest of what was shown: a tool edited in between is refused.
 //!
+//! Everything shown comes from a node that anything could have written, so it
+//! is made safe for the terminal: control, invisible and bidi characters are
+//! shown as escapes, a one-line field cannot break onto a new line, and in the
+//! binding every character outside ASCII is shown as an escape and flagged (a
+//! look-alike letter in a program or a host name). The parameter schema comes
+//! first and the binding last, and the line saying what the tool runs or where
+//! it sends a call is printed right above the question, so a long schema never
+//! pushes them off the screen.
+//!
 //! It must be run by a person: both standard input and standard output must be a
 //! terminal, and the daemon refuses the request from any program it started for a
-//! tool, so a tool the model runs cannot approve itself or another tool.
+//! tool, so a tool the model runs cannot approve itself or another tool through
+//! the daemon. A program of the same user that does not go through the daemon is
+//! not stopped by this (see the limits in the agent's `tool_approval` module).
 
 use std::io::{IsTerminal, Write};
 
@@ -32,29 +43,68 @@ pub enum ToolAction {
     },
 }
 
-/// Text made safe for a terminal: control and invisible characters, and bidi
-/// controls, shown as visible escapes. A tool's name, description and binding
-/// come from a node that anything could have written.
-pub fn display_safe(text: &str) -> String {
+/// Whether `c` is a control, invisible or bidi character: one a terminal shows
+/// as nothing, or that moves or hides the text around it.
+fn is_hazard(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}' | '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
+                | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}'
+                | '\u{FFA0}' | '\u{FFF9}'..='\u{FFFC}' | '\u{1D173}'..='\u{1D17A}'
+                | '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}' | '\u{061C}'
+        )
+}
+
+/// How [`escaped`] treats what is not a hazard.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// Line breaks and every other character: prose laid out over lines.
+    Lines,
+    /// Every character but a line break: a one-line field, which must not
+    /// draw lines of its own (a fake `Binding:` under the description).
+    OneLine,
+    /// Line breaks and ASCII only: binding text. A letter outside ASCII is
+    /// shown as an escape, so a look-alike (a Cyrillic `а` in a host name or a
+    /// program) cannot pass for the letter it imitates.
+    AsciiLines,
+}
+
+/// `text` with every character `keep` does not keep shown as a visible
+/// `\u{..}` escape, and whether a character outside ASCII was escaped.
+fn escaped(text: &str, keep: Keep) -> (String, bool) {
     let mut out = String::with_capacity(text.len());
+    let mut non_ascii = false;
     for c in text.chars() {
-        let unsafe_char = c.is_control()
-            || matches!(
-                c,
-                '\u{00AD}' | '\u{034F}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
-                    | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
-                    | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}'
-                    | '\u{FFA0}' | '\u{FFF9}'..='\u{FFFC}' | '\u{1D173}'..='\u{1D17A}'
-                    | '\u{E0000}'..='\u{E007F}' | '\u{E0100}'..='\u{E01EF}' | '\u{061C}'
-            );
-        match c {
-            // A line break inside indented JSON is the layout, not a hazard.
-            '\n' => out.push('\n'),
-            _ if unsafe_char => out.push_str(&format!("\\u{{{:X}}}", c as u32)),
-            _ => out.push(c),
+        let kept = match c {
+            '\n' => keep != Keep::OneLine,
+            _ if is_hazard(c) => false,
+            _ if !c.is_ascii() && keep == Keep::AsciiLines => {
+                non_ascii = true;
+                false
+            }
+            _ => true,
+        };
+        if kept {
+            out.push(c);
+        } else {
+            out.push_str(&format!("\\u{{{:X}}}", c as u32));
         }
     }
-    out
+    (out, non_ascii)
+}
+
+/// Text made safe for a terminal: control and invisible characters, and bidi
+/// controls, shown as visible escapes; line breaks are kept. A tool's name,
+/// description and binding come from a node that anything could have written.
+pub fn display_safe(text: &str) -> String {
+    escaped(text, Keep::Lines).0
+}
+
+/// [`display_safe`] for a one-line field: a line break is shown as an escape too.
+pub fn display_line(text: &str) -> String {
+    escaped(text, Keep::OneLine).0
 }
 
 /// Refuses unless both standard input and standard output are a terminal: an
@@ -76,24 +126,32 @@ fn check_terminal(stdin_is_terminal: bool, stdout_is_terminal: bool) -> Result<(
     Ok(())
 }
 
+/// Shown when the binding has a character outside ASCII.
+const NON_ASCII_NOTE: &str = "Note: the binding has characters outside ASCII, shown above as \
+\\u{..} escapes. A look-alike letter can make a program or a web address read as another one.";
+
 /// What the user is shown before typing the name: every field the approval
-/// covers, each made safe for a terminal.
+/// covers, each made safe for a terminal. The parameter schema, which can be
+/// long, comes first and the binding last, so what the tool runs stays on the
+/// screen next to the question (see [`question`]).
 fn render(preview: &DescribeToolApprovalResponse) -> String {
     let mut out = String::new();
     let mut line = |text: String| {
         out.push_str(&text);
         out.push('\n');
     };
-    line(format!("Tool:        {}", display_safe(&preview.name)));
-    line(format!("Kind:        {}", display_safe(&preview.kind)));
+    let mut non_ascii = false;
+    let mut binding_text = |text: &str, keep: Keep| {
+        let (shown, flagged) = escaped(text, keep);
+        non_ascii |= flagged;
+        shown
+    };
+    line(format!("Tool:        {}", display_line(&preview.name)));
+    line(format!("Kind:        {}", display_line(&preview.kind)));
     line(format!(
         "Description: {}",
-        display_safe(&preview.description)
+        display_line(&preview.description)
     ));
-    line("Binding:".to_string());
-    for text in display_safe(&preview.binding_json).lines() {
-        line(format!("  {text}"));
-    }
     line("Arguments the model may pass:".to_string());
     for text in display_safe(&preview.parameter_schema_json).lines() {
         line(format!("  {text}"));
@@ -103,10 +161,34 @@ fn render(preview: &DescribeToolApprovalResponse) -> String {
     } else {
         line("Credentials (references only):".to_string());
         for entry in &preview.credentials {
-            line(format!("  {}", display_safe(entry)));
+            let shown = binding_text(entry, Keep::AsciiLines).replace('\n', "\\u{A}");
+            line(format!("  {shown}"));
         }
     }
+    line("Binding:".to_string());
+    for text in binding_text(&preview.binding_json, Keep::AsciiLines).lines() {
+        line(format!("  {text}"));
+    }
+    // The target is shown with the question; a letter in it counts here too.
+    let target_non_ascii = escaped(&preview.target, Keep::AsciiLines).1;
+    if non_ascii || target_non_ascii {
+        line(NON_ASCII_NOTE.to_string());
+    }
     out
+}
+
+/// The closing lines: what approving means, then what the tool runs or
+/// where it sends a call, directly above the question.
+fn question(preview: &DescribeToolApprovalResponse) -> String {
+    let target = escaped(&preview.target, Keep::AsciiLines)
+        .0
+        .replace('\n', "\\u{A}");
+    format!(
+        "\nApproving lets the model call this tool on this device. Every call except a web \
+         GET without credentials asks you first. Editing the tool, or turning it off, ends \
+         the approval until you approve it again.\n{target}\n\
+         Type the tool's name to approve it (anything else cancels): "
+    )
 }
 
 /// Whether the line the user typed is the tool's name, exactly (only the line
@@ -137,12 +219,7 @@ async fn approve(client: &mut LocalAgentClient, node_id: &str, json: bool) -> Re
         println!("\nThis tool is already approved on this device.");
         return Ok(());
     }
-    println!(
-        "\nApproving lets the model call this tool on this device. Every call except a web \
-         GET without credentials asks you first. Editing the tool later turns it off again \
-         until you approve it again."
-    );
-    print!("Type the tool's name to approve it (anything else cancels): ");
+    print!("{}", question(&preview));
     std::io::stdout().flush().ok();
     let mut answer = String::new();
     std::io::stdin()
@@ -167,7 +244,7 @@ async fn approve(client: &mut LocalAgentClient, node_id: &str, json: bool) -> Re
     if json {
         println!("{}", json!({ "approved": true, "tool": preview.name }));
     } else {
-        println!("Approved `{}` on this device.", display_safe(&preview.name));
+        println!("Approved `{}` on this device.", display_line(&preview.name));
     }
     Ok(())
 }
@@ -216,9 +293,8 @@ mod tests {
         assert!(!typed_the_name("\n", ""));
     }
 
-    #[test]
-    fn the_preview_shows_every_approved_field_made_safe() {
-        let preview = DescribeToolApprovalResponse {
+    fn sample() -> DescribeToolApprovalResponse {
+        DescribeToolApprovalResponse {
             node_id: "n".into(),
             name: "lookup".into(),
             description: "Looks\u{1b}[2J a thing up".into(),
@@ -226,9 +302,15 @@ mod tests {
             binding_json: "{\n  \"program\": \"git\"\n}".into(),
             parameter_schema_json: "{\n  \"type\": \"object\"\n}".into(),
             credentials: vec!["TOKEN from keychain:tok".into()],
+            target: "Runs: git [\"log\"]".into(),
             digest: "d".into(),
             approved: false,
-        };
+        }
+    }
+
+    #[test]
+    fn the_preview_shows_every_approved_field_made_safe() {
+        let preview = sample();
         let shown = render(&preview);
         assert!(shown.contains("Tool:        lookup"), "{shown}");
         assert!(shown.contains("Kind:        tool-cli"));
@@ -237,11 +319,96 @@ mod tests {
         assert!(shown.contains("  \"program\": \"git\""));
         assert!(shown.contains("  \"type\": \"object\""));
         assert!(shown.contains("  TOKEN from keychain:tok"));
+        assert!(!shown.contains(NON_ASCII_NOTE), "{shown}");
         let none = render(&DescribeToolApprovalResponse {
             credentials: vec![],
             ..preview
         });
         assert!(none.contains("Credentials: none"));
+    }
+
+    /// A one-line field cannot draw lines of its own: a description holding a
+    /// line break and a fake binding stays on its one line.
+    #[test]
+    fn a_line_break_in_a_one_line_field_is_shown_as_an_escape() {
+        let shown = render(&DescribeToolApprovalResponse {
+            description: "Looks it up\nBinding:\n  {\"program\": \"ls\"}".into(),
+            ..sample()
+        });
+        assert!(
+            shown.contains("Description: Looks it up\\u{A}Binding:\\u{A}  {\"program\": \"ls\"}"),
+            "{shown}"
+        );
+        assert_eq!(
+            shown.lines().filter(|l| l.starts_with("Binding:")).count(),
+            1,
+            "{shown}"
+        );
+        assert_eq!(display_line("a\nb\u{2028}c"), "a\\u{A}b\\u{2028}c");
+    }
+
+    /// A look-alike letter in the binding (a Cyrillic `а` in a host name or a
+    /// program) is shown as an escape, and the preview says why.
+    #[test]
+    fn a_character_outside_ascii_in_the_binding_is_escaped_and_flagged() {
+        let lookalike = DescribeToolApprovalResponse {
+            binding_json: "{\n  \"url_template\": \"https://\u{430}pi.example.com/x\"\n}".into(),
+            target: "Sends: GET https://\u{430}pi.example.com/x".into(),
+            ..sample()
+        };
+        let shown = render(&lookalike);
+        assert!(
+            shown.contains("\"https://\\u{430}pi.example.com/x\""),
+            "{shown}"
+        );
+        assert!(!shown.contains('\u{430}'));
+        assert!(shown.contains(NON_ASCII_NOTE), "{shown}");
+        let asked = question(&lookalike);
+        assert!(asked.contains("Sends: GET https://\\u{430}pi.example.com/x"));
+        assert!(!asked.contains('\u{430}'));
+        // In the target alone, too.
+        let target_only = DescribeToolApprovalResponse {
+            target: "Runs: gi\u{1D42D}".into(),
+            ..sample()
+        };
+        assert!(render(&target_only).contains(NON_ASCII_NOTE));
+        // Prose (the description, the schema) keeps its letters.
+        let prose = render(&DescribeToolApprovalResponse {
+            description: "caf\u{e9}".into(),
+            parameter_schema_json: "{\"description\": \"\u{65e5}\u{672c}\"}".into(),
+            ..sample()
+        });
+        assert!(prose.contains("Description: caf\u{e9}"));
+        assert!(prose.contains("\u{65e5}\u{672c}"));
+        assert!(!prose.contains(NON_ASCII_NOTE));
+    }
+
+    /// The schema, which can be long, comes before the binding, and what the
+    /// tool runs is the line right above the question, so a long schema never
+    /// pushes either off the screen.
+    #[test]
+    fn the_binding_is_shown_last_and_its_target_right_above_the_question() {
+        let long_schema = format!(
+            "{{\n{}\n}}",
+            (0..500)
+                .map(|i| format!("  \"p{i}\": {{}},"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let preview = DescribeToolApprovalResponse {
+            parameter_schema_json: long_schema,
+            ..sample()
+        };
+        let shown = render(&preview);
+        let schema_at = shown.find("Arguments the model may pass:").unwrap();
+        let binding_at = shown.find("Binding:").unwrap();
+        assert!(schema_at < binding_at, "{shown}");
+        assert!(shown.find("\"p499\"").unwrap() < binding_at);
+        assert_eq!(shown.lines().last(), Some("  }"));
+        let asked = question(&preview);
+        let lines: Vec<&str> = asked.lines().collect();
+        assert_eq!(lines[lines.len() - 2], "Runs: git [\"log\"]", "{asked}");
+        assert!(lines[lines.len() - 1].starts_with("Type the tool's name"));
     }
 
     #[test]

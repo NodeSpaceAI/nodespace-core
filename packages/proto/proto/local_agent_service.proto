@@ -142,6 +142,9 @@ message DescribeToolApprovalResponse {
   string digest = 8;
   // Already enabled and approved on this device.
   bool approved = 9;
+  // One line: what the tool runs or where a call goes (the program and its
+  // arguments, the method and URL, or the MCP server).
+  string target = 10;
 }
 
 message ApproveToolRequest {

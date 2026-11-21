@@ -642,6 +642,87 @@ async fn the_approved_binding_is_a_fingerprint_or_unset() {
     }
 }
 
+/// Turning a tool off ends its approval: every write that leaves `enabled`
+/// anything but `true` removes `approved_binding`, so writing `enabled: true`
+/// again brings no approval back with it.
+#[tokio::test]
+async fn turning_a_tool_off_removes_its_approval_on_every_write_path() {
+    let (svc, _tmp) = test_service().await;
+    let tag = "0123456789abcdef".repeat(4);
+    let approval = |svc: Arc<NodeService>, id: String| async move {
+        get(&svc, &id).await.properties["tool"]
+            .get("approved_binding")
+            .cloned()
+    };
+    for kind in REMOTE_KINDS {
+        let mut approved = remote_properties(kind, true);
+        approved["approved_binding"] = json!(tag);
+        let id = create(&svc, kind, "lookup", approved.clone())
+            .await
+            .unwrap();
+        // A write that leaves the tool on keeps the approval.
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "description": "Reworded" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            approval(svc.clone(), id.clone()).await,
+            Some(json!(tag)),
+            "{kind}"
+        );
+
+        // Off through a versioned update, then on again: no approval.
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "enabled": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+
+        // Through a batch update and an unversioned update.
+        let id = create(&svc, kind, "batch", approved.clone()).await.unwrap();
+        svc.bulk_update(vec![(
+            id.clone(),
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )])
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+        let id = create(&svc, kind, "unversioned", approved.clone())
+            .await
+            .unwrap();
+        svc.update_node_unchecked(
+            &id,
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+
+        // A tool created off holds no approval either.
+        let mut off = approved.clone();
+        off["enabled"] = json!(false);
+        let id = create(&svc, kind, "created_off", off).await.unwrap();
+        assert_eq!(approval(svc.clone(), id.clone()).await, None, "{kind}");
+    }
+}
+
 #[tokio::test]
 async fn a_remote_tool_takes_only_its_declared_fields() {
     let (svc, _tmp) = test_service().await;

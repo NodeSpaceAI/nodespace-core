@@ -190,6 +190,13 @@ pub trait SecretBackend: Send + Sync {
             "this credential store cannot add an item without replacing one".to_string(),
         ))
     }
+    /// Whether [`add_if_absent`](Self::add_if_absent) is an add-only write. A
+    /// store without one never holds this device's approval key: none is
+    /// provisioned in it, so a key found in it was put there by something
+    /// else and is never read.
+    fn has_add_only_write(&self) -> bool {
+        false
+    }
     /// The largest item this store holds, measured by [`item_size`](Self::item_size);
     /// `None` when it has no limit below [`MAX_SECRET_VALUE_BYTES`].
     fn max_item_size(&self) -> Option<usize> {
@@ -322,8 +329,19 @@ impl SecretStore {
     /// This device's approval key: `None` when none has been provisioned, an
     /// error when the store cannot be read or holds something that is not a key
     /// (which callers treat as no key: they fail closed).
+    ///
+    /// A store without an add-only write (the Windows credential manager) is
+    /// never read for a key: none can be provisioned in it, so one found there
+    /// is not this device's, and the answer is `None`.
+    ///
+    /// The approval key and the names index are separate items, so this takes
+    /// no lock: the platform store can wait on a prompt, and listing or
+    /// setting a secret meanwhile is not held up. The call can block; an async
+    /// caller makes it on a blocking thread.
     pub fn approval_key(&self) -> Result<Option<ApprovalKey>, SecretError> {
-        let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.backend.has_add_only_write() {
+            return Ok(None);
+        }
         self.read_approval_key()
     }
 
@@ -340,9 +358,16 @@ impl SecretStore {
     /// existing key is never replaced, and one that cannot be read is an error
     /// (replacing it would silently void every approval). The key is written
     /// with the store's add-only write, so a key another process stored between
-    /// the read and the write is kept, and is the one handed back.
+    /// the read and the write is kept, and is the one handed back. A store
+    /// without an add-only write refuses, before it is read. Like
+    /// [`approval_key`](Self::approval_key) it takes no lock and can block.
     pub fn provision_approval_key(&self) -> Result<ApprovalKey, SecretError> {
-        let _guard = self.index_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.backend.has_add_only_write() {
+            return Err(SecretError::Store(
+                "this credential store cannot add an item without replacing one, so it holds no approval key"
+                    .to_string(),
+            ));
+        }
         if let Some(key) = self.read_approval_key()? {
             return Ok(key);
         }
@@ -352,11 +377,10 @@ impl SecretStore {
         bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
         let key = ApprovalKey::from_bytes(bytes);
         bytes.zeroize();
-        // The lock above only serialises this process. Another store instance
-        // (a second daemon, the command line) can have added its own key since
-        // the read: then this add writes nothing, and what is stored is
-        // returned, so the key handed back is the one approvals are checked
-        // against.
+        // Another caller (in this process, a second daemon, the command line)
+        // can have added its own key since the read: then this add writes
+        // nothing, and what is stored is returned, so the key handed back is
+        // the one approvals are checked against.
         self.backend
             .add_if_absent(APPROVAL_KEY_ACCOUNT, &key.to_hex())?;
         self.read_approval_key()?
@@ -435,6 +459,9 @@ impl SecretBackend for InMemorySecretBackend {
                 Ok(true)
             }
         }
+    }
+    fn has_add_only_write(&self) -> bool {
+        true
     }
 }
 
@@ -519,17 +546,10 @@ impl SecretBackend for KeychainBackend {
             Err(_) => Err(SecretError::Store("the platform store failed".to_string())),
         }
     }
-    /// Windows: the credential manager has no add-only write, so this reads and
-    /// then writes. Two processes racing between the two can both write, and
-    /// the later key wins; the caller re-reads, so each hands back what is
-    /// stored at that moment.
-    #[cfg(windows)]
-    fn add_if_absent(&self, account: &str, value: &str) -> Result<bool, SecretError> {
-        if self.get(account)?.is_some() {
-            return Ok(false);
-        }
-        self.set(account, value)?;
-        Ok(true)
+    /// Only the macOS keychain has one. The Windows credential manager has no
+    /// add-only write, so no approval key is kept there (and none is read).
+    fn has_add_only_write(&self) -> bool {
+        cfg!(target_os = "macos")
     }
 }
 
@@ -955,6 +975,9 @@ mod tests {
             fn add_if_absent(&self, a: &str, v: &str) -> Result<bool, SecretError> {
                 self.inner.add_if_absent(a, v)
             }
+            fn has_add_only_write(&self) -> bool {
+                true
+            }
         }
         let other = ApprovalKey::from_bytes([5u8; 32]);
         let backend = Arc::new(OtherAddsAfterOurRead {
@@ -999,6 +1022,135 @@ mod tests {
         let err = s.provision_approval_key().unwrap_err();
         assert!(err.to_string().contains("without replacing"), "{err}");
         assert!(backend.0.snapshot().is_empty());
+    }
+
+    /// A store that cannot add without replacing (the Windows credential
+    /// manager) never holds this device's key, so a key found in it was put
+    /// there by something else: it is not read, and nothing is approved by it.
+    #[test]
+    fn a_key_in_a_store_without_an_add_only_write_is_never_read() {
+        struct UpsertOnly {
+            inner: InMemorySecretBackend,
+            key_reads: std::sync::atomic::AtomicUsize,
+        }
+        impl SecretBackend for UpsertOnly {
+            fn set(&self, a: &str, v: &str) -> Result<(), SecretError> {
+                self.inner.set(a, v)
+            }
+            fn get(&self, a: &str) -> Result<Option<String>, SecretError> {
+                if a == APPROVAL_KEY_ACCOUNT {
+                    self.key_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                self.inner.get(a)
+            }
+            fn delete(&self, a: &str) -> Result<bool, SecretError> {
+                self.inner.delete(a)
+            }
+        }
+        let backend = Arc::new(UpsertOnly {
+            inner: InMemorySecretBackend::default(),
+            key_reads: Default::default(),
+        });
+        // A well-formed key, planted directly in the platform store.
+        let planted = ApprovalKey::from_bytes([3u8; 32]);
+        backend
+            .inner
+            .set(APPROVAL_KEY_ACCOUNT, &planted.to_hex())
+            .unwrap();
+        let s = SecretStore::new(backend.clone());
+        assert!(s.approval_key().unwrap().is_none());
+        assert!(s.provision_approval_key().is_err());
+        assert_eq!(
+            backend.key_reads.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    /// Only the macOS keychain has an add-only write among the platform
+    /// stores: elsewhere no approval key is provisioned or read.
+    #[test]
+    fn only_the_macos_keychain_can_hold_an_approval_key() {
+        assert_eq!(
+            KeychainBackend.has_add_only_write(),
+            cfg!(target_os = "macos")
+        );
+        assert!(InMemorySecretBackend::default().has_add_only_write());
+    }
+
+    /// Reading or provisioning the key does not hold the store's names lock
+    /// while the platform store is asked (which can wait on a prompt): the
+    /// names can be listed meanwhile.
+    #[test]
+    fn the_approval_key_is_read_and_provisioned_without_holding_the_names_lock() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        struct Waits {
+            inner: InMemorySecretBackend,
+            entered: Mutex<mpsc::Sender<()>>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl SecretBackend for Waits {
+            fn set(&self, a: &str, v: &str) -> Result<(), SecretError> {
+                self.inner.set(a, v)
+            }
+            fn get(&self, a: &str) -> Result<Option<String>, SecretError> {
+                if a == APPROVAL_KEY_ACCOUNT {
+                    self.entered.lock().unwrap().send(()).ok();
+                    self.release
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(20))
+                        .ok();
+                }
+                self.inner.get(a)
+            }
+            fn delete(&self, a: &str) -> Result<bool, SecretError> {
+                self.inner.delete(a)
+            }
+            fn add_if_absent(&self, a: &str, v: &str) -> Result<bool, SecretError> {
+                self.inner.add_if_absent(a, v)
+            }
+            fn has_add_only_write(&self) -> bool {
+                true
+            }
+        }
+        for provision in [false, true] {
+            let (entered_tx, entered) = mpsc::channel();
+            let (release, release_rx) = mpsc::channel();
+            let s = Arc::new(SecretStore::new(Arc::new(Waits {
+                inner: InMemorySecretBackend::default(),
+                entered: Mutex::new(entered_tx),
+                release: Mutex::new(release_rx),
+            })));
+            let reader = {
+                let s = Arc::clone(&s);
+                std::thread::spawn(move || {
+                    if provision {
+                        s.provision_approval_key().map(|_| ())
+                    } else {
+                        s.approval_key().map(|_| ())
+                    }
+                })
+            };
+            entered.recv_timeout(Duration::from_secs(20)).unwrap();
+            let (listed_tx, listed) = mpsc::channel();
+            let lister = Arc::clone(&s);
+            std::thread::spawn(move || {
+                listed_tx.send(lister.names().is_ok()).ok();
+            });
+            let outcome = listed.recv_timeout(Duration::from_secs(5));
+            // Let every read through, then finish.
+            for _ in 0..4 {
+                release.send(()).ok();
+            }
+            reader.join().unwrap().unwrap();
+            assert_eq!(
+                outcome,
+                Ok(true),
+                "provision: {provision}: the names waited for the key"
+            );
+        }
     }
 
     #[test]
