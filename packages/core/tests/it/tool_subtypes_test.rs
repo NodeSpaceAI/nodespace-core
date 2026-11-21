@@ -682,6 +682,20 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
         assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: update");
         let node = get(&svc, &ids[0]).await;
         record(&svc, &node);
+        // So does a write made through the store itself (which reports it
+        // through the store's notifier rather than as an emitted event).
+        svc.store()
+            .update_node(
+                &ids[0],
+                NodeUpdate::new().with_properties(json!({ "tool": { "description": "Again" } })),
+                None,
+                nodespace_core::db::WriteContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(!svc.tool_approval_recorded(&ids[0]), "{kind}: store update");
+        let node = get(&svc, &ids[0]).await;
+        record(&svc, &node);
         svc.delete_node(&ids[0], node.version).await.unwrap();
         svc.delete_node_unchecked(&ids[1]).await.unwrap();
         svc.bulk_delete(vec![ids[2].clone()]).await.unwrap();
