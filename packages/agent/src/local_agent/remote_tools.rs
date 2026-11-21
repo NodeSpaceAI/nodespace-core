@@ -19,6 +19,11 @@
 //!   its memory. Absent, malformed, made under another key (another device, or
 //!   this daemon before it restarted), copied from another node or stale after
 //!   any edit all mean off;
+//! - the approval is still live in this process: issued by this daemon (see
+//!   [`approve`]) for this node as it was then created, and no write has left
+//!   the tool off since (`nodespace_core::behaviors::tool_off_writes`). A tag
+//!   read before the tool was turned off and written back afterwards, or one
+//!   on a node deleted and made again under the same id, is not live;
 //! - the daemon has an approval key: with none (not macOS, or a release build
 //!   that is not signed as one) nothing is offered, so the gate fails closed;
 //! - its `parameter_schema` has a closed root;
@@ -217,6 +222,9 @@ pub enum Refusal {
     NotEnabled,
     NoApprovalKey,
     NotApproved,
+    /// The tag verifies, but this process did not issue it for the node as it
+    /// is, or the tool was turned off since.
+    NotLive,
     BadParameterSchema,
 }
 
@@ -281,14 +289,81 @@ pub fn assess<S: AsRef<str>>(
 /// The device approval tag to write to `approved_binding` when the tool is
 /// enabled on this device: the one function the offering gate verifies against.
 /// `chain` is the node type's chain, nearest scope first.
+///
+/// It also records the tag as this process's live approval of the node: the
+/// node's creation time and how many writes have left it off so far (read
+/// before the tag is written, so a write that turns it off meanwhile counts).
+/// [`assess_stored`] admits the tag only while both still hold.
 pub fn approve<S: AsRef<str>>(node: &Node, chain: &[S], key: &ApprovalKey) -> String {
-    tool_approval_tag(
+    let tag = tool_approval_tag(
         key.as_bytes(),
         &node.id,
         &node.content,
         chain,
         &node.properties,
-    )
+    );
+    live::record(node, &tag);
+    tag
+}
+
+/// The approvals this process has issued, in memory only like the key.
+mod live {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use chrono::{DateTime, Utc};
+    use nodespace_core::behaviors::tool_off_writes;
+    use nodespace_core::models::Node;
+
+    /// What an issued tag was given for.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct Issued {
+        off_writes: u64,
+        created_at: DateTime<Utc>,
+    }
+
+    /// (node id, tag) -> what it was issued for.
+    static ISSUED: Mutex<Option<HashMap<(String, String), Issued>>> = Mutex::new(None);
+
+    pub(super) fn record(node: &Node, tag: &str) {
+        let issued = Issued {
+            off_writes: tool_off_writes(&node.id),
+            created_at: node.created_at,
+        };
+        let mut table = ISSUED.lock().unwrap_or_else(|e| e.into_inner());
+        table
+            .get_or_insert_with(HashMap::new)
+            .insert((node.id.clone(), tag.to_string()), issued);
+    }
+
+    /// Whether `tag` was issued here for `node` as it was created, and no
+    /// write has left the tool off since.
+    pub(super) fn is_live(node: &Node, tag: &str) -> bool {
+        let now = Issued {
+            off_writes: tool_off_writes(&node.id),
+            created_at: node.created_at,
+        };
+        let table = ISSUED.lock().unwrap_or_else(|e| e.into_inner());
+        table
+            .as_ref()
+            .and_then(|table| table.get(&(node.id.clone(), tag.to_string())))
+            .is_some_and(|issued| *issued == now)
+    }
+}
+
+/// [`assess`] a stored node, and admit it only while its approval is live in
+/// this process (see [`approve`]): what a turn offers, and what an approval is
+/// checked against when it is read back.
+pub fn assess_stored(
+    node: &Node,
+    chain: &[String],
+    key: Option<&ApprovalKey>,
+) -> Result<RemoteTool, Refusal> {
+    let tool = assess(&node.id, &node.content, chain, &node.properties, key)?;
+    if !live::is_live(node, &tool.approval_tag) {
+        return Err(Refusal::NotLive);
+    }
+    Ok(tool)
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +683,7 @@ impl RemoteToolHost {
                     });
                 chains.insert(node.node_type.clone(), chain);
             }
-            match assess_node(node, &chains[&node.node_type], Some(key)) {
+            match assess_stored(node, &chains[&node.node_type], Some(key)) {
                 Ok(tool) => {
                     if !self.runners.contains_key(&tool.kind) {
                         tracing::debug!(node_id = %node.id, "remote tools: no runner for this kind");
@@ -774,15 +849,6 @@ impl RemoteToolHost {
             Err(error) => Ok(Self::failure(&name, error.0, true)),
         }
     }
-}
-
-/// [`assess`] a stored node.
-fn assess_node(
-    node: &Node,
-    chain: &[String],
-    key: Option<&ApprovalKey>,
-) -> Result<RemoteTool, Refusal> {
-    assess(&node.id, &node.content, chain, &node.properties, key)
 }
 
 #[async_trait]
@@ -2033,6 +2099,78 @@ mod tests {
             _tmp: TempDir::new().unwrap(),
         };
         assert!(names(&restarted.host(&all_kinds(), &runs)).await.is_empty());
+    }
+
+    /// A tag kept from before the tool was turned off, written back with
+    /// `enabled: true`, does not bring the tool back: the write that turned it
+    /// off ended that approval for good. Approving it again does.
+    #[tokio::test]
+    async fn a_tag_written_back_after_the_tool_was_turned_off_is_not_offered() {
+        let f = fixture().await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let id = f.tool("tool-cli", "c_tool", true).await;
+        assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["c_tool"]);
+        let kept = f.ns.get_node(&id).await.unwrap().unwrap().properties["tool"]
+            ["approved_binding"]
+            .clone();
+        for write in [
+            json!({"enabled": false}),
+            json!({"enabled": true, "approved_binding": kept}),
+        ] {
+            let node = f.ns.get_node(&id).await.unwrap().unwrap();
+            f.ns.update_node(&id, node.version, NodeUpdate::new().with_properties(write))
+                .await
+                .unwrap();
+        }
+        let stored = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(stored.properties["tool"]["approved_binding"], kept);
+        assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
+        f.approve(&id).await;
+        assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["c_tool"]);
+    }
+
+    /// A tool deleted and made again under the same id, its old tag and all,
+    /// is not the tool that was approved.
+    #[tokio::test]
+    async fn a_tool_made_again_under_the_same_id_is_not_offered() {
+        let f = fixture().await;
+        let runs = Arc::new(AtomicUsize::new(0));
+        let id = f.tool("tool-rest", "r_tool", true).await;
+        let approved = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(names(&f.host(&all_kinds(), &runs)).await, vec!["r_tool"]);
+        f.ns.delete_node_unchecked(&id).await.unwrap();
+        let mut again = Node::new(
+            approved.node_type.clone(),
+            approved.content.clone(),
+            approved.properties.clone(),
+        );
+        again.id = id.clone();
+        f.ns.create_node(again).await.unwrap();
+        let stored = f.ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.properties["tool"]["approved_binding"],
+            approved.properties["tool"]["approved_binding"]
+        );
+        assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
+    }
+
+    /// A tag this process never issued is not admitted, even one that verifies
+    /// under its key.
+    #[test]
+    fn a_tag_this_process_did_not_issue_is_not_live() {
+        let (chain, properties) = approved("tool-rest");
+        // A new node: a fresh random id nothing has approved.
+        let mut node = Node::new("tool-rest".to_string(), NAME.to_string(), properties);
+        let key = test_key();
+        let tag = tool_approval_tag(key.as_bytes(), &node.id, NAME, &chain, &node.properties);
+        node.properties["tool"]["approved_binding"] = json!(tag);
+        assert!(assess(&node.id, NAME, &chain, &node.properties, Some(&key)).is_ok());
+        assert_eq!(
+            assess_stored(&node, &chain, Some(&key)).unwrap_err(),
+            Refusal::NotLive
+        );
+        assert_eq!(approve(&node, &chain, &key), tag);
+        assert!(assess_stored(&node, &chain, Some(&key)).is_ok());
     }
 
     #[tokio::test]

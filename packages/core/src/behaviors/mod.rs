@@ -2442,10 +2442,11 @@ pub fn tool_binding_hash<S: AsRef<str>>(chain: &[S], properties: &Value) -> Stri
 ///
 /// Every write runs this once the node is validated, so turning a tool off
 /// lasts: writing `enabled: true` again brings no approval back with it, and
-/// the tool is offered again only after this device approves it again. (A
-/// writer that kept the old tag and writes it back with `enabled: true`
-/// restores it; only something that could read the node before it was turned
-/// off holds one.)
+/// the tool is offered again only after this device approves it again. A
+/// writer that kept the old tag and writes it back with `enabled: true` does
+/// not restore it either: the write that turned the tool off also moved
+/// [`tool_off_writes`], and an approval counts only while that has not moved
+/// since it was given.
 pub fn end_approval_unless_enabled<S: AsRef<str>>(chain: &[S], properties: &mut Value) -> bool {
     if ToolOrigin::of(chain).is_none() {
         return false;
@@ -2460,6 +2461,44 @@ pub fn end_approval_unless_enabled<S: AsRef<str>>(chain: &[S], properties: &mut 
         return false;
     }
     bucket.remove("approved_binding").is_some()
+}
+
+/// Whether `properties` are a tool's that is not on: `enabled` in the `tool`
+/// bucket is anything but `true`. A node that is not a tool is not off.
+pub fn tool_is_off<S: AsRef<str>>(chain: &[S], properties: &Value) -> bool {
+    ToolOrigin::of(chain).is_some()
+        && properties
+            .get(CoreNodeType::Tool.as_str())
+            .and_then(|bucket| bucket.get("enabled"))
+            != Some(&Value::Bool(true))
+}
+
+/// How many writes in this process have left each tool off, by node id.
+static TOOL_OFF_WRITES: std::sync::Mutex<Option<HashMap<String, u64>>> =
+    std::sync::Mutex::new(None);
+
+/// How many writes in this process have left the tool `node_id` off: 0 for one
+/// never written off. An approval records it when it is given and counts only
+/// while it is unchanged, so a tool turned off stays unapproved, whatever is
+/// written back to it later, until it is approved again. Kept in memory, like
+/// the approval key: both start again when the process does.
+pub fn tool_off_writes(node_id: &str) -> u64 {
+    let counts = TOOL_OFF_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    counts
+        .as_ref()
+        .and_then(|counts| counts.get(node_id).copied())
+        .unwrap_or(0)
+}
+
+/// Counts a write that leaves the tool `node_id` off. Called on the write path
+/// itself, before the write is stored, so no later read can see the tool on
+/// again without the count having moved.
+pub fn count_tool_off_write(node_id: &str) {
+    let mut counts = TOOL_OFF_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    *counts
+        .get_or_insert_with(HashMap::new)
+        .entry(node_id.to_string())
+        .or_insert(0) += 1;
 }
 
 /// The label that keys the approval tag's message to its purpose and version.
@@ -6067,6 +6106,34 @@ mod tests {
         let mut other = with(Some(json!(false)));
         assert!(!end_approval_unless_enabled(&["text"], &mut other));
         assert_eq!(other["tool"]["approved_binding"], json!(tag));
+    }
+
+    #[test]
+    fn a_tool_is_off_unless_enabled_is_exactly_true() {
+        let chain = ["tool-rest", "tool"];
+        let mut props = approval_node("https://a.test/x", "d");
+        props["tool"]["enabled"] = json!(true);
+        assert!(!tool_is_off(&chain, &props));
+        for enabled in [json!(false), json!("true"), Value::Null] {
+            props["tool"]["enabled"] = enabled.clone();
+            assert!(tool_is_off(&chain, &props), "{enabled}");
+        }
+        props["tool"].as_object_mut().unwrap().remove("enabled");
+        assert!(tool_is_off(&chain, &props));
+        assert!(!tool_is_off(&["text"], &props));
+    }
+
+    #[test]
+    fn writes_that_leave_a_tool_off_are_counted_per_node() {
+        let (one, two) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        assert_eq!(tool_off_writes(&one), 0);
+        count_tool_off_write(&one);
+        count_tool_off_write(&one);
+        assert_eq!(tool_off_writes(&one), 2);
+        assert_eq!(tool_off_writes(&two), 0);
     }
 
     /// A pinned tag: a change to the label, the field order or the encoding

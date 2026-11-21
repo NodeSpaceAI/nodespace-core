@@ -42,7 +42,10 @@
 //! off (the tag no longer verifies), and so does turning it off: every write
 //! that leaves `enabled` anything but `true` removes the tag
 //! (`nodespace_core::behaviors::end_approval_unless_enabled`), so writing
-//! `enabled: true` again does not bring the approval back.
+//! `enabled: true` again does not bring the approval back. Writing the old tag
+//! back with it does not either: an approval counts only while it is live in
+//! the daemon that gave it, for the node as it was created then and with no
+//! write having left it off since (`remote_tools::assess_stored`).
 //!
 //! # What the approval defends against, and what it does not
 //!
@@ -77,7 +80,7 @@ use nodespace_types::is_tool_name;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::remote_tools::{self, assess, RemoteToolKind};
+use super::remote_tools::{self, assess_stored, RemoteToolKind};
 use super::tools::Tool;
 
 /// Longest description, binding or schema text a preview shows. A node with
@@ -403,9 +406,10 @@ fn build_preview(
     Ok((preview, pinned, pin))
 }
 
-/// Whether the offering gate passes `node` under `key`: what a turn checks.
+/// Whether the offering gate passes `node` under `key`: what a turn checks,
+/// the approval's being live in this process included.
 fn passes_the_gate(key: &ApprovalKey, node: &Node, chain: &[String]) -> bool {
-    assess(&node.id, &node.content, chain, &node.properties, Some(key)).is_ok()
+    assess_stored(node, chain, Some(key)).is_ok()
 }
 
 /// What approving `node_id` would approve. Writes nothing. `key` is the
@@ -654,7 +658,7 @@ mod tests {
 
     async fn offered(ns: &NodeService, key: &ApprovalKey, id: &str) -> bool {
         let (node, chain) = load(ns, id).await.unwrap();
-        assess(&node.id, &node.content, &chain, &node.properties, Some(key)).is_ok()
+        assess_stored(&node, &chain, Some(key)).is_ok()
     }
 
     #[tokio::test]
@@ -1184,5 +1188,30 @@ mod tests {
             approve(&ns, &key, id, &p.digest).await.unwrap();
         }
         assert!(offered(&ns, &key, &one).await && offered(&ns, &key, &two).await);
+    }
+
+    /// A tag kept from before the tool was turned off and written back with
+    /// `enabled: true` is not an approval here: not in effect, not approved.
+    #[tokio::test]
+    async fn a_tag_written_back_after_the_tool_was_turned_off_is_not_approved() {
+        let (ns, key, _tmp) = rig().await;
+        let id = tool(&ns, "lookup").await;
+        let p = preview(&ns, &key, &id).await.unwrap();
+        approve(&ns, &key, &id, &p.digest).await.unwrap();
+        let kept =
+            ns.get_node(&id).await.unwrap().unwrap().properties["tool"]["approved_binding"].clone();
+        set_properties(&ns, &id, json!({ "enabled": false })).await;
+        set_properties(
+            &ns,
+            &id,
+            json!({ "enabled": true, "approved_binding": kept }),
+        )
+        .await;
+        assert!(!preview(&ns, &key, &id).await.unwrap().approved);
+        assert_eq!(
+            in_effect(&ns, &key, &id).await,
+            Err(ApprovalError::NotInEffect)
+        );
+        assert!(!offered(&ns, &key, &id).await);
     }
 }

@@ -642,6 +642,57 @@ async fn the_approved_binding_is_a_fingerprint_or_unset() {
     }
 }
 
+/// Every write that leaves a tool off is counted on the write path itself,
+/// whichever path it takes; a write that leaves it on is not. An approval
+/// given before the count moved no longer counts.
+#[tokio::test]
+async fn a_write_that_leaves_a_tool_off_is_counted_on_every_write_path() {
+    use nodespace_core::behaviors::tool_off_writes;
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let id = create(&svc, kind, "lookup", remote_properties(kind, true))
+            .await
+            .unwrap();
+        assert_eq!(tool_off_writes(&id), 0, "{kind}");
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "description": "Reworded" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_off_writes(&id), 0, "{kind}: on");
+        let node = get(&svc, &id).await;
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "enabled": false })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_off_writes(&id), 1, "{kind}: versioned");
+        svc.bulk_update(vec![(
+            id.clone(),
+            NodeUpdate::new().with_properties(json!({ "description": "Again" })),
+        )])
+        .await
+        .unwrap();
+        assert_eq!(tool_off_writes(&id), 2, "{kind}: batch, still off");
+        svc.update_node_unchecked(
+            &id,
+            NodeUpdate::new().with_properties(json!({ "enabled": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tool_off_writes(&id), 2, "{kind}: on again");
+        let created_off = create(&svc, kind, "off", remote_properties(kind, false))
+            .await
+            .unwrap();
+        assert_eq!(tool_off_writes(&created_off), 1, "{kind}: created off");
+    }
+}
+
 /// Turning a tool off ends its approval: every write that leaves `enabled`
 /// anything but `true` removes `approved_binding`, so writing `enabled: true`
 /// again brings no approval back with it.
