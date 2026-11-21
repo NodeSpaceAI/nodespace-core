@@ -1606,6 +1606,11 @@ impl NodeService {
         // Shared batch state — no batch open by default; see `begin_batch_emit`.
         let batch_state: Arc<Mutex<BatchState>> = Arc::default();
 
+        // The database's name in the remote-tool approval records: a delete
+        // the store reports ends the approval of the node (see
+        // `crate::tool_approvals`), on the write path, not through the bus.
+        let approval_scope = store.path().display().to_string();
+
         // Register store-level notifier for automatic domain event emission
         // This callback converts StoreChange notifications to EventEnvelopes.
         // Set here, while this is the store's only owner (`Arc::get_mut`
@@ -1623,6 +1628,10 @@ impl NodeService {
             let batch_state_ref = Arc::clone(&batch_state);
             let notifier = Arc::new(move |change: StoreChange| {
                 use crate::db::events::{EventEnvelope, EventMetadata};
+
+                if change.operation == StoreOperation::Deleted {
+                    crate::tool_approvals::forget(&approval_scope, &change.node.id);
+                }
 
                 // Compute changed properties for updates
                 let changed_properties = if change.operation == StoreOperation::Updated {
@@ -3101,8 +3110,13 @@ impl NodeService {
     }
 
     /// Wrap `event` with this instance's client id and execution context,
-    /// beside its write context.
+    /// beside its write context. A delete ends the remote-tool approval of
+    /// the node here, as the delete is reported, not when a subscriber gets to
+    /// it (see `crate::tool_approvals`).
     fn emitted(&self, event: DomainEvent) -> EmittedEvent {
+        if let DomainEvent::NodeDeleted { id, .. } = &event {
+            crate::tool_approvals::forget(&self.approval_scope(), id);
+        }
         EmittedEvent {
             envelope: crate::db::events::EventEnvelope {
                 event,
@@ -3113,6 +3127,38 @@ impl NodeService {
             },
             write_context: self.write_context,
         }
+    }
+}
+
+/// The remote-tool approvals of this database (see `crate::tool_approvals`).
+impl NodeService {
+    /// This database's name in the approval records: its file's path.
+    pub fn approval_scope(&self) -> String {
+        self.store.path().display().to_string()
+    }
+
+    /// Records an approval of `node_id` in this database.
+    pub fn record_tool_approval(&self, node_id: &str, issued: crate::tool_approvals::Issued) {
+        crate::tool_approvals::record(&self.approval_scope(), node_id, issued);
+    }
+
+    /// Takes back the approval `tag` of `node_id` (its write failed).
+    pub fn forget_tool_approval(&self, node_id: &str, tag: &str) {
+        crate::tool_approvals::forget_tag(&self.approval_scope(), node_id, tag);
+    }
+
+    /// The approval `tag` of `node`, as stored now, if it is still in effect.
+    pub fn live_tool_approval(
+        &self,
+        node: &Node,
+        tag: &str,
+    ) -> Option<crate::tool_approvals::Issued> {
+        crate::tool_approvals::live(&self.approval_scope(), node, tag)
+    }
+
+    /// Whether `node_id` has an approval record in this database.
+    pub fn tool_approval_recorded(&self, node_id: &str) -> bool {
+        crate::tool_approvals::recorded(&self.approval_scope(), node_id)
     }
 }
 

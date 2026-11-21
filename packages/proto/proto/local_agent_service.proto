@@ -146,9 +146,13 @@ message DescribeToolApprovalResponse {
   // One line: what the tool runs or where a call goes (the program and its
   // arguments, the method and URL, or the MCP server).
   string target = 10;
-  // The digest's first eight hex digits as XXXX-XXXX. The system dialog that
-  // ApproveTool shows names the same code.
+  // XXXX-XXXX-XXXX: keyed by the daemon's approval key, so only the daemon can
+  // make one. The system dialog that ApproveTool shows starts with the same
+  // code. Empty when the daemon cannot approve tools (no key).
   string code = 11;
+  // For a tool that starts a program: the program file the approval pins,
+  // "<full path> (SHA-256 <hex>)". Empty for one that starts none.
+  string program = 12;
 }
 
 message ApproveToolRequest {

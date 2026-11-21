@@ -130,6 +130,53 @@ impl Isolated {
     }
 }
 
+/// SHA-256 of the file at `path` (following a symbolic link), as lowercase
+/// hex: what an approval pins for a program.
+pub(crate) fn file_sha256(path: &str) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path)?;
+    Ok(Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Checks, right before a program is started, that its file is still the one
+/// the approval pinned: `expected` is the SHA-256 recorded with the approval
+/// (`None` for a tool whose approval pinned none, which the gate never
+/// offers). A file that changed (an update, `brew upgrade`, a replacement) is
+/// refused and the user is told to approve the tool again.
+///
+/// The file is read and hashed, then started by its path: a file replaced in
+/// the moment between the two is not caught.
+pub(crate) async fn check_program_file(
+    program: &str,
+    expected: Option<&str>,
+) -> Result<(), RemoteCallError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if !std::path::Path::new(program).is_absolute() {
+        return fail(format!(
+            "the program `{program}` is not a full path, so the file the approval pinned cannot be checked"
+        ));
+    }
+    let path = program.to_string();
+    let actual = tokio::task::spawn_blocking(move || file_sha256(&path))
+        .await
+        .map_err(|_| RemoteCallError("the program file could not be checked".to_string()))?;
+    match actual {
+        Ok(actual) if actual == expected => Ok(()),
+        Ok(_) => fail(format!(
+            "the program file `{program}` changed since the tool was approved (an update replaces it): approve the tool again with `nodespace tool approve`"
+        )),
+        Err(e) => fail(format!(
+            "the program file `{program}` cannot be read ({}): approve the tool again once it is back",
+            e.kind()
+        )),
+    }
+}
+
 /// Starts `program` with `argv`: no shell, the environment cleared and rebuilt
 /// from [`BASE_ENV`] (read through `base`) and `credentials`, a fresh private
 /// working directory, its own process group, stdout and stderr piped and the

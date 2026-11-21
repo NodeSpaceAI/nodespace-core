@@ -6,7 +6,8 @@
 //! that holds for a release build signed with the hardened runtime and no
 //! `get-task-allow` entitlement: a debugger or another process of the same user
 //! cannot attach to it. So a release build makes a key only when the kernel
-//! says its signature is valid (and not ad hoc), the hardened runtime is on,
+//! says its signature is valid (and not ad hoc, by `codesign -s -` or by the
+//! linker), the hardened runtime is on,
 //! debugging is not allowed and no debugger has attached
 //! (`csops(getpid(), CS_OPS_STATUS)`). One that fails gets no key, and nothing
 //! is approved or offered.
@@ -26,6 +27,9 @@ const CS_ADHOC: u32 = 0x0000_0002;
 const CS_GET_TASK_ALLOW: u32 = 0x0000_0004;
 /// `CS_RUNTIME`: the hardened runtime is on.
 const CS_RUNTIME: u32 = 0x0001_0000;
+/// `CS_LINKER_SIGNED`: signed ad hoc by the linker (a local build). The kernel
+/// does not set `CS_ADHOC` for these.
+const CS_LINKER_SIGNED: u32 = 0x0002_0000;
 /// `CS_DEBUGGED`: a debugger has attached.
 const CS_DEBUGGED: u32 = 0x1000_0000;
 
@@ -41,6 +45,7 @@ impl CodeStatus {
         has(CS_VALID)
             && has(CS_RUNTIME)
             && !has(CS_ADHOC)
+            && !has(CS_LINKER_SIGNED)
             && !has(CS_GET_TASK_ALLOW)
             && !has(CS_DEBUGGED)
     }
@@ -154,6 +159,7 @@ mod tests {
             CS_RUNTIME,
             CS_VALID,
             RELEASE | CS_ADHOC,
+            RELEASE | CS_LINKER_SIGNED,
             RELEASE | CS_GET_TASK_ALLOW,
             RELEASE | CS_DEBUGGED,
         ] {
@@ -194,5 +200,14 @@ mod tests {
     fn this_process_reads_its_flags_and_a_test_binary_is_not_a_signed_release() {
         let status = this_process().expect("csops answers for this process");
         assert!(!status.is_signed_release(), "{:#x}", status.0);
+        // On Apple silicon every binary is signed, a test binary ad hoc by the
+        // linker: the flags read are the kernel's, not a default.
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(
+            status.0 & (CS_VALID | CS_LINKER_SIGNED),
+            CS_VALID | CS_LINKER_SIGNED,
+            "{:#x}",
+            status.0
+        );
     }
 }

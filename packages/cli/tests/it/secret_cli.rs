@@ -18,6 +18,22 @@ use tonic::transport::Server;
 
 const TOKEN: &str = "ghp_SUPERSECRETVALUE123";
 
+/// The person at the screen, in these tests: always confirms.
+struct Confirms;
+
+impl nodespace_daemon::user_presence::PresenceCheck for Confirms {
+    fn confirm(&self, _reason: &str) -> nodespace_daemon::user_presence::Presence {
+        nodespace_daemon::user_presence::Presence::Confirmed
+    }
+}
+
+/// A check that says yes. The daemon's quiet time after a confirmation is
+/// longer than these tests wait, so each test uses one change per service,
+/// or none.
+fn yes() -> nodespace_daemon::user_presence::UserPresence {
+    nodespace_daemon::user_presence::UserPresence::new(Arc::new(Confirms))
+}
+
 struct Daemon {
     home: TempDir,
     store: Arc<SecretStore>,
@@ -38,7 +54,7 @@ async fn spawn() -> Daemon {
     let sock = home.path().join("d.sock");
     let incoming = UnixListenerStream::new(UnixListener::bind(&sock).unwrap());
     let (tx, rx) = oneshot::channel::<()>();
-    let service = SecretServiceImpl::new(store.clone());
+    let service = SecretServiceImpl::new(store.clone(), Arc::new(yes()));
     tokio::spawn(async move {
         Server::builder()
             .add_service(SecretServiceServer::new(service))

@@ -234,12 +234,12 @@ pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
 pub use nodespace_proto::socket::LAUNCHER_ARGS;
 pub use router::{build_base_router, BaseServices};
 pub use services::{
-    build_database_services, build_shared_services, shared_model_load_in_flight,
-    unrouted_services_if_default_refused, AgentSessionHandler, DaemonExtensions,
-    DaemonExtensionsError, DatabaseManager, DatabaseRequiresExtensions, DatabaseServiceImpl,
-    DatabaseServices, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
-    LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable, SecretServiceImpl,
-    SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
+    build_database_services, build_shared_services, install_approval_services,
+    shared_model_load_in_flight, unrouted_services_if_default_refused, AgentSessionHandler,
+    DaemonExtensions, DaemonExtensionsError, DatabaseManager, DatabaseRequiresExtensions,
+    DatabaseServiceImpl, DatabaseServices, EmbeddingReady, EmbeddingsServiceImpl,
+    ImportServiceImpl, LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable,
+    SecretServiceImpl, SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
 };
 
 #[cfg(test)]

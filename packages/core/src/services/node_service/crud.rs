@@ -3616,12 +3616,7 @@ impl NodeService {
         }
         self.behaviors.validate_node(node, chain)?;
         // A tool that is not on holds no approval: turning it off ends it.
-        // After validation, so a malformed approval is still refused. The
-        // count of such writes moves first, so a tag kept from before and
-        // written back later no longer counts (see `tool_off_writes`).
-        if crate::behaviors::tool_is_off(chain.as_slice(), &node.properties) {
-            crate::behaviors::count_tool_off_write(&node.id);
-        }
+        // After validation, so a malformed approval is still refused.
         crate::behaviors::end_approval_unless_enabled(chain.as_slice(), &mut node.properties);
         Ok(())
     }

@@ -71,8 +71,8 @@ use super::net_policy::{
     CONNECT_TIMEOUT,
 };
 use super::process::{
-    credentials_within, environment_note, program_note, reap, resolve_env_credentials,
-    spawn_isolated, stop, EnvLookup, Isolated,
+    check_program_file, credentials_within, environment_note, program_note, reap,
+    resolve_env_credentials, spawn_isolated, stop, EnvLookup, Isolated,
 };
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
@@ -764,6 +764,7 @@ impl McpRunner {
     async fn run_stdio(
         &self,
         fields: &ToolMcpFields,
+        pinned_sha256: Option<&str>,
         remote_tool: &str,
         arguments: Value,
         limit: Duration,
@@ -784,6 +785,8 @@ impl McpRunner {
         )
         .await?;
         let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
+        // The file must still be the one the approval pinned.
+        check_program_file(program, pinned_sha256).await?;
         let mut process = spawn_isolated(
             program,
             &argv,
@@ -1102,8 +1105,15 @@ impl RemoteToolRunner for McpRunner {
         let cap = DEFAULT_RESPONSE_BYTES as usize;
         match fields.transport.as_deref() {
             Some("stdio") => {
-                self.run_stdio(&fields, &remote_tool, arguments, limit, cap)
-                    .await
+                self.run_stdio(
+                    &fields,
+                    tool.program_sha256.as_deref(),
+                    &remote_tool,
+                    arguments,
+                    limit,
+                    cap,
+                )
+                .await
             }
             Some("http") => {
                 self.run_http(&fields, &remote_tool, arguments, limit, cap)
@@ -1139,6 +1149,7 @@ mod tests {
             parameter_schema: schema(),
             properties: json!({ "tool-mcp": binding }),
             approval_tag: String::new(),
+            program_sha256: None,
         }
     }
 
@@ -2253,5 +2264,37 @@ for line in sys.stdin:
             .unwrap()
             .pin
             .is_none());
+    }
+
+    /// The approval pinned the server program's content: a file that differs
+    /// is not started, one that matches is.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stdio_server_whose_file_changed_since_the_approval_is_not_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("started");
+        let binding = json!({
+            "transport": "stdio",
+            "command": "/bin/sh",
+            "args": ["-c", format!("touch {}", marker.display())],
+            "remote_tool_name": "y",
+            "timeout_seconds": 5
+        });
+        let mut changed = tool(binding.clone());
+        changed.program_sha256 = Some("0".repeat(64));
+        let err = runner(store())
+            .run(&changed, &json!({"q": "hi"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.0.contains("changed since the tool was approved"),
+            "{}",
+            err.0
+        );
+        assert!(!marker.exists(), "the server was started");
+        let mut pinned = tool(binding);
+        pinned.program_sha256 = Some(crate::local_agent::process::file_sha256("/bin/sh").unwrap());
+        let _ = runner(store()).run(&pinned, &json!({"q": "hi"})).await;
+        assert!(marker.exists(), "the pinned server was not started");
     }
 }

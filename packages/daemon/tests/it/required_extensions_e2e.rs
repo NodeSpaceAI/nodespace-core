@@ -158,9 +158,12 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::new(std::sync::Arc::new(SecretStore::new(
-            std::sync::Arc::new(InMemorySecretBackend::default()),
-        ))),
+        secrets: SecretServiceImpl::new(
+            std::sync::Arc::new(SecretStore::new(std::sync::Arc::new(
+                InMemorySecretBackend::default(),
+            ))),
+            std::sync::Arc::new(nodespace_daemon::user_presence::UserPresence::unavailable()),
+        ),
     };
     let router = build_base_router(
         tonic::transport::Server::builder().layer(DbManagerLayer::new(manager.clone())),
@@ -320,9 +323,12 @@ async fn a_reserved_client_id_is_refused_by_the_unrouted_service_set() {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::new(std::sync::Arc::new(SecretStore::new(
-            std::sync::Arc::new(InMemorySecretBackend::default()),
-        ))),
+        secrets: SecretServiceImpl::new(
+            std::sync::Arc::new(SecretStore::new(std::sync::Arc::new(
+                InMemorySecretBackend::default(),
+            ))),
+            std::sync::Arc::new(nodespace_daemon::user_presence::UserPresence::unavailable()),
+        ),
     };
     let router = build_base_router(
         tonic::transport::Server::builder().layer(DbManagerLayer::new(manager.clone())),

@@ -642,55 +642,114 @@ async fn the_approved_binding_is_a_fingerprint_or_unset() {
     }
 }
 
-/// Every write that leaves a tool off is counted on the write path itself,
-/// whichever path it takes; a write that leaves it on is not. An approval
-/// given before the count moved no longer counts.
+/// A delete the node service reports ends a tool's approval record on the
+/// write path, on every delete path; a write that is not a delete leaves it to
+/// the version check.
 #[tokio::test]
-async fn a_write_that_leaves_a_tool_off_is_counted_on_every_write_path() {
-    use nodespace_core::behaviors::tool_off_writes;
+async fn a_delete_ends_the_approval_record_on_every_delete_path() {
+    use nodespace_core::tool_approvals::Issued;
     let (svc, _tmp) = test_service().await;
+    let record = |svc: &Arc<NodeService>, node: &Node| {
+        svc.record_tool_approval(
+            &node.id,
+            Issued {
+                tag: "t".to_string(),
+                version: node.version,
+                created_at: node.created_at,
+                program_sha256: None,
+            },
+        )
+    };
     for kind in REMOTE_KINDS {
-        let id = create(&svc, kind, "lookup", remote_properties(kind, true))
-            .await
-            .unwrap();
-        assert_eq!(tool_off_writes(&id), 0, "{kind}");
-        let node = get(&svc, &id).await;
+        let mut ids = Vec::new();
+        for name in ["versioned", "unchecked", "bulk"] {
+            let id = create(&svc, kind, name, remote_properties(kind, true))
+                .await
+                .unwrap();
+            record(&svc, &get(&svc, &id).await);
+            assert!(svc.tool_approval_recorded(&id), "{kind} {name}");
+            ids.push(id);
+        }
+        // An update keeps the record (the version check ends it).
+        let node = get(&svc, &ids[0]).await;
         svc.update_node(
-            &id,
+            &ids[0],
             node.version,
             NodeUpdate::new().with_properties(json!({ "description": "Reworded" })),
         )
         .await
         .unwrap();
-        assert_eq!(tool_off_writes(&id), 0, "{kind}: on");
-        let node = get(&svc, &id).await;
-        svc.update_node(
-            &id,
-            node.version,
-            NodeUpdate::new().with_properties(json!({ "enabled": false })),
-        )
-        .await
-        .unwrap();
-        assert_eq!(tool_off_writes(&id), 1, "{kind}: versioned");
-        svc.bulk_update(vec![(
-            id.clone(),
-            NodeUpdate::new().with_properties(json!({ "description": "Again" })),
-        )])
-        .await
-        .unwrap();
-        assert_eq!(tool_off_writes(&id), 2, "{kind}: batch, still off");
-        svc.update_node_unchecked(
-            &id,
-            NodeUpdate::new().with_properties(json!({ "enabled": true })),
-        )
-        .await
-        .unwrap();
-        assert_eq!(tool_off_writes(&id), 2, "{kind}: on again");
-        let created_off = create(&svc, kind, "off", remote_properties(kind, false))
-            .await
-            .unwrap();
-        assert_eq!(tool_off_writes(&created_off), 1, "{kind}: created off");
+        assert!(svc.tool_approval_recorded(&ids[0]), "{kind}");
+        let node = get(&svc, &ids[0]).await;
+        svc.delete_node(&ids[0], node.version).await.unwrap();
+        svc.delete_node_unchecked(&ids[1]).await.unwrap();
+        svc.bulk_delete(vec![ids[2].clone()]).await.unwrap();
+        for (id, path) in ids.iter().zip(["versioned", "unchecked", "bulk"]) {
+            assert!(!svc.tool_approval_recorded(id), "{kind}: {path} delete");
+        }
     }
+}
+
+/// A tool deleted through the node service and then put back exactly as it was
+/// (its old version and creation time, by writing the database file directly)
+/// is not approved: the delete took the record with it.
+#[tokio::test]
+async fn a_tool_put_back_by_writing_the_database_directly_is_not_approved() {
+    use nodespace_core::tool_approvals::Issued;
+    let (svc, tmp) = test_service().await;
+    let id = create(
+        &svc,
+        "tool-rest",
+        "lookup",
+        remote_properties("tool-rest", true),
+    )
+    .await
+    .unwrap();
+    let node = get(&svc, &id).await;
+    svc.record_tool_approval(
+        &id,
+        Issued {
+            tag: "t".to_string(),
+            version: node.version,
+            created_at: node.created_at,
+            program_sha256: None,
+        },
+    );
+    assert!(svc.live_tool_approval(&node, "t").is_some());
+    let db = libsql::Builder::new_local(tmp.path().join("test.db"))
+        .build()
+        .await
+        .unwrap();
+    let conn = db.connect().unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT node_type, content, properties, title, lifecycle_status, version, created_at, modified_at \
+             FROM node WHERE id = ?1",
+            libsql::params![id.clone()],
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let columns: Vec<libsql::Value> = (0..8).map(|i| row.get_value(i).unwrap()).collect();
+    drop(rows);
+    drop(conn);
+    svc.delete_node(&id, node.version).await.unwrap();
+    let mut params = vec![libsql::Value::Text(id.clone())];
+    params.extend(columns);
+    // A fresh connection: the read above holds an older snapshot.
+    db.connect().unwrap().execute(
+        "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, version, created_at, modified_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params,
+    )
+    .await
+    .unwrap();
+    let back = get(&svc, &id).await;
+    assert_eq!(
+        (back.version, back.created_at),
+        (node.version, node.created_at)
+    );
+    assert!(svc.live_tool_approval(&back, "t").is_none());
 }
 
 /// Turning a tool off ends its approval: every write that leaves `enabled`

@@ -581,6 +581,7 @@ mod tests {
             parameter_schema: schema(),
             properties: json!({ "tool-rest": binding }),
             approval_tag: String::new(),
+            program_sha256: None,
         }
     }
 

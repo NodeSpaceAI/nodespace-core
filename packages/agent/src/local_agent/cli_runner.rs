@@ -67,8 +67,8 @@ use zeroize::Zeroizing;
 
 pub use super::process::BASE_ENV;
 use super::process::{
-    credentials_within, environment_note, program_note, reap, resolve_env_credentials,
-    spawn_isolated, stop, EnvLookup, Isolated,
+    check_program_file, credentials_within, environment_note, program_note, reap,
+    resolve_env_credentials, spawn_isolated, stop, EnvLookup, Isolated,
 };
 use super::redaction::{cut, sanitize};
 use super::remote_tools::{
@@ -226,6 +226,8 @@ impl RemoteToolRunner for CliRunner {
         .await?;
         let needles: Vec<Zeroizing<String>> = credentials.iter().map(|(_, v)| v.clone()).collect();
 
+        // The file must still be the one the approval pinned.
+        check_program_file(&call.program, tool.program_sha256.as_deref()).await?;
         let mut process = spawn_isolated(
             &call.program,
             &call.argv,
@@ -368,6 +370,7 @@ mod tests {
             parameter_schema: schema(),
             properties: json!({ "tool-cli": binding }),
             approval_tag: String::new(),
+            program_sha256: None,
         }
     }
 

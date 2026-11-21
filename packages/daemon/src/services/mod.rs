@@ -28,9 +28,9 @@ pub mod terminal_summary;
 pub use agent_session_service::AgentSessionHandler;
 pub use assembly::{
     build_database_services, build_shared_services, embedding_model_unavailable,
-    shared_model_load_in_flight, unrouted_services_if_default_refused, DatabaseRequiresExtensions,
-    DatabaseServices, RequiredExtensionsUnreadable, SharedContext, SharedServices,
-    SubtreeGateFactory,
+    install_approval_services, shared_model_load_in_flight, unrouted_services_if_default_refused,
+    DatabaseRequiresExtensions, DatabaseServices, RequiredExtensionsUnreadable, SharedContext,
+    SharedServices, SubtreeGateFactory,
 };
 pub use database_manager::{
     DatabaseEntry, DatabaseId, DatabaseListing, DatabaseManager, DatabaseStatus, Registry,

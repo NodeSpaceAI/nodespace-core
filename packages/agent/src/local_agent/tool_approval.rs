@@ -1,51 +1,55 @@
 //! Approving a remote tool on this device.
 //!
 //! A remote tool (a `tool-cli`, `tool-mcp` or `tool-rest` node, or a type that
-//! extends one) is offered to the model only when this device has approved it:
+//! extends one) is offered to the model only when this daemon has approved it:
 //! `approved_binding` holds a keyed MAC, under a key that only the daemon's
 //! memory holds, of the node, its name, its description and its binding (see
-//! [`super::remote_tools`]). This module is the one place that writes an
-//! approval, in steps the user sees:
+//! [`super::remote_tools`]), and the approval is recorded as in effect. This
+//! module is the one place that writes an approval, in steps the user sees:
 //!
 //! 1. [`preview`] reads the node and returns EXACTLY what would be approved:
 //!    the name, the description, the kind, every binding field (program and
-//!    arguments, or URL, method and headers), the credential references and the
-//!    parameter schema, plus a digest of it and a short code taken from the
-//!    digest. Nothing is written.
-//! 2. [`review`] takes that digest back. It reads the node again and goes on
-//!    only if the node still produces the same digest: a node edited between
-//!    the two steps is refused, so the user never approves what they did not
-//!    see.
+//!    arguments, or URL, method and headers), the credential references, the
+//!    parameter schema and, for a tool that starts a program, the program
+//!    file and its SHA-256; plus a digest of all of it and a code, keyed by
+//!    the daemon's key, that the system dialog will show first. Nothing is
+//!    written.
+//! 2. [`review`] takes that digest back. It reads the node and the program file
+//!    again and goes on only if they still produce the same digest: a node
+//!    edited, or a program file replaced, between the two steps is refused, so
+//!    the user never approves what they did not see.
 //! 3. The caller then asks the person at the device to confirm, outside this
-//!    module (the daemon shows a system dialog with the name, the code and
-//!    the target; a program cannot answer it). Nothing here writes before that.
+//!    module (the daemon shows a system dialog that starts with the code, then
+//!    the name and what the tool runs; a program cannot answer it). Nothing
+//!    here writes before that.
 //! 4. [`write`] writes the approval with the version the review read, so an
 //!    edit made while the person was asked is a conflict and nothing is
-//!    approved. The tag is made under the daemon's approval key, which exists
-//!    only in the daemon's memory (made from the operating system's random
-//!    source when it starts, never stored). The node is then read back and run
-//!    through the offering gate under that key, so what is reported approved
-//!    is what a turn offers.
+//!    approved, and records it (`nodespace_core::tool_approvals`) with the
+//!    version that write leaves and the program file's SHA-256. The tag is made
+//!    under the daemon's approval key, which exists only in the daemon's
+//!    memory (made from the operating system's random source when it starts,
+//!    never stored). The node is then read back and run through the offering
+//!    gate, so what is reported approved is what a turn offers.
 //!
-//! Because the key is never stored, approvals last as long as the daemon runs:
-//! after a restart (a reboot, an update, Quit in the tray) every tool is off
-//! until it is approved again.
+//! Because the key and the records are never stored, approvals last as long as
+//! the daemon runs: after a restart (a reboot, an update, Quit in the tray)
+//! every tool is off until it is approved again.
 //!
 //! A program named by a bare name (a `tool-cli` `program`, a stdio `tool-mcp`
 //! `command`) would be looked up on the daemon's `PATH` at every call, so a
 //! program put earlier on the `PATH` later would run in its place. The preview
 //! therefore resolves it now, shows the full path, and the approval writes that
-//! full path into the tool: what is approved is one file's path, not a name.
-//! A name that is not on the daemon's `PATH` cannot be approved.
+//! full path into the tool. Either way the file's content is pinned: the
+//! runner checks the file's SHA-256 right before it starts the program, so a
+//! file replaced after the approval (an update or `brew upgrade` included) does
+//! not run until the tool is approved again. A name that is not on the daemon's
+//! `PATH`, or a file that cannot be read, cannot be approved.
 //!
-//! Editing the binding, the name or the description afterwards turns the tool
-//! off (the tag no longer verifies), and so does turning it off: every write
-//! that leaves `enabled` anything but `true` removes the tag
-//! (`nodespace_core::behaviors::end_approval_unless_enabled`), so writing
-//! `enabled: true` again does not bring the approval back. Writing the old tag
-//! back with it does not either: an approval counts only while it is live in
-//! the daemon that gave it, for the node as it was created then and with no
-//! write having left it off since (`remote_tools::assess_stored`).
+//! Any write to the node after the approval's own ends it: an edit (reverting
+//! it does not bring the approval back), turning it off (which also removes the
+//! tag, `nodespace_core::behaviors::end_approval_unless_enabled`), archiving,
+//! a change of type; so does a delete, and a node made again under the same id
+//! or copied into another database is not approved there.
 //!
 //! # What the approval defends against, and what it does not
 //!
@@ -57,18 +61,28 @@
 //! it started for a tool, the command line refuses without a terminal, and the
 //! MCP passthrough refuses the command.
 //!
-//! A program of the same user cannot make a tag that verifies: the key is in no
-//! store it can read or replace. What such a program can still do, and what
-//! this does not defend against:
+//! A program of the same user cannot make a tag that verifies, or a code: the
+//! key is in no store it can read or replace. What such a program can still do,
+//! and what this does not defend against:
 //!
-//! - Talk the person into confirming a dialog they did not mean to (consent
-//!   phishing): the dialog names the tool, its code and its target, and the
-//!   command line shows the same code, but nothing stops a person from
-//!   confirming a request they did not start.
-//! - Replace the daemon: the user can write its LaunchAgent and, on an Intel
-//!   Homebrew install, the directory it is installed in, or run a daemon of
-//!   their own build; such a daemon approves whatever it likes. A development
-//!   build is not a boundary at all (a debugger can read its key).
+//! - Show the person a real dialog for a request of its own and hope they
+//!   confirm it (consent phishing). The dialog starts with a code only the
+//!   daemon can make, which the person's own `nodespace tool approve` prints,
+//!   and the node's text cannot draw a code of its own, so a person who
+//!   compares the codes is not fooled; one who does not compare can be.
+//! - Keep asking, so dialogs it starts crowd out the person's own (each one
+//!   that is not confirmed keeps the next back longer, up to 15 minutes).
+//! - Replace the daemon. The `.pkg` installs its LaunchAgent in the root-owned
+//!   `/Library/LaunchAgents`, but the app's own per-user LaunchAgent is
+//!   writable by the user, `launchctl bootout` stops either, an Intel Homebrew
+//!   install keeps the daemon in a user-writable directory, and the user can
+//!   run a daemon of their own build; such a daemon approves whatever it
+//!   likes. A development build is not a boundary at all (a debugger can read
+//!   its key).
+//! - Replace the program file in the moment between the runner's check of its
+//!   SHA-256 and the program's start.
+//! - Put a deleted tool back by writing the database file directly when the
+//!   delete itself did not go through the node service (then nothing saw it).
 //! - Overwrite a credential's value with the system's own tools (`security`
 //!   on macOS): the credentials are still items in the login keychain.
 
@@ -104,10 +118,16 @@ pub struct ApprovalPreview {
     /// One line saying what the tool runs or where it sends a call: the
     /// program and its arguments, the method and URL, or the MCP server.
     pub target: String,
+    /// The program file the approval pins, `<full path> (SHA-256 <hex>)`, for
+    /// a tool that starts a program; empty for one that starts none. If the
+    /// file changes afterwards (an update, `brew upgrade`), the tool is not
+    /// run until it is approved again.
+    pub program: String,
     /// Digest of what is shown (and of the binding it stands for).
     pub digest: String,
-    /// The digest's first eight hex digits as `XXXX-XXXX` ([`approval_code`]):
-    /// short enough to compare with the code the system dialog shows.
+    /// The code the system dialog shows first, `XXXX-XXXX-XXXX`
+    /// ([`approval_code`], keyed by the daemon's key). Empty when the daemon
+    /// holds no key: then nothing can be approved.
     pub code: String,
     /// Whether the tool is enabled and approved on this device already.
     pub approved: bool,
@@ -134,6 +154,8 @@ pub enum ApprovalError {
     TooLarge,
     #[error("the program `{0}` is not on the daemon's PATH: write the program's full path into the tool")]
     ProgramNotFound(String),
+    #[error("the program file `{0}` cannot be read ({1}), so its content cannot be pinned and the tool cannot be approved")]
+    ProgramUnreadable(String, String),
     #[error("the tool changed since it was shown: review it again")]
     Changed,
     #[error("the tool was edited while it was being approved: review it again")]
@@ -215,12 +237,12 @@ fn target_of(kind: RemoteToolKind, binding: &Value) -> String {
 /// The binding field that names the program a kind starts, if it starts one:
 /// `program` for `tool-cli`, `command` for a `tool-mcp` server run over stdio.
 fn program_field(kind: RemoteToolKind, bucket: &Value) -> Option<&'static str> {
+    if !remote_tools::starts_a_program(kind, bucket) {
+        return None;
+    }
     match kind {
         RemoteToolKind::Cli => Some("program"),
-        RemoteToolKind::Mcp if bucket.get("transport").and_then(Value::as_str) == Some("stdio") => {
-            Some("command")
-        }
-        _ => None,
+        _ => Some("command"),
     }
 }
 
@@ -229,64 +251,89 @@ fn is_bare_name(program: &str) -> bool {
     !program.contains(['/', '\\'])
 }
 
-/// Where a bare program name is found on the daemon's `PATH`, as a call would
-/// look it up: the full path, or `None` when it is not found (or the `PATH` is
-/// unset, or the path is not UTF-8).
-pub fn on_the_daemon_path(program: &str) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    which::which_in(program, Some(path), "/")
-        .ok()
-        .and_then(|found| found.to_str().map(str::to_string))
+/// The program file a tool starts, as the approval pins it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramFile {
+    /// Its full path.
+    pub path: String,
+    /// SHA-256 of its content, lowercase hex.
+    pub sha256: String,
 }
 
-/// The binding field to pin and the full path to pin it to.
-type Pin = Option<(&'static str, String)>;
+/// The program as the daemon would start it: a bare name looked up on the
+/// daemon's `PATH`, as a call would look it up, and the file's content hashed.
+/// Blocks (a `PATH` search, a file read): call it off the async threads.
+pub fn on_the_daemon_path(program: &str) -> Result<ProgramFile, ApprovalError> {
+    let path = if is_bare_name(program) {
+        std::env::var_os("PATH")
+            .and_then(|path| which::which_in(program, Some(path), "/").ok())
+            .and_then(|found| found.to_str().map(str::to_string))
+            .ok_or_else(|| ApprovalError::ProgramNotFound(program.to_string()))?
+    } else {
+        program.to_string()
+    };
+    let sha256 = super::process::file_sha256(&path)
+        .map_err(|e| ApprovalError::ProgramUnreadable(path.clone(), e.kind().to_string()))?;
+    Ok(ProgramFile { path, sha256 })
+}
 
-/// Finds a bare program name: [`on_the_daemon_path`], or a stand-in in tests.
-type Lookup = dyn Fn(&str) -> Option<String> + Sync;
+/// Resolves a program as written in a binding: [`on_the_daemon_path`], or a
+/// stand-in in tests.
+type Lookup = fn(&str) -> Result<ProgramFile, ApprovalError>;
 
-/// `properties` with a bare program name replaced by its full path from
-/// `lookup`, and that pin. A name `lookup` does not find is refused.
-fn pin_program(
+/// The program a binding names, as the approval pins it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProgramPin {
+    /// The binding field that names it.
+    field: &'static str,
+    /// As written in the binding.
+    written: String,
+    file: ProgramFile,
+}
+
+/// Resolves the program `node`'s binding names, if its kind starts one, on a
+/// blocking thread.
+async fn resolve_program(
     kind: RemoteToolKind,
-    properties: &Value,
-    lookup: &Lookup,
-) -> Result<(Value, Pin), ApprovalError> {
-    let bucket = properties.get(kind.bucket()).unwrap_or(&Value::Null);
+    node: &Node,
+    lookup: Lookup,
+) -> Result<Option<ProgramPin>, ApprovalError> {
+    let bucket = node.properties.get(kind.bucket()).unwrap_or(&Value::Null);
     let Some(field) = program_field(kind, bucket) else {
-        return Ok((properties.clone(), None));
+        return Ok(None);
     };
-    let Some(program) = bucket.get(field).and_then(Value::as_str) else {
-        return Ok((properties.clone(), None));
+    let Some(written) = bucket.get(field).and_then(Value::as_str) else {
+        return Ok(None);
     };
-    if !is_bare_name(program) {
-        return Ok((properties.clone(), None));
-    }
-    let full =
-        lookup(program).ok_or_else(|| ApprovalError::ProgramNotFound(program.to_string()))?;
-    let mut pinned = properties.clone();
-    pinned[kind.bucket()][field] = Value::String(full.clone());
-    Ok((pinned, Some((field, full))))
+    let written = written.to_string();
+    let asked = written.clone();
+    let file = tokio::task::spawn_blocking(move || lookup(&asked))
+        .await
+        .map_err(|_| ApprovalError::Read("the program lookup failed".to_string()))??;
+    Ok(Some(ProgramPin {
+        field,
+        written,
+        file,
+    }))
 }
 
-/// The short code of a digest: its first eight hex digits, upper case, as
-/// `XXXX-XXXX`. The command line shows it and the system dialog shows it, so
-/// the person can tell the dialog is for what they reviewed.
-pub fn approval_code(digest: &str) -> String {
-    let head: String = digest
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .take(8)
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    let (left, right) = head.split_at(head.len().min(4));
-    format!("{left}-{right}")
+/// The code of a preview digest under the daemon's key (`XXXX-XXXX-XXXX`, see
+/// `nodespace_core::behaviors::tool_approval_code`): what the command line and
+/// the system dialog both show. A program without the key cannot compute one.
+pub fn approval_code(key: &ApprovalKey, digest: &str) -> String {
+    nodespace_core::behaviors::tool_approval_code(key.as_bytes(), digest)
 }
 
-fn digest_of(node_id: &str, name: &str, description: &str, binding_hash: &str) -> String {
+fn digest_of(
+    node_id: &str,
+    name: &str,
+    description: &str,
+    binding_hash: &str,
+    program_sha256: &str,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"tool-approval-preview-v1");
-    for field in [node_id, name, description, binding_hash] {
+    hasher.update(b"tool-approval-preview-v2");
+    for field in [node_id, name, description, binding_hash, program_sha256] {
         hasher.update((field.len() as u64).to_be_bytes());
         hasher.update(field.as_bytes());
     }
@@ -338,14 +385,14 @@ fn check_shape(node: &Node, chain: &[String]) -> Result<RemoteToolKind, Approval
 }
 
 /// What the approval of `node` would write: the preview the person is shown
-/// (`approved` left false for the caller to set), the node as it will be once
-/// a bare program name is replaced by its full path, and that pin. `lookup`
-/// finds a bare program name on the daemon's `PATH`.
+/// (`approved` and `code` left for the caller to set), and the node as it
+/// will be once a bare program name is replaced by its full path. `program` is
+/// the program the binding names, resolved and hashed ([`resolve_program`]).
 fn build_preview(
     node: &Node,
     chain: &[String],
-    lookup: &Lookup,
-) -> Result<(ApprovalPreview, Node, Pin), ApprovalError> {
+    program: Option<&ProgramPin>,
+) -> Result<(ApprovalPreview, Node), ApprovalError> {
     let kind = check_shape(node, chain)?;
     let base = CoreNodeType::Tool.as_str();
     let description = text(&node.properties, base, "description");
@@ -363,7 +410,10 @@ fn build_preview(
     }
     // What is shown, digested and approved is the binding as the approval
     // leaves it: with a bare program name replaced by its full path.
-    let (properties, pin) = pin_program(kind, &node.properties, lookup)?;
+    let mut properties = node.properties.clone();
+    if let Some(pin) = program.filter(|pin| is_bare_name(&pin.written)) {
+        properties[kind.bucket()][pin.field] = Value::String(pin.file.path.clone());
+    }
     // Every bucket of the chain but `tool`'s own: the binding fields.
     let mut binding = serde_json::Map::new();
     for node_type in chain.iter().filter(|t| t.as_str() != base) {
@@ -374,10 +424,10 @@ fn build_preview(
     let bucket = properties.get(kind.bucket()).unwrap_or(&Value::Null);
     let credentials = credentials_of(bucket);
     let mut target = target_of(kind, bucket);
-    if let Some((field, _)) = &pin {
-        let bare = node.properties[kind.bucket()][field].as_str().unwrap_or("");
+    if let Some(pin) = program.filter(|pin| is_bare_name(&pin.written)) {
         target.push_str(&format!(
-            " (`{bare}` as found on the daemon's PATH; approving writes this full path into the tool)"
+            " (`{}` as found on the daemon's PATH; approving writes this full path into the tool)",
+            pin.written
         ));
     }
     let digest = digest_of(
@@ -385,6 +435,7 @@ fn build_preview(
         &node.content,
         &description,
         &tool_binding_hash(chain, &properties),
+        program.map(|pin| pin.file.sha256.as_str()).unwrap_or(""),
     );
     let preview = ApprovalPreview {
         node_id: node.id.clone(),
@@ -395,7 +446,11 @@ fn build_preview(
         parameter_schema_json: pretty(schema)?,
         credentials,
         target,
-        code: approval_code(&digest),
+        program: program
+            .map(|pin| format!("{} (SHA-256 {})", pin.file.path, pin.file.sha256))
+            .unwrap_or_default(),
+        // Filled in under the daemon's key by the caller; none without one.
+        code: String::new(),
         digest,
         approved: false,
     };
@@ -403,35 +458,56 @@ fn build_preview(
         properties,
         ..node.clone()
     };
-    Ok((preview, pinned, pin))
+    Ok((preview, pinned))
 }
 
 /// Whether the offering gate passes `node` under `key`: what a turn checks,
-/// the approval's being live in this process included.
-fn passes_the_gate(key: &ApprovalKey, node: &Node, chain: &[String]) -> bool {
-    assess_stored(node, chain, Some(key)).is_ok()
+/// the approval's being in effect in this database included.
+fn passes_the_gate(
+    node_service: &NodeService,
+    key: &ApprovalKey,
+    node: &Node,
+    chain: &[String],
+) -> bool {
+    assess_stored(node_service, node, chain, Some(key)).is_ok()
+}
+
+/// Reads `node_id` and what its binding's program resolves to, and builds
+/// what approving it would write.
+async fn shown(
+    node_service: &NodeService,
+    node_id: &str,
+    lookup: Lookup,
+) -> Result<(Node, Vec<String>, ApprovalPreview, Node, Option<ProgramPin>), ApprovalError> {
+    let (node, chain) = load(node_service, node_id).await?;
+    let kind = check_shape(&node, &chain)?;
+    let program = resolve_program(kind, &node, lookup).await?;
+    let (preview, pinned) = build_preview(&node, &chain, program.as_ref())?;
+    Ok((node, chain, preview, pinned, program))
 }
 
 /// What approving `node_id` would approve. Writes nothing. `key` is the
 /// daemon's approval key, `None` when it holds none (then nothing is
-/// `approved`).
+/// `approved` and there is no code).
 pub async fn preview(
     node_service: &NodeService,
     key: Option<&ApprovalKey>,
     node_id: &str,
 ) -> Result<ApprovalPreview, ApprovalError> {
-    preview_with(node_service, key, node_id, &on_the_daemon_path).await
+    preview_with(node_service, key, node_id, on_the_daemon_path).await
 }
 
 async fn preview_with(
     node_service: &NodeService,
     key: Option<&ApprovalKey>,
     node_id: &str,
-    lookup: &Lookup,
+    lookup: Lookup,
 ) -> Result<ApprovalPreview, ApprovalError> {
-    let (node, chain) = load(node_service, node_id).await?;
-    let (mut preview, _, _) = build_preview(&node, &chain, lookup)?;
-    preview.approved = key.is_some_and(|key| passes_the_gate(key, &node, &chain));
+    let (node, chain, mut preview, _, _) = shown(node_service, node_id, lookup).await?;
+    if let Some(key) = key {
+        preview.code = approval_code(key, &preview.digest);
+        preview.approved = passes_the_gate(node_service, key, &node, &chain);
+    }
     Ok(preview)
 }
 
@@ -444,7 +520,7 @@ pub struct Reviewed {
     /// The node as read, with a bare program name replaced by its full path.
     pinned: Node,
     chain: Vec<String>,
-    pin: Pin,
+    program: Option<ProgramPin>,
 }
 
 impl Reviewed {
@@ -455,41 +531,46 @@ impl Reviewed {
 }
 
 /// Reads `node_id` again and goes on only if it still produces `digest`, the
-/// digest the person was shown. Writes nothing; refused before anything is
-/// asked or written when the tool changed.
+/// digest the person was shown (a changed program file included). Writes
+/// nothing; refused before anything is asked or written when the tool
+/// changed. The preview it holds carries the code under `key`, for the
+/// system dialog.
 pub async fn review(
     node_service: &NodeService,
+    key: &ApprovalKey,
     node_id: &str,
     digest: &str,
 ) -> Result<Reviewed, ApprovalError> {
-    review_with(node_service, node_id, digest, &on_the_daemon_path).await
+    review_with(node_service, key, node_id, digest, on_the_daemon_path).await
 }
 
 async fn review_with(
     node_service: &NodeService,
+    key: &ApprovalKey,
     node_id: &str,
     digest: &str,
-    lookup: &Lookup,
+    lookup: Lookup,
 ) -> Result<Reviewed, ApprovalError> {
-    let (node, chain) = load(node_service, node_id).await?;
-    let (preview, pinned, pin) = build_preview(&node, &chain, lookup)?;
+    let (_, chain, mut preview, pinned, program) = shown(node_service, node_id, lookup).await?;
     if !constant_time_eq(&preview.digest, digest) {
         return Err(ApprovalError::Changed);
     }
+    preview.code = approval_code(key, &preview.digest);
     Ok(Reviewed {
         preview,
         pinned,
         chain,
-        pin,
+        program,
     })
 }
 
 /// Approves what `reviewed` holds under `key`, the daemon's approval key:
 /// enables the tool, writes the approval tag and the full path of a bare
 /// program name, with the version the review read (an edit since is
-/// [`ApprovalError::Conflict`]). Succeeds only when the tool, read back as
-/// stored, passes the offering gate under the same key: what is reported
-/// approved is what a turn will offer.
+/// [`ApprovalError::Conflict`]), and records the approval with the version
+/// that write leaves and the program file's SHA-256. Succeeds only when the
+/// tool, read back as stored, passes the offering gate under the same key:
+/// what is reported approved is what a turn will offer.
 ///
 /// The caller has already had the person at the device confirm it.
 pub async fn write(
@@ -502,31 +583,48 @@ pub async fn write(
     in_effect(node_service, key, &node_id).await
 }
 
-/// The write itself: the tag, `enabled` and the pin, with the reviewed version.
+/// The write itself: the record first (for the version the write will leave),
+/// then the tag, `enabled` and the pin, with the reviewed version. A write
+/// that fails takes its record back.
 async fn commit(
     node_service: &NodeService,
     key: &ApprovalKey,
     reviewed: Reviewed,
 ) -> Result<(), ApprovalError> {
     let Reviewed {
-        pinned, chain, pin, ..
+        pinned,
+        chain,
+        program,
+        ..
     } = reviewed;
     let tag = remote_tools::approve(&pinned, &chain, key);
+    node_service.record_tool_approval(
+        &pinned.id,
+        nodespace_core::tool_approvals::Issued {
+            tag: tag.clone(),
+            version: pinned.version + 1,
+            created_at: pinned.created_at,
+            program_sha256: program.as_ref().map(|pin| pin.file.sha256.clone()),
+        },
+    );
     let mut properties = json!({"enabled": true, "approved_binding": tag});
-    if let Some((field, full)) = pin {
-        properties[field] = Value::String(full);
+    if let Some(pin) = program.filter(|pin| is_bare_name(&pin.written)) {
+        properties[pin.field] = Value::String(pin.file.path);
     }
-    node_service
+    let written = node_service
         .update_node(
             &pinned.id,
             pinned.version,
             NodeUpdate::new().with_properties(properties),
         )
-        .await
-        .map_err(|e| match e {
+        .await;
+    if let Err(e) = written {
+        node_service.forget_tool_approval(&pinned.id, &tag);
+        return Err(match e {
             NodeServiceError::VersionConflict { .. } => ApprovalError::Conflict,
             other => ApprovalError::Write(other.to_string()),
-        })?;
+        });
+    }
     Ok(())
 }
 
@@ -538,7 +636,7 @@ async fn in_effect(
     node_id: &str,
 ) -> Result<(), ApprovalError> {
     let (stored, chain) = load(node_service, node_id).await?;
-    if !passes_the_gate(key, &stored, &chain) {
+    if !passes_the_gate(node_service, key, &stored, &chain) {
         return Err(ApprovalError::NotInEffect);
     }
     Ok(())
@@ -560,14 +658,27 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    /// The daemon's `PATH` in these tests: every bare name is found, under
-    /// `/test/bin`.
-    fn on_test_path(program: &str) -> Option<String> {
-        Some(format!("/test/bin/{program}"))
+    /// A stand-in content hash for a path, the same for the same path.
+    fn sha_of(path: &str) -> String {
+        format!("{:0>64}", path.len())
     }
 
-    fn nowhere(_: &str) -> Option<String> {
-        None
+    /// The daemon's `PATH` in these tests: every bare name is found, under
+    /// `/test/bin`; every file's content hash is [`sha_of`] its path.
+    fn on_test_path(program: &str) -> Result<ProgramFile, ApprovalError> {
+        let path = if is_bare_name(program) {
+            format!("/test/bin/{program}")
+        } else {
+            program.to_string()
+        };
+        Ok(ProgramFile {
+            sha256: sha_of(&path),
+            path,
+        })
+    }
+
+    fn nowhere(program: &str) -> Result<ProgramFile, ApprovalError> {
+        Err(ApprovalError::ProgramNotFound(program.to_string()))
     }
 
     async fn preview(
@@ -575,7 +686,7 @@ mod tests {
         key: &ApprovalKey,
         id: &str,
     ) -> Result<ApprovalPreview, ApprovalError> {
-        preview_with(ns, Some(key), id, &on_test_path).await
+        preview_with(ns, Some(key), id, on_test_path).await
     }
 
     /// The approval as the daemon makes it, the person's confirmation aside:
@@ -586,7 +697,7 @@ mod tests {
         id: &str,
         digest: &str,
     ) -> Result<(), ApprovalError> {
-        let reviewed = review_with(ns, id, digest, &on_test_path).await?;
+        let reviewed = review_with(ns, key, id, digest, on_test_path).await?;
         write(ns, key, reviewed).await
     }
 
@@ -658,7 +769,7 @@ mod tests {
 
     async fn offered(ns: &NodeService, key: &ApprovalKey, id: &str) -> bool {
         let (node, chain) = load(ns, id).await.unwrap();
-        assess_stored(&node, &chain, Some(key)).is_ok()
+        assess_stored(ns, &node, &chain, Some(key)).is_ok()
     }
 
     #[tokio::test]
@@ -681,7 +792,7 @@ mod tests {
         assert_eq!(p.credentials, ["TOKEN from keychain:tok"]);
         assert!(!p.approved);
         assert_eq!(p.digest.len(), 64);
-        assert_eq!(p.code, approval_code(&p.digest));
+        assert_eq!(p.code, approval_code(&key, &p.digest));
         // Nothing was written.
         let after = ns.get_node(&id).await.unwrap().unwrap();
         assert_eq!(before.version, after.version);
@@ -833,11 +944,11 @@ mod tests {
     #[test]
     fn a_name_that_is_not_a_plain_identifier_cannot_be_approved() {
         let (node, chain) = stored("lookup", closed_schema());
-        assert!(build_preview(&node, &chain, &on_test_path).is_ok());
+        assert!(build_preview(&node, &chain, None).is_ok());
         for bad in ["has space", "", "1starts_with_a_digit", "dot.ted"] {
             let (node, chain) = stored(bad, closed_schema());
             assert_eq!(
-                build_preview(&node, &chain, &on_test_path).unwrap_err(),
+                build_preview(&node, &chain, None).unwrap_err(),
                 ApprovalError::BadName,
                 "{bad:?}"
             );
@@ -866,13 +977,13 @@ mod tests {
         for schema in [json!({"type": "object"}), Value::Null] {
             let (node, chain) = stored("open", schema.clone());
             assert_eq!(
-                build_preview(&node, &chain, &on_test_path).unwrap_err(),
+                build_preview(&node, &chain, None).unwrap_err(),
                 ApprovalError::BadParameterSchema,
                 "{schema}"
             );
         }
         let (node, chain) = stored("open", closed_schema());
-        assert!(build_preview(&node, &chain, &on_test_path).is_ok());
+        assert!(build_preview(&node, &chain, None).is_ok());
     }
 
     #[tokio::test]
@@ -910,11 +1021,11 @@ mod tests {
         let (mut node, chain) = stored("lookup", closed_schema());
         node.properties["tool"]["description"] = json!("d".repeat(MAX_PREVIEW_JSON_BYTES + 1));
         assert_eq!(
-            build_preview(&node, &chain, &on_test_path).unwrap_err(),
+            build_preview(&node, &chain, None).unwrap_err(),
             ApprovalError::TooLarge
         );
         node.properties["tool"]["description"] = json!("d".repeat(MAX_PREVIEW_JSON_BYTES));
-        assert!(build_preview(&node, &chain, &on_test_path).is_ok());
+        assert!(build_preview(&node, &chain, None).is_ok());
     }
 
     #[tokio::test]
@@ -968,13 +1079,31 @@ mod tests {
 
     // -- the code, the review and the program's full path -------------------
 
-    #[test]
-    fn the_code_is_the_digests_first_eight_hex_digits() {
-        assert_eq!(approval_code("1a2b3c4d5e6f"), "1A2B-3C4D");
-        let (node, chain) = stored("lookup", closed_schema());
-        let (p, _, _) = build_preview(&node, &chain, &on_test_path).unwrap();
-        assert_eq!(p.code.len(), 9);
-        assert_eq!(p.code.replace('-', ""), p.digest[..8].to_uppercase());
+    /// The code is keyed: the same digest gives another code under another
+    /// key, so a program without the daemon's key can neither compute a code
+    /// nor search for a second tool that shares one. Without a key there is
+    /// no code.
+    #[tokio::test]
+    async fn the_code_is_keyed_by_the_daemon_key_and_absent_without_one() {
+        let (ns, key, _tmp) = rig().await;
+        let id = tool(&ns, "lookup").await;
+        let p = preview(&ns, &key, &id).await.unwrap();
+        assert_eq!(p.code, approval_code(&key, &p.digest));
+        assert_eq!(p.code.len(), 14, "{}", p.code);
+        assert!(p.code.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
+        let other = ApprovalKey::generate().unwrap();
+        assert_ne!(approval_code(&other, &p.digest), p.code);
+        // Not the digest itself, in any case.
+        assert!(!p
+            .digest
+            .to_uppercase()
+            .starts_with(&p.code.replace('-', "")));
+        let reviewed = review_with(&ns, &key, &id, &p.digest, on_test_path)
+            .await
+            .unwrap();
+        assert_eq!(reviewed.preview().code, p.code);
+        let keyless = preview_with(&ns, None, &id, on_test_path).await.unwrap();
+        assert!(keyless.code.is_empty());
     }
 
     /// A bare program name is resolved when the tool is shown: the preview
@@ -1013,14 +1142,14 @@ mod tests {
         let id = tool(&ns, "lookup").await;
         let before = ns.get_node(&id).await.unwrap().unwrap();
         assert_eq!(
-            preview_with(&ns, Some(&key), &id, &nowhere)
+            preview_with(&ns, Some(&key), &id, nowhere)
                 .await
                 .unwrap_err(),
             ApprovalError::ProgramNotFound("git".to_string())
         );
         let shown = preview(&ns, &key, &id).await.unwrap();
         assert_eq!(
-            review_with(&ns, &id, &shown.digest, &nowhere)
+            review_with(&ns, &key, &id, &shown.digest, nowhere)
                 .await
                 .unwrap_err(),
             ApprovalError::ProgramNotFound("git".to_string())
@@ -1037,9 +1166,15 @@ mod tests {
         let (ns, key, _tmp) = rig().await;
         let id = tool(&ns, "lookup").await;
         let shown = preview(&ns, &key, &id).await.unwrap();
-        let elsewhere = |name: &str| Some(format!("/home/me/bin/{name}"));
+        fn elsewhere(name: &str) -> Result<ProgramFile, ApprovalError> {
+            let path = format!("/home/me/bin/{name}");
+            Ok(ProgramFile {
+                sha256: sha_of(&path),
+                path,
+            })
+        }
         assert_eq!(
-            review_with(&ns, &id, &shown.digest, &elsewhere)
+            review_with(&ns, &key, &id, &shown.digest, elsewhere)
                 .await
                 .unwrap_err(),
             ApprovalError::Changed
@@ -1047,17 +1182,29 @@ mod tests {
         assert!(!offered(&ns, &key, &id).await);
     }
 
+    /// A full path is not looked up on the `PATH` and not rewritten; its file
+    /// is still pinned by content.
     #[tokio::test]
-    async fn a_full_program_path_is_left_as_it_is() {
+    async fn a_full_program_path_is_left_as_it_is_and_pinned_by_content() {
         let (ns, key, _tmp) = rig().await;
         let id = tool(&ns, "lookup").await;
         set_properties(&ns, &id, json!({"program": "/usr/local/bin/git"})).await;
-        let not_looked_up = |name: &str| -> Option<String> { panic!("looked up {name}") };
-        let p = preview_with(&ns, Some(&key), &id, &not_looked_up)
+        fn not_looked_up(program: &str) -> Result<ProgramFile, ApprovalError> {
+            assert!(!is_bare_name(program), "looked up {program}");
+            on_test_path(program)
+        }
+        let p = preview_with(&ns, Some(&key), &id, not_looked_up)
             .await
             .unwrap();
         assert_eq!(p.target, r#"Runs: /usr/local/bin/git ["log","{q}"]"#);
-        let reviewed = review_with(&ns, &id, &p.digest, &not_looked_up)
+        assert_eq!(
+            p.program,
+            format!(
+                "/usr/local/bin/git (SHA-256 {})",
+                sha_of("/usr/local/bin/git")
+            )
+        );
+        let reviewed = review_with(&ns, &key, &id, &p.digest, not_looked_up)
             .await
             .unwrap();
         write(&ns, &key, reviewed).await.unwrap();
@@ -1069,8 +1216,8 @@ mod tests {
         assert!(offered(&ns, &key, &id).await);
     }
 
-    #[test]
-    fn a_stdio_mcp_command_is_pinned_and_an_http_server_has_nothing_to_pin() {
+    #[tokio::test]
+    async fn a_stdio_mcp_command_is_pinned_and_an_http_server_has_nothing_to_pin() {
         let chain = vec!["tool-mcp".to_string(), "tool".to_string()];
         let stdio = Node::new(
             "tool-mcp".to_string(),
@@ -1080,14 +1227,26 @@ mod tests {
                 "tool-mcp": {"transport": "stdio", "command": "npx", "args": ["server"], "remote_tool_name": "find"}
             }),
         );
-        let (p, pinned, pin) = build_preview(&stdio, &chain, &on_test_path).unwrap();
-        assert_eq!(pin, Some(("command", "/test/bin/npx".to_string())));
+        let pin = resolve_program(RemoteToolKind::Mcp, &stdio, on_test_path)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (pin.field, pin.file.path.as_str()),
+            ("command", "/test/bin/npx")
+        );
+        let (p, pinned) = build_preview(&stdio, &chain, Some(&pin)).unwrap();
         assert_eq!(pinned.properties["tool-mcp"]["command"], "/test/bin/npx");
         assert!(
             p.target
                 .starts_with(r#"Runs: /test/bin/npx ["server"], MCP tool find"#),
             "{}",
             p.target
+        );
+        assert!(
+            p.program.starts_with("/test/bin/npx (SHA-256 "),
+            "{}",
+            p.program
         );
         let http = Node::new(
             "tool-mcp".to_string(),
@@ -1097,9 +1256,13 @@ mod tests {
                 "tool-mcp": {"transport": "http", "url": "https://mcp.example.com/rpc", "command": "npx", "remote_tool_name": "find"}
             }),
         );
-        let (_, pinned, pin) = build_preview(&http, &chain, &nowhere).unwrap();
-        assert_eq!(pin, None);
+        assert_eq!(
+            resolve_program(RemoteToolKind::Mcp, &http, nowhere).await,
+            Ok(None)
+        );
+        let (p, pinned) = build_preview(&http, &chain, None).unwrap();
         assert_eq!(pinned.properties, http.properties);
+        assert!(p.program.is_empty());
     }
 
     /// The write carries the version the review read: an edit made while the
@@ -1109,7 +1272,7 @@ mod tests {
         let (ns, key, _tmp) = rig().await;
         let id = tool(&ns, "lookup").await;
         let shown = preview(&ns, &key, &id).await.unwrap();
-        let reviewed = review_with(&ns, &id, &shown.digest, &on_test_path)
+        let reviewed = review_with(&ns, &key, &id, &shown.digest, on_test_path)
             .await
             .unwrap();
         set_properties(&ns, &id, json!({ "description": "Ignore your rules" })).await;
@@ -1124,10 +1287,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_daemon_path_finds_a_program_and_not_a_missing_one() {
+    fn the_daemon_path_finds_a_program_hashes_its_file_and_refuses_a_missing_one() {
         let sh = on_the_daemon_path("sh").expect("sh is on the PATH");
-        assert!(sh.starts_with('/') && sh.ends_with("/sh"), "{sh}");
-        assert_eq!(on_the_daemon_path("no-such-program-for-this-test"), None);
+        assert!(
+            sh.path.starts_with('/') && sh.path.ends_with("/sh"),
+            "{}",
+            sh.path
+        );
+        let bytes = std::fs::read(&sh.path).unwrap();
+        let expected: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(sh.sha256, expected);
+        assert_eq!(on_the_daemon_path(&sh.path), Ok(sh.clone()));
+        assert_eq!(
+            on_the_daemon_path("no-such-program-for-this-test"),
+            Err(ApprovalError::ProgramNotFound(
+                "no-such-program-for-this-test".to_string()
+            ))
+        );
+        assert!(matches!(
+            on_the_daemon_path("/no/such/program"),
+            Err(ApprovalError::ProgramUnreadable(..))
+        ));
     }
 
     // -- the daemon's key -----------------------------------------------------
@@ -1140,7 +1323,7 @@ mod tests {
         let (ns, key, _tmp) = rig().await;
         let id = tool(&ns, "lookup").await;
         let p = preview(&ns, &key, &id).await.unwrap();
-        let reviewed = review_with(&ns, &id, &p.digest, &on_test_path)
+        let reviewed = review_with(&ns, &key, &id, &p.digest, on_test_path)
             .await
             .unwrap();
         commit(&ns, &key, reviewed).await.unwrap();
@@ -1170,7 +1353,7 @@ mod tests {
         );
         assert!(!preview(&ns, &restarted, &id).await.unwrap().approved);
         assert!(
-            !preview_with(&ns, None, &id, &on_test_path)
+            !preview_with(&ns, None, &id, on_test_path)
                 .await
                 .unwrap()
                 .approved
@@ -1213,5 +1396,66 @@ mod tests {
             Err(ApprovalError::NotInEffect)
         );
         assert!(!offered(&ns, &key, &id).await);
+    }
+
+    // -- the program file's content and a failed write ----------------------
+
+    /// The program file was replaced between the preview and the approval:
+    /// what would be pinned is not what was shown.
+    #[tokio::test]
+    async fn a_program_file_that_changed_since_the_preview_is_not_approved() {
+        let (ns, key, _tmp) = rig().await;
+        let id = tool(&ns, "lookup").await;
+        let shown = preview(&ns, &key, &id).await.unwrap();
+        fn replaced(program: &str) -> Result<ProgramFile, ApprovalError> {
+            let file = on_test_path(program)?;
+            Ok(ProgramFile {
+                sha256: "f".repeat(64),
+                ..file
+            })
+        }
+        assert_eq!(
+            review_with(&ns, &key, &id, &shown.digest, replaced)
+                .await
+                .unwrap_err(),
+            ApprovalError::Changed
+        );
+        assert!(!offered(&ns, &key, &id).await);
+    }
+
+    /// The approval records the SHA-256 the person saw, and a turn's tool
+    /// carries it to the runner.
+    #[tokio::test]
+    async fn the_approval_records_the_program_files_content_for_the_runner() {
+        let (ns, key, _tmp) = rig().await;
+        let id = tool(&ns, "lookup").await;
+        let p = preview(&ns, &key, &id).await.unwrap();
+        assert_eq!(
+            p.program,
+            format!("/test/bin/git (SHA-256 {})", sha_of("/test/bin/git"))
+        );
+        approve(&ns, &key, &id, &p.digest).await.unwrap();
+        let (node, chain) = load(&ns, &id).await.unwrap();
+        let tool = assess_stored(&ns, &node, &chain, Some(&key)).unwrap();
+        assert_eq!(tool.program_sha256, Some(sha_of("/test/bin/git")));
+    }
+
+    /// A write that fails takes back the record it made, so nothing it left
+    /// behind can make a later state count as approved.
+    #[tokio::test]
+    async fn a_failed_approval_write_takes_back_its_record() {
+        let (ns, key, _tmp) = rig().await;
+        let id = tool(&ns, "lookup").await;
+        let shown = preview(&ns, &key, &id).await.unwrap();
+        let reviewed = review_with(&ns, &key, &id, &shown.digest, on_test_path)
+            .await
+            .unwrap();
+        // Written back between the dialog and the write.
+        set_properties(&ns, &id, json!({ "enabled": false })).await;
+        assert_eq!(
+            write(&ns, &key, reviewed).await,
+            Err(ApprovalError::Conflict)
+        );
+        assert!(!ns.tool_approval_recorded(&id));
     }
 }

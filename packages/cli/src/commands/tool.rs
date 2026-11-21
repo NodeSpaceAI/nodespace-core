@@ -130,6 +130,15 @@ fn check_terminal(stdin_is_terminal: bool, stdout_is_terminal: bool) -> Result<(
     Ok(())
 }
 
+/// Shown under the program file the approval pins.
+const PROGRAM_NOTE: &str = "The approval pins this file's content: if the file changes (an \
+update, `brew upgrade`), the tool does not run until you approve it again.";
+
+/// Said instead of the question when the daemon gave no code: it holds no
+/// approval key, so it cannot approve a tool.
+const NO_APPROVALS_HERE: &str = "This NodeSpace daemon cannot approve remote tools: it only \
+does so on macOS, in a signed release or a development build.";
+
 /// Shown when the binding has a character outside ASCII.
 const NON_ASCII_NOTE: &str = "Note: the binding has characters outside ASCII, shown above as \
 \\u{..} escapes. A look-alike letter can make a program or a web address read as another one.";
@@ -173,6 +182,11 @@ fn render(preview: &DescribeToolApprovalResponse) -> String {
     for text in binding_text(&preview.binding_json, Keep::AsciiLines).lines() {
         line(format!("  {text}"));
     }
+    if !preview.program.is_empty() {
+        let shown = binding_text(&preview.program, Keep::AsciiLines).replace('\n', "\\u{A}");
+        line(format!("Program file: {shown}"));
+        line(PROGRAM_NOTE.to_string());
+    }
     // The target is shown with the question; a letter in it counts here too.
     let target_non_ascii = escaped(&preview.target, Keep::AsciiLines).1;
     if non_ascii || target_non_ascii {
@@ -197,6 +211,15 @@ fn question(preview: &DescribeToolApprovalResponse) -> String {
          with that code.\n{target}\n\
          Type the tool's name to approve it (anything else cancels): "
     )
+}
+
+/// Refuses before the question when the daemon gave no code: it holds no
+/// approval key, so it cannot approve a tool.
+fn can_approve(preview: &DescribeToolApprovalResponse) -> Result<()> {
+    if preview.code.is_empty() {
+        bail!("{NO_APPROVALS_HERE}");
+    }
+    Ok(())
 }
 
 /// Whether the line the user typed is the tool's name, exactly (only the line
@@ -227,6 +250,7 @@ async fn approve(client: &mut LocalAgentClient, node_id: &str, json: bool) -> Re
         println!("\nThis tool is already approved on this device.");
         return Ok(());
     }
+    can_approve(&preview)?;
     print!("{}", question(&preview));
     std::io::stdout().flush().ok();
     let mut answer = String::new();
@@ -315,7 +339,8 @@ mod tests {
             parameter_schema_json: "{\n  \"type\": \"object\"\n}".into(),
             credentials: vec!["TOKEN from keychain:tok".into()],
             target: "Runs: git [\"log\"]".into(),
-            code: "1A2B-3C4D".into(),
+            program: String::new(),
+            code: "1A2B-3C4D-5E6F".into(),
             digest: "d".into(),
             approved: false,
         }
@@ -430,7 +455,7 @@ mod tests {
     fn the_question_names_the_code_of_the_system_dialog() {
         let asked = question(&sample());
         assert!(
-            asked.contains("system dialog that shows code 1A2B-3C4D"),
+            asked.contains("system dialog that shows code 1A2B-3C4D-5E6F"),
             "{asked}"
         );
         let hostile = question(&DescribeToolApprovalResponse {
@@ -438,6 +463,36 @@ mod tests {
             ..sample()
         });
         assert!(hostile.contains("code 1A2B\\u{A}Type"), "{hostile}");
+    }
+
+    /// The program file the approval pins is shown, escaped, with what the
+    /// pin means.
+    #[test]
+    fn the_pinned_program_file_is_shown_with_what_the_pin_means() {
+        let shown = render(&DescribeToolApprovalResponse {
+            program: "/opt/homebrew/bin/gi\u{1D42D} (SHA-256 ab12)".into(),
+            ..sample()
+        });
+        assert!(
+            shown.contains("Program file: /opt/homebrew/bin/gi\\u{1D42D} (SHA-256 ab12)"),
+            "{shown}"
+        );
+        assert!(shown.contains(PROGRAM_NOTE));
+        assert!(!render(&sample()).contains("Program file:"));
+    }
+
+    #[test]
+    fn a_daemon_that_gives_no_code_is_not_asked_to_approve() {
+        assert!(can_approve(&sample()).is_ok());
+        let err = can_approve(&DescribeToolApprovalResponse {
+            code: String::new(),
+            ..sample()
+        })
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("cannot approve remote tools"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -13,14 +13,23 @@
 //!
 //! - **Asked in the daemon, every time.** A new evaluation per change, with
 //!   Touch ID reuse off, so one confirmation never covers a second change.
-//! - **No screen, no change.** Over SSH, at a locked screen, or with another
-//!   user at the console the system refuses at once; that is "confirm at this
-//!   Mac's screen", and nothing is written. Whether the system *could* ask is
-//!   never trusted (it says yes over SSH): only an evaluation's own answer is.
-//! - **One at a time.** While one confirmation is open, another is refused
-//!   without being shown, and for [`COOLDOWN`] after one that was not confirmed
-//!   (cancelled, failed or unanswered) no new one is shown, so a program cannot
-//!   pile dialogs on the person until one is clicked through.
+//! - **The dialog is on the Mac's screen.** The daemon runs in the logged-in
+//!   user's session, so a request that comes in over SSH still puts the panel
+//!   on the Mac's own screen, where only someone at the Mac can answer it. At
+//!   a locked screen, when the session has switched to another user, or when
+//!   the daemon itself runs outside a logged-in session, the system refuses at
+//!   once; that is "confirm at this Mac's screen", and nothing is written.
+//!   Whether the system *could* ask is never trusted: only an evaluation's own
+//!   answer is.
+//! - **One at a time, and not in a hurry.** While one confirmation is open,
+//!   another is refused without being shown. After one that was not confirmed
+//!   (cancelled, failed or unanswered) no new one is shown for [`COOLDOWN`],
+//!   doubling with each further one within [`PRESSURE_WINDOW`] up to
+//!   [`MAX_COOLDOWN`], so a program cannot pile dialogs on the person until
+//!   one is clicked through. After one that was confirmed none is shown for
+//!   [`AFTER_CONFIRMED`], so a program cannot slip a request in right behind
+//!   the person's own. A refusal for either reason says that something else
+//!   may be asking, and is logged.
 //! - **Bounded.** An unanswered dialog is closed after [`ANSWER_LIMIT`] and
 //!   counts as not confirmed.
 //! - **The reason is ours.** It is written here from fixed words, the tool's
@@ -37,6 +46,13 @@ use std::time::{Duration, Instant};
 pub const ANSWER_LIMIT: Duration = Duration::from_secs(60);
 /// How long no new dialog is shown after one that was not confirmed.
 pub const COOLDOWN: Duration = Duration::from_secs(30);
+/// The longest the cooldown grows to.
+pub const MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+/// How far back dialogs that were not confirmed count towards a longer
+/// cooldown.
+pub const PRESSURE_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// How long no new dialog is shown after one that was confirmed.
+pub const AFTER_CONFIRMED: Duration = Duration::from_secs(5);
 /// Longest part of a reason taken from a node (the target), in characters.
 const MAX_REASON_DETAIL: usize = 120;
 
@@ -67,9 +83,15 @@ pub enum PresenceRefusal {
     Unavailable(String),
     /// Another confirmation is open.
     Busy,
-    /// One was just not confirmed; no new one is shown for a while.
+    /// One was just not confirmed (or just confirmed); no new one is shown
+    /// for a while.
     CoolingDown,
 }
+
+/// Said with a refusal the person may not have caused: something else on the
+/// Mac may be asking.
+const SOMETHING_ELSE_MAY_BE_ASKING: &str = "if you did not start another confirmation \
+yourself, another program on this Mac asked: do not confirm a dialog you did not start";
 
 impl PresenceRefusal {
     /// The refusal as a status: the message says what to do.
@@ -79,23 +101,68 @@ impl PresenceRefusal {
                 "not confirmed at this device: the system dialog was cancelled or not answered in time",
             ),
             Self::Unavailable(why) => tonic::Status::failed_precondition(format!(
-                "{why}: run the command again at this Mac's own screen"
+                "{why}: confirm it at this Mac's own screen, with the screen unlocked"
             )),
-            Self::Busy => tonic::Status::unavailable(
-                "another confirmation is open in a system dialog on this device: answer it first",
-            ),
+            Self::Busy => tonic::Status::unavailable(format!(
+                "another confirmation is open in a system dialog on this Mac; {SOMETHING_ELSE_MAY_BE_ASKING}"
+            )),
             Self::CoolingDown => tonic::Status::unavailable(format!(
-                "a confirmation was just cancelled; try again in {} seconds",
-                COOLDOWN.as_secs()
+                "a confirmation was asked for just now, so none is shown for a while (up to {} minutes after several cancelled ones); {SOMETHING_ELSE_MAY_BE_ASKING}",
+                MAX_COOLDOWN.as_secs() / 60
             )),
         }
     }
+}
+
+/// How long the gate keeps the next dialog back (shorter in tests).
+#[derive(Clone, Copy)]
+struct Timing {
+    cooldown: Duration,
+    max_cooldown: Duration,
+    window: Duration,
+    after_confirmed: Duration,
+}
+
+impl Timing {
+    const DAEMON: Self = Self {
+        cooldown: COOLDOWN,
+        max_cooldown: MAX_COOLDOWN,
+        window: PRESSURE_WINDOW,
+        after_confirmed: AFTER_CONFIRMED,
+    };
 }
 
 #[derive(Default)]
 struct State {
     open: bool,
     quiet_until: Option<Instant>,
+    /// When the recent dialogs that were not confirmed ended.
+    unconfirmed: std::collections::VecDeque<Instant>,
+}
+
+impl State {
+    /// Records how a shown dialog ended, and how long the next one waits.
+    fn ended(&mut self, confirmed: bool, timing: Timing) {
+        let now = Instant::now();
+        if confirmed {
+            self.quiet_until = Some(now + timing.after_confirmed);
+            return;
+        }
+        while self
+            .unconfirmed
+            .front()
+            .is_some_and(|at| now.duration_since(*at) > timing.window)
+        {
+            self.unconfirmed.pop_front();
+        }
+        self.unconfirmed.push_back(now);
+        let doublings = (self.unconfirmed.len() - 1).min(16) as u32;
+        let wait = timing
+            .cooldown
+            .saturating_mul(2u32.saturating_pow(doublings))
+            .min(timing.max_cooldown);
+        self.quiet_until = Some(now + wait);
+    }
 }
 
 /// The daemon's one way to ask the person at the screen, shared by every
@@ -103,37 +170,53 @@ struct State {
 pub struct UserPresence {
     check: Arc<dyn PresenceCheck>,
     state: Arc<Mutex<State>>,
-    cooldown: Duration,
+    timing: Timing,
 }
 
 /// Clears the open flag when the evaluation ends, on every path (a panic in
-/// the check included), and starts the cooldown unless told not to.
+/// the check included), and keeps the next dialog back as it ended.
 struct Open {
     state: Arc<Mutex<State>>,
-    cooldown: Duration,
-    cool_down: bool,
+    timing: Timing,
+    /// How it ended: `None` when nothing was shown.
+    ended: Option<bool>,
 }
 
 impl Drop for Open {
     fn drop(&mut self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.open = false;
-        if self.cool_down {
-            state.quiet_until = Some(Instant::now() + self.cooldown);
+        if let Some(confirmed) = self.ended {
+            state.ended(confirmed, self.timing);
         }
     }
 }
 
 impl UserPresence {
     pub fn new(check: Arc<dyn PresenceCheck>) -> Self {
-        Self::with_cooldown(check, COOLDOWN)
+        Self::with_timing(check, Timing::DAEMON)
     }
 
-    fn with_cooldown(check: Arc<dyn PresenceCheck>, cooldown: Duration) -> Self {
+    /// A check with no quiet time after a dialog (only one open at a time),
+    /// for tests that ask more than once in a row.
+    #[cfg(test)]
+    pub(crate) fn without_quiet_time(check: Arc<dyn PresenceCheck>) -> Self {
+        Self::with_timing(
+            check,
+            Timing {
+                cooldown: Duration::ZERO,
+                max_cooldown: Duration::ZERO,
+                window: Duration::ZERO,
+                after_confirmed: Duration::ZERO,
+            },
+        )
+    }
+
+    fn with_timing(check: Arc<dyn PresenceCheck>, timing: Timing) -> Self {
         Self {
             check,
             state: Arc::default(),
-            cooldown,
+            timing,
         }
     }
 
@@ -152,7 +235,18 @@ impl UserPresence {
 
     /// No way to ask: every change that needs a confirmation is refused.
     pub fn unavailable() -> Self {
-        Self::new(Arc::new(Unavailable))
+        Self::new(Arc::new(Unavailable(
+            "this device has no way to confirm a change at its screen",
+        )))
+    }
+
+    /// The check of a daemon that never installed one: every change that
+    /// needs a confirmation is refused, and the message says what is missing.
+    pub fn not_installed() -> Self {
+        Self::new(Arc::new(Unavailable(
+            "this daemon did not install the check that asks the person at the screen \
+             (nodespace_daemon::install_approval_services at startup)",
+        )))
     }
 
     /// Asks the person at the screen to confirm `reason`. `Ok` only when they
@@ -161,19 +255,27 @@ impl UserPresence {
         let mut open = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.open {
+                tracing::warn!(
+                    "a confirmation was asked for while another was open; refused unshown"
+                );
                 return Err(PresenceRefusal::Busy);
             }
             if state
                 .quiet_until
                 .is_some_and(|until| Instant::now() < until)
             {
+                tracing::warn!(
+                    "a confirmation was asked for during the quiet time after the last one; refused unshown"
+                );
                 return Err(PresenceRefusal::CoolingDown);
             }
             state.open = true;
             Open {
                 state: Arc::clone(&self.state),
-                cooldown: self.cooldown,
-                cool_down: true,
+                timing: self.timing,
+                // Counted as not confirmed unless the check says otherwise
+                // (a panic in it included).
+                ended: Some(false),
             }
         };
         let check = Arc::clone(&self.check);
@@ -182,9 +284,12 @@ impl UserPresence {
         // has really ended.
         let answer = tokio::task::spawn_blocking(move || {
             let answer = check.confirm(&reason);
-            // Only a dialog that was shown and not confirmed keeps the next
-            // one back; one that could not be shown showed nothing.
-            open.cool_down = answer == Presence::NotConfirmed;
+            open.ended = match answer {
+                Presence::Confirmed => Some(true),
+                Presence::NotConfirmed => Some(false),
+                // Nothing was shown: nothing to keep back.
+                Presence::Unavailable(_) => None,
+            };
             drop(open);
             answer
         })
@@ -198,24 +303,37 @@ impl UserPresence {
     }
 }
 
-/// A platform with no way to ask.
-struct Unavailable;
+/// No way to ask, and why.
+struct Unavailable(&'static str);
 
 impl PresenceCheck for Unavailable {
     fn confirm(&self, _reason: &str) -> Presence {
-        Presence::Unavailable(
-            "this device has no way to confirm a change at its screen".to_string(),
-        )
+        Presence::Unavailable(self.0.to_string())
     }
 }
 
-/// `text` as ASCII: every character outside printable ASCII shown as a
-/// `\u{..}` escape (a control, a bidi or an invisible character, a look-alike
-/// letter), cut to `max` characters with `...` when longer.
-fn ascii_safe(text: &str, max: usize) -> String {
+/// Whether `chars[at]` is a dash with four hex digits on each side: the shape
+/// of a code group, which node text must not be able to draw.
+fn joins_code_groups(chars: &[char], at: usize) -> bool {
+    let hex = |range: std::ops::Range<usize>| {
+        range.end <= chars.len() && chars[range].iter().all(char::is_ascii_hexdigit)
+    };
+    chars[at] == '-' && at >= 4 && hex(at - 4..at) && hex(at + 1..at + 5)
+}
+
+/// Text a node holds, as the dialog shows it: ASCII only, every other
+/// character (a control, a bidi or an invisible character, a look-alike
+/// letter) as a `\u{..}` escape, and so are `(`, `)`, `:` and a dash between
+/// two code-shaped groups, so the text cannot draw a code, or a "(code ...):"
+/// of its own. Cut to `max` characters with `...` when longer.
+fn node_text(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
-    for c in text.chars() {
-        let shown = if c == ' ' || c.is_ascii_graphic() {
+    for (at, &c) in chars.iter().enumerate() {
+        let plain = (c == ' ' || c.is_ascii_graphic())
+            && !matches!(c, '(' | ')' | ':')
+            && !joins_code_groups(&chars, at);
+        let shown = if plain {
             c.to_string()
         } else {
             format!("\\u{{{:X}}}", c as u32)
@@ -229,14 +347,45 @@ fn ascii_safe(text: &str, max: usize) -> String {
     out
 }
 
+/// The code as the dialog shows it: the daemon made it, so it keeps its
+/// dashes; anything but hex digits and dashes is dropped.
+fn code_text(code: &str) -> String {
+    code.chars()
+        .filter(|c| *c == '-' || c.is_ascii_hexdigit())
+        .take(14)
+        .collect()
+}
+
+/// What a preview target says a tool does, as the dialog's verb: the target
+/// starts with one of these, written by the daemon; what follows is the node's.
+const TARGET_VERBS: [(&str, &str); 3] = [
+    ("Runs: ", "runs"),
+    ("Sends: ", "sends"),
+    ("Connects to: ", "connects to"),
+];
+
 /// The dialog's reason for approving a tool. The system shows it after
-/// "nodespaced is trying to".
-pub fn approval_reason(name: &str, code: &str, target: &str) -> String {
+/// "nodespaced is trying to". The code comes first, then the tool's name, so a
+/// panel that shortens a long reason still shows both; what the node says it
+/// runs (or where it sends a call) comes last, escaped and cut. A tool whose
+/// program file the approval pins by content says so.
+pub fn approval_reason(code: &str, name: &str, target: &str, content_pinned: bool) -> String {
+    let (verb, detail) = TARGET_VERBS
+        .iter()
+        .find_map(|(prefix, verb)| target.strip_prefix(prefix).map(|rest| (*verb, rest)))
+        .unwrap_or(("does", target));
+    let pinned = if content_pinned {
+        " (that file's content is pinned)"
+    } else {
+        ""
+    };
     format!(
-        "approve the remote tool \u{201C}{}\u{201D} (code {}): {}",
-        ascii_safe(name, 64),
-        ascii_safe(code, 9),
-        ascii_safe(target, MAX_REASON_DETAIL)
+        "approve code {} for the remote tool \u{201C}{}\u{201D}, which {} {}{}",
+        code_text(code),
+        node_text(name, 64),
+        verb,
+        node_text(detail, MAX_REASON_DETAIL),
+        pinned
     )
 }
 
@@ -244,7 +393,7 @@ pub fn approval_reason(name: &str, code: &str, target: &str) -> String {
 pub fn credential_reason(name: &str) -> String {
     format!(
         "change the credential \u{201C}{}\u{201D}",
-        ascii_safe(name, 64)
+        node_text(name, 64)
     )
 }
 
@@ -262,8 +411,9 @@ mod local_authentication {
     const SYSTEM_CANCEL: isize = -4;
     /// `LAErrorPasscodeNotSet`: the account has no login password.
     const PASSCODE_NOT_SET: isize = -5;
-    /// `LAErrorNotInteractive`: no panel can be shown (no screen session: a
-    /// remote login, a daemon outside the user's session).
+    /// `LAErrorNotInteractive`: no panel can be shown: the daemon runs outside
+    /// a logged-in screen session (a request over SSH to a daemon in the
+    /// session still shows the panel on the Mac's screen).
     const NOT_INTERACTIVE: isize = -1004;
 
     /// One evaluation of the device-owner policy, as [`evaluate`] drives it.
@@ -280,11 +430,11 @@ mod local_authentication {
     pub(super) fn outcome_of(code: isize) -> Presence {
         match code {
             NOT_INTERACTIVE => Presence::Unavailable(
-                "no dialog can be shown here (no screen session: a remote login, or the daemon is outside the logged-in session)"
+                "no dialog can be shown: this daemon runs outside a logged-in screen session"
                     .to_string(),
             ),
             SYSTEM_CANCEL => Presence::Unavailable(
-                "the system ended the dialog (the screen locked, or another user is at the console)"
+                "the system ended the dialog (the screen locked, or the session switched to another user)"
                     .to_string(),
             ),
             PASSCODE_NOT_SET => Presence::Unavailable(
@@ -429,17 +579,6 @@ mod local_authentication {
             }
         }
 
-        #[test]
-        fn the_reason_is_handed_to_the_system_as_given() {
-            let scripted = Scripted::answering(Some(Ok(())));
-            evaluate(&scripted, "approve the remote tool", ANSWER_LIMIT);
-            assert_eq!(
-                scripted.reason.lock().unwrap().as_deref(),
-                Some("approve the remote tool")
-            );
-            assert!(!scripted.invalidated.load(Ordering::SeqCst));
-        }
-
         /// No answer in time: the dialog is closed, and it is a no.
         #[test]
         fn an_unanswered_dialog_is_closed_and_is_not_confirmed() {
@@ -573,7 +712,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_second_confirmation_while_one_is_open_is_refused_unshown() {
         let (fake, answer) = FakePresence::waiting();
-        let presence = Arc::new(UserPresence::new(fake.clone()));
+        // No quiet time after a confirmation here: only the open one counts.
+        let presence = Arc::new(UserPresence::with_timing(fake.clone(), quick(30_000, 0)));
         let first = {
             let presence = Arc::clone(&presence);
             tokio::spawn(async move { presence.confirm("first".into()).await })
@@ -594,8 +734,17 @@ mod tests {
         assert_eq!(fake.asked(), ["first", "third"]);
     }
 
-    /// After a dialog that was not confirmed, none is shown for a while; one
-    /// that was confirmed, or could not be shown, keeps nothing back.
+    fn quick(cooldown_ms: u64, after_confirmed_ms: u64) -> Timing {
+        Timing {
+            cooldown: Duration::from_millis(cooldown_ms),
+            max_cooldown: Duration::from_millis(cooldown_ms * 4),
+            window: Duration::from_secs(60),
+            after_confirmed: Duration::from_millis(after_confirmed_ms),
+        }
+    }
+
+    /// After a dialog that was not confirmed, none is shown for the cooldown;
+    /// one that could not be shown keeps nothing back.
     #[tokio::test]
     async fn a_cancelled_dialog_keeps_the_next_one_back_for_the_cooldown() {
         let fake = FakePresence::new(Answer::No);
@@ -611,7 +760,7 @@ mod tests {
         assert_eq!(fake.asked(), ["first"]);
         // The cooldown ends.
         let fake = FakePresence::new(Answer::No);
-        let short = UserPresence::with_cooldown(fake.clone(), Duration::from_millis(20));
+        let short = UserPresence::with_timing(fake.clone(), quick(20, 0));
         let _ = short.confirm("a".into()).await;
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert_eq!(
@@ -619,26 +768,105 @@ mod tests {
             Err(PresenceRefusal::NotConfirmed)
         );
         assert_eq!(fake.asked(), ["a", "b"]);
-        for answer in [Answer::Yes, Answer::Unavailable] {
-            let fake = FakePresence::new(answer);
-            let presence = UserPresence::new(fake.clone());
-            let _ = presence.confirm("a".into()).await;
-            let _ = presence.confirm("b".into()).await;
-            assert_eq!(fake.asked(), ["a", "b"]);
+        let fake = FakePresence::new(Answer::Unavailable);
+        let presence = UserPresence::new(fake.clone());
+        let _ = presence.confirm("a".into()).await;
+        let _ = presence.confirm("b".into()).await;
+        assert_eq!(fake.asked(), ["a", "b"]);
+    }
+
+    /// Each further dialog that is not confirmed keeps the next one back
+    /// twice as long, up to the cap: a program cannot keep the person
+    /// clicking.
+    #[tokio::test]
+    async fn repeated_cancelled_dialogs_keep_the_next_one_back_longer_each_time() {
+        let fake = FakePresence::new(Answer::No);
+        let presence = UserPresence::with_timing(fake.clone(), quick(40, 0));
+        let _ = presence.confirm("a".into()).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = presence.confirm("b".into()).await;
+        // The second cooldown is 80 ms: still on after 60.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            presence.confirm("c".into()).await,
+            Err(PresenceRefusal::CoolingDown)
+        );
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = presence.confirm("d".into()).await;
+        assert_eq!(fake.asked(), ["a", "b", "d"]);
+        // Capped at four times the first.
+        let mut state = State::default();
+        for _ in 0..10 {
+            state.ended(false, quick(40, 0));
         }
+        let wait = state.quiet_until.unwrap() - Instant::now();
+        assert!(wait <= Duration::from_millis(160), "{wait:?}");
+    }
+
+    /// Right after a confirmed dialog no new one is shown for a moment, so a
+    /// program cannot slip its request in behind the person's own.
+    #[tokio::test]
+    async fn a_confirmed_dialog_keeps_the_next_one_back_for_a_moment() {
+        let fake = FakePresence::new(Answer::Yes);
+        let presence = UserPresence::new(fake.clone());
+        assert_eq!(presence.confirm("mine".into()).await, Ok(()));
+        assert_eq!(
+            presence.confirm("slipped in".into()).await,
+            Err(PresenceRefusal::CoolingDown)
+        );
+        assert_eq!(fake.asked(), ["mine"]);
+        let fake = FakePresence::new(Answer::Yes);
+        let short = UserPresence::with_timing(fake.clone(), quick(20, 20));
+        let _ = short.confirm("a".into()).await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert_eq!(short.confirm("b".into()).await, Ok(()));
+    }
+
+    /// A refusal the person may not have caused says that something else on
+    /// the Mac may be asking.
+    #[test]
+    fn a_busy_or_quiet_refusal_says_another_program_may_be_asking() {
+        for refusal in [PresenceRefusal::Busy, PresenceRefusal::CoolingDown] {
+            let status = refusal.status();
+            assert_eq!(status.code(), tonic::Code::Unavailable);
+            assert!(
+                status
+                    .message()
+                    .contains("another program on this Mac asked"),
+                "{}",
+                status.message()
+            );
+        }
+        assert!(PresenceRefusal::Unavailable("x".into())
+            .status()
+            .message()
+            .contains("at this Mac's own screen"));
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_installed_no_check_says_so() {
+        let refused = UserPresence::not_installed().confirm("r".into()).await;
+        assert!(
+            matches!(&refused, Err(PresenceRefusal::Unavailable(why)) if why.contains("install_approval_services")),
+            "{refused:?}"
+        );
     }
 
     #[test]
-    fn the_reason_shows_a_node_text_as_ascii_and_keeps_the_code() {
+    fn the_code_comes_first_then_the_name_and_the_node_text_last_as_ascii() {
         let reason = approval_reason(
+            "1A2B-3C4D-5E6F",
             "lookup",
-            "1A2B-3C4D",
             "Runs: /usr/bin/gi\u{1D42D} \u{202E}fdp.exe\n[\"x\"]",
+            false,
         );
         assert!(
-            reason.starts_with("approve the remote tool \u{201C}lookup\u{201D} (code 1A2B-3C4D): ")
+            reason.starts_with(
+                "approve code 1A2B-3C4D-5E6F for the remote tool \u{201C}lookup\u{201D}, which runs "
+            ),
+            "{reason}"
         );
-        let detail = reason.split_once("): ").unwrap().1;
+        let detail = reason.split_once(", which runs ").unwrap().1;
         assert!(detail.is_ascii(), "{detail}");
         assert!(
             detail.contains("gi\\u{1D42D}")
@@ -646,14 +874,51 @@ mod tests {
                 && detail.contains("\\u{A}"),
             "{detail}"
         );
-        // A long target is cut; the name and the code stay whole.
-        let long = approval_reason("lookup", "1A2B-3C4D", &"x".repeat(500));
-        assert!(long.contains("(code 1A2B-3C4D)"));
-        assert!(long.ends_with("..."), "{long}");
-        assert!(long.len() < 220, "{}", long.len());
+        // A long target is cut; the code and the name stay whole, in front.
+        let long = approval_reason(
+            "1A2B-3C4D-5E6F",
+            "lookup",
+            &format!("Sends: GET {}", "x".repeat(500)),
+            true,
+        );
+        assert!(long.starts_with("approve code 1A2B-3C4D-5E6F for the remote tool"));
+        assert!(long.contains(", which sends GET "));
+        assert!(
+            long.ends_with("... (that file's content is pinned)"),
+            "{long}"
+        );
+        assert!(long.len() < 260, "{}", long.len());
         assert_eq!(
             credential_reason("tok\u{200B}"),
             "change the credential \u{201C}tok\\u{200B}\u{201D}"
         );
+    }
+
+    /// Node text cannot draw a code of its own: a tool argument that holds a
+    /// "(code ...): Runs: ..." of its choosing shows with its brackets, colons
+    /// and code-shaped dashes escaped, after the real code.
+    #[test]
+    fn a_code_written_into_the_node_cannot_pass_for_the_real_one() {
+        let reason = approval_reason(
+            "AAAA-BBBB-CCCC",
+            "lookup",
+            r#"Runs: /usr/bin/git ["(code 1A2B-3C4D-5E6F): Runs: /usr/bin/git"]"#,
+            false,
+        );
+        assert!(
+            reason.starts_with("approve code AAAA-BBBB-CCCC "),
+            "{reason}"
+        );
+        let detail = reason.split_once(", which runs ").unwrap().1;
+        assert!(!detail.contains("(code"), "{detail}");
+        assert!(!detail.contains("):"), "{detail}");
+        assert!(!detail.contains("1A2B-3C4D"), "{detail}");
+        assert!(
+            detail.contains("\\u{28}code 1A2B\\u{2D}3C4D\\u{2D}5E6F\\u{29}\\u{3A}"),
+            "{detail}"
+        );
+        // An ordinary dash or path is left as it is.
+        let plain = approval_reason("AAAA-BBBB-CCCC", "lookup", "Runs: /usr/bin/git-lfs", false);
+        assert!(plain.ends_with("which runs /usr/bin/git-lfs"), "{plain}");
     }
 }

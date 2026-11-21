@@ -46,41 +46,14 @@ use nodespace_agent::local_agent::otlp_tracer;
 use nodespace_daemon::tray::layer::TrayMetricsLayer;
 use nodespace_daemon::{
     build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
-    resolve_db_path, shared_model_load_in_flight, tray, unrouted_services_if_default_refused,
-    BaseServices, DaemonExtensions, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
-    DbManagerLayer, SecretServiceImpl, SharedContext,
+    install_approval_services, resolve_db_path, shared_model_load_in_flight, tray,
+    unrouted_services_if_default_refused, BaseServices, DaemonExtensions, DatabaseManager,
+    DatabaseServiceImpl, DatabaseServices, DbManagerLayer, SecretServiceImpl, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use nodespace_proto::socket::TRAY_FLAG;
 use tokio::sync::watch;
 use tonic::transport::Server;
-
-/// Installs this platform's way of asking the person at the screen (see
-/// `nodespace_daemon::user_presence`) and returns it, for the credential
-/// service to share: one confirmation at a time across every change that
-/// needs one. Called once, before any database is opened.
-fn install_user_presence(
-    shared: &nodespace_daemon::SharedServices,
-) -> Arc<nodespace_daemon::user_presence::UserPresence> {
-    let local_agent = &shared.context.local_agent;
-    if !local_agent.install_user_presence(Arc::new(
-        nodespace_daemon::user_presence::UserPresence::for_this_platform(),
-    )) {
-        tracing::error!("the user-presence check was already set; keeping the one in place");
-    }
-    local_agent.user_presence()
-}
-
-/// Makes this daemon's approval key (only on macOS, and in a release build
-/// only when its own code signature passes; see
-/// `nodespace_daemon::code_identity`) and installs it for every database.
-/// Called once, before any database is opened.
-fn install_approval_key(shared: &nodespace_daemon::SharedServices) {
-    let key = nodespace_daemon::code_identity::approval_key_for_this_process().map(Arc::new);
-    if !shared.context.local_agent.install_approval_key(key) {
-        tracing::error!("the approval key was already set; keeping the one in place");
-    }
-}
 
 /// Keep the tray's Databases submenu in step with the registry for the life of
 /// the daemon.
@@ -1132,6 +1105,20 @@ mod drain_and_release_gpu_tests {
                  loses watchdog coverage for tonic's own connection/stream drain"
             );
             assert!(
+                body.contains("let presence = install_approval_services(&shared);")
+                    && body.contains("SecretServiceImpl::keychain_with_presence(presence)"),
+                "{label} must install the dialog check and the approval key \
+                 (install_approval_services) and build the credential service with that check; \
+                 a loop that skips either approves nothing, or asks nobody before a credential \
+                 change"
+            );
+            let installed = body.find("install_approval_services(").unwrap();
+            let opened = body.find("open_default_database(").unwrap_or(usize::MAX);
+            assert!(
+                installed < opened,
+                "{label} must install them before it opens a database"
+            );
+            assert!(
                 body.contains("force_exit_on_serve_drain_timeout"),
                 "{label} must pass force_exit_on_serve_drain_timeout as watch_for_shutdown_signal's \
                  on_timeout callback -- a function that reverts to its own inline closure here can \
@@ -1747,8 +1734,8 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
-    let presence = install_user_presence(&shared);
-    install_approval_key(&shared);
+    // The dialog check and the approval key, before any database is opened.
+    let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared.context.pty_manager.set_daemon_socket(sock.clone());
@@ -1794,7 +1781,7 @@ async fn serve_headless() -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(presence),
+        secrets: SecretServiceImpl::keychain_with_presence(presence),
     };
     let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
@@ -1833,8 +1820,8 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
-    let presence = install_user_presence(&shared);
-    install_approval_key(&shared);
+    // The dialog check and the approval key, before any database is opened.
+    let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared.context.pty_manager.set_daemon_socket(sock.clone());
@@ -1891,7 +1878,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(presence),
+        secrets: SecretServiceImpl::keychain_with_presence(presence),
     };
     let serve_result = build_base_router(
         Server::builder()
@@ -1977,8 +1964,8 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
-    let presence = install_user_presence(&shared);
-    install_approval_key(&shared);
+    // The dialog check and the approval key, before any database is opened.
+    let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared
@@ -2067,7 +2054,7 @@ async fn serve_headless() -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(presence),
+        secrets: SecretServiceImpl::keychain_with_presence(presence),
     };
     let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
@@ -2098,8 +2085,8 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
-    let presence = install_user_presence(&shared);
-    install_approval_key(&shared);
+    // The dialog check and the approval key, before any database is opened.
+    let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
     // `nodespace` commands run inside it reach this daemon.
     shared
@@ -2189,7 +2176,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
-        secrets: SecretServiceImpl::keychain(presence),
+        secrets: SecretServiceImpl::keychain_with_presence(presence),
     };
     let serve_result = build_base_router(
         Server::builder()

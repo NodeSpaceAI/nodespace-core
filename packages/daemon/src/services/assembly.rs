@@ -348,6 +348,44 @@ pub async fn build_shared_services(
     ))
 }
 
+/// Installs, for every database the daemon opens, the two things a remote
+/// tool approval and a credential change rely on, and returns the first for the
+/// credential service ([`crate::SecretServiceImpl::keychain_with_presence`]):
+///
+/// - this platform's way of asking the person at the screen
+///   ([`crate::user_presence::UserPresence::for_this_platform`]);
+/// - the approval key, made in memory now (only on macOS, and in a release build
+///   only when the daemon's own code signature passes; see
+///   [`crate::code_identity`]).
+///
+/// Every daemon `main` calls it once, right after [`build_shared_services`] and
+/// before any database is opened. A daemon that does not gets no approvals and
+/// no credential changes: both are refused, saying this was not called.
+pub fn install_approval_services(
+    shared: &SharedServices,
+) -> Arc<crate::user_presence::UserPresence> {
+    install_approval_services_on(
+        &shared.context.local_agent,
+        Arc::new(crate::user_presence::UserPresence::for_this_platform()),
+        crate::code_identity::approval_key_for_this_process().map(Arc::new),
+    )
+}
+
+/// [`install_approval_services`] with the check and the key given.
+pub(crate) fn install_approval_services_on(
+    local_agent: &SharedLocalAgent,
+    presence: Arc<crate::user_presence::UserPresence>,
+    key: crate::services::local_agent_service::ApprovalKeySlot,
+) -> Arc<crate::user_presence::UserPresence> {
+    if !local_agent.install_user_presence(presence) {
+        tracing::error!("the user-presence check was already set; keeping the one in place");
+    }
+    if !local_agent.install_approval_key(key) {
+        tracing::error!("the approval key was already set; keeping the one in place");
+    }
+    local_agent.user_presence()
+}
+
 /// Make sure the directory that will hold a database file exists.
 ///
 /// A directory under the daemon's state directory is daemon-owned: it is
