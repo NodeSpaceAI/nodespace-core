@@ -2889,21 +2889,27 @@ fn schema_change_sentence(record: &ToolExecutionRecord) -> String {
         .filter(|t| plain(t))
         .map(|t| format!("the type '{t}'"))
         .unwrap_or_else(|| "a type".to_string());
-    let named: Vec<String> = ["add_fields", "fields"]
+    let all: Vec<&str> = ["add_fields", "fields"]
         .iter()
         .filter_map(|k| record.args.get(*k).and_then(|v| v.as_array()))
         .flatten()
         .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+        .collect();
+    let named: Vec<String> = all
+        .iter()
         .filter(|f| plain(f))
         .take(crate::agent_types::REFUSED_KEYS_SHOWN)
         .map(|f| format!("'{f}'"))
         .collect();
-    let added = if named.is_empty() {
-        String::new()
-    } else {
-        format!(" (fields: {})", named.join(", "))
+    // A list that leaves fields out says so: the ones not named are counted.
+    let unnamed = all.len() - named.len();
+    let added = match (named.is_empty(), unnamed) {
+        (true, 0) => String::new(),
+        (true, _) => " (other fields)".to_string(),
+        (false, 0) => format!(" (fields: {})", named.join(", ")),
+        (false, n) => format!(" (fields: {} and {n} more)", named.join(", ")),
     };
-    format!("I changed {ty} in this turn{added}, which you did not ask for.")
+    format!("I changed {ty} in this turn{added}.")
 }
 
 /// A write refused for keys its type does not declare (ADR-112 section 11), as a
@@ -12625,8 +12631,7 @@ mod tests {
          because 'effort' is not a field of 'task'.";
     const OFFER_EFFORT: &str =
         " I can add it to every 'task' as a separate request if you want it.";
-    const CHANGED_TASK: &str =
-        "I changed the type 'task' in this turn (fields: 'effort'), which you did not ask for.";
+    const CHANGED_TASK: &str = "I changed the type 'task' in this turn (fields: 'effort').";
 
     /// What the user is told for a refused `effort` on a `task`, whatever the model
     /// replied, and nothing that says or promises the field was added or stored.
@@ -12938,8 +12943,7 @@ mod tests {
         assert_eq!(
             response,
             "⚠️ A write carrying 'effort' to the type 'task' was refused, because 'effort' is \
-             not a field of 'task'. I changed the type 'project' in this turn (fields: 'goal'), \
-             which you did not ask for."
+             not a field of 'task'. I changed the type 'project' in this turn (fields: 'goal')."
         );
     }
 
@@ -12960,9 +12964,41 @@ mod tests {
         assert_eq!(
             response,
             "⚠️ A write carrying 'effort' to the type 'task' was refused, because 'effort' is \
-             not a field of 'task'. I changed the type 'Sprint' in this turn (fields: 'goal'), \
-             which you did not ask for."
+             not a field of 'task'. I changed the type 'Sprint' in this turn (fields: 'goal')."
         );
+    }
+
+    /// A field list the sentence cannot give whole says so: fields that are not
+    /// plain identifiers, or past the cap, are counted, never silently left out.
+    #[tokio::test]
+    async fn a_partial_field_list_is_marked() {
+        let fields = |names: &[&str]| {
+            json!({"schema_id": "project",
+                   "add_fields": names.iter().map(|n| json!({"name": n, "type": "text"})).collect::<Vec<_>>()})
+        };
+        for (names, expected) in [
+            (
+                vec!["a", "b", "c", "d", "e", "f", "g"],
+                "(fields: 'a', 'b', 'c', 'd', 'e' and 2 more)",
+            ),
+            (vec!["a", "bad name"], "(fields: 'a' and 1 more)"),
+            (vec!["bad name", "x.y"], "(other fields)"),
+        ] {
+            let response = run_claim_turn(
+                vec![
+                    create_task_refused(),
+                    landed_call("update_schema", fields(&names)),
+                ],
+                "All set.",
+            )
+            .await;
+            assert!(
+                response.ends_with(&format!(
+                    "I changed the type 'project' in this turn {expected}."
+                )),
+                "{names:?}: {response}"
+            );
+        }
     }
 
     /// An `update_schema` that failed changed nothing: the offer stands, and the
