@@ -4422,26 +4422,10 @@ async fn read_typed_keys(
     if refused.is_empty() {
         return Ok(moved);
     }
-    let keys = refused
-        .iter()
-        .map(|key| format!("'{key}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(ToolError::InvalidArguments {
+    Err(ToolError::UndeclaredKeys {
         tool: tool.to_string(),
-        reason: format!(
-            "{keys} {} not {} of the type '{node_type}', so nothing was stored. A node takes \
-             only the fields its type declares. Tell the user which value was refused and \
-             offer to add the field to '{node_type}' as a separate request; adding it changes \
-             every '{node_type}' node, so do not add it yourself and do not leave the value \
-             out without saying so.",
-            if refused.len() == 1 { "is" } else { "are" },
-            if refused.len() == 1 {
-                "a field"
-            } else {
-                "fields"
-            },
-        ),
+        node_type: node_type.to_string(),
+        keys: refused,
     })
 }
 
@@ -10915,9 +10899,10 @@ mod tests {
                     }),
                 )
                 .await;
-            let Err(ToolError::InvalidArguments { reason, .. }) = outcome else {
+            let Err(error @ ToolError::UndeclaredKeys { .. }) = outcome else {
                 panic!("expected a refusal, got {outcome:?}");
             };
+            let reason = error.to_string();
             assert!(reason.contains("'notes'"), "{reason}");
             assert!(reason.contains("'task'"), "{reason}");
             assert!(
@@ -11021,9 +11006,10 @@ mod tests {
                     }),
                 )
                 .await;
-            let Err(ToolError::InvalidArguments { reason, .. }) = outcome else {
+            let Err(error @ ToolError::UndeclaredKeys { .. }) = outcome else {
                 panic!("expected a refusal, got {outcome:?}");
             };
+            let reason = error.to_string();
             assert!(reason.contains("'task__weight'"), "{reason}");
             assert!(reason.contains("'text__status'"), "{reason}");
         }
@@ -11048,9 +11034,10 @@ mod tests {
                     json!({ "id": id, "field_values": { "registrar": "Gandi" }, "dry_run": true }),
                 )
                 .await;
-            let Err(ToolError::InvalidArguments { reason, .. }) = outcome else {
+            let Err(error @ ToolError::UndeclaredKeys { .. }) = outcome else {
                 panic!("expected a refusal, got {outcome:?}");
             };
+            let reason = error.to_string();
             assert!(reason.contains("'registrar'"), "{reason}");
             let properties = stored(&executor, &id).await;
             assert!(properties.get("registrar").is_none(), "{properties}");
@@ -11130,9 +11117,10 @@ mod tests {
                     }),
                 )
                 .await;
-            let Err(ToolError::InvalidArguments { reason, .. }) = outcome else {
+            let Err(error @ ToolError::UndeclaredKeys { .. }) = outcome else {
                 panic!("expected a refusal, got {outcome:?}");
             };
+            let reason = error.to_string();
             assert!(reason.contains("'weight'"), "{reason}");
             assert!(reason.contains("'crate'"), "{reason}");
 
@@ -11171,9 +11159,10 @@ mod tests {
                     json!({ "id": id, "field_values": { "registrar": "Gandi" } }),
                 )
                 .await;
-            let Err(ToolError::InvalidArguments { reason, .. }) = outcome else {
+            let Err(error @ ToolError::UndeclaredKeys { .. }) = outcome else {
                 panic!("expected a refusal, got {outcome:?}");
             };
+            let reason = error.to_string();
             assert!(reason.contains("'registrar'"), "{reason}");
             assert!(reason.contains("do not add it yourself"), "{reason}");
             let properties = stored(&executor, &id).await;

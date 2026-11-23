@@ -40,6 +40,19 @@ pub enum ToolError {
         reason: String,
     },
 
+    /// A write named keys the type does not declare (ADR-112 section 11). Its own
+    /// class so the agent loop can tell the user which value was refused and offer
+    /// the field, instead of reading a malformed call.
+    #[error("undeclared keys for tool {tool}: {}", undeclared_keys_message(.keys, .node_type))]
+    UndeclaredKeys {
+        /// Name of the tool.
+        tool: String,
+        /// The type the write was for.
+        node_type: String,
+        /// The keys no schema in its chain declares.
+        keys: Vec<String>,
+    },
+
     /// A write named an id that resolves to no node: a placeholder, a name in
     /// place of an id, or an id that no longer exists. Typed so the agent loop
     /// can refuse the call and ask the user, rather than read an error string.
@@ -58,6 +71,58 @@ pub enum ToolError {
     /// Catch-all for unexpected errors.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// What a refused write says to the model: which keys, which type, and what to do.
+/// The leading sentence is the shape [`parse_undeclared_keys`] reads back.
+fn undeclared_keys_message(keys: &[String], node_type: &str) -> String {
+    let list = keys
+        .iter()
+        .map(|key| format!("'{key}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (verb, noun) = if keys.len() == 1 {
+        ("is", "a field")
+    } else {
+        ("are", "fields")
+    };
+    format!(
+        "{list} {verb} not {noun} of the type '{node_type}', so nothing was stored. A node takes \
+         only the fields its type declares. Tell the user which value was refused and offer to \
+         add the field to '{node_type}' as a separate request; adding it changes every \
+         '{node_type}' node, so do not add it yourself and do not leave the value out without \
+         saying so."
+    )
+}
+
+/// The keys and the type of a refusal for undeclared keys, read from an error
+/// text: this crate's own ([`ToolError::UndeclaredKeys`]) or the store's
+/// (`'k' is not a field of the type 'T': ...`), whatever prefix the tool put on it.
+/// Only a key or type of plain identifier characters is returned, since both come
+/// from the model's call; `keys` is empty when none is.
+pub fn parse_undeclared_keys(text: &str) -> Option<(Vec<String>, String)> {
+    let (marker_at, marker) = [" not a field of the type '", " not fields of the type '"]
+        .iter()
+        .filter_map(|m| text.find(m).map(|at| (at, *m)))
+        .min_by_key(|(at, _)| *at)?;
+    let after = &text[marker_at + marker.len()..];
+    let node_type = after.split('\'').next()?;
+    let before = &text[..marker_at];
+    let sentence = before.rsplit_once(": ").map_or(before, |(_, tail)| tail);
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    };
+    let keys: Vec<String> = sentence
+        .split('\'')
+        .skip(1)
+        .step_by(2)
+        .filter(|k| plain(k))
+        .map(str::to_string)
+        .collect();
+    plain(node_type).then(|| (keys, node_type.to_string()))
 }
 
 // ---------------------------------------------------------------------------

@@ -152,10 +152,28 @@ async fn persists_node_properties_through_the_round_trip() {
     let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
     let state = harness.client_state();
 
+    // `text` declares no field, and a type takes only what it declares, so the
+    // fields are added to it first, through the schema path, as a user does.
+    let mut client = state.client().await;
+    client
+        .update_schema(nodespace_proto::nodespace::SchemaParamsRequest {
+            params_json: json!({
+                "schema_id": "text",
+                "add_fields": [
+                    { "name": "rank", "type": "text" },
+                    { "name": "tags", "type": "array", "itemType": "text" },
+                    { "name": "count", "type": "number" }
+                ]
+            })
+            .to_string(),
+        })
+        .await
+        .expect("adding custom fields to text failed");
+
     let id = uuid::Uuid::new_v4().to_string();
     let mut input = text_input(&id, "with props");
     input.properties = json!({
-        "text": { "priority": "high", "tags": ["a", "b"], "count": 42 }
+        "text": { "rank": "high", "tags": ["a", "b"], "count": 42 }
     });
 
     create_node(state.clone(), input)
@@ -171,9 +189,8 @@ async fn persists_node_properties_through_the_round_trip() {
     // properties promoted to top-level fields — see `node_to_typed_value` /
     // `flatten_properties_for_api` in nodespace-types. For a generic type,
     // flattened properties land under the top-level `properties` object.
-    // `text` is a core type with no fields of its own, so what it carries are
-    // namespaced extension fields.
-    assert_eq!(node["properties"]["priority"], json!("high"));
+    // They are custom fields of `text`, stored under their own names.
+    assert_eq!(node["properties"]["rank"], json!("high"));
     assert_eq!(node["properties"]["tags"], json!(["a", "b"]));
     assert_eq!(node["properties"]["count"], json!(42));
 }
