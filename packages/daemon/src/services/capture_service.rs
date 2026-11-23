@@ -249,7 +249,12 @@ where
             return Ok(false);
         };
         let update = NodeUpdate::new().with_properties(properties.clone());
-        match node_service.update_node(node_id, version, update).await {
+        // Session end records `last_active`, `exit_code`, `session_id`,
+        // `summary` and `transcript`: system fields this service alone writes.
+        match node_service
+            .maintaining_system_fields(node_service.update_node(node_id, version, update))
+            .await
+        {
             Ok(_) => return Ok(true),
             Err(NodeServiceError::VersionConflict { .. }) if attempt + 1 < MAX_WRITE_ATTEMPTS => {
                 tracing::debug!(

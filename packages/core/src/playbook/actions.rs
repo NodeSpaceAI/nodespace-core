@@ -1497,6 +1497,24 @@ pub async fn execute_actions(
     node_service: &Arc<NodeService>,
     execution_context: PlaybookExecutionContext,
 ) -> ActionResult {
+    NodeService::without_system_field_maintenance(execute_actions_held(
+        actions,
+        trigger_node,
+        event,
+        node_service,
+        execution_context,
+    ))
+    .await
+}
+
+/// [`execute_actions`] with the system-field lift already cleared.
+async fn execute_actions_held(
+    actions: &[ParsedAction],
+    trigger_node: &Node,
+    event: &DomainEvent,
+    node_service: &Arc<NodeService>,
+    execution_context: PlaybookExecutionContext,
+) -> ActionResult {
     // Extract the play id before `execution_context` is moved into
     // `scoped_for_playbook` below -- it anchors `rule_id` (ADR-060 §3,
     // ADR-074; see module doc).
@@ -2200,6 +2218,28 @@ pub(crate) async fn execute_actions_in_tx(
     run: InvariantRun<'_, '_>,
     execution_context: PlaybookExecutionContext,
 ) -> ActionResult {
+    // An invariant rule runs inside the write that triggered it, and is not
+    // the maintainer of anything that write is allowed to set.
+    NodeService::without_system_field_maintenance(execute_actions_in_tx_held(
+        actions,
+        trigger_node,
+        event,
+        node_service,
+        run,
+        execution_context,
+    ))
+    .await
+}
+
+/// [`execute_actions_in_tx`] with the system-field lift already cleared.
+async fn execute_actions_in_tx_held(
+    actions: &[ParsedAction],
+    trigger_node: &Node,
+    event: &DomainEvent,
+    node_service: &Arc<NodeService>,
+    run: InvariantRun<'_, '_>,
+    execution_context: PlaybookExecutionContext,
+) -> ActionResult {
     let play_id = execution_context.source_playbook_id.clone();
     let depth = execution_context.depth;
 
@@ -2888,6 +2928,58 @@ mod tests {
             }
             other => panic!("expected Failed(Rejected), got {:?}", other),
         }
+    }
+
+    /// A rule's actions are user-authored, so the lift a maintainer's write
+    /// holds does not reach them: an `update_node` action that sets a system
+    /// field is refused even when `execute_actions` is called inside
+    /// `maintaining_system_fields`.
+    #[tokio::test]
+    async fn execute_actions_does_not_inherit_the_system_field_lift() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut store: Arc<crate::db::SqliteStore> = Arc::new(
+            crate::db::SqliteStore::new(temp_dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let chat_id = node_service
+            .create_node(Node::new(
+                "ai-chat-pty".to_string(),
+                "Session".to_string(),
+                json!({ "agent": "claude-code" }),
+            ))
+            .await
+            .unwrap();
+        let actions = vec![ParsedAction {
+            action_type: ActionType::UpdateNode,
+            params: json!({ "node_id": chat_id, "properties": { "summary": "forged" } }),
+            for_each: None,
+        }];
+        let trigger = make_test_node("trigger-1", "task");
+        let event = make_node_created_event("trigger-1", "task");
+        let context = PlaybookExecutionContext {
+            originating_event_id: "evt-1".to_string(),
+            depth: 0,
+            source_playbook_id: "play-1".to_string(),
+        };
+
+        let result = node_service
+            .maintaining_system_fields(execute_actions(
+                &actions,
+                &trigger,
+                &event,
+                &node_service,
+                context,
+            ))
+            .await;
+
+        assert!(
+            matches!(&result, ActionResult::Failed(e) if e.to_string().contains("'summary'")),
+            "{result:?}"
+        );
+        let stored = node_service.get_node(&chat_id).await.unwrap().unwrap();
+        assert!(stored.properties["ai-chat"].get("summary").is_none());
     }
 
     // -----------------------------------------------------------------------

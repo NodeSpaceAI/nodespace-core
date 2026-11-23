@@ -48,6 +48,7 @@ pub(crate) mod query;
 pub(crate) mod relationship;
 pub(crate) mod schema;
 pub mod seed_updates;
+mod system_fields;
 
 #[cfg(test)]
 mod dry_run_tests;

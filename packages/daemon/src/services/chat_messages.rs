@@ -413,13 +413,19 @@ pub async fn append_message(
         lifecycle_status: None,
     };
 
+    // A message's `timestamp`, `reasoning`, `outcome` and `options` are system
+    // fields: appending a message is the one place they are written.
     let relationships = message_edges(&message);
     if relationships.is_empty() {
-        return node_service.create_node_with_parent(params).await;
+        return node_service
+            .maintaining_system_fields(node_service.create_node_with_parent(params))
+            .await;
     }
 
     let (message_id, skipped) = node_service
-        .create_node_with_relationships(params, relationships.clone())
+        .maintaining_system_fields(
+            node_service.create_node_with_relationships(params, relationships.clone()),
+        )
         .await?;
     for index in skipped {
         let edge = &relationships[index];

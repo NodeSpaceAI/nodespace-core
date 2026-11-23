@@ -240,11 +240,11 @@ async fn an_acp_chat_stores_each_field_in_its_declaring_bucket() {
 
     // The session id is the agent's own, written once the session exists.
     let version = get(&svc, &id).await.version;
-    svc.update_node(
+    svc.maintaining_system_fields(svc.update_node(
         &id,
         version,
         NodeUpdate::new().with_properties(json!({ "session_id": "s-1" })),
-    )
+    ))
     .await
     .expect("session_id is a declared field");
     let node = get(&svc, &id).await;
@@ -423,7 +423,7 @@ async fn a_flat_update_lands_each_field_in_its_declaring_bucket() {
     let id = pty_chat(&svc).await;
     let version = get(&svc, &id).await.version;
 
-    svc.update_node(
+    svc.maintaining_system_fields(svc.update_node(
         &id,
         version,
         NodeUpdate::new().with_properties(json!({
@@ -432,7 +432,7 @@ async fn a_flat_update_lands_each_field_in_its_declaring_bucket() {
             "exit_code": 0,
             "session_status": "ended"
         })),
-    )
+    ))
     .await
     .unwrap();
 

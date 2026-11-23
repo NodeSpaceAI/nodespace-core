@@ -12107,6 +12107,56 @@ mod tests {
             assert!(matches!(err, ToolError::InvalidArguments { .. }));
         }
 
+        /// A field the schema marks `system` is written by the code that
+        /// maintains it, so the agent's tools refuse it on create and update,
+        /// naming the field and the type.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_agent_tool_cannot_write_a_system_field() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let play_id = ns
+                .create_node(nodespace_core::models::Node::new(
+                    "play".to_string(),
+                    "A play".to_string(),
+                    json!({ "rules": [] }),
+                ))
+                .await
+                .unwrap();
+            let err = executor
+                .execute(
+                    "update_node",
+                    json!({ "id": play_id, "field_values": {"suspended_at": "2026-10-02T10:00:00Z"} }),
+                )
+                .await
+                .expect_err("a suspension is the engine's");
+            assert!(err.to_string().contains("suspended_at"), "{err:?}");
+
+            let chat_id = ns
+                .create_node(nodespace_core::models::Node::new(
+                    "query".to_string(),
+                    "A query".to_string(),
+                    json!({ "generated_by": "user" }),
+                ))
+                .await
+                .unwrap();
+            let err = executor
+                .execute(
+                    "update_node",
+                    json!({ "id": chat_id, "field_values": {"execution_count": 99} }),
+                )
+                .await
+                .expect_err("an execution count is the query runner's");
+            let message = err.to_string();
+            assert!(
+                message.contains("'execution_count'") && message.contains("'query'"),
+                "{message}"
+            );
+            let stored = ns.get_node(&chat_id).await.unwrap().unwrap();
+            assert!(stored.properties["query"]
+                .get("execution_count")
+                .is_none_or(|v| v.as_u64() != Some(99)));
+        }
+
         /// An agent tool cannot write a conversation record, so it cannot forge a
         /// confirmation card and its answer.
         #[tokio::test(flavor = "multi_thread")]

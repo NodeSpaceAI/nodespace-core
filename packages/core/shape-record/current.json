@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "81645863a88501cd63bea9f0c9a7c755f1fc4689faa43982161d4185cbda4b0e",
+  "hash": "9067399d6c24c12930d899d52fba0efa8cbbb5ad4a33d4190af9f8291eb6edb1",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -1129,7 +1129,7 @@
           "friendlyName": "Timestamp",
           "indexed": false,
           "name": "timestamp",
-          "protection": "system",
+          "protection": "core",
           "required": false,
           "type": "datetime"
         },

@@ -26,4 +26,5 @@ mod required_extensions_e2e;
 mod scenario6_update_node_properties;
 mod sigterm_during_model_load;
 mod single_instance;
+mod system_field_grpc_test;
 mod unrecognized_flag;

@@ -79,7 +79,9 @@ async fn try_create_under(
     content: &str,
     properties: serde_json::Value,
 ) -> Result<String, NodeServiceError> {
-    svc.create_node_with_parent(CreateNodeParams {
+    // The chat engines write a message's system fields, so the fixture
+    // writes as they do.
+    svc.maintaining_system_fields(svc.create_node_with_parent(CreateNodeParams {
         id: None,
         node_type: node_type.to_string(),
         content: content.to_string(),
@@ -87,7 +89,7 @@ async fn try_create_under(
         position: InsertPositionOwned::End,
         properties,
         lifecycle_status: None,
-    })
+    }))
     .await
 }
 
@@ -238,11 +240,11 @@ async fn an_acp_chat_stores_parts_and_updates_a_tool_call_in_place() {
     .await;
 
     let version = get(&svc, &call).await.version;
-    svc.update_node(
+    svc.maintaining_system_fields(svc.update_node(
         &call,
         version,
         NodeUpdate::new().with_properties(json!({ "tool_status": "completed" })),
-    )
+    ))
     .await
     .unwrap();
     let node = get(&svc, &call).await;
