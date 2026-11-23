@@ -20,7 +20,9 @@
 // What it cannot catch: a prefix assembled from pieces (`"cus" + "tom:"`), held
 // in a variable and matched later, or read from data. It finds the literal
 // spellings, which is how a prefix has come back every time; the write rule
-// itself is a lookup in the schema (ADR-112 section 3), so a key a caller spells
+// A Tauri permission identifier shaped `plugin:name` inside quotes would be
+// flagged as a key; the repository holds none, and one would be allow-listed by
+// path in `ALLOWED_PATHS`. The write rule itself is a lookup in the schema (ADR-112 section 3), so a key a caller spells
 // with a prefix is refused as undeclared whatever the code looks like.
 
 import { readFileSync } from "node:fs";
@@ -89,9 +91,10 @@ export const ALLOWED_PATHS: readonly string[] = ["packages/agent/goldens/ablatio
 /**
  * `text` with its comments blanked: `//` to the end of a line and `/* .. *\/`
  * spans, outside double-quoted and backtick strings. Line numbers are kept.
- * A single quote is not tracked (a Rust lifetime or a char would end it wrong).
+ * A single quote opens a string only when `singleQuoted` is set (TypeScript, JavaScript and
+ * Svelte); in Rust it is a lifetime or a char and is not tracked.
  */
-export function stripComments(text: string): string {
+export function stripComments(text: string, singleQuoted = false): string {
   let out = "";
   let quote: string | null = null;
   for (let i = 0; i < text.length; i++) {
@@ -103,7 +106,7 @@ export function stripComments(text: string): string {
         out += next ?? "";
         i++;
       } else if (c === quote) quote = null;
-    } else if (c === '"' || c === "`") {
+    } else if (c === '"' || c === "`" || (singleQuoted && c === "'")) {
       quote = c;
       out += c;
     } else if (c === "/" && next === "/") {
@@ -143,7 +146,7 @@ export function kindOf(path: string): "code" | "markdown" | null {
 /** Every hit in one file's text. */
 export function findHits(file: string, text: string): Hit[] {
   const kind = kindOf(file) ?? (extensionOf(file) === ".md" ? "markdown" : "code");
-  const source = kind === "code" && COMMENTED_EXTENSIONS.has(extensionOf(file)) ? stripComments(text) : text;
+  const source = kind === "code" && COMMENTED_EXTENSIONS.has(extensionOf(file)) ? stripComments(text, extensionOf(file) !== ".rs") : text;
   const hits: Hit[] = [];
   const lines = source.split("\n");
   const original = text.split("\n");

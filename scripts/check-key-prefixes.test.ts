@@ -18,6 +18,7 @@ describe("code", () => {
     ["a.ts", `if (key.startsWith('plugin:')) {`],
     ["a.svelte", `const key = "org:region";`],
     ["a.rs", `  *p = "custom:a";`],
+    ["a.ts", `const u = 'a//b'; const k = "custom:a";`],
     ["a.rs", `/* x */ k.starts_with("custom:")`],
     ["a.rs", `let k = "plugin:nodespace:x";`],
     ["a.ts", `const k = "custom:story-points";`],
@@ -38,6 +39,7 @@ describe("code", () => {
     ["a.rs", `let n = 1; // the "custom:effort" key is gone`],
     ["a.rs", `/* "custom:effort" */ let n = 1;`],
     ["a.rs", `let url = "https://example.com//custom:x"; let n = 2;`],
+    ["a.ts", `const url = 'https://example.com'; // "custom:effort"`],
     ["a.rs", `let node_id = id.strip_prefix("node:");`],
     ["a.rs", `json!({ "effort": 3 })`],
   ];
