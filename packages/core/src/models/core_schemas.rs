@@ -1237,6 +1237,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Summary".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
+                    // System field: written only by the terminal-session capture service (daemon `capture_service`), when a session ends.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1256,6 +1257,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Last active".to_string(),
                     field_type: crate::models::SchemaFieldType::Datetime,
                     local_only: false,
+                    // System field: written only by the terminal-session capture service (daemon `capture_service`), when a session ends.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1330,6 +1332,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Context tokens".to_string(),
                     field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
+                    // System field: written only by the native chat engine; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1404,6 +1407,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Session id".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
+                    // System field: written only by the terminal-session capture service (daemon `capture_service`), when a session ends.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1423,6 +1427,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Transcript".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
+                    // System field: written only by the terminal-session capture service (daemon `capture_service`), when a session ends.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1442,6 +1447,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Exit code".to_string(),
                     field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
+                    // System field: written only by the terminal-session capture service (daemon `capture_service`), when a session ends.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1499,6 +1505,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Session id".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
+                    // System field: written only by the ACP chat engine; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1557,7 +1564,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Timestamp".to_string(),
                     field_type: crate::models::SchemaFieldType::Datetime,
                     local_only: false,
-                    protection: SchemaProtectionLevel::System,
+                    // Core, not system: the app writes a user's own message, `timestamp` included.
+                    protection: SchemaProtectionLevel::Core,
                     core_values: None,
                     user_values: None,
                     indexed: false,
@@ -1576,6 +1584,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Reasoning".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
+                    // System field: written only by the chat message appender (daemon `chat_messages::append_message`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1595,6 +1604,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Outcome".to_string(),
                     field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
+                    // System field: written only by the chat message appender (daemon `chat_messages::append_message`).
                     protection: SchemaProtectionLevel::System,
                     core_values: Some(enum_values(&AiChatTurnOutcome::ALL, AiChatTurnOutcome::as_str)),
                     user_values: Some(vec![]),
@@ -1614,6 +1624,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Options".to_string(),
                     field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
+                    // System field: written only by the chat message appender (daemon `chat_messages::append_message`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1633,6 +1644,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Part kind".to_string(),
                     field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
+                    // System field: written only by the chat card service (daemon `chat_card`) for a confirmation card; the ACP chat engine will write the other parts.
                     protection: SchemaProtectionLevel::System,
                     core_values: Some(enum_values(&AiChatPartKind::ALL, AiChatPartKind::as_str)),
                     user_values: Some(vec![]),
@@ -1652,6 +1664,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Tool call id".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
+                    // System field: written only by the ACP chat engine; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1671,6 +1684,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Tool title".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
+                    // System field: written only by the ACP chat engine; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1690,6 +1704,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Tool kind".to_string(),
                     field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
+                    // System field: written only by the ACP chat engine; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: Some(enum_values(&AiChatToolKind::ALL, AiChatToolKind::as_str)),
                     user_values: Some(vec![]),
@@ -1709,6 +1724,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Tool status".to_string(),
                     field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
+                    // System field: written only by the ACP chat engine; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: Some(enum_values(&AiChatToolStatus::ALL, AiChatToolStatus::as_str)),
                     user_values: Some(vec![]),
@@ -1728,6 +1744,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Confirmation id".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
+                    // System field: written only by the chat card service (daemon `chat_card`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1747,6 +1764,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Confirmation digest".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
+                    // System field: written only by the chat card service (daemon `chat_card`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1766,6 +1784,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Confirmation status".to_string(),
                     field_type: crate::models::SchemaFieldType::Enum,
                     local_only: false,
+                    // System field: written only by the chat card service (daemon `chat_card`), when a confirmation is answered.
                     protection: SchemaProtectionLevel::System,
                     core_values: Some(enum_values(&AiChatConfirmationStatus::ALL, AiChatConfirmationStatus::as_str)),
                     user_values: Some(vec![]),
@@ -1785,6 +1804,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Confirmation arguments".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
+                    // System field: written only by the chat card service (daemon `chat_card`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -1804,6 +1824,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Confirmation credentials".to_string(),
                     field_type: crate::models::SchemaFieldType::Array,
                     local_only: false,
+                    // System field: written only by the chat card service (daemon `chat_card`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -2033,6 +2054,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Execution count".to_string(),
                     field_type: crate::models::SchemaFieldType::Number,
                     local_only: false,
+                    // System field: written only by the query runner; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -2052,6 +2074,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Last executed".to_string(),
                     field_type: crate::models::SchemaFieldType::Datetime,
                     local_only: false,
+                    // System field: written only by the query runner; no writer exists yet, so no node holds a value.
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -2489,6 +2512,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Suspended reason".to_string(),
                     field_type: crate::models::SchemaFieldType::Enum,
                     local_only: true,
+                    // System field: written only by the playbook engine (`NodeService::record_play_suspension`).
                     protection: SchemaProtectionLevel::System,
                     core_values: Some(enum_values(
                         &crate::models::PlaySuspensionReason::ALL,
@@ -2514,6 +2538,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Suspended message".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: true,
+                    // System field: written only by the playbook engine (`NodeService::record_play_suspension`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,
@@ -2536,6 +2561,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     friendly_name: "Suspended at".to_string(),
                     field_type: crate::models::SchemaFieldType::Datetime,
                     local_only: true,
+                    // System field: written only by the playbook engine (`NodeService::record_play_suspension`).
                     protection: SchemaProtectionLevel::System,
                     core_values: None,
                     user_values: None,

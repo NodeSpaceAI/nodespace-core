@@ -180,7 +180,7 @@ impl NodeService {
             let ownership = self
                 .field_ownership_in_batch(&node.node_type, &mut ownership_by_type)
                 .await?;
-            self.rebucket_and_validate_with(node, ownership, false)?;
+            self.rebucket_and_validate_with(None, node, ownership, false)?;
             self.stamp_task_started(None, node).await?;
             // A new play carries no suspension, on this create path as on
             // the single-node one (ADR-087 §5).
@@ -608,7 +608,7 @@ impl NodeService {
             self.ensure_creatable_in_batch(&node, &mut instantiable_types)
                 .await?;
             let ownership = &ownership_by_type[&node.node_type];
-            self.rebucket_and_validate_with(&mut node, ownership, false)?;
+            self.rebucket_and_validate_with(None, &mut node, ownership, false)?;
             self.stamp_task_started(None, &mut node).await?;
             nodes_normalized.push((
                 node.id,
@@ -746,6 +746,8 @@ impl NodeService {
         // first, where the ancestor's behaviour reads them.
         let mut ownership_by_type: std::collections::HashMap<String, FieldOwnershipInfo> =
             std::collections::HashMap::new();
+        let mut guard_by_type: std::collections::HashMap<String, FieldOwnershipInfo> =
+            std::collections::HashMap::new();
         let mut instantiable_types = std::collections::HashSet::new();
         let mut nodes_normalized = Vec::with_capacity(nodes.len());
         for (id, node_type, content, parent_id, order, properties) in nodes {
@@ -764,7 +766,14 @@ impl NodeService {
             self.ensure_creatable_in_batch(&node, &mut instantiable_types)
                 .await?;
             let ownership = &ownership_by_type[&node.node_type];
-            self.rebucket_and_validate_behaviors(&mut node, ownership, false)?;
+            // The import takes no schema validation, but a `system` field is
+            // still the maintaining code's: an imported file does not set it.
+            if !guard_by_type.contains_key(&node.node_type) {
+                let resolved = self.field_ownership_for_write(&node.node_type).await?;
+                guard_by_type.insert(node.node_type.clone(), resolved);
+            }
+            self.rebucket_and_validate_behaviors(None, &mut node, ownership, false)?;
+            Self::ensure_system_fields_maintained(None, &node, &guard_by_type[&node.node_type])?;
             self.stamp_task_started(None, &mut node).await?;
             nodes_normalized.push((
                 node.id,
@@ -1039,7 +1048,12 @@ impl NodeService {
                 .await;
             ownership
                 .and_then(|ownership| {
-                    self.rebucket_and_validate_with(&mut updated, ownership, node_type_changed)
+                    self.rebucket_and_validate_with(
+                        Some(existing),
+                        &mut updated,
+                        ownership,
+                        node_type_changed,
+                    )
                 })
                 .map_err(|e| {
                     NodeServiceError::bulk_operation_failed(format!(

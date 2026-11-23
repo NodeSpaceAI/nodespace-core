@@ -73,9 +73,15 @@ impl ChatCardUi {
                 "confirmation_status": status,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }));
+            // `confirmation_status` and `timestamp` are system fields: this
+            // service is the one writer that records an answer on a card.
             match self
                 .node_service
-                .update_node(card_id, node.version, update)
+                .maintaining_system_fields(self.node_service.update_node(
+                    card_id,
+                    node.version,
+                    update,
+                ))
                 .await
             {
                 Ok(_) => return,
@@ -158,7 +164,12 @@ impl ConfirmationUi for ChatCardUi {
             }),
             lifecycle_status: None,
         };
-        match self.node_service.create_node_with_parent(params).await {
+        // The card's confirmation fields are system fields written only here.
+        match self
+            .node_service
+            .maintaining_system_fields(self.node_service.create_node_with_parent(params))
+            .await
+        {
             Ok(card_id) => {
                 self.cards
                     .lock()
@@ -460,7 +471,8 @@ mod tests {
         let (ns, chat, ui, _tmp) = rig().await;
         ui.present(&ask(&chat, "mine")).await;
         // A card with no id, as a synced peer's arrives (the id is device-local).
-        ns.create_node_with_parent(CreateNodeParams {
+        // The fixture writes it as the code that maintains the card fields.
+        ns.maintaining_system_fields(ns.create_node_with_parent(CreateNodeParams {
             id: None,
             node_type: "ai-chat-message".to_string(),
             content: "run `rm`".to_string(),
@@ -469,7 +481,7 @@ mod tests {
             properties: json!({"role": "assistant", "part_kind": "confirmation",
                                "confirmation_status": "pending"}),
             lifecycle_status: None,
-        })
+        }))
         .await
         .unwrap();
         ui.cancel_all_local_pending().await;

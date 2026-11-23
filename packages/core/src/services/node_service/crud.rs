@@ -793,7 +793,7 @@ impl NodeService {
                 Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
         }
         // A create defaults the fields the caller left out.
-        self.rebucket_and_validate(&mut node, true).await?;
+        self.rebucket_and_validate(None, &mut node, true).await?;
 
         if node.title.is_none() {
             node.title = self.compute_title(&node, Some(is_root)).await?;
@@ -1508,7 +1508,7 @@ impl NodeService {
         // arrives flat, normalizes into the node's OWN bucket, and would sit
         // there duplicating the authoritative value in the declaring
         // ancestor's bucket, where that ancestor's behaviour never reads it.
-        self.rebucket_and_validate(&mut updated, node_type_changed)
+        self.rebucket_and_validate(Some(&existing), &mut updated, node_type_changed)
             .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
@@ -1629,7 +1629,7 @@ impl NodeService {
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
             .await?;
         // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
-        self.rebucket_and_validate(&mut updated, node_type_changed)
+        self.rebucket_and_validate(Some(&existing), &mut updated, node_type_changed)
             .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
@@ -1767,7 +1767,7 @@ impl NodeService {
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
             .await?;
         // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
-        self.rebucket_and_validate(&mut updated, node_type_changed)
+        self.rebucket_and_validate(Some(&existing), &mut updated, node_type_changed)
             .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
@@ -2045,7 +2045,7 @@ impl NodeService {
         // defaulted first, and an inherited field, which arrives flat, is
         // moved to its declaring ancestor's bucket before anything validates
         // it, or it exists in two places.
-        self.rebucket_and_validate(&mut updated, node_type_changed)
+        self.rebucket_and_validate(Some(existing), &mut updated, node_type_changed)
             .await?;
 
         let play_rules_changed = self
@@ -3523,11 +3523,12 @@ impl NodeService {
     /// bucketed, so only its behaviour runs.
     pub(crate) async fn rebucket_and_validate(
         &self,
+        before: Option<&Node>,
         node: &mut Node,
         apply_defaults: bool,
     ) -> Result<(), NodeServiceError> {
         let ownership = self.field_ownership_for_write(&node.node_type).await?;
-        self.rebucket_and_validate_with(node, &ownership, apply_defaults)
+        self.rebucket_and_validate_with(before, node, &ownership, apply_defaults)
     }
 
     /// What [`Self::rebucket_and_validate`] resolves for a node of
@@ -3569,11 +3570,12 @@ impl NodeService {
     /// resolved.
     pub(crate) fn rebucket_and_validate_with(
         &self,
+        before: Option<&Node>,
         node: &mut Node,
         ownership: &FieldOwnershipInfo,
         apply_defaults: bool,
     ) -> Result<(), NodeServiceError> {
-        self.rebucket_and_validate_behaviors(node, ownership, apply_defaults)?;
+        self.rebucket_and_validate_behaviors(before, node, ownership, apply_defaults)?;
         if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             return Ok(());
         }
@@ -3597,6 +3599,7 @@ impl NodeService {
     /// validation.
     pub(crate) fn rebucket_and_validate_behaviors(
         &self,
+        before: Option<&Node>,
         node: &mut Node,
         ownership: &FieldOwnershipInfo,
         apply_defaults: bool,
@@ -3607,6 +3610,9 @@ impl NodeService {
         }
         node.properties =
             Self::unnest_ancestor_buckets(&node.node_type, &node.properties, owners, chain);
+        // Before defaults: a default the schema fills in is not a value the
+        // caller wrote.
+        Self::ensure_system_fields_maintained(before, node, ownership)?;
         if !fields.is_empty() {
             if apply_defaults {
                 self.apply_schema_defaults_with_fields(node, fields, Some(chain))?;

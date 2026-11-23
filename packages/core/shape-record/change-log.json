@@ -146,6 +146,17 @@
       "class": "refuse",
       "summary": "The ai-chat-message schema gains a confirmation part kind and five optional fields that record a question put to the user before a remote tool call runs: confirmation_id and confirmation_digest (device-local), confirmation_status, confirmation_arguments and confirmation_credentials. A database created by an earlier build holds a message schema without them, which the core-type comparison reports as missing fields and a part_kind without the new value, so that database is refused at open (a schema mismatch) until it is reset.",
       "userProducible": false
+    },
+    {
+      "id": "ai-chat-message-timestamp-is-core",
+      "after": "0.3.12",
+      "covers": [
+        "schemas.ai-chat-message.fields.timestamp"
+      ],
+      "area": "core_schema",
+      "class": "refuse",
+      "summary": "The ai-chat-message timestamp field changes from system to core protection. The app writes a user's own message, timestamp included, so it is not a field only code maintains. A database created by an earlier build holds the message schema with system protection, which the core-type comparison reports as a difference, so that database is refused at open (a schema mismatch) until it is reset.",
+      "userProducible": false
     }
   ]
 }
