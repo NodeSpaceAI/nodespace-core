@@ -342,36 +342,220 @@ async fn the_maintainer_path_writes_a_system_field_and_only_inside_its_scope() {
     .expect("a non-system field is not held back");
 }
 
-/// The maintainer path is not reachable from a user-facing surface. The
-/// surfaces' write calls end at the refusing paths above (the gRPC server the
-/// Tauri commands and the CLI call is held by a daemon test, the agent's tools
-/// by an agent test); this holds that none of their source names the way in.
+#[tokio::test]
+async fn a_user_rule_triggered_by_a_maintainers_write_cannot_set_a_system_field() {
+    let (svc, _tmp) = test_service().await;
+    let engine = nodespace_core::PlaybookEngine::new(Arc::clone(&svc));
+    svc.set_playbook_lifecycle(engine.lifecycle().clone());
+    let victim = a_pty_chat(&svc).await;
+    let rule_play = Node::new(
+        "play".into(),
+        "forge".into(),
+        json!({ "play": { "rules": [{
+            "name": "forge-summary",
+            "class": "invariant",
+            "description": "A user's rule",
+            "trigger": { "type": "graph_event", "on": "node_created",
+                         "select": { "target_type": "ai-chat-message" } },
+            "conditions": [],
+            "actions": [{
+                "description": "Forge the summary",
+                "action_type": "update_node",
+                "params": { "node_id": victim.id, "properties": { "summary": "forged" } }
+            }]
+        }] } }),
+    );
+    engine
+        .lifecycle()
+        .write()
+        .unwrap()
+        .activate_play(&rule_play)
+        .expect("the play activates");
+
+    let chat = svc
+        .create_node(Node::new(
+            "ai-chat-native".into(),
+            "Chat".into(),
+            json!({ "agent": "nodespace" }),
+        ))
+        .await
+        .unwrap();
+    let message = |parent: String| CreateNodeParams {
+        id: None,
+        node_type: "ai-chat-message".into(),
+        content: "hello".into(),
+        parent_id: Some(parent),
+        position: InsertPositionOwned::End,
+        properties: json!({ "role": "assistant", "timestamp": "2026-10-02T10:00:00Z",
+                            "outcome": "replied" }),
+        lifecycle_status: None,
+    };
+    let appended = svc
+        .maintaining_system_fields(svc.create_node_with_parent(message(chat.clone())))
+        .await;
+    let stored = svc.get_node(&victim.id).await.unwrap().unwrap();
+    assert!(
+        stored.properties["ai-chat"]
+            .get("summary")
+            .is_none_or(Value::is_null),
+        "the rule forged a system field inside the maintainer's write: {:?} / {:?}",
+        stored.properties,
+        appended
+    );
+    assert!(
+        appended.is_err(),
+        "the invariant rule's refused action fails the write it ran in"
+    );
+
+    // With the rule gone the maintainer's own write still lands.
+    engine
+        .lifecycle()
+        .write()
+        .unwrap()
+        .deactivate_play(&rule_play.id);
+    svc.maintaining_system_fields(svc.create_node_with_parent(message(chat)))
+        .await
+        .expect("the maintainer's write lands");
+}
+
+/// A single-chain system field (no `extends`) through the trusted import and
+/// the batch update, and a number's value rather than its spelling.
+#[tokio::test]
+async fn a_single_chain_system_field_is_held_on_the_trusted_import_and_bulk_update() {
+    let (svc, _tmp) = test_service().await;
+    assert_refused(
+        "trusted import of a query",
+        svc.bulk_create_hierarchy_trusted(vec![(
+            "00000000-0000-4000-8000-0000000000b1".to_string(),
+            "query".to_string(),
+            "A query".to_string(),
+            None,
+            1.0,
+            json!({ "generated_by": "user", "execution_count": 5 }),
+        )])
+        .await,
+        "execution_count",
+        "query",
+    );
+
+    let id = svc
+        .maintaining_system_fields(svc.create_node(Node::new(
+            "query".into(),
+            "A query".into(),
+            json!({ "generated_by": "user", "execution_count": 3 }),
+        )))
+        .await
+        .expect("the maintainer creates a query with a count");
+    let patch =
+        |count: Value| NodeUpdate::new().with_properties(json!({ "execution_count": count }));
+    // The stored value carried back is not a change, however it is spelled.
+    svc.bulk_update(vec![(id.clone(), patch(json!(3)))])
+        .await
+        .expect("an unchanged system field on bulk_update");
+    assert_refused(
+        "bulk_update",
+        svc.bulk_update(vec![(id.clone(), patch(json!(4)))]).await,
+        "execution_count",
+        "query",
+    );
+}
+
+/// A number is compared by its value, not its spelling: a client that sends a
+/// whole node back with `0` as `0.0` is not changing `exit_code`.
+#[tokio::test]
+async fn a_number_resent_as_a_float_is_not_a_change() {
+    let (svc, _tmp) = test_service().await;
+    let id = svc
+        .maintaining_system_fields(
+            svc.create_node(pty_chat(json!({ "agent": "claude-code", "exit_code": 0 }))),
+        )
+        .await
+        .expect("the maintainer records an exit code");
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    svc.update_node(
+        &id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "exit_code": 0.0 })),
+    )
+    .await
+    .expect("0.0 is the stored 0");
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_refused(
+        "a different number",
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "exit_code": 1.0 })),
+        )
+        .await,
+        "exit_code",
+        "ai-chat-pty",
+    );
+}
+
+/// A tripwire, not the protection: the scope in `maintaining_system_fields`
+/// is what keeps a user surface out (a surface that called it would only lift
+/// the check for its own write, and nothing a user can author runs inside it).
+/// This scans the product source of every surface for the name, so a new call
+/// there is a review conversation rather than an accident.
 #[test]
 fn no_user_facing_surface_names_the_maintainer_path() {
     let packages = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    // Whole crates or directories, except the files named in `allowed`, which
+    // are the maintaining code itself.
     let surfaces = [
         "cli/src",
         "desktop-app/app-lib/src",
         "desktop-app/src-tauri/src",
-        "agent/src/local_agent/tools.rs",
-        "agent/src/local_agent/remote_tools.rs",
+        "agent/src",
         "core/src/ops",
+        "core/src/playbook",
         "daemon/src/router.rs",
-        "daemon/src/services/node_service.rs",
-        "daemon/src/services/import_service.rs",
+        "daemon/src/lib.rs",
+        "daemon/src/main.rs",
     ];
+    let daemon_services = [
+        "node_service.rs",
+        "import_service.rs",
+        "local_agent_service.rs",
+        "agent_session_service.rs",
+        "database_service.rs",
+        "extensions.rs",
+    ];
+    let mut roots: Vec<std::path::PathBuf> = surfaces.iter().map(|s| packages.join(s)).collect();
+    roots.extend(
+        daemon_services
+            .iter()
+            .map(|s| packages.join("daemon/src/services").join(s)),
+    );
     let mut scanned = 0;
-    for surface in surfaces {
-        let root = packages.join(surface);
-        let mut files = vec![root.clone()];
+    for root in roots {
+        let mut files = vec![root];
         while let Some(path) = files.pop() {
             if path.is_dir() {
                 files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
             } else if path.extension().is_some_and(|e| e == "rs") {
                 scanned += 1;
                 let source = std::fs::read_to_string(&path).unwrap();
-                // Test modules emulate the maintainer; only product code counts.
-                let product = source.split("#[cfg(test)]").next().unwrap();
+                // Test modules emulate the maintainer. A module is cut at its
+                // `#[cfg(test)]` line to its closing brace at column zero, so
+                // product code after one is still read.
+                let mut product = String::new();
+                let mut in_tests = false;
+                for line in source.lines() {
+                    if line.trim_start().starts_with("#[cfg(test)]") && !line.starts_with(' ') {
+                        in_tests = true;
+                        continue;
+                    }
+                    if in_tests {
+                        if line == "}" {
+                            in_tests = false;
+                        }
+                        continue;
+                    }
+                    product.push_str(line);
+                    product.push('\n');
+                }
                 assert!(
                     !product.contains("maintaining_system_fields"),
                     "{} calls the maintainer path",
@@ -380,5 +564,8 @@ fn no_user_facing_surface_names_the_maintainer_path() {
             }
         }
     }
-    assert!(scanned > 5, "the scan found no surface source ({scanned})");
+    assert!(
+        scanned > 40,
+        "the scan found little surface source ({scanned})"
+    );
 }

@@ -27,7 +27,7 @@ use std::future::Future;
 
 tokio::task_local! {
     /// Set while a [`NodeService::maintaining_system_fields`] write runs.
-    static MAINTAINING_SYSTEM_FIELDS: ();
+    static MAINTAINING_SYSTEM_FIELDS: bool;
 }
 
 /// A field's value in `properties`: the one in the nearest bucket of the node's
@@ -40,6 +40,16 @@ fn stored_in_chain<'a>(properties: &'a Value, chain: &[String], name: &str) -> O
         .filter_map(|scope| buckets.get(scope.as_str()).and_then(Value::as_object))
         .find_map(|bucket| bucket.get(name))
         .filter(|value| !value.is_null())
+}
+
+/// Whether two stored values are the same value. Numbers compare by value:
+/// `0` and `0.0` are one number, so a client that sends a node back whole
+/// with its integers as floats is not changing the field.
+fn same_value(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (Some(Value::Number(x)), Some(Value::Number(y))) => x.as_f64() == y.as_f64(),
+        _ => a == b,
+    }
 }
 
 impl NodeService {
@@ -60,12 +70,24 @@ impl NodeService {
     /// and the CLI reach the node write paths only through the
     /// daemon and `ops`, which do not.
     pub async fn maintaining_system_fields<F: Future>(&self, write: F) -> F::Output {
-        MAINTAINING_SYSTEM_FIELDS.scope((), write).await
+        MAINTAINING_SYSTEM_FIELDS.scope(true, write).await
+    }
+
+    /// Run `code` with the lift cleared, for code that runs inside a write and
+    /// is not the maintainer's: a playbook rule's actions run in the task of
+    /// the write that triggered them (an invariant rule runs inside the
+    /// create or update's own transaction), and a rule is user-authored, so it
+    /// is held to the same line as any user write. The lift belongs to the one
+    /// write the maintainer made, never to what that write runs.
+    pub(crate) async fn without_system_field_maintenance<F: Future>(code: F) -> F::Output {
+        MAINTAINING_SYSTEM_FIELDS.scope(false, code).await
     }
 
     /// Whether the current write is inside [`Self::maintaining_system_fields`].
     fn is_maintaining_system_fields() -> bool {
-        MAINTAINING_SYSTEM_FIELDS.try_with(|_| ()).is_ok()
+        MAINTAINING_SYSTEM_FIELDS
+            .try_with(|on| *on)
+            .unwrap_or(false)
     }
 
     /// Refuse a write that sets or changes a `system` field's value.
@@ -101,7 +123,7 @@ impl NodeService {
             }
             let after = stored_in_chain(&node.properties, chain, &field.name);
             let was = before.and_then(|b| stored_in_chain(&b.properties, chain, &field.name));
-            if after == was {
+            if same_value(after, was) {
                 continue;
             }
             let declared_by = owner.unwrap_or(&node.node_type);

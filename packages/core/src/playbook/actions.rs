@@ -1497,6 +1497,24 @@ pub async fn execute_actions(
     node_service: &Arc<NodeService>,
     execution_context: PlaybookExecutionContext,
 ) -> ActionResult {
+    NodeService::without_system_field_maintenance(execute_actions_held(
+        actions,
+        trigger_node,
+        event,
+        node_service,
+        execution_context,
+    ))
+    .await
+}
+
+/// [`execute_actions`] with the system-field lift already cleared.
+async fn execute_actions_held(
+    actions: &[ParsedAction],
+    trigger_node: &Node,
+    event: &DomainEvent,
+    node_service: &Arc<NodeService>,
+    execution_context: PlaybookExecutionContext,
+) -> ActionResult {
     // Extract the play id before `execution_context` is moved into
     // `scoped_for_playbook` below -- it anchors `rule_id` (ADR-060 §3,
     // ADR-074; see module doc).
@@ -2193,6 +2211,28 @@ struct TxCtx<'a> {
 /// unexecuted action would have produced is read. A `reject` whose message
 /// binds an earlier action's result therefore fails to resolve in a dry run.
 pub(crate) async fn execute_actions_in_tx(
+    actions: &[ParsedAction],
+    trigger_node: &Node,
+    event: &DomainEvent,
+    node_service: &Arc<NodeService>,
+    run: InvariantRun<'_, '_>,
+    execution_context: PlaybookExecutionContext,
+) -> ActionResult {
+    // An invariant rule runs inside the write that triggered it, and is not
+    // the maintainer of anything that write is allowed to set.
+    NodeService::without_system_field_maintenance(execute_actions_in_tx_held(
+        actions,
+        trigger_node,
+        event,
+        node_service,
+        run,
+        execution_context,
+    ))
+    .await
+}
+
+/// [`execute_actions_in_tx`] with the system-field lift already cleared.
+async fn execute_actions_in_tx_held(
     actions: &[ParsedAction],
     trigger_node: &Node,
     event: &DomainEvent,
