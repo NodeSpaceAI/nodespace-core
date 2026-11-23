@@ -589,28 +589,11 @@ async fn applied_bulk_create_does_not_reach_trigger_evaluation(
     // NodeCreated event must carry the applying service's write context and
     // client id (not the defaults) and never reach trigger evaluation at all.
     //
-    // Unlike `create_node`, `NodeService::bulk_create` does not run node
-    // properties through `normalize_flat_properties_to_namespace` before
-    // insert (a separate, pre-existing inconsistency, out of scope for this
-    // fix) — a node it creates stores properties flat at the top level
-    // (`properties.status`), not nested under the node_type key the way
-    // `create_node`/`update_node` do. If the update action HAD fired, it
-    // would have deep-merged a namespaced `{"pb-bulk-sync-task": {"status":
-    // "done"}}` alongside that flat shape (as the control assertion above
-    // relies on) — so asserting its absence, together with the untouched
-    // flat property, is the correct and shape-agnostic way to prove this
-    // node was never acted on.
+    // `bulk_create` files the properties under the node's type, as every write
+    // does, so the untouched value is `status: "open"` in that bucket. Had the
+    // update action fired, the same field would read "done".
     assert_eq!(
         user_field(&synced_after, "pb-bulk-sync-task", "status").and_then(|v| v.as_str()),
-        None,
-        "the update action's namespaced 'done' marker must be absent — the sync-tagged \
-         bulk_create event must never have reached trigger evaluation (ADR-073)"
-    );
-    assert_eq!(
-        synced_after
-            .properties
-            .get("status")
-            .and_then(|v| v.as_str()),
         Some("open"),
         "a sync-originated bulk_create NodeCreated event must be excluded from trigger \
          evaluation before rule matching (ADR-073) — this node must be left exactly as created"

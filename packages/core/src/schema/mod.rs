@@ -1722,18 +1722,19 @@ fn validate_no_same_schema_field_relationship_collision(
     Ok(())
 }
 
-/// The keys of a node's envelope, which a field of that name would be read as.
-const ENVELOPE_KEYS: [&str; 9] = [
-    "id",
-    "content",
-    "title",
-    "version",
-    "node_type",
-    "lifecycle_status",
-    "created_at",
-    "modified_at",
-    "properties",
-];
+/// Envelope keys that neither the CEL bridge's core keys nor the reserved
+/// property names cover.
+const OTHER_ENVELOPE_KEYS: [&str; 3] = ["title", "lifecycle_status", "properties"];
+
+/// Whether `name` is a key a field would be read as instead: a core key of the
+/// CEL bridge (`id`, `node_type`, `content`, `version`, `type_chain`), a
+/// reserved core property (`parent_id`, `root_id`, the dates and the task
+/// fields), or another key of the node's envelope.
+fn is_reserved_field_name(name: &str) -> bool {
+    crate::playbook::cel::is_core_key(name)
+        || RESERVED_CORE_PROPERTIES.contains(&name)
+        || OTHER_ENVELOPE_KEYS.contains(&name)
+}
 
 /// Refuse a custom field named after an envelope key, or after a type: a type's
 /// id is the name of its bucket in `properties`, and a field of that name is
@@ -1748,7 +1749,7 @@ async fn reject_reserved_custom_field_name(
             .await
             .map_err(|e| MarkdownError::internal_error(format!("Failed to get schema: {e}")))?
             .is_some();
-    if ENVELOPE_KEYS.contains(&name) || is_type {
+    if is_reserved_field_name(name) || is_type {
         return Err(MarkdownError::invalid_params(format!(
             "'{name}' cannot be the name of a field added to a built-in type: it names {}. \
              Choose another name.",
@@ -1792,6 +1793,7 @@ async fn reject_names_read_as_relationships(
     node_service: &Arc<NodeService>,
     schema_id: &str,
     names: &[&str],
+    change: ParentChange<'_>,
 ) -> Result<(), MarkdownError> {
     if names.is_empty() {
         return Ok(());
@@ -1806,10 +1808,28 @@ async fn reject_names_read_as_relationships(
         .get_subtype_closure(schema_id)
         .await
         .map_err(|e| internal(&e))?;
+    // What a call that re-targets `extends` leaves a type reading: not what the
+    // old parent gave it, and what the new one gives.
+    let moved = change.new.filter(|new| Some(*new) != change.old);
+    let from_old = match (moved, change.old) {
+        (Some(_), Some(old)) => crate::ops::query_ops::relationship_names_of(node_service, old)
+            .await
+            .map_err(|e| internal(&e))?,
+        _ => Vec::new(),
+    };
+    let from_new = match moved {
+        Some(new) => crate::ops::query_ops::relationship_names_of(node_service, new)
+            .await
+            .map_err(|e| internal(&e))?,
+        None => Vec::new(),
+    };
     for type_id in std::iter::once(&schema_id.to_string()).chain(closure.iter()) {
-        let read = crate::ops::query_ops::relationship_names_of(node_service, type_id)
+        let mut read = crate::ops::query_ops::relationship_names_of(node_service, type_id)
             .await
             .map_err(|e| internal(&e))?;
+        read.retain(|(name, _)| !from_old.iter().any(|(gone, _)| gone == name));
+        read.extend(from_new.iter().cloned());
+        read.retain(|(name, _)| !change.freed.contains(name));
         for name in names {
             if let Some((_, far)) = read.iter().find(|(read_as, _)| read_as == name) {
                 return Err(MarkdownError::invalid_params(format!(
@@ -1826,6 +1846,25 @@ async fn reject_names_read_as_relationships(
     Ok(())
 }
 
+/// What a schema edit does to the chain the checks above read: the parent it
+/// leaves, the parent it takes, and the relationships it removes by name, which
+/// free their names in the same call.
+#[derive(Clone, Copy)]
+struct ParentChange<'a> {
+    old: Option<&'a str>,
+    new: Option<&'a str>,
+    freed: &'a [String],
+}
+
+impl ParentChange<'static> {
+    /// A call that changes nothing about the chain.
+    const NONE: Self = Self {
+        old: None,
+        new: None,
+        freed: &[],
+    };
+}
+
 /// Refuse a relationship whose reverse name is a field a node at its target
 /// end already declares (ADR-112 section 5, the other direction): the target's
 /// instances would read the one name as both. The target's chain and the types
@@ -1833,40 +1872,71 @@ async fn reject_names_read_as_relationships(
 async fn reject_reverse_names_declared_as_fields(
     node_service: &Arc<NodeService>,
     relationships: &[crate::models::schema::SchemaRelationship],
+    pending: Option<(&str, &[SchemaField])>,
 ) -> Result<(), MarkdownError> {
     for rel in relationships {
-        let Some(target) = rel.target_type.as_deref() else {
-            continue;
-        };
         if rel.reverse_name.is_empty() {
             continue;
         }
-        let closure = node_service
-            .store()
-            .get_subtype_closure(target)
-            .await
-            .map_err(|e| {
-                MarkdownError::internal_error(format!(
-                    "Failed to read the types extending '{target}': {e}"
-                ))
-            })?;
-        let (effective, _, _) = resolve_field_owners_or_error(node_service, target).await?;
-        let mut declared: Vec<(String, String)> = effective
-            .into_iter()
-            .map(|f| (f.name, target.to_string()))
-            .collect();
-        for sub in closure.iter().filter(|id| id.as_str() != target) {
-            if let Some(schema) = node_service.get_schema_node(sub).await.map_err(|e| {
-                MarkdownError::internal_error(format!("Failed to get schema '{sub}': {e}"))
-            })? {
-                declared.extend(
-                    schema
-                        .declared_fields()
-                        .map(|f| (f.name.clone(), sub.clone())),
-                );
+        let clash = match rel.target_type.as_deref() {
+            // Read from a node of any type: any declared field of that name clashes.
+            None => {
+                let mut declared: Vec<(String, String)> = Vec::new();
+                for schema in node_service.get_all_schemas().await.map_err(|e| {
+                    MarkdownError::internal_error(format!("Failed to read the schemas: {e}"))
+                })? {
+                    declared.extend(
+                        schema
+                            .declared_fields()
+                            .map(|f| (f.name.clone(), schema.envelope.id.clone())),
+                    );
+                }
+                if let Some((id, fields)) = pending {
+                    declared.extend(fields.iter().map(|f| (f.name.clone(), id.to_string())));
+                }
+                declared
+                    .into_iter()
+                    .find(|(name, _)| *name == rel.reverse_name)
+                    .map(|(_, owner)| (owner, "any".to_string()))
             }
-        }
-        if let Some((_, owner)) = declared.iter().find(|(name, _)| *name == rel.reverse_name) {
+            Some(target) => {
+                let closure = node_service
+                    .store()
+                    .get_subtype_closure(target)
+                    .await
+                    .map_err(|e| {
+                        MarkdownError::internal_error(format!(
+                            "Failed to read the types extending '{target}': {e}"
+                        ))
+                    })?;
+                let (effective, _, _) = resolve_field_owners_or_error(node_service, target).await?;
+                let mut declared: Vec<(String, String)> = effective
+                    .into_iter()
+                    .map(|f| (f.name, target.to_string()))
+                    .collect();
+                for sub in closure.iter().filter(|id| id.as_str() != target) {
+                    if let Some(schema) = node_service.get_schema_node(sub).await.map_err(|e| {
+                        MarkdownError::internal_error(format!("Failed to get schema '{sub}': {e}"))
+                    })? {
+                        declared.extend(
+                            schema
+                                .declared_fields()
+                                .map(|f| (f.name.clone(), sub.clone())),
+                        );
+                    }
+                }
+                // The schema being written is not stored yet, or not as this
+                // call leaves it: its own fields count when it is the target.
+                if let Some((id, fields)) = pending.filter(|(id, _)| *id == target) {
+                    declared.extend(fields.iter().map(|f| (f.name.clone(), id.to_string())));
+                }
+                declared
+                    .into_iter()
+                    .find(|(name, _)| *name == rel.reverse_name)
+                    .map(|(_, owner)| (owner, target.to_string()))
+            }
+        };
+        if let Some((owner, target)) = clash {
             return Err(MarkdownError::invalid_params(format!(
                 "Relationship '{}' cannot have the reverse name '{}': '{owner}' declares a field \
                  of that name, and a '{target}' node would read it as both a field and the \
@@ -2327,7 +2397,12 @@ pub async fn create_schema(
     reject_reserved_relationship_names(&relationships)?;
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets(node_service, &relationships, pending_schema_id).await?;
-    reject_reverse_names_declared_as_fields(node_service, &relationships).await?;
+    reject_reverse_names_declared_as_fields(
+        node_service,
+        &relationships,
+        Some((schema_id.as_str(), stored_fields.as_slice())),
+    )
+    .await?;
     // Cross-domain collision within this SAME schema's own declarations —
     // no extends chain needed to produce the ambiguity ADR-078 exists to
     // prevent, so this runs unconditionally, not just when `extends` is set.
@@ -2348,7 +2423,8 @@ pub async fn create_schema(
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
         let own_names: Vec<&str> = stored_fields.iter().map(|f| f.name.as_str()).collect();
-        reject_names_read_as_relationships(node_service, parent_id, &own_names).await?;
+        reject_names_read_as_relationships(node_service, parent_id, &own_names, ParentChange::NONE)
+            .await?;
     }
     validate_structural_rules(
         node_service,
@@ -3225,17 +3301,19 @@ async fn update_schema_as(
                     }
                 }
 
-                // Not when this call also re-targets `extends` or removes
-                // relationships: the name may be freed by the same call, and
-                // the redeclaration checks judge the schema as it would stand.
-                if params.extends.is_none() && params.remove_relationships.is_none() {
-                    reject_names_read_as_relationships(
-                        node_service,
-                        &params.schema_id,
-                        &[rename.to.as_str()],
-                    )
-                    .await?;
-                }
+                // Against the chain this call leaves: the parent it takes, and
+                // without the relationships it removes by name.
+                reject_names_read_as_relationships(
+                    node_service,
+                    &params.schema_id,
+                    &[rename.to.as_str()],
+                    ParentChange {
+                        old: schema_before.extends.as_deref(),
+                        new: params.extends.as_deref().map(str::trim),
+                        freed: params.remove_relationships.as_deref().unwrap_or(&[]),
+                    },
+                )
+                .await?;
 
                 if let Some(ref parent) = rename_ancestor {
                     validate_rename_destination_against_ancestors(node_service, parent, &rename.to)
@@ -3526,6 +3604,9 @@ async fn update_schema_as(
     // The schema as stored: the starting point for the in-transaction data
     // migration of identity renames.
     let schema_as_stored = schema.clone();
+    let new_parent_trimmed: Option<String> =
+        params.extends.as_deref().map(|p| p.trim().to_string());
+    let freed_relationships: Vec<String> = params.remove_relationships.clone().unwrap_or_default();
     let mut identity_renames: Vec<(String, String)> = Vec::new();
     if let Some(ref renames) = params.rename_fields {
         for rename in renames {
@@ -3636,7 +3717,17 @@ async fn update_schema_as(
         // not declare the name.
         let added: Vec<&str> = add_fields.iter().map(|f| f.name.as_str()).collect();
         validate_no_subtype_redeclaration(node_service, &params.schema_id, &added, &[]).await?;
-        reject_names_read_as_relationships(node_service, &params.schema_id, &added).await?;
+        reject_names_read_as_relationships(
+            node_service,
+            &params.schema_id,
+            &added,
+            ParentChange {
+                old: schema.extends.as_deref(),
+                new: new_parent_trimmed.as_deref(),
+                freed: &freed_relationships,
+            },
+        )
+        .await?;
         // Write-boundary friendly_name defaulting, with the current field
         // set (existing + removals already applied) as collision context —
         // see `apply_friendly_name_defaults`.
@@ -3798,7 +3889,12 @@ async fn update_schema_as(
         // schema being edited was loaded above, so a relationship targeting
         // it resolves through the ordinary existence lookup.
         validate_relationship_targets(node_service, add_rels, None).await?;
-        reject_reverse_names_declared_as_fields(node_service, add_rels).await?;
+        reject_reverse_names_declared_as_fields(
+            node_service,
+            add_rels,
+            Some((params.schema_id.as_str(), fields.as_slice())),
+        )
+        .await?;
         relationships_added = add_rels.len();
         relationships.extend(add_rels.clone());
     }
@@ -3819,6 +3915,20 @@ async fn update_schema_as(
         // stand after this call's add/remove/rename, not as they were loaded —
         // a call that both re-parents and drops the colliding field is legal.
         validate_no_field_redeclaration(node_service, new_parent, &fields).await?;
+        // A field the schema already holds is read as a relationship too when
+        // the new chain reads that name as one (ADR-112 section 5).
+        let own_names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+        reject_names_read_as_relationships(
+            node_service,
+            &params.schema_id,
+            &own_names,
+            ParentChange {
+                old: schema.extends.as_deref(),
+                new: Some(new_parent),
+                freed: &freed_relationships,
+            },
+        )
+        .await?;
         // Same check for relationships, against the fully-merged
         // relationship list (existing declarations plus this call's own
         // `add_relationships`/`remove_relationships`, already applied

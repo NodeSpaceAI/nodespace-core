@@ -176,7 +176,12 @@ impl NodeService {
             )?;
 
             // Step 2: Re-bucketing, then behavior and chain-aware schema
-            // validation
+            // validation. A caller's flat properties are filed under the
+            // node's type first, as every other write does: the closed-bucket
+            // rule and the system field check read the buckets, so a key left
+            // flat would pass both.
+            node.properties =
+                Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
             let ownership = self
                 .field_ownership_in_batch(&node.node_type, &mut ownership_by_type)
                 .await?;

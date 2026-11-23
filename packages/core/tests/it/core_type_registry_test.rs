@@ -887,6 +887,201 @@ async fn a_leftover_in_an_ancestors_bucket_is_carried_back_by_a_flat_update() {
     assert!(error.contains("'effort' is not a field"), "{error}");
 }
 
+/// `NodeService::bulk_create` takes flat properties; they are filed under the
+/// node's type first, so the closed bucket and the system field check hold
+/// there as on every other write.
+#[tokio::test]
+async fn bulk_create_holds_the_closed_bucket_and_the_system_field_check() {
+    let (svc, _tmp) = test_service().await;
+    let error = svc
+        .bulk_create(vec![Node::new(
+            "task".to_string(),
+            "A task".to_string(),
+            json!({ "bogus": 1 }),
+        )])
+        .await
+        .expect_err("an undeclared key")
+        .to_string();
+    assert!(
+        error.contains("'bogus' is not a field of the type 'task'"),
+        "{error}"
+    );
+
+    let error = svc
+        .bulk_create(vec![Node::new(
+            "ai-chat-pty".to_string(),
+            "A chat".to_string(),
+            json!({ "agent": "claude-code", "summary": "forged" }),
+        )])
+        .await
+        .expect_err("a system field")
+        .to_string();
+    assert!(
+        error.contains("summary") && error.contains("system"),
+        "{error}"
+    );
+
+    svc.bulk_create(vec![Node::new(
+        "task".to_string(),
+        "A task".to_string(),
+        json!({ "priority": "high" }),
+    )])
+    .await
+    .expect("a declared field");
+}
+
+/// The relationship-name check judges the schema as the call leaves it: a
+/// rename cannot take a name the chain reads as a relationship by passing an
+/// empty `remove_relationships` list or by naming the parent it already has;
+/// moving under a parent that reads a name is refused for the type's own
+/// fields too; and a name the call frees by removing its relationship is
+/// still free.
+#[tokio::test]
+async fn relationship_names_are_judged_against_the_chain_the_call_leaves() {
+    let (svc, _tmp) = test_service().await;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
+    )
+    .await
+    .unwrap();
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "rename_fields": [{ "from": "effort", "to": "blocked_by" }],
+            "remove_relationships": [],
+            "force": true
+        }),
+    )
+    .await
+    .expect_err("an empty removal list frees nothing")
+    .to_string();
+    assert!(
+        error.contains("blocked_by") && error.contains("relationship"),
+        "{error}"
+    );
+
+    create_schema(
+        &svc,
+        json!({ "name": "Chore", "extends": "task", "fields": [{ "name": "room", "type": "text" }] }),
+    )
+    .await;
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "chore",
+            "rename_fields": [{ "from": "room", "to": "blocked_by" }],
+            "extends": "task",
+            "force": true
+        }),
+    )
+    .await
+    .expect_err("the parent it already has still reads the name")
+    .to_string();
+    assert!(error.contains("blocked_by"), "{error}");
+
+    // F2: a field the type already holds, moved under a parent that reads it.
+    create_schema(
+        &svc,
+        json!({ "name": "Foo", "fields": [{ "name": "blocked_by", "type": "text" }] }),
+    )
+    .await;
+    let error = handle_update_schema(&svc, json!({ "schema_id": "foo", "extends": "task" }))
+        .await
+        .expect_err("task reads blocked_by as a relationship")
+        .to_string();
+    assert!(error.contains("blocked_by"), "{error}");
+    assert!(svc
+        .get_schema_node("foo")
+        .await
+        .unwrap()
+        .unwrap()
+        .extends
+        .is_none());
+}
+
+/// A reverse name is a clash with a field of the schema being created, and a
+/// wildcard relationship's reverse name with a field of any type.
+#[tokio::test]
+async fn a_reverse_name_clashes_with_a_field_of_its_own_schema_or_any_type() {
+    let (svc, _tmp) = test_service().await;
+    let error = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Folk2",
+            "fields": [{ "name": "kin_of", "type": "text" }],
+            "relationships": [{
+                "name": "kin",
+                "targetType": "folk2",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "kin_of",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("the reverse name is its own field")
+    .to_string();
+    assert!(
+        error.contains("kin_of") && error.contains("reverse name"),
+        "{error}"
+    );
+    assert!(svc.get_schema_node("folk2").await.unwrap().is_none());
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
+    )
+    .await
+    .unwrap();
+    create_schema(&svc, json!({ "name": "Anchor", "fields": [] })).await;
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "anchor",
+            "add_relationships": [{
+                "name": "pins",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "effort",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a wildcard reverse name read from a task")
+    .to_string();
+    assert!(
+        error.contains("effort") && error.contains("reverse name"),
+        "{error}"
+    );
+}
+
+/// Names the CEL bridge overwrites or the schema layer reserves cannot be
+/// custom fields: `type_chain`, `parent_id`, `root_id` and the others.
+#[tokio::test]
+async fn the_bridges_own_keys_cannot_be_custom_fields() {
+    let (svc, _tmp) = test_service().await;
+    for name in [
+        "type_chain",
+        "parent_id",
+        "root_id",
+        "created_at",
+        "modified_at",
+    ] {
+        let error = handle_update_schema(
+            &svc,
+            json!({ "schema_id": "task", "add_fields": [{ "name": name, "type": "text" }] }),
+        )
+        .await
+        .expect_err("a reserved name")
+        .to_string();
+        assert!(error.contains(&format!("'{name}'")), "{name}: {error}");
+    }
+}
+
 /// No schema is open (ADR-112 section 11): a user subtype of a core type and a
 /// user-defined type refuse a key no schema in their chain declares, naming
 /// the key and the type.

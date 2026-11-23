@@ -118,7 +118,14 @@ fn import_identity_key(source: &str, relative_path: &str) -> String {
 /// turned into properties and are not dropped: the block is kept as the last
 /// child of the document, a code block of the YAML as written, where every
 /// surface that shows the document shows it.
-fn split_document(content: String) -> (String, usize) {
+///
+/// A document that is only front matter has no first line to title it: its title
+/// is "Untitled" (the file's name, when the title comes from it), and the block
+/// is its one child. The block is a fenced code block, with a fence longer than
+/// any run of backticks in it. This importer reads a fence's end as any line that
+/// starts with three backticks, so a block with such a line is kept as a quote
+/// instead, line for line.
+fn split_document(content: String, title_from_filename: bool) -> (String, usize) {
     let Some(front) = split_front_matter(&content) else {
         return (content, 0);
     };
@@ -134,8 +141,36 @@ fn split_document(content: String) -> (String, usize) {
         .position(|l| matches!(l.trim_end_matches('\r'), "---" | "..."))
         .map_or(0, |i| i + 1);
     let block = lines[..=close].join("\n");
+    let rendered = if lines[..=close]
+        .iter()
+        .any(|l| l.trim_start().starts_with("```"))
+    {
+        lines[..=close]
+            .iter()
+            .map(|l| {
+                if l.is_empty() {
+                    ">".to_string()
+                } else {
+                    format!("> {l}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        let longest = block.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(longest.max(2) + 1);
+        format!("{fence}yaml\n{block}\n{fence}")
+    };
     let body = front.body.trim_end();
-    (format!("{body}\n\n```yaml\n{block}\n```\n"), keys)
+    if body.trim().is_empty() {
+        let title = if title_from_filename {
+            ""
+        } else {
+            "Untitled\n\n"
+        };
+        return (format!("{title}{rendered}\n"), keys);
+    }
+    (format!("{body}\n\n{rendered}\n"), keys)
 }
 
 #[derive(Clone)]
@@ -275,7 +310,7 @@ async fn import_single_file(
         (None, false)
     };
 
-    let (content, front_matter_keys) = split_document(content);
+    let (content, front_matter_keys) = split_document(content, opts.use_filename_as_title);
 
     let title = if opts.use_filename_as_title {
         path.file_stem()
@@ -1288,7 +1323,7 @@ fn prepare_file_import(
         .unwrap_or(&file_read.relative_path)
         .to_string();
 
-    let (content, front_matter_keys) = split_document(file_read.content);
+    let (content, front_matter_keys) = split_document(file_read.content, use_filename_as_title);
 
     let title = if use_filename_as_title {
         file_read
@@ -3723,6 +3758,92 @@ mod tests {
                 assert!(fence.1.contains(written), "{written}: {:?}", fence.1);
             }
             assert!(below.contains(&("text".to_string(), "Body text.".to_string())));
+        }
+    }
+
+    /// The fence is longer than any run of backticks in the block, and a line
+    /// that starts with three backticks makes the block a quote.
+    #[test]
+    fn the_front_matter_block_is_fenced_or_quoted_by_what_it_holds() {
+        let (inline, keys) = split_document(
+            "---\nnote: \"a ``` b\"\n---\n# T\n\nBody.\n".to_string(),
+            false,
+        );
+        assert_eq!(keys, 1);
+        assert!(
+            inline.contains("````yaml\n---\nnote: \"a ``` b\"\n---\n````"),
+            "{inline}"
+        );
+        let (plain, _) = split_document("---\na: 1\n---\n# T\n\nB.\n".to_string(), false);
+        assert!(plain.contains("```yaml\n---\na: 1\n---\n```"), "{plain}");
+        let (quoted, _) = split_document(
+            "---\nnote: |\n  ```\n  more\n---\n# T\n\nB.\n".to_string(),
+            false,
+        );
+        assert!(
+            quoted.contains("> ---\n> note: |\n>   ```\n>   more\n> ---"),
+            "{quoted}"
+        );
+        assert!(!quoted.contains("yaml"), "{quoted}");
+    }
+
+    async fn descendants_of(ns: &CoreNodeService, root: &str) -> Vec<(String, String)> {
+        ns.get_descendants(root)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| (n.node_type, n.content))
+            .collect()
+    }
+
+    /// A document of front matter alone has no first line to title it: the root
+    /// is "Untitled" and the block is its one child.
+    #[tokio::test]
+    async fn a_front_matter_only_document_is_untitled_and_keeps_its_block() {
+        let (ns, roots, _dir) = import_both_ways("---\nauthor: ann\n---\n").await;
+        for (root_id, result) in &roots {
+            let root = ns.get_node(root_id).await.unwrap().unwrap();
+            assert_eq!(root.content, "Untitled");
+            assert_eq!(result.front_matter_keys, 1);
+            let below = descendants_of(&ns, root_id).await;
+            assert_eq!(below.len(), 1, "{below:?}");
+            assert_eq!(below[0].0, "code-block");
+            assert!(below[0].1.contains("author: ann"), "{below:?}");
+        }
+    }
+
+    /// A value holding backticks does not end the block early: a run of them
+    /// inside a line gets a longer fence, and a line that starts with three
+    /// keeps the block as a quote, every line of it.
+    #[tokio::test]
+    async fn backticks_in_front_matter_do_not_break_the_block() {
+        let inline = "---\nnote: \"a ``` b\"\n---\n# Title\n\nBody.\n";
+        let (ns, roots, _dir) = import_both_ways(inline).await;
+        for (root_id, _) in &roots {
+            let below = descendants_of(&ns, root_id).await;
+            let fence = below
+                .iter()
+                .find(|(k, _)| k == "code-block")
+                .expect("a code block");
+            assert!(fence.1.contains("note: \"a ``` b\""), "{below:?}");
+            assert!(
+                below.contains(&("text".to_string(), "Body.".to_string())),
+                "{below:?}"
+            );
+        }
+        let at_line_start = "---\nnote: |\n  ```\n  more\n---\n# Title\n\nBody.\n";
+        let (ns, roots, _dir) = import_both_ways(at_line_start).await;
+        for (root_id, _) in &roots {
+            let below = descendants_of(&ns, root_id).await;
+            let quote = below
+                .iter()
+                .find(|(k, _)| k == "quote-block")
+                .expect("a quote block");
+            assert!(quote.1.contains("more"), "{below:?}");
+            assert!(
+                below.contains(&("text".to_string(), "Body.".to_string())),
+                "{below:?}"
+            );
         }
     }
 
