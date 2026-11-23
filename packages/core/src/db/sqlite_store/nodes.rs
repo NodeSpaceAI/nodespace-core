@@ -4442,32 +4442,23 @@ impl SqliteStore {
         // gain a less-guarded caller later, so it re-validates rather than trust
         // an upstream check it cannot see from here.
         //
-        // The grammar must be a SUPERSET of what `validate_schema_field_name`
-        // permits, or a legitimately-declared field is silently invisible to its
-        // own `unique` rule. That function allows a bare name OR a
-        // `<namespace>:<bare>` pair (ADR-063 requires the namespaced form for any
-        // field added to a CORE type, e.g. `custom:employeeId`), each segment
-        // being Unicode-alphanumeric or `_` — so this check mirrors exactly that,
-        // not a stricter ASCII-only, colon-less approximation of it.
+        // The grammar mirrors `validate_schema_field_name`: a field name is
+        // Unicode-alphanumeric or `_`, whichever list declares it (a custom
+        // field is stored under its bare name, ADR-112). A narrower check
+        // would leave a legitimately declared field invisible to its own
+        // `unique` rule.
         fn is_safe_segment(s: &str) -> bool {
             !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_')
         }
-        // `node_type`/`bucket` are never namespaced (each is a schema id, e.g.
-        // `person`, or a UUID-shaped extension-schema id — hence `-` is allowed
-        // here only).
+        // `node_type`/`bucket` are schema ids (e.g. `person`), or a UUID-shaped
+        // extension-schema id, hence `-` is allowed here only).
         fn is_safe_node_type(s: &str) -> bool {
             !s.is_empty()
                 && s.chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
         }
-        // `field` may be bare or `<namespace>:<bare>` — at most one `:`.
         fn is_safe_field(s: &str) -> bool {
-            let mut parts = s.split(':');
-            match (parts.next(), parts.next(), parts.next()) {
-                (Some(bare), None, _) => is_safe_segment(bare),
-                (Some(ns), Some(bare), None) => is_safe_segment(ns) && is_safe_segment(bare),
-                _ => false,
-            }
+            is_safe_segment(s)
         }
         if !is_safe_node_type(node_type) || !is_safe_node_type(bucket) || !is_safe_field(field) {
             tracing::warn!(
@@ -5161,13 +5152,13 @@ mod find_conflicting_unique_tests {
         let mut node = Node::new(
             "task".to_string(),
             "Employee record".to_string(),
-            json!({ "task": { "custom:employee_id": "E-42" } }),
+            json!({ "task": { "employee_id": "E-42" } }),
         );
         node.lifecycle_status = "active".to_string();
         store.create_node(node, None, None).await?;
 
         let hit = store
-            .find_conflicting_unique("task", "task", "custom:employee_id", "E-42", None, false)
+            .find_conflicting_unique("task", "task", "employee_id", "E-42", None, false)
             .await?;
         assert!(
             hit.is_some(),

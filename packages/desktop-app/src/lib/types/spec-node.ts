@@ -4,7 +4,7 @@
  * `SpecNode` and `SpecNodeUpdate` are generated from Rust's
  * `nodespace-types` (`./generated`): the spec schema's core fields travel
  * at the top level, and `properties` carries only extension fields
- * (`custom:…`).
+ * (custom fields, ADR-112).
  */
 
 import type { Node } from './node';

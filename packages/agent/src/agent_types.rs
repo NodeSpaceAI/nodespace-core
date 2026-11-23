@@ -40,6 +40,19 @@ pub enum ToolError {
         reason: String,
     },
 
+    /// A write named keys the type does not declare (ADR-112 section 11). Its own
+    /// class so the agent loop can tell the user which value was refused and offer
+    /// the field, instead of reading a malformed call.
+    #[error("undeclared keys for tool {tool}: {}", undeclared_keys_message(.keys, .node_type))]
+    UndeclaredKeys {
+        /// Name of the tool.
+        tool: String,
+        /// The type the write was for.
+        node_type: String,
+        /// The keys no schema in its chain declares.
+        keys: Vec<String>,
+    },
+
     /// A write named an id that resolves to no node: a placeholder, a name in
     /// place of an id, or an id that no longer exists. Typed so the agent loop
     /// can refuse the call and ask the user, rather than read an error string.
@@ -58,6 +71,132 @@ pub enum ToolError {
     /// Catch-all for unexpected errors.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// What a refused write says to the model: which keys, which type, and what to do.
+/// The leading sentence is the shape [`parse_undeclared_keys`] reads back.
+fn undeclared_keys_message(keys: &[String], node_type: &str) -> String {
+    let list = keys
+        .iter()
+        .map(|key| format!("'{key}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (verb, noun) = if keys.len() == 1 {
+        ("is", "a field")
+    } else {
+        ("are", "fields")
+    };
+    format!(
+        "{list} {verb} not {noun} of the type '{node_type}', so nothing was stored. A node takes \
+         only the fields its type declares. Tell the user which value was refused and offer to \
+         add the field to '{node_type}' as a separate request; adding it changes every \
+         '{node_type}' node, so do not add it yourself and do not leave the value out without \
+         saying so."
+    )
+}
+
+/// How many refused keys a notice names; the rest are counted.
+pub const REFUSED_KEYS_SHOWN: usize = 5;
+
+/// The keys and the type of a write refused for keys its type does not declare, as
+/// far as they can be repeated to a user: they come from the model's call, so only
+/// a key of letters, digits and `_` and a type of those and `-` is named, and what
+/// is not is counted in `unnamed` and left unsaid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndeclaredRefusal {
+    /// The type the write was for, when it can be named.
+    pub node_type: Option<String>,
+    /// The keys that can be named, in order, at most [`REFUSED_KEYS_SHOWN`].
+    pub keys: Vec<String>,
+    /// How many keys are not named: not plain, or past the cap.
+    pub unnamed: usize,
+}
+
+/// A name that is repeated to a user as it is: letters, digits, `_` and `-` (a front
+/// matter key such as `due-date`), at most 64 bytes. The store echoes keys by the
+/// same rule, so a key it did not echo cannot reappear here.
+fn plain_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn plain_type(s: &str) -> bool {
+    plain_key(s)
+}
+
+impl UndeclaredRefusal {
+    /// A refusal from the structured error: the keys and the type as the tool
+    /// reported them.
+    pub fn from_parts(node_type: &str, keys: &[String]) -> Self {
+        let named: Vec<String> = keys.iter().filter(|k| plain_key(k)).cloned().collect();
+        let unnamed = keys.len() - named.len().min(keys.len());
+        let shown: Vec<String> = named.iter().take(REFUSED_KEYS_SHOWN).cloned().collect();
+        // A refusal that names no key is still a refused write: it carried a value.
+        let unnamed = (unnamed + named.len() - shown.len()).max(usize::from(keys.is_empty()));
+        Self {
+            node_type: plain_type(node_type).then(|| node_type.to_string()),
+            unnamed,
+            keys: shown,
+        }
+    }
+}
+
+/// A refusal read from the store's own text, for a write whose error reaches only as
+/// text (a user-defined type, a bulk or trusted write): the sentence
+/// `'k' is not a field of the type 'T': no schema in its chain declares it`.
+///
+/// The sentence is accepted only where the store puts it: at the start of the text,
+/// or after the exact prefixes a tool error carries, in this order and each at most
+/// once: `tool execution failed: `, `<tool> failed: `, `Invalid update: `. A
+/// sentence after any other text (`unknown node_type 'a: 'k' is not a field ...`) is
+/// not a refusal, so text a caller chose cannot name the type or a key. The sentence
+/// is matched whole, quoted keys and fixed words, and the store does not echo a key
+/// of other characters. `None` when no such sentence is there.
+pub fn parse_undeclared_keys(text: &str) -> Option<UndeclaredRefusal> {
+    let mut rest = text;
+    if let Some(after) = rest.strip_prefix("tool execution failed: ") {
+        rest = after;
+    }
+    if let Some((tool, after)) = rest.split_once(" failed: ") {
+        if !tool.is_empty()
+            && tool
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            rest = after;
+        }
+    }
+    if let Some(after) = rest.strip_prefix("Invalid update: ") {
+        rest = after;
+    }
+    refusal_sentence(rest)
+}
+
+fn refusal_sentence(s: &str) -> Option<UndeclaredRefusal> {
+    let mut rest = s;
+    let mut keys: Vec<String> = Vec::new();
+    loop {
+        let inner = rest.strip_prefix('\'')?;
+        let (key, after) = inner.split_once('\'')?;
+        keys.push(key.to_string());
+        match after.strip_prefix(", ") {
+            Some(more) => rest = more,
+            None => {
+                rest = after;
+                break;
+            }
+        }
+    }
+    let rest = rest
+        .strip_prefix(" is not a field of the type '")
+        .or_else(|| rest.strip_prefix(" are not fields of the type '"))?;
+    let (node_type, after) = rest.split_once('\'')?;
+    after
+        .starts_with(": no schema in its chain declares it")
+        .then_some(())?;
+    Some(UndeclaredRefusal::from_parts(node_type, &keys))
 }
 
 // ---------------------------------------------------------------------------

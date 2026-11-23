@@ -172,7 +172,7 @@ pub struct IssueNode {
 /// fields are tri-state: absent leaves the field unchanged, `null` clears it,
 /// and a value sets it.
 ///
-/// `content` is an envelope field and extension fields (`custom:…`) live in
+/// `content` is an envelope field and custom fields (ADR-112) live in
 /// `properties`; both are written through the generic node update.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]

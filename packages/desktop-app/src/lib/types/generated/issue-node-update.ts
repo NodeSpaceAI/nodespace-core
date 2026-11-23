@@ -12,7 +12,7 @@ import type { Priority } from './priority';
  * fields are tri-state: absent leaves the field unchanged, `null` clears it,
  * and a value sets it.
  *
- * `content` is an envelope field and extension fields (`custom:…`) live in
+ * `content` is an envelope field and custom fields (ADR-112) live in
  * `properties`; both are written through the generic node update.
  */
 export type IssueNodeUpdate = {

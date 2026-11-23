@@ -964,7 +964,7 @@ mod wire_contract {
             "task".to_string(),
             "Buy milk".to_string(),
             serde_json::json!({
-                "task": { "status": "in_progress", "priority": "high", "custom:store": "Costco" }
+                "task": { "status": "in_progress", "priority": "high", "store": "Costco" }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
@@ -975,12 +975,9 @@ mod wire_contract {
         // `properties` is flattened: no `task` namespace survives.
         assert!(out["properties"].get("task").is_none());
         // User/custom fields remain in flat `properties`.
-        assert_eq!(out["properties"]["custom:store"], "Costco");
+        assert_eq!(out["properties"]["store"], "Costco");
         // Promotion is a move: core fields have one home, the top level.
-        assert_eq!(
-            out["properties"],
-            serde_json::json!({ "custom:store": "Costco" })
-        );
+        assert_eq!(out["properties"], serde_json::json!({ "store": "Costco" }));
         // URI is injected by the backend.
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
     }
@@ -991,7 +988,7 @@ mod wire_contract {
             "task".to_string(),
             "Buy milk".to_string(),
             serde_json::json!({
-                "task": { "status": "done", "due_date": "2026-05-01", "custom:store": "Costco" }
+                "task": { "status": "done", "due_date": "2026-05-01", "store": "Costco" }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
@@ -1001,7 +998,7 @@ mod wire_contract {
             serde_json::json!({
                 "status": "done",
                 "due_date": "2026-05-01",
-                "custom:store": "Costco"
+                "store": "Costco"
             })
         );
     }
@@ -1012,7 +1009,7 @@ mod wire_contract {
             "collection".to_string(),
             "Clients".to_string(),
             serde_json::json!({
-                "collection": { "description": "Accounts we bill", "custom:owner": "Ada" }
+                "collection": { "description": "Accounts we bill", "owner": "Ada" }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
@@ -1022,10 +1019,7 @@ mod wire_contract {
         assert_eq!(out["lifecycleStatus"], "active");
         assert_eq!(out["version"], 1);
         assert_eq!(out["description"], "Accounts we bill");
-        assert_eq!(
-            out["properties"],
-            serde_json::json!({ "custom:owner": "Ada" })
-        );
+        assert_eq!(out["properties"], serde_json::json!({ "owner": "Ada" }));
     }
 
     #[test]
@@ -1052,7 +1046,7 @@ mod wire_contract {
                     "not_for": "Delete records",
                     "tool_whitelist": ["update_node", "get_node"],
                     "max_iterations": 3,
-                    "custom:team": "Agents"
+                    "team": "Agents"
                 },
                 "_seed": { "tier": "system" }
             }),
@@ -1070,10 +1064,7 @@ mod wire_contract {
         );
         assert_eq!(out["maxIterations"], 3);
         assert_eq!(out["role"], "tool");
-        assert_eq!(
-            out["properties"],
-            serde_json::json!({ "custom:team": "Agents" })
-        );
+        assert_eq!(out["properties"], serde_json::json!({ "team": "Agents" }));
         assert_eq!(
             flat_properties_view(&out),
             serde_json::json!({
@@ -1082,7 +1073,7 @@ mod wire_contract {
                 "tool_whitelist": ["update_node", "get_node"],
                 "max_iterations": 3,
                 "role": "tool",
-                "custom:team": "Agents"
+                "team": "Agents"
             })
         );
     }
@@ -1176,7 +1167,7 @@ mod wire_contract {
                     "first_name": "Ada",
                     "last_name": "Lovelace",
                     "email": "ada@example.com",
-                    "custom:team": "Engines"
+                    "team": "Engines"
                 }
             }),
         );
@@ -1189,7 +1180,7 @@ mod wire_contract {
         assert_eq!(out["email"], "ada@example.com");
         assert_eq!(out["title"], "Ada Lovelace");
         assert!(out["properties"].get("person").is_none());
-        assert_eq!(out["properties"]["custom:team"], "Engines");
+        assert_eq!(out["properties"]["team"], "Engines");
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
     }
 
@@ -1218,7 +1209,7 @@ mod wire_contract {
                     "priority": "high",
                     "start_date": "2026-03-01T09:00:00Z",
                     "end_date": "2026-04-30",
-                    "custom:budget": 1200
+                    "budget": 1200
                 }
             }),
         );
@@ -1230,7 +1221,7 @@ mod wire_contract {
         assert_eq!(out["startDate"], "2026-03-01");
         assert_eq!(out["endDate"], "2026-04-30");
         assert!(out["properties"].get("project").is_none());
-        assert_eq!(out["properties"]["custom:budget"], 1200);
+        assert_eq!(out["properties"]["budget"], 1200);
     }
 
     #[test]
@@ -1263,7 +1254,7 @@ mod wire_contract {
                     "generated_by": "user",
                     "execution_count": 0,
                     "view_config": { "lastView": "kanban", "kanban": { "groupBy": "status" } },
-                    "custom:pinned": true
+                    "pinned": true
                 }
             }),
         );
@@ -1281,7 +1272,7 @@ mod wire_contract {
         assert!(out.get("lastExecuted").is_none());
         assert_eq!(
             out["properties"],
-            serde_json::json!({ "custom:pinned": true }),
+            serde_json::json!({ "pinned": true }),
             "properties carries only extension fields"
         );
     }
@@ -1309,7 +1300,7 @@ mod wire_contract {
                             "params": { "node_id": "{trigger.node.child_of.id}" }
                         }]
                     }],
-                    "custom:owner": "ada"
+                    "owner": "ada"
                 },
                 "_seed": { "tier": "core" }
             }),
@@ -1333,7 +1324,7 @@ mod wire_contract {
         );
         assert_eq!(
             out["properties"],
-            serde_json::json!({ "custom:owner": "ada" }),
+            serde_json::json!({ "owner": "ada" }),
             "properties keeps extension fields only"
         );
         assert_eq!(out["isSeeded"], true, "derived from the `_seed` marker");
@@ -1402,7 +1393,7 @@ mod wire_contract {
                     "turn_status": "processing",
                     "provider": "openai-compat",
                     "context_tokens": 12,
-                    "custom:pinned": true
+                    "pinned": true
                 }
             }),
         );
@@ -1422,10 +1413,7 @@ mod wire_contract {
         assert!(out.get("summary").is_none());
         // Each declared field has one home: `properties` keeps extension
         // fields only.
-        assert_eq!(
-            out["properties"],
-            serde_json::json!({ "custom:pinned": true })
-        );
+        assert_eq!(out["properties"], serde_json::json!({ "pinned": true }));
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
     }
 
@@ -1555,7 +1543,7 @@ mod wire_contract {
                     "reasoning": "Two match.",
                     "outcome": "clarified",
                     "options": ["A", "B"],
-                    "custom:flag": true
+                    "flag": true
                 }
             }),
         );
@@ -1568,10 +1556,7 @@ mod wire_contract {
         assert_eq!(out["reasoning"], "Two match.");
         assert_eq!(out["outcome"], "clarified");
         assert_eq!(out["options"], serde_json::json!(["A", "B"]));
-        assert_eq!(
-            out["properties"],
-            serde_json::json!({ "custom:flag": true })
-        );
+        assert_eq!(out["properties"], serde_json::json!({ "flag": true }));
         assert_eq!(
             flat_properties_view(&out)["role"],
             serde_json::json!("assistant")

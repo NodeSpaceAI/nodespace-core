@@ -14,7 +14,7 @@
 use crate::models::schema::{RelationshipCardinality, RelationshipDirection, SchemaField};
 use crate::models::{SchemaNode, SchemaProtectionLevel};
 use nodespace_types::SchemaFieldType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// What a description is rendered from.
 pub struct SchemaDescription<'a> {
@@ -25,6 +25,9 @@ pub struct SchemaDescription<'a> {
     pub fields: &'a [SchemaField],
     /// The schema that declares each field, by field name.
     pub owners: &'a HashMap<String, String>,
+    /// The names, among `fields`, of the ones users added to a built-in type
+    /// (its `custom_fields` or an ancestor's).
+    pub custom: &'a HashSet<String>,
     /// The display name of each type this description names (the parent and the
     /// field owners), by type id. A type missing from it is shown by its id.
     pub names: &'a HashMap<String, String>,
@@ -38,6 +41,7 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
         purpose,
         fields,
         owners,
+        custom,
         names,
     } = input;
     let mut message = format!("Here is what {link} is.");
@@ -66,7 +70,15 @@ pub fn describe_schema(link: &str, input: &SchemaDescription<'_>) -> String {
         // What core refuses to change: a field it protects. A `User` field,
         // seeded or added under a prefix, is the user's to change.
         let fixed = field.protection != SchemaProtectionLevel::User;
-        message.push_str(&field_line(field, owner, &schema.envelope.id, fixed, names));
+        let added = custom.contains(&field.name);
+        message.push_str(&field_line(
+            field,
+            owner,
+            &schema.envelope.id,
+            fixed,
+            added,
+            names,
+        ));
     }
 
     if !schema.relationships.is_empty() {
@@ -116,8 +128,8 @@ fn standing(schema: &SchemaNode, names: &HashMap<String, String>) -> String {
         format!(
             "It is a built-in type, so a field marked built in cannot be changed or removed; a \
              field not so marked can be, once what names it is dealt with. You can add a field \
-             of your own under a prefix such as `custom:`, and add your own values to a list \
-             that accepts them.{extends}"
+             of your own, which goes in the type's `custom_fields` and exists on every node of \
+             the type, and add your own values to a list that accepts them.{extends}"
         )
     } else {
         format!("It is your own type, so its fields can be added, changed and removed.{extends}")
@@ -130,6 +142,7 @@ fn field_line(
     owner: Option<&String>,
     schema_id: &str,
     fixed: bool,
+    added: bool,
     names: &HashMap<String, String>,
 ) -> String {
     let mut kind = field.field_type.as_str().to_string();
@@ -167,6 +180,9 @@ fn field_line(
     }
     if fixed {
         notes.push("Built in: it cannot be changed or removed.".to_string());
+    }
+    if added {
+        notes.push("Added by users to this type, in its custom_fields.".to_string());
     }
     if let Some(owner) = owner.filter(|owner| owner.as_str() != schema_id) {
         notes.push(format!("From {}.", type_link(owner, names)));
@@ -241,6 +257,11 @@ mod tests {
             .iter()
             .map(|f| (f.name.clone(), schema.envelope.id.clone()))
             .collect();
+        let custom: HashSet<String> = schema
+            .custom_fields
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
         describe_schema(
             "[Ticket](nodespace://ticket)",
             &SchemaDescription {
@@ -248,6 +269,7 @@ mod tests {
                 purpose: Some("A support request.\nOne per customer issue."),
                 fields,
                 owners: &owners,
+                custom: &custom,
                 names: &HashMap::new(),
             },
         )
@@ -299,7 +321,10 @@ mod tests {
             text.contains("built-in type, so a field marked built in cannot be changed"),
             "{text}"
         );
-        assert!(text.contains("under a prefix such as `custom:`"), "{text}");
+        assert!(
+            text.contains("goes in the type's `custom_fields`"),
+            "{text}"
+        );
         assert!(
             text.contains(
                 "- **status** (enum): Values: open, done. More values can be added. \
@@ -324,7 +349,7 @@ mod tests {
             ..Default::default()
         };
         let own = SchemaField {
-            name: "custom:effort".to_string(),
+            name: "effort".to_string(),
             protection: SchemaProtectionLevel::User,
             ..Default::default()
         };
@@ -337,7 +362,35 @@ mod tests {
         };
         assert!(line("status").contains("Built in"), "{text}");
         assert!(!line("priority").contains("Built in"), "{text}");
-        assert!(!line("custom:effort").contains("Built in"), "{text}");
+        assert!(!line("effort").contains("Built in"), "{text}");
+    }
+
+    /// A field users added to a built-in type is listed, and says where it lives.
+    #[test]
+    fn a_custom_field_is_listed_and_marked_as_added_by_users() {
+        let mut schema = SchemaNode::new("task", "Task");
+        schema.is_core = true;
+        let status = SchemaField {
+            name: "status".to_string(),
+            protection: SchemaProtectionLevel::Core,
+            ..Default::default()
+        };
+        let effort = SchemaField {
+            name: "effort".to_string(),
+            protection: SchemaProtectionLevel::User,
+            ..Default::default()
+        };
+        schema.fields = vec![status.clone()];
+        schema.custom_fields = vec![effort.clone()];
+
+        let text = describe(&schema, &[status, effort]);
+        let line = |name: &str| {
+            text.lines()
+                .find(|line| line.starts_with(&format!("- **{name}**")))
+                .expect("the field is listed")
+        };
+        assert!(line("effort").contains("custom_fields"), "{text}");
+        assert!(!line("status").contains("custom_fields"), "{text}");
     }
 
     #[test]
@@ -359,6 +412,7 @@ mod tests {
                 purpose: None,
                 fields: &[inherited],
                 owners: &owners,
+                custom: &HashSet::new(),
                 names: &names,
             },
         );

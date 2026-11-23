@@ -12,7 +12,7 @@
  * a label computed from `name`.
  */
 
-import type { SchemaNode } from './generated';
+import type { SchemaField, SchemaNode } from './generated';
 
 export type {
   EdgeField,
@@ -42,4 +42,13 @@ export function isSchemaNode(value: unknown): value is SchemaNode {
     typeof node.schemaVersion === 'number' &&
     Array.isArray(node.fields)
   );
+}
+
+/**
+ * Every field a schema declares: the shipped `fields`, then the `customFields`
+ * users added to a built-in type (ADR-112). A form, a table, a title template
+ * and a filter read both lists by the same bare names.
+ */
+export function declaredFields(schema: SchemaNode | null | undefined): SchemaField[] {
+  return [...(schema?.fields ?? []), ...(schema?.customFields ?? [])];
 }

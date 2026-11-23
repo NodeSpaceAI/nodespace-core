@@ -116,7 +116,7 @@ pub struct TaskNode {
 /// `YYYY-MM-DD`.
 ///
 /// The update carries the task schema's fields and nothing else. `content` is
-/// an envelope field and extension fields (`custom:…`) live in `properties`;
+/// an envelope field and extension fields (`…`) live in `properties`;
 /// both are written through the generic node update.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -262,7 +262,7 @@ mod tests {
     fn task_node_update_rejects_content_and_properties() {
         for json in [
             r#"{"content": "Renamed"}"#,
-            r#"{"status": "done", "properties": {"custom:estimate": 3}}"#,
+            r#"{"status": "done", "properties": {"estimate": 3}}"#,
         ] {
             assert!(
                 serde_json::from_str::<TaskNodeUpdate>(json).is_err(),

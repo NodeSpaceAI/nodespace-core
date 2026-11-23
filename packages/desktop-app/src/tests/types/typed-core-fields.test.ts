@@ -16,7 +16,7 @@ describe('typed core field lookups', () => {
   it('resolves a field by either spelling, and nothing for an extension field', () => {
     expect(typedCoreField('task', 'due_date')?.wire).toBe('dueDate');
     expect(typedCoreField('task', 'dueDate')?.storage).toBe('due_date');
-    expect(typedCoreField('task', 'custom:store')).toBeUndefined();
+    expect(typedCoreField('task', 'store')).toBeUndefined();
     expect(typedCoreField('invoice', 'status')).toBeUndefined();
   });
 

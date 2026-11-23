@@ -32,9 +32,9 @@ describe('resolveFieldValue', () => {
   });
 
   it('reads an extension field on a core type from properties', () => {
-    const node = { nodeType: 'task', status: 'open', properties: { 'custom:store': 'Costco' } };
+    const node = { nodeType: 'task', status: 'open', properties: { 'store': 'Costco' } };
 
-    expect(resolveFieldValue(node, 'custom:store')).toBe('Costco');
+    expect(resolveFieldValue(node, 'store')).toBe('Costco');
   });
 
   it('reads a flat field for a user-defined schema type, even one named like a core field', () => {
@@ -64,7 +64,7 @@ describe('resolveFieldValue', () => {
 
 describe('buildFieldWrite', () => {
   it('writes a core type field as a typed top-level change', () => {
-    const node = { nodeType: 'project', status: 'planning', properties: { 'custom:x': 1 } };
+    const node = { nodeType: 'project', status: 'planning', properties: { 'x': 1 } };
 
     expect(buildFieldWrite(node, 'start_date', '2026-03-01')).toEqual({
       startDate: '2026-03-01'

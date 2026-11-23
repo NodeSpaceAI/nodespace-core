@@ -14,9 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nodespace_core::markdown::{
-    content_without_title_line, front_matter_properties, prepare_nodes_from_markdown,
-    root_content_for_title, split_front_matter, transform_links_in_nodes_with_mentions,
-    PreparedNode,
+    content_without_title_line, prepare_nodes_from_markdown, root_content_for_title,
+    split_front_matter, transform_links_in_nodes_with_mentions, PreparedNode,
 };
 use nodespace_core::models::CoreNodeType;
 use nodespace_core::services::{
@@ -111,14 +110,67 @@ fn import_identity_key(source: &str, relative_path: &str) -> String {
     format!("{source}\u{0}{relative_path}")
 }
 
-/// A document's front matter split from the rest: the properties its root
-/// takes (an imported root is a `text` node, which declares no field, so every
-/// key is an extension field) and the document without the block.
-fn split_document(content: String) -> (String, serde_json::Map<String, serde_json::Value>) {
-    match split_front_matter(&content) {
-        Some(front) => (front.body, front_matter_properties(front.fields, |_| false)),
-        None => (content, serde_json::Map::new()),
+/// A document with its front matter split off: the document to import and how
+/// many keys the block held.
+///
+/// An imported root is a `text` node, which declares no field, and no schema
+/// admits a key it does not declare (ADR-112 section 11). The keys are not
+/// turned into properties and are not dropped: the block is kept as the last
+/// child of the document, a code block of the YAML as written, where every
+/// surface that shows the document shows it.
+///
+/// A document that is only front matter has no first line to title it: its title
+/// is "Untitled" (the file's name, when the title comes from it), and the block
+/// is its one child. The block is a fenced code block, with a fence longer than
+/// any run of backticks in it. This importer reads a fence's end as any line that
+/// starts with three backticks, so a block with such a line is kept as a quote
+/// instead, line for line.
+fn split_document(content: String, title_from_filename: bool) -> (String, usize) {
+    let Some(front) = split_front_matter(&content) else {
+        return (content, 0);
+    };
+    let keys = front.fields.len();
+    if keys == 0 {
+        return (front.body, 0);
     }
+    // The block as it was written: from the opening line to the closing one.
+    let lines: Vec<&str> = content.lines().collect();
+    let close = lines
+        .iter()
+        .skip(1)
+        .position(|l| matches!(l.trim_end_matches('\r'), "---" | "..."))
+        .map_or(0, |i| i + 1);
+    let block = lines[..=close].join("\n");
+    let rendered = if lines[..=close]
+        .iter()
+        .any(|l| l.trim_start().starts_with("```"))
+    {
+        lines[..=close]
+            .iter()
+            .map(|l| {
+                if l.is_empty() {
+                    ">".to_string()
+                } else {
+                    format!("> {l}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        let longest = block.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+        let fence = "`".repeat(longest.max(2) + 1);
+        format!("{fence}yaml\n{block}\n{fence}")
+    };
+    let body = front.body.trim_end();
+    if body.trim().is_empty() {
+        let title = if title_from_filename {
+            ""
+        } else {
+            "Untitled\n\n"
+        };
+        return (format!("{title}{rendered}\n"), keys);
+    }
+    (format!("{body}\n\n{rendered}\n"), keys)
 }
 
 #[derive(Clone)]
@@ -258,7 +310,7 @@ async fn import_single_file(
         (None, false)
     };
 
-    let (content, front_matter) = split_document(content);
+    let (content, front_matter_keys) = split_document(content, opts.use_filename_as_title);
 
     let title = if opts.use_filename_as_title {
         path.file_stem()
@@ -298,7 +350,6 @@ async fn import_single_file(
         &content,
         DocumentOptions {
             title_from_filename: opts.use_filename_as_title,
-            front_matter: front_matter.clone(),
             is_archived,
             replace: opts.replace,
         },
@@ -310,7 +361,7 @@ async fn import_single_file(
             let front_matter_keys = if nodes_created == 0 {
                 0
             } else {
-                front_matter.len()
+                front_matter_keys
             };
             if let Some(ref coll) = collection {
                 let collection_service = CollectionService::new(node_service.store(), node_service);
@@ -556,7 +607,7 @@ async fn run_batch_import(
             file_path: p.file_path.to_string_lossy().to_string(),
             root_id: Some(p.root_id.clone()),
             nodes_created: 0,
-            front_matter_keys: p.root_properties.len(),
+            front_matter_keys: p.front_matter_keys,
             success: true,
             error: None,
             collection: p.collection_path.clone(),
@@ -943,8 +994,7 @@ impl Phase2Writer {
         let mut skipped: Vec<String> = Vec::new();
         // A replaced document's new root content and old child ids, applied
         // only once its fresh subtree has committed.
-        let mut refreshed_roots: Vec<(String, String, serde_json::Map<String, serde_json::Value>)> =
-            Vec::new();
+        let mut refreshed_roots: Vec<(String, String)> = Vec::new();
         let mut prune: Vec<String> = Vec::new();
         let mut chunk_mentions: Vec<(String, String)> = Vec::new();
         let mut memberships: Vec<(String, String)> = Vec::new();
@@ -965,11 +1015,7 @@ impl Phase2Writer {
                         continue;
                     }
                 }
-                refreshed_roots.push((
-                    file.root_id.clone(),
-                    file.root_content,
-                    file.root_properties,
-                ));
+                refreshed_roots.push((file.root_id.clone(), file.root_content));
             } else if !exists {
                 rows.push((
                     file.root_id.clone(),
@@ -977,7 +1023,7 @@ impl Phase2Writer {
                     file.root_content,
                     None,
                     1.0,
-                    serde_json::Value::Object(file.root_properties),
+                    serde_json::json!({}),
                 ));
             }
 
@@ -1058,11 +1104,8 @@ impl Phase2Writer {
         // links and mentions, survive), then prune its OLD children. Both wait
         // for the fresh subtree to commit, so a failed chunk never truncates
         // or retitles a document.
-        for (root_id, content, properties) in &refreshed_roots {
-            let mut update = nodespace_core::NodeUpdate::new().with_content(content.clone());
-            if !properties.is_empty() {
-                update = update.with_properties(serde_json::Value::Object(properties.clone()));
-            }
+        for (root_id, content) in &refreshed_roots {
+            let update = nodespace_core::NodeUpdate::new().with_content(content.clone());
             if let Err(e) = refresh_root(&self.node_service, root_id, update).await {
                 tracing::error!("Failed to refresh root {}: {}", root_id, e);
                 self.fail(root_id, &format!("Root refresh failed: {e}"));
@@ -1076,7 +1119,7 @@ impl Phase2Writer {
                     e
                 );
                 let error = format!("Stale subtree prune failed: {e}");
-                for (root_id, _, _) in &refreshed_roots {
+                for (root_id, _) in &refreshed_roots {
                     self.fail(root_id, &error);
                 }
             }
@@ -1085,7 +1128,7 @@ impl Phase2Writer {
         // content effectively changed — re-mark it stale so it re-embeds. New
         // roots already get their markers inside bulk_create_hierarchy_trusted.
         if !refreshed_roots.is_empty() {
-            let root_ids: Vec<String> = refreshed_roots.into_iter().map(|(r, _, _)| r).collect();
+            let root_ids: Vec<String> = refreshed_roots.into_iter().map(|(r, _)| r).collect();
             if let Err(e) = self.store.requeue_root_embeddings(&root_ids).await {
                 tracing::warn!(
                     "Failed to re-mark {} replaced root(s) stale: {}",
@@ -1280,7 +1323,7 @@ fn prepare_file_import(
         .unwrap_or(&file_read.relative_path)
         .to_string();
 
-    let (content, root_properties) = split_document(file_read.content);
+    let (content, front_matter_keys) = split_document(file_read.content, use_filename_as_title);
 
     let title = if use_filename_as_title {
         file_read
@@ -1308,7 +1351,7 @@ fn prepare_file_import(
             file_path: file_read.path,
             root_id,
             root_content,
-            root_properties,
+            front_matter_keys,
             is_archived: file_read.is_archived,
             collection_path: file_read.collection_path,
             children,
@@ -1611,8 +1654,8 @@ struct PreparedFileImport {
     file_path: PathBuf,
     root_id: String,
     root_content: String,
-    /// The root's properties, from the document's front matter.
-    root_properties: serde_json::Map<String, serde_json::Value>,
+    /// How many keys the document's front matter held.
+    front_matter_keys: usize,
     is_archived: bool,
     collection_path: Option<String>,
     children: Vec<PreparedNode>,
@@ -1666,8 +1709,6 @@ impl LocalFileImportResult {
 struct DocumentOptions {
     /// The title is the file's name rather than its first line.
     title_from_filename: bool,
-    /// The properties of the root, from the document's front matter.
-    front_matter: serde_json::Map<String, serde_json::Value>,
     is_archived: bool,
     /// Refresh a document imported before instead of leaving it untouched.
     replace: bool,
@@ -1682,7 +1723,6 @@ async fn import_markdown_content(
 ) -> Result<(String, usize), String> {
     let DocumentOptions {
         title_from_filename,
-        front_matter,
         is_archived,
         replace,
     } = options;
@@ -1754,7 +1794,7 @@ async fn import_markdown_content(
             root_content.clone(),
             None,
             1.0,
-            serde_json::Value::Object(front_matter.clone()),
+            serde_json::json!({}),
         ));
     }
     rows.extend(prepared_nodes.iter().map(|n| {
@@ -1784,9 +1824,6 @@ async fn import_markdown_content(
             .map_err(|e| format!("Failed to read existing subtree: {}", e))?;
         follow_up.prune_ids = descendants.into_iter().map(|n| n.id).collect();
         let mut update = nodespace_core::NodeUpdate::new().with_content(root_content);
-        if !front_matter.is_empty() {
-            update = update.with_properties(serde_json::Value::Object(front_matter.clone()));
-        }
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
         }
@@ -1975,7 +2012,7 @@ mod tests {
             file_path: PathBuf::from("vanished.md"),
             root_id,
             root_content: "Vanished".to_string(),
-            root_properties: Default::default(),
+            front_matter_keys: 0,
             is_archived,
             collection_path: None,
             children: Vec::new(),
@@ -2120,7 +2157,6 @@ mod tests {
             content,
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: false,
                 replace: false,
             },
@@ -2311,7 +2347,6 @@ mod tests {
             "# Plan\n\nfine\n\nPOISON line\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: false,
                 replace: false,
             },
@@ -2330,7 +2365,6 @@ mod tests {
             "# Plan\n\nfine\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: false,
                 replace: false,
             },
@@ -2391,7 +2425,6 @@ mod tests {
             "# Old Plan\n\nold body\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: false,
                 replace: false,
             },
@@ -2407,7 +2440,6 @@ mod tests {
             "# New Plan\n\nPOISON body\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: true,
                 replace: true,
             },
@@ -2437,7 +2469,6 @@ mod tests {
             "# Old\n\nbody\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: false,
                 replace: false,
             },
@@ -2460,7 +2491,6 @@ mod tests {
             "# Old\n\nbody\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: true,
                 replace: false,
             },
@@ -2493,7 +2523,6 @@ mod tests {
             content,
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: true,
                 replace: false,
             },
@@ -2509,7 +2538,6 @@ mod tests {
             content,
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: true,
                 replace: false,
             },
@@ -2536,7 +2564,6 @@ mod tests {
             "# Old\n\nold body\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: true,
                 replace: false,
             },
@@ -2560,7 +2587,6 @@ mod tests {
             "# New\n\nnew body\n",
             DocumentOptions {
                 title_from_filename: false,
-                front_matter: Default::default(),
                 is_archived: true,
                 replace: true,
             },
@@ -3695,24 +3721,128 @@ mod tests {
             .collect()
     }
 
+    /// A `text` root declares no field, so no front matter key is turned into
+    /// one (ADR-112 section 11). Nothing is lost either: the block is the last
+    /// child of the document, a code block holding the YAML as it was written,
+    /// which every read surface shows. The result counts the keys it held.
     #[tokio::test]
-    async fn front_matter_becomes_properties_of_the_root_and_makes_no_node() {
+    async fn front_matter_is_kept_as_a_code_block_and_sets_no_property() {
         let (ns, roots, _dir) = import_both_ways(FRONT_MATTER_DOC).await;
         for (root_id, result) in &roots {
             let root = ns.get_node(root_id).await.unwrap().unwrap();
             assert_eq!(root.node_type, "text");
             assert_eq!(root.content, "The Title");
-            let props = &root.properties["text"];
-            assert_eq!(props["custom:author"], serde_json::json!("ann"));
-            assert_eq!(props["custom:count"], serde_json::json!(3));
-            assert_eq!(props["custom:draft"], serde_json::json!(true));
-            assert_eq!(props["custom:tags"], serde_json::json!(["a", "b"]));
-            assert_eq!(props["custom:owner"], serde_json::json!({"team": "core"}));
-            assert_eq!(result.front_matter_keys, 5);
-            // No `---` node and no node for the fields: only the body.
             assert_eq!(
-                child_kinds(&ns, root_id).await,
-                vec![("text".to_string(), "Body text.".to_string())]
+                root.properties.get("_front_matter"),
+                None,
+                "{}",
+                root.properties
+            );
+            let props = &root.properties["text"];
+            assert!(props.get("author").is_none(), "{props}");
+            assert_eq!(result.front_matter_keys, 5);
+            // The block sits beneath the document, under the last block of the
+            // body, as any fenced block that follows a line of text does.
+            let below: Vec<(String, String)> = ns
+                .get_descendants(root_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|n| (n.node_type, n.content))
+                .collect();
+            let fence = below
+                .iter()
+                .find(|(kind, _)| kind == "code-block")
+                .unwrap_or_else(|| panic!("the front matter block is a code block: {below:?}"));
+            for written in ["author: ann", "count: 3", "draft: true", "team: core"] {
+                assert!(fence.1.contains(written), "{written}: {:?}", fence.1);
+            }
+            assert!(below.contains(&("text".to_string(), "Body text.".to_string())));
+        }
+    }
+
+    /// The fence is longer than any run of backticks in the block, and a line
+    /// that starts with three backticks makes the block a quote.
+    #[test]
+    fn the_front_matter_block_is_fenced_or_quoted_by_what_it_holds() {
+        let (inline, keys) = split_document(
+            "---\nnote: \"a ``` b\"\n---\n# T\n\nBody.\n".to_string(),
+            false,
+        );
+        assert_eq!(keys, 1);
+        assert!(
+            inline.contains("````yaml\n---\nnote: \"a ``` b\"\n---\n````"),
+            "{inline}"
+        );
+        let (plain, _) = split_document("---\na: 1\n---\n# T\n\nB.\n".to_string(), false);
+        assert!(plain.contains("```yaml\n---\na: 1\n---\n```"), "{plain}");
+        let (quoted, _) = split_document(
+            "---\nnote: |\n  ```\n  more\n---\n# T\n\nB.\n".to_string(),
+            false,
+        );
+        assert!(
+            quoted.contains("> ---\n> note: |\n>   ```\n>   more\n> ---"),
+            "{quoted}"
+        );
+        assert!(!quoted.contains("yaml"), "{quoted}");
+    }
+
+    async fn descendants_of(ns: &CoreNodeService, root: &str) -> Vec<(String, String)> {
+        ns.get_descendants(root)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|n| (n.node_type, n.content))
+            .collect()
+    }
+
+    /// A document of front matter alone has no first line to title it: the root
+    /// is "Untitled" and the block is its one child.
+    #[tokio::test]
+    async fn a_front_matter_only_document_is_untitled_and_keeps_its_block() {
+        let (ns, roots, _dir) = import_both_ways("---\nauthor: ann\n---\n").await;
+        for (root_id, result) in &roots {
+            let root = ns.get_node(root_id).await.unwrap().unwrap();
+            assert_eq!(root.content, "Untitled");
+            assert_eq!(result.front_matter_keys, 1);
+            let below = descendants_of(&ns, root_id).await;
+            assert_eq!(below.len(), 1, "{below:?}");
+            assert_eq!(below[0].0, "code-block");
+            assert!(below[0].1.contains("author: ann"), "{below:?}");
+        }
+    }
+
+    /// A value holding backticks does not end the block early: a run of them
+    /// inside a line gets a longer fence, and a line that starts with three
+    /// keeps the block as a quote, every line of it.
+    #[tokio::test]
+    async fn backticks_in_front_matter_do_not_break_the_block() {
+        let inline = "---\nnote: \"a ``` b\"\n---\n# Title\n\nBody.\n";
+        let (ns, roots, _dir) = import_both_ways(inline).await;
+        for (root_id, _) in &roots {
+            let below = descendants_of(&ns, root_id).await;
+            let fence = below
+                .iter()
+                .find(|(k, _)| k == "code-block")
+                .expect("a code block");
+            assert!(fence.1.contains("note: \"a ``` b\""), "{below:?}");
+            assert!(
+                below.contains(&("text".to_string(), "Body.".to_string())),
+                "{below:?}"
+            );
+        }
+        let at_line_start = "---\nnote: |\n  ```\n  more\n---\n# Title\n\nBody.\n";
+        let (ns, roots, _dir) = import_both_ways(at_line_start).await;
+        for (root_id, _) in &roots {
+            let below = descendants_of(&ns, root_id).await;
+            let quote = below
+                .iter()
+                .find(|(k, _)| k == "quote-block")
+                .expect("a quote block");
+            assert!(quote.1.contains("more"), "{below:?}");
+            assert!(
+                below.contains(&("text".to_string(), "Body.".to_string())),
+                "{below:?}"
             );
         }
     }

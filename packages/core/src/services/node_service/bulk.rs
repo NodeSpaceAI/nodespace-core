@@ -176,7 +176,12 @@ impl NodeService {
             )?;
 
             // Step 2: Re-bucketing, then behavior and chain-aware schema
-            // validation
+            // validation. A caller's flat properties are filed under the
+            // node's type first, as every other write does: the closed-bucket
+            // rule and the system field check read the buckets, so a key left
+            // flat would pass both.
+            node.properties =
+                Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
             let ownership = self
                 .field_ownership_in_batch(&node.node_type, &mut ownership_by_type)
                 .await?;
@@ -756,7 +761,7 @@ impl NodeService {
                 let ownership = if chain.len() > 1 {
                     self.field_ownership_for_write(&node_type).await?
                 } else {
-                    (Vec::new(), std::collections::HashMap::new(), chain)
+                    (Vec::new(), std::collections::HashMap::new(), chain, false)
                 };
                 ownership_by_type.insert(node_type.clone(), ownership);
             }
@@ -774,6 +779,13 @@ impl NodeService {
             }
             self.rebucket_and_validate_behaviors(None, &mut node, ownership, false)?;
             Self::ensure_system_fields_maintained(None, &node, &guard_by_type[&node.node_type])?;
+            // The bucket is as closed here as on any other write (ADR-112
+            // section 3): the import skips schema validation, not the rule
+            // that a key must be declared.
+            let (_, owners, chain, closed) = &guard_by_type[&node.node_type];
+            if *closed {
+                Self::reject_undeclared_keys(None, &node, owners, chain)?;
+            }
             self.stamp_task_started(None, &mut node).await?;
             nodes_normalized.push((
                 node.id,

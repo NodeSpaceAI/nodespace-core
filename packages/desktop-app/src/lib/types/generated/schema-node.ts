@@ -50,6 +50,14 @@ export type SchemaNode = {
    */
   fields: Array<SchemaField>;
   /**
+   * The fields users added to this core type (ADR-112): declared here
+   * beside the protected `fields` and stored under their own names in the
+   * type's bucket. Only `update_schema` writes the list, and only a
+   * built-in schema has one; a user-defined type declares every field in
+   * `fields`.
+   */
+  customFields?: Array<SchemaField>;
+  /**
    * The relationships this schema declares to other types, stored as
    * declaration edges between schema nodes (ADR-070). A read of one
    * schema's definition adds the inherited ones, like `fields`.

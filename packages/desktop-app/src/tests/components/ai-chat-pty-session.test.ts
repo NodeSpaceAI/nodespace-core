@@ -337,7 +337,7 @@ describe('AiChatPtySession', () => {
     });
 
     it('launches by patching agent and session_status only', async () => {
-      seedPtyChat('launch-chat', { agent: 'codex', properties: { 'custom:tag': 'keep' } });
+      seedPtyChat('launch-chat', { agent: 'codex', properties: { 'tag': 'keep' } });
       mockDaemon({
         launch_session: () => Promise.resolve({ sessionId: 'new-session', createdAt: 1 })
       });

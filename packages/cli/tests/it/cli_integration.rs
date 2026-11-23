@@ -3618,10 +3618,10 @@ async fn node_update_sets_properties_and_preserves_content() {
 
     let id = raw
         .create_node(CreateNodeRequest {
-            node_type: "text".into(),
+            node_type: "task".into(),
             content: "original content".into(),
             parent_id: None,
-            properties: serde_json::json!({"custom:existing": "keep-me"}).to_string(),
+            properties: serde_json::json!({"priority": "high"}).to_string(),
             collections: Vec::new(),
             collection_ids: Vec::new(),
             lifecycle_status: None,
@@ -3639,7 +3639,7 @@ async fn node_update_sets_properties_and_preserves_content() {
             properties_json: None,
             id: id.clone(),
             content: None,
-            properties: vec![("custom:added".into(), serde_json::json!("value"))],
+            properties: vec![("status".into(), serde_json::json!("in_progress"))],
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
@@ -3669,9 +3669,9 @@ async fn node_update_sets_properties_and_preserves_content() {
     // Typed properties are namespaced under the node's type key on the wire
     // (properties.<node_type>.<field>), per the typed-value shape produced by
     // crate::models::node_to_typed_value.
-    assert_eq!(props["text"]["custom:added"], "value");
+    assert_eq!(props["task"]["status"], "in_progress");
     assert_eq!(
-        props["text"]["custom:existing"], "keep-me",
+        props["task"]["priority"], "high",
         "existing properties must be deep-merged, not replaced"
     );
 

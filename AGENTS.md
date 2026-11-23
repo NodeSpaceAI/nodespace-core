@@ -142,7 +142,7 @@ Adding state to a core type?
   It belongs to a specialization        → a subtype's field, bare name, own bucket
   It links nodes                        → a declared relationship, not a list of ids
   It's "hidden / retired"               → lifecycle_status via governance; never a type field
-User extending a core type?             → custom:/org:/plugin: prefix (ADR-063)
+User extending a core type?             → a field in the schema's custom_fields, stored under its own name (ADR-112)
 User-defined type's field?              → bare name
 Another build's data?                   → its own extends subtype (ADR-082/083); never on a core type
 ```
@@ -157,7 +157,7 @@ Another build's data?                   → its own extends subtype (ADR-082/083
 - ❌ No `node_type == "<literal>"` comparisons (Rust, SQL or TypeScript). Resolve the type through the registry: `type_is_a` / `CoreNodeType::nearest` in Rust, `is_a_sql` in SQL, `isA` in TypeScript; `is_exactly` / `isExactly` only where a subtype must not match. `scripts/check-node-type-literals.ts` fails the push check and `bun run test:scripts` on a literal comparison outside tests
 - ❌ No reads of `lifecycle_status` outside the governance participation check, and no type-specific meaning for `archived`. Ask `crate::governance`: `participates` / `is_visible` in Rust, `participates_sql` / `default_query_conditions` in SQL; `include_archived` is the only opt-in. `scripts/check-lifecycle-reads.ts` fails the push check and `bun run test:scripts` on a comparison, a match or a lookup of the field by name outside tests
 - ❌ No undeclared property keys, wrapper structs, `default_metadata`, hierarchy flags or compatibility shims
-- ❌ No unprefixed user properties on core types. No deleting core fields from schemas without the sequence and an ADR
+- ❌ No property key on any type that no schema in its chain declares (`fields` or `custom_fields`, or a `_` bookkeeping key). No deleting core fields from schemas without the sequence and an ADR
 
 ## Component Architecture (CRITICAL)
 

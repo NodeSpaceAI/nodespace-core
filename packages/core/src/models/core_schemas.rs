@@ -300,6 +300,7 @@ fn remote_tool_schema(envelope: NodeEnvelope, fields: Vec<SchemaField>) -> Schem
         children: Default::default(),
         parent: Default::default(),
         schema_version: 1,
+        custom_fields: Vec::new(),
         fields,
         relationships: vec![],
         title_template: None,
@@ -451,6 +452,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 task_status_field(),
                 SchemaField {
@@ -666,6 +668,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "status".to_string(),
@@ -809,6 +812,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 issue_status_field(),
                 link_field(
@@ -839,6 +843,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 // What binds a checkout to a software project: a client
                 // compares the checkout's remote with this link's URL.
@@ -886,6 +891,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 text_field(
                     "objective",
@@ -941,6 +947,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 text_field(
                     "approach",
@@ -995,6 +1002,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![closed_status_field(
                 "decision_status",
                 "Decision status",
@@ -1024,6 +1032,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1039,6 +1048,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1054,6 +1064,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1069,6 +1080,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1084,6 +1096,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1099,6 +1112,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1114,6 +1128,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1129,6 +1144,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1144,6 +1160,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![SchemaField {
                 name: "description".to_string(),
                 friendly_name: "Description".to_string(),
@@ -1177,6 +1194,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -1193,6 +1211,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "agent".to_string(),
@@ -1288,6 +1307,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "provider".to_string(),
@@ -1382,6 +1402,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "session_status".to_string(),
@@ -1480,6 +1501,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "session_status".to_string(),
@@ -1539,6 +1561,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "role".to_string(),
@@ -1931,6 +1954,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "target_type".to_string(),
@@ -2132,6 +2156,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "first_name".to_string(),
@@ -2256,6 +2281,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![],
             relationships: vec![],
             title_template: None,
@@ -2271,6 +2297,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "use_for".to_string(),
@@ -2436,6 +2463,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "rules".to_string(),
@@ -2599,6 +2627,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: REQUIRED_EXTENSIONS_FIELD.to_string(),
@@ -2704,6 +2733,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "description".to_string(),
@@ -2797,6 +2827,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![
                 SchemaField {
                     name: "handler".to_string(),
@@ -3136,15 +3167,16 @@ mod tests {
         assert_eq!(query.children, SchemaChildrenRule::None);
     }
 
-    /// Core field names are snake_case, apart from the namespaced ones, and
+    /// Core field names are snake_case, and
     /// no core field takes the `string` type the vocabulary no longer has.
     #[test]
     fn core_fields_are_snake_case() {
         for schema in get_core_schemas() {
             for field in &schema.fields {
-                let bare = field.name.rsplit(':').next().unwrap_or(&field.name);
                 assert!(
-                    bare.chars()
+                    field
+                        .name
+                        .chars()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
                     "{}.{} is not snake_case",
                     schema.envelope.id,

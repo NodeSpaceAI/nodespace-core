@@ -547,10 +547,9 @@ fn related_one_hop_schemas(
 /// applies before writing into this same `relevant_schemas` vector.
 ///
 /// The `create_node` guidance treats presence in EXISTING SCHEMAS as
-/// proof a type is user-defined (bare property keys) versus built-in
-/// (`custom:`-prefixed) — a core type reaching this block would make the
-/// model write a bare key onto a core type, the exact ADR-063 violation that
-/// guidance exists to prevent.
+/// proof a type is user-defined versus built-in — a core type reaching this
+/// block would make the model treat a built-in type as one whose every field
+/// is the user's, which it is not (a built-in type has `custom_fields`).
 fn non_core_schema_hits(results: Vec<(Node, f64)>, corpus: &[SchemaNode]) -> Vec<SchemaNode> {
     results
         .into_iter()
@@ -1560,6 +1559,7 @@ mod tests {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: fields
                 .iter()
                 .map(|name| SchemaField {

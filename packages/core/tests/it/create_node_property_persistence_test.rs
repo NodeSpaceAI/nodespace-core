@@ -12,12 +12,13 @@
 //! necessarily declare:
 //!
 //!   - a value for a field the schema DOES declare must persist, and
-//!   - a value for a field the schema does NOT declare must ALSO persist,
-//!     rather than being filtered out for being unknown.
+//!   - a value for a field the schema does NOT declare is refused, naming the
+//!     key and the type (ADR-112 section 11), rather than being filtered out
+//!     for being unknown while the call reports success.
 //!
-//! If the second case dropped the value, "schema omitted the field" and "model
-//! omitted the value" would produce an identical zero count and the trace could
-//! not distinguish them.
+//! Dropping the value silently would make "schema omitted the field" and "model
+//! omitted the value" produce an identical zero count, and the trace could not
+//! distinguish them.
 
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::Node;
@@ -72,8 +73,8 @@ async fn persists_values_for_declared_schema_fields() -> Result<(), Box<dyn std:
     seed_schema(
         &ns,
         json!([
-            { "name": "status", "field_type": "text" },
-            { "name": "replacement_cost", "field_type": "number" },
+            { "name": "status", "type": "text" },
+            { "name": "replacement_cost", "type": "number" },
         ]),
     )
     .await?;
@@ -108,15 +109,17 @@ async fn persists_values_for_declared_schema_fields() -> Result<(), Box<dyn std:
 }
 
 /// The scenario-4 shape: the model supplies `replacement_cost` but the schema
-/// created a turn earlier never declared it. The value must still be stored —
-/// an undeclared key is not a reason to discard what the user said.
+/// created a turn earlier never declared it. The type is closed (ADR-112
+/// section 11), so the write is refused, naming the key and the type, rather
+/// than reporting success for a record that holds nothing of what the user
+/// said.
 #[tokio::test]
-async fn persists_values_for_fields_the_schema_never_declared(
+async fn refuses_values_for_fields_the_schema_never_declared(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ns = test_service().await?;
-    seed_schema(&ns, json!([{ "name": "status", "field_type": "text" }])).await?;
+    seed_schema(&ns, json!([{ "name": "status", "type": "text" }])).await?;
 
-    let output = node_ops::create_node(
+    let error = node_ops::create_node(
         &ns,
         node_ops::CreateNodeInput {
             id: None,
@@ -131,13 +134,12 @@ async fn persists_values_for_fields_the_schema_never_declared(
             lifecycle_status: None,
         },
     )
-    .await?;
-
-    assert_eq!(
-        persisted_count(&output.node_data),
-        1,
-        "a value for an undeclared field must still persist, got: {}",
-        serde_json::to_string_pretty(&output.node_data)?
+    .await
+    .expect_err("an undeclared key is refused")
+    .to_string();
+    assert!(
+        error.contains("'replacement_cost' is not a field of the type 'equipment'"),
+        "{error}"
     );
     Ok(())
 }
@@ -149,7 +151,7 @@ async fn persists_values_for_fields_the_schema_never_declared(
 #[tokio::test]
 async fn reports_zero_only_when_given_no_properties() -> Result<(), Box<dyn std::error::Error>> {
     let ns = test_service().await?;
-    seed_schema(&ns, json!([{ "name": "status", "field_type": "text" }])).await?;
+    seed_schema(&ns, json!([{ "name": "status", "type": "text" }])).await?;
 
     let output = node_ops::create_node(
         &ns,

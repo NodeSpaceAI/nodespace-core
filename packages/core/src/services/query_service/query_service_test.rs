@@ -757,7 +757,7 @@ mod tests {
             "custom_type".to_string(),
             "schema".to_string(),
             "Custom Type".to_string(),
-            json!({ "fields": [] }),
+            json!({ "fields": [{ "name": "custom_field", "type": "text" }] }),
         );
         node_service
             .store()
@@ -1799,18 +1799,35 @@ mod tests {
                 Some(reference) => json!({ "invoice": { "reference": reference } }),
                 None => json!({}),
             };
-            node_service
+            // The values are of mixed JSON types on purpose, which the declared
+            // text field would refuse, so they are written past validation.
+            let id = node_service
                 .create_node_with_parent(CreateNodeParams {
                     id: None,
                     node_type: "invoice".to_string(),
                     content: content.to_string(),
                     parent_id: None,
                     position: crate::services::InsertPositionOwned::End,
-                    properties,
+                    properties: json!({}),
                     lifecycle_status: None,
                 })
                 .await
                 .unwrap();
+            if !properties.as_object().is_some_and(|p| p.is_empty()) {
+                node_service
+                    .store()
+                    .update_node(
+                        &id,
+                        crate::models::NodeUpdate {
+                            properties: Some(properties),
+                            ..Default::default()
+                        },
+                        None,
+                        Default::default(),
+                    )
+                    .await
+                    .unwrap();
+            }
         }
         let sorted = |direction: SortDirection, limit: Option<usize>| QueryDefinition {
             target_type: "invoice".to_string(),
@@ -3180,7 +3197,7 @@ mod tests {
 
     #[test]
     fn validate_identifiers_accepts_real_identifiers() {
-        for id in ["task", "due_date", "custom:field", "my-type"] {
+        for id in ["task", "due_date", "field", "my-type"] {
             assert!(
                 definition(id, Some(id), Some(id))
                     .validate_identifiers()
@@ -3200,7 +3217,7 @@ mod tests {
         assert!(definition("a.b", None, None)
             .validate_identifiers()
             .is_err());
-        assert!(definition("task", Some("a.b"), Some("a.b_c.custom:d"))
+        assert!(definition("task", Some("a.b"), Some("a.b_c.x:d"))
             .validate_identifiers()
             .is_ok());
         for bad in [

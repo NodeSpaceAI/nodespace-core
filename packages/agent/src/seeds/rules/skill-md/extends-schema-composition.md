@@ -22,4 +22,4 @@ nodespace schema update --params '{"schema_id":"bug","add_field_values":[{"field
 
 Never declare a new, differently-named field (`bug_status`) for this — that isn't an extension of `status` at all, and it's exactly what `mapsTo` exists to make unnecessary: a base-scoped Play or query watching `task.status` keeps matching a `bug` node's `backlog` value as `open`, unmodified.
 
-**Namespace exception:** fields declared directly on the extending schema's own `fields` list are stored bare — no `custom:`/`org:`/`plugin:` prefix required, unlike the usual rule for extending a type you don't own. They live in their own bucket and never collide with the parent's fields.
+**Fields of the extending schema:** a field declared on the extending schema's own `fields` list is stored bare, under its own name, in that schema's own bucket, so it never collides with the parent's fields; the additive-only rule above keeps a name from being declared twice anywhere in the chain.

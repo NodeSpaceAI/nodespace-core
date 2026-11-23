@@ -56,8 +56,8 @@ describe('evaluateTitleTemplate', () => {
     expect(evaluateTitleTemplate('{first-name}', { 'first-name': 'Alice' })).toBe('Alice');
   });
 
-  it('resolves namespace-prefixed token names', () => {
-    expect(evaluateTitleTemplate('{custom:capacity}', { 'custom:capacity': 120 })).toBe('120');
+  it('resolves a custom field by its bare name', () => {
+    expect(evaluateTitleTemplate('{capacity}', { capacity: 120 })).toBe('120');
   });
 
   it('handles empty template string', () => {
@@ -235,9 +235,9 @@ describe('evaluateSummaryTemplate', () => {
     expect(evaluateSummaryTemplate('{note}', { note: 'hello' }, [textField])).toBe('hello');
   });
 
-  it('resolves namespace-prefixed token names, including enum labels', () => {
+  it('resolves a custom enum field by its bare name, including its label', () => {
     const namespacedEnum: SchemaField = {
-      name: 'custom:status',
+      name: 'status',
       friendlyName: 'Status',
       type: 'enum',
       protection: 'user',
@@ -245,7 +245,7 @@ describe('evaluateSummaryTemplate', () => {
       userValues: [{ value: 'on_hold', label: 'On Hold' }]
     };
     expect(
-      evaluateSummaryTemplate('{custom:status}', { 'custom:status': 'on_hold' }, [namespacedEnum])
+      evaluateSummaryTemplate('{status}', { status: 'on_hold' }, [namespacedEnum])
     ).toBe('On Hold');
   });
 });

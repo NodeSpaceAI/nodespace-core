@@ -441,9 +441,9 @@ mod tests {
     /// only, and the two computed titles disagree.
     #[test]
     fn test_interpolate_non_word_character_field_names() {
-        let props = serde_json::json!({"custom:capacity": 120, "first-name": "Alice"});
+        let props = serde_json::json!({"capacity": 120, "first-name": "Alice"});
         assert_eq!(
-            interpolate_title_template_with_schema("{custom:capacity}", &props, &[]),
+            interpolate_title_template_with_schema("{capacity}", &props, &[]),
             "120"
         );
         assert_eq!(

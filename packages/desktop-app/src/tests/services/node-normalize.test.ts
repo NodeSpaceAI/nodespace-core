@@ -109,8 +109,8 @@ describe('normalizeNodeData for the core subtypes of task and project', () => {
 
 describe('mergeProperties', () => {
   it('merges one level and keeps sibling keys', () => {
-    const merged = mergeProperties({ 'custom:x': 'keep', provider: 'native' }, { model: 'm1' });
-    expect(merged).toEqual({ 'custom:x': 'keep', provider: 'native', model: 'm1' });
+    const merged = mergeProperties({ 'x': 'keep', provider: 'native' }, { model: 'm1' });
+    expect(merged).toEqual({ 'x': 'keep', provider: 'native', model: 'm1' });
   });
 
   it('treats a missing existing bag as empty', () => {

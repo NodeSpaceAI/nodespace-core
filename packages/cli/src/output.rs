@@ -669,7 +669,7 @@ fn write_human_node(node: &NodeData) {
 /// in snake_case, like every other CLI payload.
 ///
 /// The keys are the ones `schema create` and `schema update` take
-/// (`fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+/// (`fields`, `custom_fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
 /// `title_template`, `properties_header_summary_template`), so what a caller
 /// reads here is what it writes there. Field and relationship entries keep
 /// their camelCase metadata keys on both sides.
@@ -685,6 +685,7 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
         parent,
         schema_version,
         fields,
+        custom_fields,
         relationships,
         title_template,
         properties_header_summary_template,
@@ -704,7 +705,11 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
         "fields": fields,
         "relationships": relationships,
     });
-    // Omitted when they declare nothing, as on the wire.
+    // Omitted when they declare nothing, as on the wire. A built-in type's
+    // `custom_fields` are the ones users added (ADR-112), apart from `fields`.
+    if !custom_fields.is_empty() {
+        value["custom_fields"] = json!(custom_fields);
+    }
     if *is_abstract {
         value["abstract"] = json!(true);
     }
@@ -987,6 +992,17 @@ fn format_human_schema(schema: &SchemaNode) -> String {
             clean(&field.name),
             clean(&field.field_type.to_string())
         );
+    }
+    if !schema.custom_fields.is_empty() {
+        let _ = writeln!(out, "custom_fields:");
+        for field in &schema.custom_fields {
+            let _ = writeln!(
+                out,
+                "    {}: {}",
+                clean(&field.name),
+                clean(&field.field_type.to_string())
+            );
+        }
     }
     if !schema.relationships.is_empty() {
         let _ = writeln!(out, "relationships:");
@@ -1623,7 +1639,7 @@ mod tests {
             "id": "p1",
             "nodeType": "person",
             "content": "",
-            "properties": {"custom:team": "Core"},
+            "properties": {"team": "Core"},
             "firstName": "Ada",
             "email": "ada@example.com",
         });
@@ -1635,7 +1651,7 @@ mod tests {
             serde_json::json!({
                 "first_name": "Ada",
                 "email": "ada@example.com",
-                "custom:team": "Core"
+                "team": "Core"
             })
         );
         assert!(out["properties"].get("firstName").is_none());
@@ -1931,6 +1947,38 @@ mod tests {
         }
         assert_eq!(out["fields"], serde_json::json!([]));
         assert_eq!(out["relationships"], serde_json::json!([]));
+    }
+
+    /// A built-in type's `custom_fields` are read apart from its `fields`, in the
+    /// JSON and in the human layout, and are left out when there are none.
+    #[test]
+    fn a_schema_read_lists_custom_fields_apart_from_fields_and_omits_them_when_empty() {
+        let field = |name: &str| nodespace_core::models::SchemaField {
+            name: name.to_string(),
+            friendly_name: name.to_string(),
+            field_type: nodespace_core::models::SchemaFieldType::Number,
+            ..Default::default()
+        };
+        let mut schema = SchemaNode::new("task", "Task");
+        schema.fields = vec![field("priority")];
+        let bare = schema_to_json(&schema);
+        assert!(bare.get("custom_fields").is_none(), "{bare}");
+        assert!(!format_human_schema(&schema).contains("custom_fields"));
+
+        schema.custom_fields = vec![field("effort")];
+        let out = schema_to_json(&schema);
+        assert_eq!(out["fields"][0]["name"], "priority");
+        assert_eq!(out["custom_fields"].as_array().unwrap().len(), 1);
+        assert_eq!(out["custom_fields"][0]["name"], "effort");
+        let text = format_human_schema(&schema);
+        let (shipped, added) = text
+            .split_once("custom_fields:")
+            .expect("a custom_fields section");
+        assert!(
+            shipped.contains("priority: number") && !shipped.contains("effort"),
+            "{text}"
+        );
+        assert!(added.contains("effort: number"), "{text}");
     }
 
     #[test]

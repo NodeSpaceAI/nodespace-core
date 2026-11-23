@@ -1071,27 +1071,10 @@ impl std::fmt::Display for NodeServiceTxError {
 
 impl std::error::Error for NodeServiceTxError {}
 
-/// Whether a property key is a namespaced extension field: one added to a
-/// core type by someone other than core, under one of the ADR-063 prefixes.
-pub(crate) fn is_extension_field_name(key: &str) -> bool {
-    extension_field_bare_name(key).is_some()
-}
-
-/// The name a namespaced extension field is read by: the key with its
-/// ADR-063 prefix removed (`custom:amount` is `amount`). `None` for a key
-/// that is not an extension field.
-pub(crate) fn extension_field_bare_name(key: &str) -> Option<&str> {
-    const EXTENSION_PREFIXES: [&str; 3] = ["custom:", "org:", "plugin:"];
-    EXTENSION_PREFIXES
-        .iter()
-        .find_map(|prefix| key.strip_prefix(prefix))
-        .filter(|bare| !bare.is_empty())
-}
-
-/// Whether a core type's closed bucket takes a key its schema does not
-/// declare: bookkeeping (`_`-prefixed) or a namespaced extension field.
-pub(crate) fn is_open_key(key: &str) -> bool {
-    key.starts_with('_') || is_extension_field_name(key)
+/// Whether a property key is bookkeeping: a `_`-prefixed key is written by
+/// NodeSpace's own code and is accepted in any bucket without a declaration.
+pub(crate) fn is_bookkeeping_key(key: &str) -> bool {
+    key.starts_with('_')
 }
 
 /// Check if a string matches date node format: YYYY-MM-DD
@@ -3644,9 +3627,7 @@ mod tests {
     async fn rename_schema_field_rejects_core_protected_field() {
         let (svc, _tmp) = create_test_service().await;
 
-        let result = svc
-            .rename_schema_field("task", "status", "custom:status")
-            .await;
+        let result = svc.rename_schema_field("task", "status", "state").await;
 
         let err = result
             .expect_err("renaming a Core-protected field must be rejected")
@@ -3843,8 +3824,10 @@ mod tests {
             .update_node(
                 &ticket_id,
                 stale.version,
+                // A write that overwrites the migrated field from the read
+                // taken before the rename: it must conflict, not land.
                 crate::models::NodeUpdate {
-                    properties: Some(stale.properties.clone()),
+                    properties: Some(json!({ "ticket": { "urgency": "low" } })),
                     ..Default::default()
                 },
             )
@@ -3858,6 +3841,11 @@ mod tests {
         assert!(
             after.properties["ticket"].get("priority").is_none(),
             "the stale payload must not have revived the old key: {:?}",
+            after.properties
+        );
+        assert_eq!(
+            after.properties["ticket"]["urgency"], "high",
+            "the stale write must not have replaced the migrated value: {:?}",
             after.properties
         );
     }
@@ -5713,7 +5701,7 @@ mod tests {
         service
             .bulk_update(vec![(
                 id.clone(),
-                NodeUpdate::new().with_properties(json!({"custom:key": "value"})),
+                NodeUpdate::new().with_properties(json!({"_key": "value"})),
             )])
             .await
             .unwrap();
@@ -5722,7 +5710,7 @@ mod tests {
         assert_eq!(after_props_update.node_type, "text");
         let props = after_props_update.properties.to_string();
         assert!(
-            props.contains("custom:key") && props.contains("value"),
+            props.contains("_key") && props.contains("value"),
             "property must be merged + normalized into the node: {props}"
         );
     }
@@ -12889,7 +12877,7 @@ mod tests {
         let duplicate = Node::new(
             "database-settings".to_string(),
             String::new(),
-            json!({"plugin:marker": true}),
+            json!({"_marker": true}),
         );
         let returned_id = service.create_node(duplicate).await.unwrap();
         assert_eq!(returned_id, DATABASE_SETTINGS_NODE_ID);
@@ -14559,7 +14547,7 @@ mod tests {
             .update_node(
                 &task_id,
                 task.version,
-                NodeUpdate::new().with_properties(json!({ "custom:note": "x" })),
+                NodeUpdate::new().with_properties(json!({ "priority": "high" })),
             )
             .await
             .expect("a field-only generic update must not trip the content rule");

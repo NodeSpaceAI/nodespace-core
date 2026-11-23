@@ -240,61 +240,68 @@ async fn front_matter_sets_a_declared_field_and_an_invalid_value_creates_nothing
     );
 }
 
+/// A front matter key the type does not declare is refused, naming the key
+/// and the type, and nothing is created: no key is turned into a field.
 #[tokio::test]
-async fn an_undeclared_key_is_stored_under_custom() {
+async fn an_undeclared_key_is_refused_and_nothing_is_created() {
     let (svc, _tmp) = test_service().await;
-    let doc = "---\nauthor: ann\ntags: [a, b]\nowner:\n  team: core\n  size: 2\ncount: 3\ndraft: true\n---\n# T\n\nbody";
+    let before = svc
+        .query_nodes_by_type("decision", true)
+        .await
+        .unwrap()
+        .len();
+    let doc = "---\nauthor: ann\n---\n# T\n\nbody";
+    let err = create_document_node(&svc, input("decision", doc))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("'author' is not a field of the type 'decision'"),
+        "{err}"
+    );
+    assert_eq!(
+        svc.query_nodes_by_type("decision", true)
+            .await
+            .unwrap()
+            .len(),
+        before
+    );
+}
+
+/// A key the type declares as a custom field is stored under its own name,
+/// whatever JSON type it has.
+#[tokio::test]
+async fn a_declared_custom_field_in_front_matter_is_stored_by_its_name() {
+    let (svc, _tmp) = test_service().await;
+    for (name, field_type) in [
+        ("author", "text"),
+        ("count", "number"),
+        ("draft", "boolean"),
+    ] {
+        nodespace_core::schema::handle_update_schema(
+            &svc,
+            json!({
+                "schema_id": "decision",
+                "add_fields": [{ "name": name, "type": field_type }]
+            }),
+        )
+        .await
+        .unwrap();
+    }
+    let doc = "---\nauthor: ann\ncount: 3\ndraft: true\n_secret: 9\n---\n# T\n\nbody";
     let out = create_document_node(&svc, input("decision", doc))
         .await
         .unwrap();
     let id = &out.node_id;
-    assert_eq!(
-        property(&svc, id, "decision", "custom:author").await,
-        json!("ann")
-    );
-    assert_eq!(
-        property(&svc, id, "decision", "custom:tags").await,
-        json!(["a", "b"])
-    );
-    assert_eq!(
-        property(&svc, id, "decision", "custom:owner").await,
-        json!({"team": "core", "size": 2})
-    );
-    assert_eq!(
-        property(&svc, id, "decision", "custom:count").await,
-        json!(3)
-    );
-    assert_eq!(
-        property(&svc, id, "decision", "custom:draft").await,
-        json!(true)
-    );
+    assert_eq!(property(&svc, id, "decision", "author").await, json!("ann"));
+    assert_eq!(property(&svc, id, "decision", "count").await, json!(3));
+    assert_eq!(property(&svc, id, "decision", "draft").await, json!(true));
+    // Reserved: left out, not renamed.
+    assert_eq!(property(&svc, id, "decision", "_secret").await, Value::Null);
     // No node was made for the block.
     assert_eq!(
         children(&svc, id).await,
         vec![("text".to_string(), "body".to_string())]
-    );
-}
-
-#[tokio::test]
-async fn namespaced_and_reserved_keys_follow_the_stated_rule() {
-    let (svc, _tmp) = test_service().await;
-    let doc = "---\ncustom:x: 1\norg:y: 2\n_secret: 3\nplain: 4\n---\n# T";
-    let out = create_document_node(&svc, input("decision", doc))
-        .await
-        .unwrap();
-    let id = &out.node_id;
-    // Already namespaced: stored as given.
-    assert_eq!(property(&svc, id, "decision", "custom:x").await, json!(1));
-    assert_eq!(property(&svc, id, "decision", "org:y").await, json!(2));
-    // Reserved: left out, not renamed.
-    assert_eq!(property(&svc, id, "decision", "_secret").await, Value::Null);
-    assert_eq!(
-        property(&svc, id, "decision", "custom:_secret").await,
-        Value::Null
-    );
-    assert_eq!(
-        property(&svc, id, "decision", "custom:plain").await,
-        json!(4)
     );
 }
 
@@ -379,19 +386,12 @@ async fn front_matter_that_does_not_parse_is_refused_and_nothing_is_created() {
 #[tokio::test]
 async fn an_explicit_property_wins_over_a_front_matter_key() {
     let (svc, _tmp) = test_service().await;
-    let mut request = input(
-        "decision",
-        "---\ndecision_status: accepted\nauthor: ann\n---\n# T",
-    );
+    let mut request = input("decision", "---\ndecision_status: accepted\n---\n# T");
     request.properties = json!({"decision_status": "proposed"});
     let out = create_document_node(&svc, request).await.unwrap();
     assert_eq!(
         property(&svc, &out.node_id, "decision", "decision_status").await,
         json!("proposed")
-    );
-    assert_eq!(
-        property(&svc, &out.node_id, "decision", "custom:author").await,
-        json!("ann")
     );
 }
 

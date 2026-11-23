@@ -78,7 +78,7 @@ pub async fn find_field_references(
             searched,
         });
     };
-    let fields: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+    let fields: Vec<&str> = schema.declared_fields().map(|f| f.name.as_str()).collect();
     if fields.is_empty() {
         return Ok(FieldReferences {
             references: Vec::new(),

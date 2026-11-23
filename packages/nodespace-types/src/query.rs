@@ -644,7 +644,7 @@ mod tests {
                     { "type": "property", "operator": "equals", "property": "status", "value": "open" }
                 ],
                 "view_config": { "lastView": "kanban", "kanban": { "groupBy": "status" } },
-                "custom:owner": "ada"
+                "owner": "ada"
             }
         }))
         .unwrap();

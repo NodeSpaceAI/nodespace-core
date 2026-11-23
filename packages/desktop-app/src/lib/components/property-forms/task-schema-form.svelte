@@ -31,6 +31,7 @@
 -->
 
 <script lang="ts">
+  import { declaredFields } from '$lib/types/schema-node';
   import { isExactly } from '$lib/types/core-node-types';
   import { onMount } from 'svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
@@ -126,7 +127,7 @@
   // failed schema fetch degrades to "this one field's control is momentarily/permanently
   // unavailable" rather than blanking the entire properties panel.
   function getSchemaField(name: string): SchemaField | undefined {
-    return schema?.fields.find((f) => f.name === name);
+    return declaredFields(schema).find((f) => f.name === name);
   }
 
   // Get user-defined fields: not core, and user-visible per the shared predicate.
@@ -136,7 +137,7 @@
   // ever see this?" for every surface that renders schema fields.
   const userDefinedFields = $derived.by(() => {
     if (!schema) return [];
-    return schema.fields.filter((f) => !coreFieldNames.includes(f.name) && isUserVisibleField(f));
+    return declaredFields(schema).filter((f) => !coreFieldNames.includes(f.name) && isUserVisibleField(f));
   });
 
   // Calculate field completion stats

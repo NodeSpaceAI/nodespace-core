@@ -742,8 +742,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Understanding and Changing a Type (ADR-100 §5)
         //
         // The skill a chat bound to a schema pins. It says which case the type
-        // is in (built in and closed, or the user's own and open) before it
-        // offers a change, guides a well-formed field, and looks up what names
+        // is in (built in, with `fields` and `custom_fields`, or the user's own,
+        // with every field its own) before it offers a change, guides a well-formed field, and looks up what names
         // a field before a rename or a removal. Schema Creation makes a new
         // type; this one explains and changes one that exists, and is reached
         // only by being pinned, so its description names no request that a
@@ -751,7 +751,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: SCHEMA_CHANGING_SKILL_ID,
         title: "Understanding and Changing a Type",
         use_for: "Explain a type: what its fields mean, which values a field takes, what the type extends and what may be changed on it. Change a type: add a field, change a field, add a value to a list, or remove a field, after checking which saved queries, plays and title templates name it.",
-        tools: &["get_node", "update_schema", "search_nodes", "route_clarify"],
+        tools: &["get_node", "update_schema", "update_node", "search_nodes", "route_clarify"],
         // Read the type, a write, and two repairs of a rejected write.
         max_iterations: 5,
         not_for: None,
@@ -1833,20 +1833,20 @@ mod tests {
         // The two failure modes actually observed, both named explicitly so a
         // future reword that drops either one fails here rather than in an eval.
         assert!(
-            md.contains("NEVER drop a value"),
+            md.contains("NEVER drop the value silently"),
             "guidance must forbid discarding an unmatched value"
         );
         // Pins the RULE, not the quoted symptom: a reword that keeps the
         // prohibition but drops the exact phrase should still pass.
         assert!(
-            md.contains("NEVER drop a value") && md.contains("gone silently"),
-            "guidance must forbid discarding a value and say why it is harmful"
+            md.contains("NEVER drop the value silently") && md.contains("refuses the call"),
+            "guidance must forbid discarding a value and say what happens to the call"
         );
-        // The value belongs in THIS call, not behind a schema round-trip that
-        // the skill's own tool whitelist cannot make anyway.
+        // Adding the field is the user's decision (ADR-112 section 11), not a
+        // schema round-trip the model takes on its own.
         assert!(
-            md.contains("Do NOT call create_schema or update_schema"),
-            "guidance must route the value into this create_node call"
+            md.contains("NEVER call create_schema or update_schema to add the field yourself"),
+            "guidance must keep the model from adding the field itself"
         );
         let whitelist = tmpl_tool_whitelist(node_creation);
         assert!(
@@ -1910,35 +1910,37 @@ mod tests {
     }
 
     /// The same rule must hold on the tool schema itself, which is what the
-    /// model sees when routing lands on a skill other than Node Creation — the
-    /// scenario-4 traces show routing varying across arms while the empty-call
-    /// outcome stayed identical, so guidance alone would leave the gap open on
-    /// exactly the paths that were failing.
+    /// model sees when routing lands on a skill other than Node Creation.
     #[test]
-    fn create_node_tool_description_admits_keys_beyond_listed_fields() {
+    fn create_node_tool_description_says_an_undeclared_key_is_refused() {
         let def = crate::local_agent::tools::Tool::CreateNode.definition();
         let props = def.parameters_schema["properties"]["field_values"]["description"]
             .as_str()
             .expect("field_values field must document itself");
         assert!(
-            props.contains("Not limited to the listed fields"),
-            "create_node must tell the model extra keys are allowed, got: {props}"
+            props.contains("is refused"),
+            "create_node must say an undeclared key is refused, got: {props}"
         );
+        for stale in ["stored as given", "Not limited to the listed fields"] {
+            assert!(
+                !props.contains(stale),
+                "create_node must not say extra keys are kept ({stale:?}), got: {props}"
+            );
+        }
     }
 
     /// Both surfaces state the SAME rule, so neither can be reworded into
     /// contradicting the other while its own test stays green.
     ///
-    /// The rule is duplicated deliberately — routing does not always land on
+    /// The rule is duplicated deliberately: routing does not always land on
     /// Node Creation, and on those turns the tool schema is the only surface
-    /// carrying it — but deliberate duplication silently becomes divergence
-    /// without something pinning the two together.
+    /// carrying it. Deliberate duplication silently becomes divergence without
+    /// something pinning the two together.
     ///
-    /// The invariant pinned is ADR-063's: a value with no matching field is
-    /// keyed bare on a user-defined type, and `custom:`-prefixed on a core
-    /// type, where unprefixed names are reserved. Getting this wrong writes a
-    /// bare key onto a core type — the collision `update_schema` rejects, and
-    /// which `create_node` does NOT currently validate.
+    /// The rule is ADR-112 section 11: a key the type does not declare is
+    /// refused, on every type; the agent tells the user which value was
+    /// refused, offers the field as a separate request, and does not add the
+    /// field itself.
     #[test]
     fn both_surfaces_agree_on_the_undeclared_key_rule() {
         let node_creation_md = seed_skill_nodes()
@@ -1957,27 +1959,42 @@ mod tests {
             ("skill guidance", &node_creation_md),
             ("create_node tool schema", &tool_desc),
         ] {
-            // Assert the PAIRING, not the mere presence of "custom:" — the
-            // token appears in the worked example too, so a surface that
-            // dropped the rule while keeping the example would still pass a
-            // bare `contains("custom:")`. Verified by mutation: flipping the
-            // tool schema to "bare on a built-in type" must fail this.
-            let states_prefix_rule = text.contains("`custom:`-prefixed on a built-in type")
-                || text.contains("prefix with `custom:`");
-            assert!(
-                states_prefix_rule,
-                "{surface} must tie the custom: prefix to built-in types, not merely mention it"
-            );
-            for core_type in ["text", "task", "date"] {
+            let text = text.to_lowercase();
+            for part in [
+                "refused",
+                "which value was refused",
+                "offer to add the field to the type as a separate request",
+                "add the field yourself",
+            ] {
                 assert!(
-                    text.contains(core_type),
-                    "{surface} must name the core type '{core_type}' the prefix rule applies to"
+                    text.contains(part),
+                    "{surface} must state the undeclared-key rule, missing {part:?}, got: {text}"
+                );
+            }
+            // Polarity: every mention of adding the field yourself is the
+            // prohibition, so a surface flipped to "do add the field yourself"
+            // fails here although the words are still present.
+            let phrase = "add the field yourself";
+            let mut seen = 0;
+            for (at, _) in text.match_indices(phrase) {
+                seen += 1;
+                let before = &text[..at];
+                assert!(
+                    before.ends_with("do not ")
+                        || before.ends_with("never call create_schema or update_schema to "),
+                    "{surface} must forbid adding the field itself, got: {text}"
                 );
             }
             assert!(
-                text.contains("reserved"),
-                "{surface} must say why bare keys on core types are disallowed"
+                seen > 0,
+                "{surface} must say the model does not add the field itself"
             );
+            for stale in ["custom", "org", "plugin"].map(|p| format!("{p}:")) {
+                assert!(
+                    !text.contains(&stale),
+                    "{surface} must not teach a prefix ({stale:?}), got: {text}"
+                );
+            }
         }
     }
 

@@ -347,18 +347,37 @@ async fn a_chat_takes_only_its_own_declared_fields() {
         properties["agent"] = json!(agent);
         let error = message(create(&svc, subtype, "Untitled", properties).await);
         let key = foreign.as_object().unwrap().keys().next().unwrap().clone();
-        assert!(error.contains(&key), "{subtype} {foreign}: {error}");
+        // The store echoes a key of letters, digits, `_` and `-`, and says "a key with
+        // other characters" for any other.
+        let shown = if key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            key.as_str()
+        } else {
+            "a key with other characters"
+        };
+        assert!(error.contains(shown), "{subtype} {foreign}: {error}");
     }
 
-    // A namespaced extension field is still welcome.
+    // A field added to the type is welcome, under its own name.
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": NATIVE,
+            "add_fields": [{ "name": "pinned", "type": "boolean" }]
+        }),
+    )
+    .await
+    .expect("a custom field is added to the type");
     create(
         &svc,
         NATIVE,
         "Untitled",
-        json!({ "agent": "nodespace", "custom:pinned": true }),
+        json!({ "agent": "nodespace", "pinned": true }),
     )
     .await
-    .expect("an extension field is accepted");
+    .expect("a custom field is accepted");
 }
 
 /// The closed vocabularies: there is no `pty` provider (a terminal chat is a

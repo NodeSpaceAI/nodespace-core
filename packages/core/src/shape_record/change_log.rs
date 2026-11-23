@@ -111,6 +111,12 @@ pub struct Entry {
     /// Required for class `migrate`, and only there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migrate: Option<MigrateDetail>,
+    /// The decision a `migrate`, `refuse` or `stale` entry needs before a
+    /// release: `ADR-<number>`, or `accepted_reset_required` while a database
+    /// that cannot open is reset. Recorded only: the release check that reads
+    /// it is not built, and nothing here moves data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
 }
 
 /// The change log file.
@@ -355,6 +361,7 @@ mod tests {
                 affected_data: "rows".to_string(),
                 transformation: "move them".to_string(),
             }),
+            decision: None,
         }
     }
 
@@ -452,6 +459,7 @@ mod tests {
                 "must record the affected data",
                 Entry {
                     migrate: None,
+                    decision: None,
                     ..entry(Area::CoreSchema, Class::Migrate, &["schemas.a.fields.b"])
                 },
             ),

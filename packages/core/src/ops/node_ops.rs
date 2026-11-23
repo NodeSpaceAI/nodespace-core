@@ -290,16 +290,10 @@ async fn split_document(
     }
 
     if let Some(front) = front_matter {
-        // A key the type declares is set as that field; any other becomes
-        // `custom:<key>` (a type that is not a core type is open and takes
-        // its keys as given). A property the caller gave explicitly wins.
-        let undeclared: HashSet<String> = node_service
-            .undeclared_core_keys(&input.node_type, &front.fields)
-            .await?
-            .into_iter()
-            .collect();
-        let from_front_matter =
-            crate::markdown::front_matter_properties(front.fields, |key| !undeclared.contains(key));
+        // Every key is set as given: the write stores one the type declares
+        // and refuses any other, naming the key and the type. A property the
+        // caller gave explicitly wins.
+        let from_front_matter = crate::markdown::front_matter_properties(front.fields);
         let mut properties = match std::mem::take(&mut input.properties) {
             Value::Object(map) => map,
             Value::Null => serde_json::Map::new(),

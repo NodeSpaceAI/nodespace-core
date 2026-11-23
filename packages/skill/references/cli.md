@@ -42,11 +42,11 @@ address='{"city":"Berlin"}'` reads back as `.properties.address.city`.
 **Schema JSON shape.** `schema get` and `schema list` return schemas rather
 than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
 schema is read under the keys `schema create` and `schema update` write it
-with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+with: `fields`, `custom_fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
 `title_template` and `properties_header_summary_template`, next to `id`,
 `content` (the type's name), `is_core` and `schema_version`, and with
-`context_paths`, each path in the dotted form `add_context_paths` takes. There
-is no `properties` key. `extends`, `abstract`, `children`, `parent`, the two
+`context_paths`, each path in the dotted form `add_context_paths` takes. `custom_fields` is a built-in type's own list of the fields users added to it, kept apart from the shipped `fields`: `schema update` with `add_fields` on a built-in type adds to it, and a type you defined has none. There
+is no `properties` key. `custom_fields`, `extends`, `abstract`, `children`, `parent`, the two
 templates and `context_paths` are omitted when the type doesn't declare them. A schema node reached
 through `relationship get` comes back as a plain node, with its stored
 definition under `properties`; read schemas with `schema get` instead of
@@ -122,7 +122,7 @@ nodespace node create --type text --content "Meeting notes" --parent <parent-id>
 
 **Output:** the created node, in the node JSON shape above. It carries no parent id: the node is under the `--parent` you gave, or is a root node when you gave none.
 
-**Creating an instance of a custom type:** read the schema first (`nodespace schema get <type>`) so you know its fields. Use the field name exactly as it appears in the schema's `fields[].name` — do not add namespace prefixes when setting properties on instances (prefixes like `custom:` are part of a *field's name* at schema-authoring time, not something a caller adds — see Schema fields below). If the schema has a `title_template`, `--content` only needs a brief descriptive label — the display title is generated from properties. If there's no `title_template`, set `--content` to the best human-readable name available.
+**Creating an instance of a custom type:** read the schema first (`nodespace schema get <type>`) so you know its fields. Use the field name exactly as it appears in the schema's `fields[].name` — a field is stored under exactly the name it is declared with, so never add a prefix of any kind. A built-in type's schema lists the fields users added to it in `custom_fields`, apart from `fields`; they are set by their own names like any other. If the schema has a `title_template`, `--content` only needs a brief descriptive label — the display title is generated from properties. If there's no `title_template`, set `--content` to the best human-readable name available.
 
 Only include properties the schema actually defines as required, plus any optional ones the user gave a value for. Don't invent fields.
 
@@ -139,7 +139,7 @@ A collection is identified by its name (case-insensitive): `node create --type c
 
 **If it has headings, it is a tree, not a node.** NodeSpace is one-node-per-block, with hierarchy as first-class edges — a document with sections (an ADR, a spec, a plan) decomposes into a root node plus one child per section, not one node whose `content` holds the whole document:
 
-One call is enough for a document: `node create --type decision --content '<document>'` (example below) creates the decision with `Title` as its content and the sections as its children. A front matter block at the top sets properties: a key that is a declared field of the type (`decision_status: accepted`) is set as that field and validated; any other key is stored as `custom:<key>`; a key already namespaced (`custom:x`) is stored as given and a key starting with `_` is ignored. Write the document with real line breaks, not the two characters `\n` (the CLI does not unescape them). Single-quote it: a shell expands `$` and backticks and breaks on `"` inside double quotes, and a literal apostrophe is written `'\''` (there is no stdin or file form of `--content`). The first line must be a plain line or a heading: a list item (numbered too), a table row, a horizontal rule, a checklist item, a quote or a code fence there, a `---` block that is not a YAML mapping, or a declared field given an invalid value, is refused with nothing created, so fix the document and run it again. A document that is a single block with no front matter, such as a lone `- x`, is stored as given, not refused. A CLI newer than the daemon answers `Unimplemented` for this call: tell the user to update NodeSpace and stop rather than rebuilding the document node by node. The multi-call form below does the same by hand:
+One call is enough for a document: `node create --type decision --content '<document>'` (example below) creates the decision with `Title` as its content and the sections as its children. A front matter block at the top sets properties: a key that is a declared field of the type (`decision_status: accepted`) is set as that field and validated; any other key is refused with nothing created, naming the key and the type, and a key starting with `_` is ignored. Write the document with real line breaks, not the two characters `\n` (the CLI does not unescape them). Single-quote it: a shell expands `$` and backticks and breaks on `"` inside double quotes, and a literal apostrophe is written `'\''` (there is no stdin or file form of `--content`). The first line must be a plain line or a heading: a list item (numbered too), a table row, a horizontal rule, a checklist item, a quote or a code fence there, a `---` block that is not a YAML mapping, or a declared field given an invalid value, is refused with nothing created, so fix the document and run it again. A document that is a single block with no front matter, such as a lone `- x`, is stored as given, not refused. A CLI newer than the daemon answers `Unimplemented` for this call: tell the user to update NodeSpace and stop rather than rebuilding the document node by node. The multi-call form below does the same by hand:
 
 ```bash
 # One call: the first line is the title, the rest become its children
@@ -852,7 +852,7 @@ nodespace schema update --params '{"schema_id":"bug","add_field_values":[{"field
 
 Never declare a new, differently-named field (`bug_status`) for this — that isn't an extension of `status` at all, and it's exactly what `mapsTo` exists to make unnecessary: a base-scoped Play or query watching `task.status` keeps matching a `bug` node's `backlog` value as `open`, unmodified.
 
-**Namespace exception:** fields declared directly on the extending schema's own `fields` list are stored bare — no `custom:`/`org:`/`plugin:` prefix required, unlike the usual rule for extending a type you don't own. They live in their own bucket and never collide with the parent's fields.
+**Fields of the extending schema:** a field declared on the extending schema's own `fields` list is stored bare, under its own name, in that schema's own bucket, so it never collides with the parent's fields; the additive-only rule above keeps a name from being declared twice anywhere in the chain.
 
 **Schema fields:** define only type-specific fields — don't add a `name` or `title` field; every node already has a built-in content/title field. Exception: if `title_template` uses a `{name}` placeholder, `name` must be defined as a field (any placeholder in `title_template` must have a matching field).
 
@@ -889,7 +889,7 @@ Use `title_template` only to assemble a title from two or more fields. If one fi
 **Unique fields:** set `"unique": true` on a field when the user's request implies each instance should have a distinct value for it (e.g. "each ticket should have a unique key" → flag `key` unique). Use `"uniqueCaseInsensitive": true` instead when case shouldn't matter — email and username are the common case. This is advisory only: it does not prevent duplicates from being created, it only lets the system surface a likely existing match when a new value collides. Never describe it to the user as blocking or rejecting duplicates — it's a suggestion, not an enforced constraint. Example: `{"name":"key","type":"text","uniqueCaseInsensitive":true}`.
 <!-- END GENERATED: schema-rules -->
 
-A `description` field is fine when it adds value beyond the title. Field names are alphanumeric-and-underscore only — the CLAUDE.md-documented `custom:` namespace prefix convention applies to natural-language schema authoring in the local agent, not to explicit `fields` arrays passed here; don't prefix field names when calling `schema create`/`update` directly.
+A `description` field is fine when it adds value beyond the title. Field names are alphanumeric-and-underscore only, and are stored exactly as given: never add a prefix to a field name in a `schema create`/`update` call. On a built-in type (`task`, `text`, ...) `schema update` with `add_fields` adds the field to the type's `custom_fields`, which `schema get` lists apart from `fields`; the field then exists on every node of the type in this database. On a type you defined, every field is in `fields`.
 
 **Recognizing a relationship field.** The "relationships vs. fields" rule above presumes you've already noticed a field is a reference — that recognition step is the hard part. A field naming a **person, team, project, or any other entity** is a reference, even when it reads naturally as text: a plain string has no integrity (`"M. Alibio"` and `"m alibio"` are different values to a query engine), no reverse lookup, and no rename path — renaming a person means rewriting every node that names them. Worked examples, from how a request is phrased:
 

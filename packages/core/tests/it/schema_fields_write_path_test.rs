@@ -122,7 +122,7 @@ async fn a_schema_is_not_created_with_fields_through_the_generic_create() -> Res
             json!({
                 "isCore": false,
                 "schemaVersion": 1,
-                "fields": [{ "name": "custom:state", "type": "text" }]
+                "fields": [{ "name": "state", "type": "text" }]
             }),
         )
     };

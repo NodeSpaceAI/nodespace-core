@@ -847,6 +847,7 @@
     "agent-guidance": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Agent Guidance",
@@ -856,6 +857,7 @@
     "ai-chat": {
       "abstract": true,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "agent": {
           "description": "Who runs the conversation: nodespace, or a terminal harness (claude-code, codex, ...)",
@@ -902,6 +904,7 @@
     "ai-chat-acp": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "ai-chat",
       "fields": {
         "session_id": {
@@ -948,6 +951,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "confirmation_arguments": {
           "description": "The call's arguments as JSON text, whole",
@@ -1308,6 +1312,7 @@
     "ai-chat-native": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "ai-chat",
       "fields": {
         "context_tokens": {
@@ -1382,6 +1387,7 @@
     "ai-chat-pty": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "ai-chat",
       "fields": {
         "exit_code": {
@@ -1444,6 +1450,7 @@
     "checkbox": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Checkbox",
@@ -1456,6 +1463,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Code Block",
@@ -1465,6 +1473,7 @@
     "collection": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "description": {
           "description": "What the collection is for",
@@ -1490,6 +1499,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "capture_content": {
           "coreValues": [
@@ -1612,6 +1622,7 @@
     "date": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Date",
@@ -1624,6 +1635,7 @@
     "decision": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "decision_status": {
           "coreValues": [
@@ -1670,6 +1682,7 @@
     "header": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Header",
@@ -1682,6 +1695,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Horizontal Line",
@@ -1691,6 +1705,7 @@
     "issue": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "task",
       "fields": {
         "commits": {
@@ -1748,6 +1763,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Ordered List",
@@ -1757,6 +1773,7 @@
     "person": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "email": {
           "description": "Email address (optional)",
@@ -1816,6 +1833,7 @@
     "plan": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "approach": {
           "description": "Major components, dependencies and sequencing, tied to the spec's success criteria by name.",
@@ -1889,6 +1907,7 @@
     "play": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "description": {
           "description": "What this play automates, in one line",
@@ -1979,6 +1998,7 @@
     "project": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "end_date": {
           "description": "Date the project is intended to finish (or did finish). Paired with start_date to compute the project's planned or actual timeline; a project past its end_date while status is still active or planning reads as behind schedule.",
@@ -2083,6 +2103,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "execution_count": {
           "default": 0,
@@ -2193,6 +2214,7 @@
     "quote-block": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Quote Block",
@@ -2202,6 +2224,7 @@
     "skill": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "max_iterations": {
           "default": 2,
@@ -2291,6 +2314,7 @@
     "software-project": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "project",
       "fields": {
         "checkout_path": {
@@ -2321,6 +2345,7 @@
     "spec": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "boundaries": {
           "description": "What may always be done without asking, what needs sign-off first, and what must never be done.",
@@ -2397,6 +2422,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Table",
@@ -2423,6 +2449,7 @@
           "project"
         ]
       ],
+      "customFields": {},
       "fields": {
         "completed_at": {
           "description": "Date the task was finished. Set when status moves to done; used for completion-rate and cycle-time reporting alongside started_at. Absent while the task is open, in progress, or cancelled without a recorded finish date.",
@@ -2564,6 +2591,7 @@
     "text": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "fields": {},
       "isCore": true,
       "name": "Text",
@@ -2576,6 +2604,7 @@
         "rule": "none"
       },
       "contextPaths": [],
+      "customFields": {},
       "fields": {
         "approved_binding": {
           "description": "The device approval tag: a keyed MAC, under a key kept on this device, over the tool's id, name, description and binding (every subtype field and the parameter schema). A tool is offered only while the tag verifies. Declared local-only",
@@ -2625,6 +2654,7 @@
     "tool-cli": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "tool",
       "fields": {
         "args": {
@@ -2705,6 +2735,7 @@
     "tool-mcp": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "tool",
       "fields": {
         "args": {
@@ -2868,6 +2899,7 @@
     "tool-native": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "tool",
       "fields": {
         "cli_command": {
@@ -2897,6 +2929,7 @@
     "tool-rest": {
       "abstract": false,
       "contextPaths": [],
+      "customFields": {},
       "extends": "tool",
       "fields": {
         "auth": {

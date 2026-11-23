@@ -162,6 +162,14 @@ async fn the_base_types_refuse_the_development_fields() -> Result<()> {
 #[tokio::test]
 async fn an_issue_keeps_inherited_fields_in_the_task_bucket_and_its_own_in_its_own() -> Result<()> {
     let h = Harness::start().await?;
+    // A custom field of the issue type, stored under its own name in the
+    // `issue` bucket (ADR-112 section 7).
+    nodespace_core::schema::handle_update_schema(
+        &h.service,
+        json!({ "schema_id": "issue", "add_fields": [{ "name": "estimate", "type": "number" }] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let id = h
         .create(
             "issue",
@@ -170,7 +178,7 @@ async fn an_issue_keeps_inherited_fields_in_the_task_bucket_and_its_own_in_its_o
                 "priority": "high",
                 "due_date": "2026-11-01",
                 "pull_request": { "title": "PR 7", "url": "https://example.com/pull/7" },
-                "custom:estimate": 3
+                "estimate": 3
             }),
         )
         .await?;
@@ -193,7 +201,8 @@ async fn an_issue_keeps_inherited_fields_in_the_task_bucket_and_its_own_in_its_o
     assert_eq!(wire["dueDate"], "2026-11-01");
     assert_eq!(wire["pullRequest"]["title"], "PR 7");
     // Promotion is a move: only the extension field is left.
-    assert_eq!(wire["properties"], json!({ "custom:estimate": 3 }));
+    assert_eq!(wire["properties"], json!({ "estimate": 3 }));
+    assert_eq!(node.properties["issue"]["estimate"], 3);
 
     // An issue with no status takes the schema default, as a task does.
     let bare = h.create("issue", json!({})).await?;

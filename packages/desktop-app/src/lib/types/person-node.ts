@@ -3,7 +3,7 @@
  *
  * `PersonNode` and `PersonNodeUpdate` are generated from Rust's
  * `nodespace-types` (`./generated`): the person schema's core fields travel at
- * the top level, and `properties` carries only extension fields (`custom:…`).
+ * the top level, and `properties` carries only custom fields (ADR-112).
  */
 
 import type { Node } from './node';

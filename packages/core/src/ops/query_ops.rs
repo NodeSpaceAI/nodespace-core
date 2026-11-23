@@ -547,7 +547,7 @@ async fn declared_anywhere(node_service: &NodeService, name: &str) -> Result<boo
         .map_err(|e| OpsError::Internal(e.to_string()))?;
     Ok(schemas
         .iter()
-        .any(|schema| schema.fields.iter().any(|field| field.name == name)))
+        .any(|schema| schema.declared_fields().any(|field| field.name == name)))
 }
 
 /// The subtypes of `target_type` whose rows keep `field` in a bucket of

@@ -24,6 +24,9 @@ use nodespace_types::RelationshipPath;
 /// The key a schema node's row stores its context paths under.
 pub const CONTEXT_PATHS_KEY: &str = "contextPaths";
 
+/// The key a schema row stores its users' added fields under (ADR-112).
+pub const CUSTOM_FIELDS_KEY: &str = "customFields";
+
 /// The key a schema node's row stores its field definitions under.
 pub const FIELDS_KEY: &str = "fields";
 
@@ -75,22 +78,26 @@ pub fn from_storage(
     // An unreadable field list reads back as empty rather than failing the
     // schema, so it is logged: otherwise the only symptom is a schema with
     // no fields.
-    let fields: Vec<SchemaField> = node
-        .properties
-        .get("fields")
-        .and_then(|v| match serde_json::from_value(v.clone()) {
-            Ok(fields) => Some(fields),
-            Err(e) => {
-                tracing::warn!(
-                    schema_id = %node.id,
-                    error = %e,
-                    "Failed to parse schema fields; reading back as empty. \
-                     Likely a stale storage format — reset the database."
-                );
-                None
-            }
-        })
-        .unwrap_or_default();
+    let field_list = |key: &str| -> Vec<SchemaField> {
+        node.properties
+            .get(key)
+            .and_then(|v| match serde_json::from_value(v.clone()) {
+                Ok(fields) => Some(fields),
+                Err(e) => {
+                    tracing::warn!(
+                        schema_id = %node.id,
+                        list = key,
+                        error = %e,
+                        "Failed to parse schema fields; reading back as empty. \
+                         Likely a stale storage format — reset the database."
+                    );
+                    None
+                }
+            })
+            .unwrap_or_default()
+    };
+    let fields = field_list("fields");
+    let custom_fields = field_list(CUSTOM_FIELDS_KEY);
 
     let title_template = text("titleTemplate");
     let properties_header_summary_template = text("propertiesHeaderSummaryTemplate");
@@ -133,6 +140,7 @@ pub fn from_storage(
         parent,
         schema_version,
         fields,
+        custom_fields,
         relationships,
         title_template,
         properties_header_summary_template,
@@ -185,6 +193,11 @@ pub fn to_properties(schema: &SchemaNode) -> serde_json::Value {
         "schemaVersion": schema.schema_version,
         "fields": schema.fields,
     });
+
+    // No custom fields declares nothing, so nothing is stored.
+    if !schema.custom_fields.is_empty() {
+        properties[CUSTOM_FIELDS_KEY] = serde_json::json!(schema.custom_fields);
+    }
 
     if schema.is_abstract {
         properties["abstract"] = serde_json::Value::Bool(true);
