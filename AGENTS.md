@@ -142,7 +142,7 @@ Adding state to a core type?
   It belongs to a specialization        → a subtype's field, bare name, own bucket
   It links nodes                        → a declared relationship, not a list of ids
   It's "hidden / retired"               → lifecycle_status via governance; never a type field
-User extending a core type?             → custom:/org:/plugin: prefix (ADR-063)
+User extending a core type?             → a field in the schema's custom_fields, stored under its own name (ADR-112)
 User-defined type's field?              → bare name
 Another build's data?                   → its own extends subtype (ADR-082/083); never on a core type
 ```

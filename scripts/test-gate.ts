@@ -231,6 +231,17 @@ await run({
   nice: !merge,
 });
 
+// Key prefixes (ADR-112): a field a user adds to a core type is declared in the
+// schema's custom_fields and stored under its own name, so no code matches a
+// key by custom:, org: or plugin: and no guidance teaches one. Run on the push
+// for the same reason as the checks above.
+await run({
+  label: "check-key-prefixes (ADR-112 custom_fields, no key prefixes)",
+  command: "bun run scripts/check-key-prefixes.ts",
+  timeoutMs: 5 * MINUTE,
+  nice: !merge,
+});
+
 if (!merge) {
   console.log("\n✓ Push check passed — pushing.\n");
   process.exit(0);
