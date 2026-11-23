@@ -149,6 +149,39 @@ async fn the_pinned_type_skill_is_a_candidate_that_clears_the_gate() {
     assert!(block.contains("add_field_values"), "{block}");
 }
 
+/// "Add an effort field to tasks", asked in a chat bound to the `task` type,
+/// reaches the type skill (a pinned procedure is how a bound chat routes), and
+/// what the model reads is the procedure for a built-in type's `custom_fields`:
+/// read the schema, say it is built in and the field is on every node, add it
+/// only when asked, then set the value, with no prefix anywhere.
+#[tokio::test]
+async fn adding_a_field_to_a_built_in_type_reaches_the_type_skill_and_its_procedure() {
+    let (service, _dir) = seeded_service().await;
+    let candidates = pinned_skill_candidates(&service, &[SCHEMA_CHANGING_SKILL_ID.to_string()])
+        .await
+        .expect("the pinned skill must load");
+    let skill = &candidates[0];
+    assert_eq!(skill.name, "Understanding and Changing a Type");
+    assert!(routing::clears_score_gate(skill));
+    assert!(skill.tools.contains(&"update_schema".to_string()));
+
+    let block = routing::render_candidates_for_prompt(&candidates).expect("a candidate block");
+    for part in [
+        "ADDING A FIELD TO A BUILT-IN TYPE",
+        "add an effort field to tasks",
+        "`custom_fields`",
+        "will exist on every node of the type",
+        "only when the user asks for the field",
+        "update_schema",
+        "update_node",
+    ] {
+        assert!(block.contains(part), "missing {part:?}: {block}");
+    }
+    for prefix in ["custom", "org", "plugin"].map(|p| format!("{p}:")) {
+        assert!(!block.contains(&prefix), "{prefix} taught: {block}");
+    }
+}
+
 /// A chat that pins nothing reads nothing.
 #[tokio::test]
 async fn no_pinned_ids_yield_no_candidates() {

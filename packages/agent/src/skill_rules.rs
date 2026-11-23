@@ -399,9 +399,6 @@ pub const EXTENDS_SCHEMA_COMPOSITION: SchemaRule = SchemaRule {
         "projected",
         "mapsTo",
         "bug_status",
-        "custom:",
-        "org:",
-        "plugin:",
         "stored bare",
     ],
 };
@@ -777,6 +774,8 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     // Research & Search
     procedure_rule!("research-search-first"),
     procedure_rule!("research-search-reference"),
+    // Understanding and Changing a Type
+    procedure_rule!("add-a-field-to-a-built-in-type"),
     // Node Creation
     procedure_rule!("node-creation-new-or-existing"),
     procedure_rule!("node-creation-steps"),

@@ -213,6 +213,7 @@ fn fixture_schema_ticket() -> nodespace_core::models::SchemaNode {
         children: Default::default(),
         parent: Default::default(),
         schema_version: 1,
+        custom_fields: Vec::new(),
         fields: vec![
             schema_field("title", "text", true),
             schema_field_enum(
@@ -252,6 +253,7 @@ fn fixture_schema_adr() -> nodespace_core::models::SchemaNode {
         children: Default::default(),
         parent: Default::default(),
         schema_version: 1,
+        custom_fields: Vec::new(),
         fields: vec![
             schema_field("title", "text", true),
             schema_field_enum("status", &["proposed", "accepted", "superseded"], true),
@@ -280,6 +282,7 @@ fn fixture_schema_release() -> nodespace_core::models::SchemaNode {
         children: Default::default(),
         parent: Default::default(),
         schema_version: 1,
+        custom_fields: Vec::new(),
         fields: Vec::new(),
         relationships: Vec::new(),
         title_template: None,

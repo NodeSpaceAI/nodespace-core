@@ -373,13 +373,13 @@ async fn a_relationship_named_as_a_property_without_a_node_is_refused_with_the_f
 }
 
 /// Writing a relationship's name as a field value stores a property that
-/// changes nothing a reader sees. The call from a real chat, `custom:assignee`
+/// changes nothing a reader sees. The call from a real chat, `assignee`
 /// on a task, is refused with the call that sets it, and that call works.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_field_value_naming_a_relationship_is_refused_and_the_edge_is_set_the_named_way() {
     let (executor, _tmp) = executor_with_assigned_tasks().await;
 
-    for key in ["custom:assignee", "assignee", "task__assignee"] {
+    for key in ["assignee", "assignee", "task__assignee"] {
         let refused = executor
             .execute(
                 "update_node",
@@ -433,7 +433,7 @@ async fn creating_a_node_refuses_a_relationship_key_and_a_built_in_inbound_name_
             "create_node",
             json!({
                 "node_type": "task", "content": "plan",
-                "field_values": { "custom:assignee": "Norbert Weber" }
+                "field_values": { "assignee": "Norbert Weber" }
             }),
         )
         .await
@@ -445,7 +445,7 @@ async fn creating_a_node_refuses_a_relationship_key_and_a_built_in_inbound_name_
     // create_relationship left it naming an id the task never had.
     assert!(refused.contains("was not created"), "{refused}");
     assert!(
-        refused.contains("create_node again without 'custom:assignee'"),
+        refused.contains("create_node again without 'assignee'"),
         "{refused}"
     );
     assert!(refused.contains("in the create's result"), "{refused}");

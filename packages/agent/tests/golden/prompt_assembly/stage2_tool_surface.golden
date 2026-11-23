@@ -247,7 +247,7 @@ parameters_schema:
       "type": "string"
     },
     "field_values": {
-      "description": "The values the user supplied. Not limited to the listed fields: if the user supplies a particular no listed field covers, add it here rather than dropping it — extra keys are stored as given. Name such a key after the user's own noun for it (lowercase, singular, snake_case), and prefix it by type: bare on a type from EXISTING SCHEMAS (e.g. {\"weight\": \"40kg\"}), but `custom:`-prefixed on a built-in type — text, task, date (e.g. {\"custom:weight\": \"40kg\"}), where unprefixed names are reserved for built-in fields.",
+      "description": "The values the user supplied, keyed by the type's own field names (the listed fields). A key the type does not declare is refused and nothing is created. When that happens, tell the user which value was refused and offer to add the field to the type as a separate request; do not add the field yourself and do not leave the value out without saying so.",
       "properties": {
         "assignee": {
           "type": "string"
