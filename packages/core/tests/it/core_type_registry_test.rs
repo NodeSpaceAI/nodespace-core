@@ -439,10 +439,10 @@ async fn a_custom_field_is_stored_under_its_bare_name_and_an_undeclared_key_is_r
     assert_eq!(node.properties["_seed"]["tier"], "core");
 
     // Undeclared, and no spelling makes it declared.
-    for key in ["shade", "team:shade", "vendor:thing"] {
+    for key in ["shade", "due-date", "team:shade", "vendor:thing", "a b"] {
         let error = message(create(&svc, "task", "A task", json!({ key: "x" })).await);
-        // A key of other characters is not echoed back.
-        let shown = if key.contains(':') {
+        // A key of letters, digits, `_` and `-` is echoed; any other is not.
+        let shown = if key.contains(':') || key.contains(' ') {
             "a key with other characters"
         } else {
             key

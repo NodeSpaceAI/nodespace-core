@@ -3749,12 +3749,14 @@ impl NodeService {
                 if declared || is_bookkeeping_key(key) || carried_back {
                     continue;
                 }
-                // The key is the caller's: a key of other characters is not echoed,
+                // The key is the caller's: a key of other characters than letters, digits, `_` and `-` is not echoed,
                 // so no text a caller chooses can pass for the sentence's own
                 // structure when this message is read back.
                 let key = if !key.is_empty()
                     && key.len() <= 64
-                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                 {
                     key.as_str()
                 } else {

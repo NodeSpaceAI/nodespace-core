@@ -112,15 +112,18 @@ pub struct UndeclaredRefusal {
     pub unnamed: usize,
 }
 
+/// A name that is repeated to a user as it is: letters, digits, `_` and `-` (a front
+/// matter key such as `due-date`), at most 64 bytes. The store echoes keys by the
+/// same rule, so a key it did not echo cannot reappear here.
 fn plain_key(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn plain_type(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn plain_type(s: &str) -> bool {
+    plain_key(s)
 }
 
 impl UndeclaredRefusal {
@@ -130,9 +133,11 @@ impl UndeclaredRefusal {
         let named: Vec<String> = keys.iter().filter(|k| plain_key(k)).cloned().collect();
         let unnamed = keys.len() - named.len().min(keys.len());
         let shown: Vec<String> = named.iter().take(REFUSED_KEYS_SHOWN).cloned().collect();
+        // A refusal that names no key is still a refused write: it carried a value.
+        let unnamed = (unnamed + named.len() - shown.len()).max(usize::from(keys.is_empty()));
         Self {
             node_type: plain_type(node_type).then(|| node_type.to_string()),
-            unnamed: unnamed + named.len() - shown.len(),
+            unnamed,
             keys: shown,
         }
     }
@@ -140,18 +145,33 @@ impl UndeclaredRefusal {
 
 /// A refusal read from the store's own text, for a write whose error reaches only as
 /// text (a user-defined type, a bulk or trusted write): the sentence
-/// `'k' is not a field of the type 'T': no schema in its chain declares it`, at the
-/// start of the text or after a `: ` prefix a tool put on it.
+/// `'k' is not a field of the type 'T': no schema in its chain declares it`.
 ///
-/// The sentence is matched whole, quoted keys and fixed words, not by a marker
-/// alone: the store does not echo a key of other characters, so text the model chose
-/// cannot pass for it, and an error that merely holds the marker words is not a
-/// refusal. `None` when no such sentence is there.
+/// The sentence is accepted only where the store puts it: at the start of the text,
+/// or after the exact prefixes a tool error carries, in this order and each at most
+/// once: `tool execution failed: `, `<tool> failed: `, `Invalid update: `. A
+/// sentence after any other text (`unknown node_type 'a: 'k' is not a field ...`) is
+/// not a refusal, so text a caller chose cannot name the type or a key. The sentence
+/// is matched whole, quoted keys and fixed words, and the store does not echo a key
+/// of other characters. `None` when no such sentence is there.
 pub fn parse_undeclared_keys(text: &str) -> Option<UndeclaredRefusal> {
-    text.match_indices('\'')
-        .map(|(at, _)| at)
-        .filter(|&at| at == 0 || text[..at].ends_with(": "))
-        .find_map(|at| refusal_sentence(&text[at..]))
+    let mut rest = text;
+    if let Some(after) = rest.strip_prefix("tool execution failed: ") {
+        rest = after;
+    }
+    if let Some((tool, after)) = rest.split_once(" failed: ") {
+        if !tool.is_empty()
+            && tool
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            rest = after;
+        }
+    }
+    if let Some(after) = rest.strip_prefix("Invalid update: ") {
+        rest = after;
+    }
+    refusal_sentence(rest)
 }
 
 fn refusal_sentence(s: &str) -> Option<UndeclaredRefusal> {

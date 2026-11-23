@@ -347,9 +347,12 @@ async fn a_chat_takes_only_its_own_declared_fields() {
         properties["agent"] = json!(agent);
         let error = message(create(&svc, subtype, "Untitled", properties).await);
         let key = foreign.as_object().unwrap().keys().next().unwrap().clone();
-        // The store echoes a key of letters, digits and `_`, and says "a key with
+        // The store echoes a key of letters, digits, `_` and `-`, and says "a key with
         // other characters" for any other.
-        let shown = if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        let shown = if key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
             key.as_str()
         } else {
             "a key with other characters"
