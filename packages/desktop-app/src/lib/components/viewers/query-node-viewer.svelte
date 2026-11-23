@@ -17,6 +17,7 @@
 -->
 
 <script lang="ts">
+  import { declaredFields } from '$lib/types/schema-node';
   import { onMount } from 'svelte';
   import { v4 as uuidv4 } from 'uuid';
   import { backendAdapter } from '$lib/services/backend-adapter';
@@ -376,8 +377,8 @@
   // a no-op that gives the visibility rule a second home.
   const fieldSchemaMap = $derived.by(() => {
     const map = new Map<string, SchemaField>();
-    if (schemaNode?.fields) {
-      for (const f of schemaNode.fields) map.set(f.name, f);
+    if (schemaNode) {
+      for (const f of declaredFields(schemaNode)) map.set(f.name, f);
     }
     return map;
   });

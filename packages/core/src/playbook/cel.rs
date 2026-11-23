@@ -6,8 +6,9 @@
 //!
 //! # Property Flattening
 //!
-//! Before evaluation, node properties are flattened into the CEL Map and namespace
-//! prefixes are stripped: `custom:amount` → `node.amount`. Properties are read
+//! Before evaluation, node properties are flattened into the CEL Map under the
+//! names they are stored by: a custom field `amount` is `node.amount`
+//! (ADR-112). Properties are read
 //! directly from `node.properties` (the raw DB format), not via
 //! `flatten_properties_for_api`.
 //!
@@ -481,7 +482,7 @@ fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
 /// - Each derived attribute the node's type declares (a checkbox's
 ///   `checked`), computed from `content`
 ///
-/// Namespace prefixes on properties are stripped: `custom:status` → `status`.
+/// A property is read by the name it is stored under; no key is rewritten.
 /// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
 /// `_playbookChainDepth`, ...) are excluded entirely, whether they appear
 /// nested inside the type namespace or -- their actual stored shape,
@@ -523,7 +524,7 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     );
     map.insert(key("version"), Value::Int(node.version));
 
-    // Flatten properties into the map, stripping namespace prefixes.
+    // Flatten properties into the map.
     //
     // NodeSpace stores properties in a type-namespaced format after create_node:
     //   {"task": {"status": "open", "priority": "high"}}
@@ -531,33 +532,24 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     // NOTE: Parallel logic exists in graph_resolver::get_node_property — if the
     // property storage format changes, both must be updated. The two differ
     // on a cleared (`null`) field by design: see the `retain` below.
-    // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
         // Walk the scope chain first, nearest scope wins. Done ahead of the
         // loop below so a bucket in the chain is never also seen by the
         // flat-property branch.
         //
-        // A prefixed field lands in a bucket too — `update_node` stores
-        // `custom:x` on a core type under that type's namespace — and must be
-        // stripped the same way as a flat one, or it is unreachable as
-        // `node.x`. Unprefixed keys are taken across the WHOLE chain before
-        // any prefixed one, so a core `status` in an ancestor bucket wins
-        // over a `custom:status` in a nearer one — the same precedence as
-        // `graph_resolver::get_node_property_at_scope`.
+        // A custom field lands in its type's bucket under its own name, like
+        // a core field, so one pass reads both; the nearest scope wins a name.
         let buckets: Vec<_> = scope_chain
             .iter()
             .filter_map(|scope| obj.get(*scope).and_then(|v| v.as_object()))
             .collect();
-        for want_prefixed in [false, true] {
-            for bucket in &buckets {
-                for (ik, iv) in bucket.iter() {
-                    // Skip internal fields like _schema_version
-                    if ik.starts_with('_') || ik.contains(':') != want_prefixed {
-                        continue;
-                    }
-                    let bare_key = ik.find(':').map(|i| &ik[i + 1..]).unwrap_or(ik);
-                    map.entry(key(bare_key)).or_insert_with(|| field_to_cel(iv));
+        for bucket in &buckets {
+            for (ik, iv) in bucket.iter() {
+                // Skip internal fields like _schema_version
+                if ik.starts_with('_') {
+                    continue;
                 }
+                map.entry(key(ik)).or_insert_with(|| field_to_cel(iv));
             }
         }
 
@@ -577,15 +569,8 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
                 // `_playbookChainDepth`, ...) -- same `_`-prefix convention as
                 // `NodeService::normalize_flat_properties_to_namespace`, which
                 // is what decides these keys stay unnamespaced at the top
-                // level in the first place. The check is on the raw key `k`,
-                // not a colon-stripped bare name, matching
-                // `validate_schema_field_name`'s rule that only a leading `_`
-                // on the WHOLE stored key is internal -- `custom:_internal`
-                // is a legal, visible user field, not bookkeeping.
-                //
-                // Strip colon namespace prefix: "custom:amount" → "amount"
-                let bare_key = k.find(':').map(|i| &k[i + 1..]).unwrap_or(k.as_str());
-                map.insert(key(bare_key), field_to_cel(v));
+                // level in the first place.
+                map.insert(key(k), field_to_cel(v));
             }
         }
     }
@@ -594,8 +579,8 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     // key presence, so a `null` left in the map would make `has(node.x)` true
     // for a field that was cleared and false for one that was never set.
     // Dropped here, after the precedence above has run, so a cleared field
-    // still occupies its name rather than letting a prefixed field of the
-    // same bare name, or an ancestor bucket's, show through.
+    // still occupies its name rather than letting an ancestor bucket's
+    // show through.
     //
     // `graph_resolver::get_node_property` keeps the `null`, because an action
     // binding to a cleared field binds `null`. A `.where(...)` item is built
@@ -1290,31 +1275,26 @@ mod tests {
     }
 
     #[test]
-    fn node_to_cel_strips_namespace_prefix() {
-        let node = test_node(
-            "invoice",
-            json!({"custom:amount": 1500, "custom:status": "pending"}),
-        );
+    fn node_to_cel_reads_a_top_level_field_by_its_name() {
+        let node = test_node("invoice", json!({"amount": 1500, "status": "pending"}));
         let ctx = eval_context_with_node(&node);
 
-        // "custom:amount" should be accessible as "node.amount"
+        // "amount" should be accessible as "node.amount"
         let result = Program::compile("node.amount == 1500")
             .unwrap()
             .execute(&ctx);
         assert_eq!(result, Ok(Value::Bool(true)));
     }
 
-    /// A prefixed field on a core type is stored inside the type bucket, not
-    /// at the top level, and must be stripped there too. An unprefixed field
-    /// of the same bare name still wins.
+    /// A custom field on a core type is stored inside the type bucket under
+    /// its own name, beside the core fields, and is read by that name.
     #[test]
-    fn node_to_cel_strips_namespace_prefix_inside_the_type_bucket() {
+    fn node_to_cel_reads_a_custom_field_inside_the_type_bucket_by_its_name() {
         let node = test_node(
             "task",
             json!({"task": {
                 "status": "open",
-                "custom:status": "shadow",
-                "custom:review_notes": "ran the tests",
+                "review_notes": "ran the tests",
             }}),
         );
         let ctx = eval_context_with_node(&node);
@@ -1322,27 +1302,24 @@ mod tests {
         for (expr, why) in [
             (
                 "node.review_notes == 'ran the tests'",
-                "a bucketed prefixed field must be reachable by its bare name",
+                "a custom field must be reachable by the name it is stored under",
             ),
-            (
-                "node.status == 'open'",
-                "the unprefixed field must win over a prefixed one of the same name",
-            ),
+            ("node.status == 'open'", "a core field is read the same way"),
         ] {
             let result = Program::compile(expr).unwrap().execute(&ctx);
             assert_eq!(result, Ok(Value::Bool(true)), "{why}");
         }
     }
 
-    /// Across an `extends` chain, an unprefixed key in the ancestor bucket
-    /// still wins over a prefixed one in the nearer bucket — matching
+    /// Across an `extends` chain each field is read from its declaring
+    /// bucket, the nearest scope winning a name — matching
     /// `graph_resolver::get_node_property_at_scope`.
     #[test]
-    fn node_to_cel_prefers_unprefixed_keys_across_the_whole_scope_chain() {
+    fn node_to_cel_reads_each_field_from_its_bucket_across_the_scope_chain() {
         let node = test_node(
             "issue",
             json!({
-                "issue": {"custom:status": "shadow", "estimate": "3"},
+                "issue": {"estimate": "3"},
                 "task": {"status": "open"},
             }),
         );
@@ -1442,9 +1419,9 @@ mod tests {
     fn node_to_cel_leaves_out_null_properties_in_every_stored_shape() {
         for properties in [
             json!({"task": {"status": "open", "priority": null}}),
-            json!({"task": {"status": "open", "custom:priority": null}}),
+            json!({"task": {"status": "open", "priority": null}}),
             json!({"status": "open", "priority": null}),
-            json!({"status": "open", "custom:priority": null}),
+            json!({"status": "open", "priority": null}),
         ] {
             let node = test_node("task", properties.clone());
             let Value::Map(map) = node_to_cel_value(&node) else {
@@ -1515,14 +1492,14 @@ mod tests {
         }
     }
 
-    /// A cleared field still occupies its name: it does not let a prefixed
-    /// field of the same bare name, or an ancestor bucket's, show through.
+    /// A cleared field still occupies its name: it does not let an ancestor
+    /// bucket's value of the same name show through.
     #[test]
     fn cleared_field_does_not_unshadow_another_field_of_the_same_name() {
         let node = test_node(
             "issue",
             json!({
-                "issue": {"status": null, "custom:status": "shadow"},
+                "issue": {"status": null},
                 "task": {"status": "open"},
             }),
         );

@@ -24,8 +24,8 @@
 //!
 //! The hash identifies a shape from a database's contents alone. It leaves
 //! out what a user may legitimately change on a core schema, the same things
-//! `db::core_type_shape` leaves out of its comparison: namespaced fields
-//! (`custom:`), values added to an extensible enum (`userValues`, and an
+//! `db::core_type_shape` leaves out of its comparison: `custom_fields`
+//! (a list of its own), values added to an extensible enum (`userValues`, and an
 //! inherited enum a type redeclares to hold only added values), fields whose
 //! protection is `user` (a user may remove or rename them), and context
 //! paths. Seeded content is not in the hash, because users edit it, and the
@@ -212,6 +212,21 @@ pub fn schema_view(schema: &SchemaNode) -> Value {
     }
     view.insert("fields".to_string(), Value::Object(fields));
 
+    // The fields users added to the type (ADR-112): keyed by name like
+    // `fields`. A shipped schema lists none, and the hash leaves the list out
+    // whatever a database holds in it.
+    let mut custom_fields = Map::new();
+    for field in source
+        .get("customFields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = field.get("name").and_then(Value::as_str).unwrap_or("");
+        custom_fields.insert(name.to_string(), field.clone());
+    }
+    view.insert("customFields".to_string(), Value::Object(custom_fields));
+
     let mut relationships = Map::new();
     for rel in source
         .get("relationships")
@@ -334,9 +349,6 @@ pub fn seeded_view(templates: &[NodeTemplate]) -> Result<Value> {
 /// an extensible enum of that name.
 fn is_user_territory(field: &Value, inherited: &[&Value]) -> bool {
     let name = field.get("name").and_then(Value::as_str).unwrap_or("");
-    if name.contains(':') {
-        return true;
-    }
     if field.get("protection").and_then(Value::as_str) == Some("user") {
         return true;
     }
@@ -373,6 +385,7 @@ fn hashed_schema_view(view: &Value, inherited: &[&Value]) -> Value {
         return view;
     };
     object.remove("contextPaths");
+    object.remove("customFields");
     if let Some(fields) = object.get_mut("fields").and_then(Value::as_object_mut) {
         fields.retain(|_, field| !is_user_territory(field, inherited));
         fields.values_mut().for_each(strip_user_values);
@@ -537,11 +550,11 @@ mod tests {
         let before = hash_of(&base);
 
         let mut edited = task();
-        let mut namespaced: SchemaField = edited.fields[0].clone();
-        namespaced.name = "custom:estimate".to_string();
-        namespaced.field_type = SchemaFieldType::Text;
-        namespaced.core_values = None;
-        edited.fields.push(namespaced);
+        let mut custom: SchemaField = edited.fields[0].clone();
+        custom.name = "estimate".to_string();
+        custom.field_type = SchemaFieldType::Text;
+        custom.core_values = None;
+        edited.custom_fields.push(custom);
         for field in &mut edited.fields {
             if field.name == "status" {
                 assert!(field.extensible == Some(true), "task status is extensible");

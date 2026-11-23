@@ -11,7 +11,7 @@ import type { TaskStatus } from './task-status';
  * `YYYY-MM-DD`.
  *
  * The update carries the task schema's fields and nothing else. `content` is
- * an envelope field and extension fields (`custom:…`) live in `properties`;
+ * an envelope field and extension fields (`…`) live in `properties`;
  * both are written through the generic node update.
  */
 export type TaskNodeUpdate = {

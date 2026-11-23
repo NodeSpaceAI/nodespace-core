@@ -116,7 +116,7 @@ impl NodeService {
         if Self::is_maintaining_system_fields() {
             return Ok(());
         }
-        let (fields, owners, chain) = ownership;
+        let (fields, owners, chain, _) = ownership;
         let play_owned = crate::models::CoreNodeType::Play.as_str();
         for field in fields
             .iter()

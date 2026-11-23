@@ -22,6 +22,7 @@
 -->
 
 <script lang="ts">
+  import { declaredFields } from '$lib/types/schema-node';
 import { isExactly } from '$lib/types/core-node-types';
   import { onMount } from 'svelte';
   import { Input } from '$lib/components/ui/input';
@@ -60,7 +61,7 @@ import { isExactly } from '$lib/types/core-node-types';
       .catch((error) => log.error('Failed to load schema:', error));
   });
 
-  const emailField = $derived(schema?.fields.find((f) => f.name === 'email'));
+  const emailField = $derived(declaredFields(schema).find((f) => f.name === 'email'));
   // Rebuilt per node: the instance can be reused across person nodes, and a
   // suggestion computed for the previous one must not linger.
   const emailCheck = $derived.by(() => {

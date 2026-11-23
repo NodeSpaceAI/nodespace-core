@@ -350,15 +350,24 @@ async fn a_chat_takes_only_its_own_declared_fields() {
         assert!(error.contains(&key), "{subtype} {foreign}: {error}");
     }
 
-    // A namespaced extension field is still welcome.
+    // A field added to the type is welcome, under its own name.
+    nodespace_core::schema::handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": NATIVE,
+            "add_fields": [{ "name": "pinned", "type": "boolean" }]
+        }),
+    )
+    .await
+    .expect("a custom field is added to the type");
     create(
         &svc,
         NATIVE,
         "Untitled",
-        json!({ "agent": "nodespace", "custom:pinned": true }),
+        json!({ "agent": "nodespace", "pinned": true }),
     )
     .await
-    .expect("an extension field is accepted");
+    .expect("a custom field is accepted");
 }
 
 /// The closed vocabularies: there is no `pty` provider (a terminal chat is a

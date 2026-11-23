@@ -149,7 +149,7 @@ describe('SharedNodeStore', () => {
 
     it('deep-merges properties so a partial write keeps sibling keys', () => {
       store.setNode(
-        { ...aiChatNode, properties: { 'custom:x': 'keep', provider: 'native' } },
+        { ...aiChatNode, properties: { 'x': 'keep', provider: 'native' } },
         viewerSource
       );
 
@@ -161,7 +161,7 @@ describe('SharedNodeStore', () => {
       );
 
       const node = store.getNode(aiChatNode.id) as unknown as Node;
-      expect(node.properties['custom:x']).toBe('keep');
+      expect(node.properties['x']).toBe('keep');
       expect(node.properties.provider).toBe('native');
     });
 
@@ -170,14 +170,14 @@ describe('SharedNodeStore', () => {
 
       store.updateNode(
         taskNode.id,
-        { properties: { 'custom:store': 'Costco' } },
+        { properties: { 'store': 'Costco' } },
         viewerSource,
         skip
       );
 
       const node = store.getNode(taskNode.id) as unknown as Record<string, unknown>;
-      expect((node.properties as Record<string, unknown>)['custom:store']).toBe('Costco');
-      expect(node['custom:store']).toBeUndefined();
+      expect((node.properties as Record<string, unknown>)['store']).toBe('Costco');
+      expect(node['store']).toBeUndefined();
     });
 
     it('leaves non-typed node types unaffected', () => {

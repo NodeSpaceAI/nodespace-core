@@ -172,7 +172,7 @@ async fn a_users_schema_extensions_do_not_change_the_identified_shape() -> Resul
         &service,
         json!({
             "schema_id": "task",
-            "add_fields": [{ "name": "custom:estimate", "type": "number" }],
+            "add_fields": [{ "name": "estimate", "type": "number" }],
             "add_field_values": [{
                 "field": "status",
                 "values": [{ "value": "parked", "label": "Parked" }]

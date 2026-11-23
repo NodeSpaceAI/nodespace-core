@@ -756,7 +756,7 @@ impl NodeService {
                 let ownership = if chain.len() > 1 {
                     self.field_ownership_for_write(&node_type).await?
                 } else {
-                    (Vec::new(), std::collections::HashMap::new(), chain)
+                    (Vec::new(), std::collections::HashMap::new(), chain, false)
                 };
                 ownership_by_type.insert(node_type.clone(), ownership);
             }

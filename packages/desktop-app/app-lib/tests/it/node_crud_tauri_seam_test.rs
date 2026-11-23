@@ -155,7 +155,7 @@ async fn persists_node_properties_through_the_round_trip() {
     let id = uuid::Uuid::new_v4().to_string();
     let mut input = text_input(&id, "with props");
     input.properties = json!({
-        "text": { "custom:priority": "high", "custom:tags": ["a", "b"], "custom:count": 42 }
+        "text": { "priority": "high", "tags": ["a", "b"], "count": 42 }
     });
 
     create_node(state.clone(), input)
@@ -173,7 +173,7 @@ async fn persists_node_properties_through_the_round_trip() {
     // flattened properties land under the top-level `properties` object.
     // `text` is a core type with no fields of its own, so what it carries are
     // namespaced extension fields.
-    assert_eq!(node["properties"]["custom:priority"], json!("high"));
-    assert_eq!(node["properties"]["custom:tags"], json!(["a", "b"]));
-    assert_eq!(node["properties"]["custom:count"], json!(42));
+    assert_eq!(node["properties"]["priority"], json!("high"));
+    assert_eq!(node["properties"]["tags"], json!(["a", "b"]));
+    assert_eq!(node["properties"]["count"], json!(42));
 }

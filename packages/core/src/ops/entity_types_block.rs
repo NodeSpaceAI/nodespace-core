@@ -703,6 +703,7 @@ mod tests {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
+            custom_fields: Vec::new(),
             fields: vec![field("reference", "text"), amount, status],
             relationships: vec![SchemaRelationship {
                 name: "billed_to".to_string(),
@@ -1184,7 +1185,7 @@ mod tests {
         let schema = sample_schema();
         // Properties carrying keys the schema does not define — including a
         // bare key of the kind ADR-063 prohibits on a core type.
-        let props = json!({ "reference": "INV-1", "weight": "40kg", "custom:color": "red" });
+        let props = json!({ "reference": "INV-1", "weight": "40kg", "color": "red" });
 
         let available = build_available_properties(&schema.fields, &props);
         let names: Vec<&str> = available
@@ -1194,6 +1195,6 @@ mod tests {
 
         assert_eq!(names, vec!["reference", "amount", "status"]);
         assert!(!names.contains(&"weight"));
-        assert!(!names.contains(&"custom:color"));
+        assert!(!names.contains(&"color"));
     }
 }

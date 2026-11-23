@@ -4968,7 +4968,7 @@ mod tests {
         fn update_action(node_id: &str) -> ParsedAction {
             ParsedAction {
                 action_type: ActionType::UpdateNode,
-                params: json!({ "node_id": node_id, "properties": { "custom:tag": "v" } }),
+                params: json!({ "node_id": node_id, "properties": { "tag": "v" } }),
                 for_each: None,
             }
         }
@@ -5099,7 +5099,7 @@ mod tests {
                 action_type: ActionType::UpdateNode,
                 params: json!({
                     "node_id": "{trigger.node.id}",
-                    "properties": { "custom:stamp": "{today()}" }
+                    "properties": { "stamp": "{today()}" }
                 }),
                 for_each: None,
             };
@@ -5132,7 +5132,7 @@ mod tests {
                 action_type: ActionType::UpdateNode,
                 params: json!({
                     "node_id": "{trigger.node.id}",
-                    "properties": { "custom:end_date": "{add_days(trigger.node.id, 14)}" }
+                    "properties": { "end_date": "{add_days(trigger.node.id, 14)}" }
                 }),
                 for_each: None,
             };
@@ -5190,7 +5190,7 @@ mod tests {
                 action_type: ActionType::UpdateNode,
                 params: json!({
                     "node_id": "{item.id}",
-                    "properties": { "custom:tag": "v" }
+                    "properties": { "tag": "v" }
                 }),
                 for_each: Some("today()".to_string()),
             };
@@ -5229,7 +5229,7 @@ mod tests {
                     action_type: ActionType::UpdateNode,
                     params: json!({
                         "node_id": "{item.id}",
-                        "properties": { "custom:tag": "v" }
+                        "properties": { "tag": "v" }
                     }),
                     for_each: Some("trigger.node.tasks".to_string()),
                 }],

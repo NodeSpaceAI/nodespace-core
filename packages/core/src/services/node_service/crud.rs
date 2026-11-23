@@ -15,6 +15,10 @@ pub(crate) type FieldOwnershipInfo = (
     Vec<crate::models::SchemaField>,
     std::collections::HashMap<String, String>,
     Vec<String>,
+    // Whether the type's bucket is closed (ADR-112 section 11): a built-in
+    // type, or a type that has a schema. A type with no schema declares
+    // nothing, and a write to it is the write's own error to report.
+    bool,
 );
 
 /// Result of [`NodeService::update_with_version_check_returning_node_in_tx`]:
@@ -183,17 +187,22 @@ impl NodeService {
                 existing.id
             )));
         }
-        // Fields are checked against their chain, the namespace rule, field
+        // Fields are checked against their chain, the field
         // protection and the Plays and nodes that use them when
         // `update_schema` saves them, so they have the same one write path.
-        let fields = crate::models::schema_node::FIELDS_KEY;
-        if existing.properties.get(fields) != updated.properties.get(fields) {
-            return Err(NodeServiceError::invalid_update(format!(
-                "The fields of schema '{}' can only be changed with update_schema (add_fields, \
-                 remove_fields, rename_fields, add_field_values), which checks them against the \
-                 type's chain, its protected fields and its existing nodes.",
-                existing.id
-            )));
+        // The users' added fields (`custom_fields`, ADR-112 §4) are the same.
+        for list in [
+            crate::models::schema_node::FIELDS_KEY,
+            crate::models::schema_node::CUSTOM_FIELDS_KEY,
+        ] {
+            if existing.properties.get(list) != updated.properties.get(list) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "The fields of schema '{}' can only be changed with update_schema \
+                     (add_fields, remove_fields, rename_fields, add_field_values), which checks \
+                     them against the type's chain, its protected fields and its existing nodes.",
+                    existing.id
+                )));
+            }
         }
         Ok(())
     }
@@ -3333,12 +3342,13 @@ impl NodeService {
 
     /// The schema properties that are stored only when they say something:
     /// `abstract` when true, a structural rule when it is not `any`, the
-    /// context paths when there are any.
-    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 4] = [
+    /// context paths and the custom fields when there are any.
+    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 5] = [
         "abstract",
         "children",
         "parent",
         crate::models::schema_node::CONTEXT_PATHS_KEY,
+        crate::models::schema_node::CUSTOM_FIELDS_KEY,
     ];
 
     /// Merge a schema-definition write into a schema node's stored
@@ -3547,9 +3557,13 @@ impl NodeService {
                 Vec::new(),
                 std::collections::HashMap::new(),
                 self.type_chain(node_type).await?,
+                false,
             ));
         }
-        self.resolve_field_owners(node_type).await
+        let (fields, owners, chain) = self.resolve_field_owners(node_type).await?;
+        let closed = crate::models::CoreNodeType::from_id(node_type).is_some()
+            || self.get_schema_node(node_type).await?.is_some();
+        Ok((fields, owners, chain, closed))
     }
 
     /// [`Self::field_ownership_for_write`] for one row of a batch: resolved
@@ -3579,12 +3593,13 @@ impl NodeService {
         if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             return Ok(());
         }
-        let (fields, owners, chain) = ownership;
+        let (fields, owners, chain, closed) = ownership;
         Self::reject_derived_attribute_keys(node, chain)?;
-        Self::reject_shadowed_extension_fields(node, owners, chain)?;
         // A type that declares no fields has nothing to validate against,
-        // but a core one is still closed: its bucket takes no undeclared key.
-        Self::reject_undeclared_core_keys(node, owners, chain)?;
+        // but its bucket is still closed: it takes no undeclared key.
+        if *closed {
+            Self::reject_undeclared_keys(before, node, owners, chain)?;
+        }
         if !fields.is_empty() {
             self.validate_node_with_fields(node, fields, Some(chain))?;
         }
@@ -3604,7 +3619,7 @@ impl NodeService {
         ownership: &FieldOwnershipInfo,
         apply_defaults: bool,
     ) -> Result<(), NodeServiceError> {
-        let (fields, owners, chain) = ownership;
+        let (fields, owners, chain, _) = ownership;
         if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             Self::ensure_properties_are_buckets(node, chain)?;
         }
@@ -3691,63 +3706,22 @@ impl NodeService {
         Ok(())
     }
 
-    /// Refuse an extension field named after a declared field (ADR-097 §6).
+    /// Refuse a key in a bucket that no schema in the node's chain declares
+    /// (ADR-086 §7, ADR-112 §3 and §11).
     ///
-    /// A rule or a query reads an extension field by its bare name
-    /// (`custom:amount` as `amount`), and a declared field always wins that
-    /// name, anywhere in the node's chain. So `custom:status` on a task could
-    /// be stored and never read. The name is refused in every bucket of the
-    /// chain, a user subtype's open one included: the read is the same there.
-    ///
-    /// `owners` maps each declared field to the schema that declares it. No
-    /// schema can declare such a name either: a schema edit refuses it the
-    /// same way, whichever of the two names it would add and wherever in
-    /// the chain the other one is.
-    pub(crate) fn reject_shadowed_extension_fields(
-        node: &Node,
-        owners: &std::collections::HashMap<String, String>,
-        chain: &[String],
-    ) -> Result<(), NodeServiceError> {
-        let Some(buckets) = node.properties.as_object() else {
-            return Ok(());
-        };
-        for scope in chain {
-            let Some(bucket) = buckets.get(scope.as_str()).and_then(|v| v.as_object()) else {
-                continue;
-            };
-            for key in bucket.keys() {
-                let Some(bare) = extension_field_bare_name(key) else {
-                    continue;
-                };
-                // `org:custom:x` reads as `custom:x`, which no declared
-                // `custom:x` (read as `x`) shadows.
-                if is_extension_field_name(bare) {
-                    continue;
-                }
-                if let Some(owner) = owners.get(bare) {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "'{key}' cannot be set: '{bare}' is a declared field of the type \
-                         '{owner}', and a rule or query reads that name as the declared \
-                         field, so '{key}' could never be read. Set '{bare}', or give the \
-                         extension field another name."
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Refuse an undeclared key in a core type's bucket (ADR-086 §7).
-    ///
-    /// A core type's schema is closed: a key in its bucket must be declared by
-    /// that type's schema, be a namespaced extension field (`custom:`, `org:`,
-    /// `plugin:`, ADR-063), or start with `_` (bookkeeping). A subtype's own
-    /// bucket follows its own schema's rules, and a user-defined type stays
-    /// open, so only the core scopes of the chain are checked.
+    /// Every type's bucket is closed, built-in or user-defined: a key in it
+    /// must be declared, in `fields` or in `custom_fields`, by the schema the
+    /// bucket belongs to, or start with `_` (bookkeeping). No schema is open,
+    /// and no key is matched by its spelling: the answer is a lookup.
     ///
     /// `owners` maps each declared field to the schema that declares it, so a
-    /// key is declared for a core bucket exactly when that core type owns it.
-    pub(crate) fn reject_undeclared_core_keys(
+    /// key is declared for a bucket exactly when that type owns it.
+    ///
+    /// A key the stored node already holds, with the value it holds, is not a
+    /// write of it: removing a field from a schema leaves its values in place,
+    /// and the node must stay writable. Re-adding the name picks them up.
+    pub(crate) fn reject_undeclared_keys(
+        before: Option<&Node>,
         node: &Node,
         owners: &std::collections::HashMap<String, String>,
         chain: &[String],
@@ -3756,21 +3730,23 @@ impl NodeService {
             return Ok(());
         };
         for scope in chain {
-            if crate::models::CoreNodeType::from_id(scope).is_none() {
-                continue;
-            }
             let Some(bucket) = buckets.get(scope.as_str()).and_then(|v| v.as_object()) else {
                 continue;
             };
             for key in bucket.keys() {
                 let declared = owners.get(key).is_some_and(|owner| owner == scope);
-                if declared || is_open_key(key) {
+                let carried_back = before
+                    .and_then(|b| b.properties.get(scope.as_str()))
+                    .and_then(|bucket| bucket.get(key))
+                    .is_some_and(|stored| Some(stored) == bucket.get(key));
+                if declared || is_bookkeeping_key(key) || carried_back {
                     continue;
                 }
                 return Err(NodeServiceError::invalid_update(format!(
-                    "'{key}' is not a field of the core type '{scope}'. A core type takes only \
-                     its declared fields; to add your own, use a namespace prefix \
-                     (e.g. 'custom:{key}')."
+                    "'{key}' is not a field of the type '{scope}': no schema in its chain \
+                     declares it. A node takes only the fields its type declares. To keep the \
+                     value, add '{key}' to the type's fields first (update_schema), which gives \
+                     it to every node of the type."
                 )));
             }
         }
@@ -3778,12 +3754,12 @@ impl NodeService {
     }
 
     /// The keys of a flat property write to a `node_type` node that
-    /// [`Self::reject_undeclared_core_keys`] would refuse, in map order.
+    /// [`Self::reject_undeclared_keys`] would refuse, in map order.
     ///
     /// A flat key is stored in the bucket of the schema that declares it, or
     /// in the node's own bucket when none does. So it is refused exactly when
-    /// the node's own type is a core type and no schema in its chain declares
-    /// the key. Three kinds of key are not refused that way:
+    /// no schema in the node's chain declares the key. Four kinds of key are
+    /// not refused that way:
     ///
     /// - A key named after a type in the chain that holds an object. It
     ///   addresses that type's bucket ([`Self::unnest_ancestor_buckets`]);
@@ -3795,27 +3771,30 @@ impl NodeService {
     ///   type's bucket as an object is taken as bucketed and not normalized,
     ///   so a flat key next to it never enters a bucket.
     ///
-    /// For a caller that stores such a key under an extension prefix instead
-    /// of sending a write it knows will be refused.
-    pub async fn undeclared_core_keys(
+    /// For a caller that names the refused keys to its user ahead of the
+    /// write.
+    pub async fn undeclared_keys(
         &self,
         node_type: &str,
         properties: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Vec<String>, NodeServiceError> {
-        if crate::models::CoreNodeType::from_id(node_type).is_none()
-            || crate::models::CoreNodeType::Schema.is_exactly(node_type)
+        if crate::models::CoreNodeType::Schema.is_exactly(node_type)
             || properties.get(node_type).is_some_and(|own| own.is_object())
         {
             return Ok(Vec::new());
         }
-        let (_, owners, chain) = self.field_ownership_for_write(node_type).await?;
+        // A type with no schema declares nothing and is no closed bucket.
+        let (_, owners, chain, closed) = self.field_ownership_for_write(node_type).await?;
+        if !closed {
+            return Ok(Vec::new());
+        }
         let derived = crate::models::CoreNodeType::derived_attributes_in(&chain);
         Ok(properties
             .iter()
             .filter(|(key, value)| {
                 let names_a_bucket = value.is_object() && chain.iter().any(|scope| scope == *key);
                 !owners.contains_key(*key)
-                    && !is_open_key(key)
+                    && !is_bookkeeping_key(key)
                     && !names_a_bucket
                     && !derived.iter().any(|attribute| attribute.name() == *key)
             })
@@ -3824,15 +3803,15 @@ impl NodeService {
     }
 
     /// Whether a schema in `node_type`'s chain declares a field called
-    /// `name`. Narrower than "a write of it is not refused": an extension
-    /// key, a bookkeeping key and a bucket's own name are all accepted and
-    /// none is a declared field.
+    /// `name`, in `fields` or in `custom_fields`. Narrower than "a write of
+    /// it is not refused": a bookkeeping key and a bucket's own name are
+    /// accepted and neither is a declared field.
     pub async fn declares_field(
         &self,
         node_type: &str,
         name: &str,
     ) -> Result<bool, NodeServiceError> {
-        let (_, owners, _) = self.field_ownership_for_write(node_type).await?;
+        let (_, owners, _, _) = self.field_ownership_for_write(node_type).await?;
         Ok(owners.contains_key(name))
     }
 

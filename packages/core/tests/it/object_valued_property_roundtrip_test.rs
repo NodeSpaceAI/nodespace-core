@@ -56,7 +56,8 @@ async fn seed_venue_schema(svc: &Arc<NodeService>) -> Result<()> {
             "name": "Venue",
             "fields": [
                 { "name": "address", "type": "object", "protection": "user", "indexed": false },
-                { "name": "capacity", "type": "number", "protection": "user", "indexed": false }
+                { "name": "capacity", "type": "number", "protection": "user", "indexed": false },
+                { "name": "notes", "type": "object", "protection": "user", "indexed": false }
             ]
         }),
     )
@@ -318,7 +319,7 @@ async fn schema_cannot_declare_an_underscore_prefixed_field() -> Result<()> {
     // form of the same intent, built from the caller's own field name, so the
     // suggestion can be pasted rather than translated.
     assert!(
-        msg.contains("custom:internal_id"),
+        msg.contains("internal_id"),
         "the error must suggest the namespaced alternative, got: {msg}"
     );
 
@@ -363,42 +364,6 @@ async fn a_field_cannot_be_renamed_to_an_underscore_prefixed_name() -> Result<()
         properties_of(&node).get("capacity"),
         Some(&json!(1500)),
         "a rejected rename must not have migrated any instance data"
-    );
-    Ok(())
-}
-
-/// The reservation is on the *stored key*, which is the field name verbatim.
-/// A namespaced name stores under `custom:_internal`, which does not begin with
-/// `_`, so it survives the flattener and stays legal — the gate must not
-/// over-reach into names that round-trip correctly.
-#[tokio::test]
-async fn a_namespaced_field_may_contain_an_underscore_after_the_prefix() -> Result<()> {
-    let (svc, _tmp) = create_test_service().await?;
-
-    handle_create_schema(
-        &svc,
-        json!({
-            "name": "Gadget",
-            "fields": [{ "name": "custom:_internal", "type": "text" }]
-        }),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("custom:_internal must stay legal: {e}"))?;
-
-    let id = uuid::Uuid::new_v4().to_string();
-    svc.create_node(Node::new_with_id(
-        id.clone(),
-        "gadget".to_string(),
-        "Sprocket".to_string(),
-        json!({ "custom:_internal": "kept" }),
-    ))
-    .await?;
-
-    let node = node_ops::get_node(&svc, node_ops::GetNodeInput { node_id: id }).await?;
-    assert_eq!(
-        properties_of(&node).get("custom:_internal"),
-        Some(&json!("kept")),
-        "a prefixed name is a normal field and must round-trip"
     );
     Ok(())
 }

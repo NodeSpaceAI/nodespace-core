@@ -16,7 +16,8 @@
 //! Only a difference another build can have produced counts. What a user may
 //! do to a core schema through the schema API is left out of the comparison:
 //!
-//! - add a namespaced field (`custom:estimate`);
+//! - add a field to the type's `custom_fields` list (`estimate`), which is a
+//!   list of its own that this check does not read;
 //! - add values to an extensible enum, including one the type inherits
 //!   through `extends` (an issue's `priority`, from `task`), which the type
 //!   then declares itself, holding no core values, only the values added;
@@ -138,12 +139,11 @@ impl FieldShape {
     }
 }
 
-/// The fields core declares on a schema, by name. A namespaced field
-/// (`custom:estimate`) is one somebody added to the type, not core's.
+/// The fields core declares on a schema, by name. A field somebody added to
+/// the type is in the schema's `custom_fields`, a list this check never reads.
 fn core_fields(fields: &[SchemaField]) -> BTreeMap<&str, FieldShape> {
     fields
         .iter()
-        .filter(|field| !field.name.contains(':'))
         .map(|field| (field.name.as_str(), FieldShape::of(field)))
         .collect()
 }
@@ -492,7 +492,7 @@ mod tests {
             .starts_with("type 'task' has a definition this version cannot read"));
     }
 
-    /// What a user may do to a core schema is not a difference: a namespaced
+    /// What a user may do to a core schema is not a difference: a custom
     /// field they added, a value they added to an extensible enum, and a
     /// field of theirs to change that they removed.
     #[tokio::test]
@@ -502,8 +502,8 @@ mod tests {
 
         let mut task = shipped("task");
         let mut estimate = task.fields[2].clone();
-        estimate.name = "custom:estimate".to_string();
-        task.fields.push(estimate);
+        estimate.name = "estimate".to_string();
+        task.custom_fields.push(estimate);
         let status = task.fields.iter_mut().find(|f| f.name == "status").unwrap();
         status.user_values = Some(vec![EnumValue::new(
             "backlog".to_string(),

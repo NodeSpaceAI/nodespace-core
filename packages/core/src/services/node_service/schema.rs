@@ -669,7 +669,7 @@ impl NodeService {
                 // resolver, since deletion with a live chain is out of scope.
                 continue;
             };
-            for field in &schema.fields {
+            for field in schema.declared_fields() {
                 // First writer wins, and the chain is nearest-first, so a
                 // field declared by a nearer scope keeps ownership. Well-formed
                 // chains have no collisions (redeclaration is rejected at write
@@ -679,7 +679,7 @@ impl NodeService {
                     .entry(field.name.clone())
                     .or_insert_with(|| schema_id.clone());
             }
-            chain_fields.push(schema.fields);
+            chain_fields.push(schema.declared_fields().cloned().collect());
         }
 
         Ok((
@@ -979,16 +979,19 @@ impl NodeService {
                     })?;
 
                     // Step 2: Update schema definition — rename field in the fields list
-                    let updated_fields: Vec<crate::models::schema::SchemaField> = schema
-                        .fields
-                        .into_iter()
-                        .map(|mut f| {
-                            if f.name == from {
-                                f.name = to.clone();
-                            }
-                            f
-                        })
-                        .collect();
+                    let rename_in = |fields: Vec<crate::models::schema::SchemaField>| {
+                        fields
+                            .into_iter()
+                            .map(|mut f| {
+                                if f.name == from {
+                                    f.name = to.clone();
+                                }
+                                f
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let updated_fields = rename_in(schema.fields.clone());
+                    let updated_custom_fields = rename_in(schema.custom_fields.clone());
 
                     // The migration moved only rows holding `from`. A row
                     // with no `from` value can still hold a leftover `to` —
@@ -1002,6 +1005,7 @@ impl NodeService {
                     // without protecting anything.
                     let renamed: Vec<_> = updated_fields
                         .iter()
+                        .chain(&updated_custom_fields)
                         .filter(|f| f.name == to)
                         .map(|f| crate::models::schema::SchemaField {
                             required: None,
@@ -1015,6 +1019,7 @@ impl NodeService {
                     // properties, and are untouched by a field rename.
                     let renamed_schema = crate::models::SchemaNode {
                         fields: updated_fields,
+                        custom_fields: updated_custom_fields,
                         ..schema
                     };
                     let update = crate::models::NodeUpdate {
@@ -1083,7 +1088,11 @@ impl NodeService {
                     })
                 })?;
 
-        for f in working.fields.iter_mut() {
+        for f in working
+            .fields
+            .iter_mut()
+            .chain(working.custom_fields.iter_mut())
+        {
             if f.name == from {
                 f.name = to.to_string();
             }
@@ -1091,8 +1100,7 @@ impl NodeService {
         // Same post-migration check as `rename_schema_field`: a leftover value
         // under `to` must satisfy the renamed declaration.
         let renamed: Vec<_> = schema
-            .fields
-            .iter()
+            .declared_fields()
             .filter(|f| f.name == from)
             .map(|f| crate::models::schema::SchemaField {
                 name: to.to_string(),
@@ -1156,7 +1164,7 @@ impl NodeService {
         let type_id = type_id.as_str();
 
         // Validate source field exists in schema
-        if !schema.fields.iter().any(|f| f.name == from) {
+        if schema.get_field(from).is_none() {
             return Err(NodeServiceError::invalid_update(format!(
                 "Field '{}' not found in schema '{}'",
                 from, type_id
@@ -1188,7 +1196,7 @@ impl NodeService {
         // from the extends-chain-merged effective set, so a rename cannot
         // shadow an ancestor's field the same way `validate_no_field_redeclaration`
         // already blocks a *new* field declaration from doing.
-        if schema.fields.iter().any(|f| f.name == to) {
+        if schema.get_field(to).is_some() {
             return Err(NodeServiceError::invalid_update(format!(
                 "Field '{}' already exists in schema '{}' (declared by '{}' — own field or \
                  inherited via extends); cannot rename to an existing field",
@@ -1230,7 +1238,7 @@ impl NodeService {
             let Some(descendant_schema) = self.get_schema_node(descendant_id).await? else {
                 continue;
             };
-            if descendant_schema.fields.iter().any(|f| f.name == to) {
+            if descendant_schema.get_field(to).is_some() {
                 return Err(NodeServiceError::invalid_update(format!(
                     "Field '{}' already exists as '{}''s own field ('{}' extends '{}'); \
                      renaming would permanently shadow the ancestor's field in every \
@@ -1289,7 +1297,7 @@ impl NodeService {
                         .await?
                         .ok_or_else(|| NodeServiceError::node_not_found(type_id))?;
 
-                    if !schema.fields.iter().any(|f| f.name == field_name) {
+                    if schema.get_field(field_name).is_none() {
                         return Err(NodeServiceError::invalid_update(format!(
                             "Field '{}' not found in schema '{}'",
                             field_name, type_id
@@ -1320,24 +1328,29 @@ impl NodeService {
                     // function's treatment of an omitted value exactly: derive from the
                     // field's own name, disambiguating against a sibling field's label
                     // if the derived form collides.
+                    let siblings: Vec<_> = schema.declared_fields().cloned().collect();
                     let resolved_friendly_name =
-                        resolve_field_friendly_name(&schema.fields, field_name, friendly_name);
+                        resolve_field_friendly_name(&siblings, field_name, friendly_name);
 
-                    let updated_fields: Vec<crate::models::schema::SchemaField> = schema
-                        .fields
-                        .into_iter()
-                        .map(|mut f| {
-                            if f.name == field_name {
-                                f.friendly_name = resolved_friendly_name.clone();
-                            }
-                            f
-                        })
-                        .collect();
+                    let relabel_in = |fields: Vec<crate::models::schema::SchemaField>| {
+                        fields
+                            .into_iter()
+                            .map(|mut f| {
+                                if f.name == field_name {
+                                    f.friendly_name = resolved_friendly_name.clone();
+                                }
+                                f
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let updated_fields = relabel_in(schema.fields.clone());
+                    let updated_custom_fields = relabel_in(schema.custom_fields.clone());
 
                     // Same persistence shape as `rename_schema_field`'s Step 2:
                     // declarations live in the relationship table and are untouched.
                     let relabelled_schema = crate::models::SchemaNode {
                         fields: updated_fields,
+                        custom_fields: updated_custom_fields,
                         ..schema
                     };
                     let update = crate::models::NodeUpdate {
@@ -1948,6 +1961,20 @@ mod typed_update_tests {
         (service, temp_dir)
     }
 
+    /// Declare `name` in the `custom_fields` of the built-in type `type_id`,
+    /// the way `update_schema` stores it.
+    async fn declare(service: &NodeService, type_id: &str, name: &str, field_type: &str) {
+        crate::schema::handle_update_schema(
+            &Arc::new(service.clone()),
+            json!({
+                "schema_id": type_id,
+                "add_fields": [{ "name": name, "type": field_type }]
+            }),
+        )
+        .await
+        .expect("a custom field is added through update_schema");
+    }
+
     async fn create(service: &NodeService, node_type: &str, properties: serde_json::Value) -> Node {
         let id = service
             .create_node_with_parent(CreateNodeParams {
@@ -2085,10 +2112,11 @@ mod typed_update_tests {
     #[tokio::test]
     async fn task_update_writes_fields_and_leaves_others() {
         let (service, _t) = create_test_service().await;
+        declare(&service, "task", "estimate", "number").await;
         let task = create(
             &service,
             "task",
-            json!({ "priority": "low", "custom:estimate": 3 }),
+            json!({ "priority": "low", "estimate": 3 }),
         )
         .await;
 
@@ -2113,7 +2141,7 @@ mod typed_update_tests {
             typed["priority"], "low",
             "an absent priority is left unchanged"
         );
-        assert_eq!(typed["properties"], json!({ "custom:estimate": 3 }));
+        assert_eq!(typed["properties"], json!({ "estimate": 3 }));
     }
 
     #[tokio::test]
@@ -2150,6 +2178,7 @@ mod typed_update_tests {
     #[tokio::test]
     async fn task_update_response_keeps_lifecycle_status_and_extension_fields() {
         let (service, _t) = create_test_service().await;
+        declare(&service, "task", "estimate", "number").await;
         let id = service
             .create_node_with_parent(CreateNodeParams {
                 id: None,
@@ -2157,7 +2186,7 @@ mod typed_update_tests {
                 content: "Retired task".to_string(),
                 parent_id: None,
                 position: InsertPositionOwned::End,
-                properties: json!({ "custom:estimate": 3 }),
+                properties: json!({ "estimate": 3 }),
                 lifecycle_status: Some("archived".to_string()),
             })
             .await
@@ -2180,7 +2209,7 @@ mod typed_update_tests {
         let typed = crate::models::node_to_typed_value(updated).unwrap();
         assert_eq!(typed["lifecycleStatus"], "archived");
         assert_eq!(typed["status"], "done");
-        assert_eq!(typed["properties"], json!({ "custom:estimate": 3 }));
+        assert_eq!(typed["properties"], json!({ "estimate": 3 }));
     }
 
     #[tokio::test]
@@ -2255,10 +2284,11 @@ mod typed_update_tests {
     #[tokio::test]
     async fn project_update_writes_fields_and_leaves_others() {
         let (service, _t) = create_test_service().await;
+        declare(&service, "project", "budget", "number").await;
         let project = create(
             &service,
             "project",
-            json!({ "status": "planning", "custom:budget": 1200 }),
+            json!({ "status": "planning", "budget": 1200 }),
         )
         .await;
 
@@ -2278,7 +2308,7 @@ mod typed_update_tests {
         let typed = crate::models::node_to_typed_value(updated).unwrap();
         assert_eq!(typed["status"], "active");
         assert_eq!(typed["startDate"], "2026-03-01");
-        assert_eq!(typed["properties"], json!({ "custom:budget": 1200 }));
+        assert_eq!(typed["properties"], json!({ "budget": 1200 }));
     }
 
     #[tokio::test]
@@ -2403,15 +2433,17 @@ mod typed_update_tests {
             ],
             "sorting": [{ "field": "due_date", "direction": "asc" }],
             "generated_by": "user",
-            "view_config": { "lastView": "table" },
-            "custom:pinned": true
+            "view_config": { "lastView": "table" }
         })
     }
 
     #[tokio::test]
     async fn query_update_writes_fields_and_leaves_others() {
         let (service, _t) = create_test_service().await;
-        let query = create(&service, "query", saved_query_properties()).await;
+        declare(&service, "query", "pinned", "boolean").await;
+        let mut properties = saved_query_properties();
+        properties["pinned"] = json!(true);
+        let query = create(&service, "query", properties).await;
 
         let update: QueryNodeUpdate = serde_json::from_value(json!({
             "viewConfig": { "lastView": "kanban", "kanban": { "groupBy": "status" } },
@@ -2430,7 +2462,7 @@ mod typed_update_tests {
         assert_eq!(typed["targetType"], "task", "an untouched field survives");
         assert_eq!(typed["filters"][0]["property"], "status");
         assert_eq!(typed["sorting"][0]["field"], "due_date");
-        assert_eq!(typed["properties"], json!({ "custom:pinned": true }));
+        assert_eq!(typed["properties"], json!({ "pinned": true }));
     }
 
     #[tokio::test]
@@ -2580,15 +2612,17 @@ mod typed_update_tests {
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.child_of.id}", "properties": { "status": "done" } }
                 }]
-            }],
-            "custom:owner": "ada"
+            }]
         })
     }
 
     #[tokio::test]
     async fn play_update_writes_fields_and_leaves_others() {
         let (service, _t) = create_test_service().await;
-        let play = create(&service, "play", play_properties()).await;
+        declare(&service, "play", "owner", "text").await;
+        let mut properties = play_properties();
+        properties["owner"] = json!("ada");
+        let play = create(&service, "play", properties).await;
 
         let update: PlayNodeUpdate =
             serde_json::from_value(json!({ "description": "Roll completion up" })).unwrap();
@@ -2609,7 +2643,7 @@ mod typed_update_tests {
             "task"
         );
         assert_eq!(typed["lifecycleStatus"], "active");
-        assert_eq!(typed["properties"], json!({ "custom:owner": "ada" }));
+        assert_eq!(typed["properties"], json!({ "owner": "ada" }));
     }
 
     #[tokio::test]

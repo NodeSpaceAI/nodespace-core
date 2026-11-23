@@ -30,6 +30,7 @@
 -->
 
 <script lang="ts">
+  import { declaredFields } from '$lib/types/schema-node';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { resolveFieldValue, buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
   import { evaluateTitleTemplate } from '$lib/utils/title-template';
@@ -58,7 +59,7 @@
   // with system fields, ai-chat and collection, both have dedicated viewers
   // that bypass this component entirely), but a real gap if anything ever
   // renders a system-field type through this generic per-field loop.
-  const visibleFields = $derived(schema.fields.filter(isUserVisibleField));
+  const visibleFields = $derived(declaredFields(schema).filter(isUserVisibleField));
 
   const node = $derived<Node | null>(nodeId ? (sharedNodeStore.getNode(nodeId) ?? null) : null);
 
@@ -137,11 +138,11 @@
   function updateTitlePreview(fieldName: string, value: unknown) {
     if (!node || !schema.titleTemplate) return;
     const fieldValues: Record<string, unknown> = { [fieldName]: value };
-    for (const field of schema.fields) {
+    for (const field of declaredFields(schema)) {
       if (field.name === fieldName) continue;
       fieldValues[field.name] = getFieldValue(field.name);
     }
-    const title = evaluateTitleTemplate(schema.titleTemplate, fieldValues, schema.fields);
+    const title = evaluateTitleTemplate(schema.titleTemplate, fieldValues, declaredFields(schema));
     pushComputedTitle(nodeId, node, title, 'generic-schema-form');
   }
 </script>

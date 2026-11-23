@@ -580,11 +580,11 @@ fn no_user_facing_surface_names_the_maintainer_path() {
                     product.push_str(line);
                     product.push('\n');
                 }
-                assert!(
-                    !product.contains("maintaining_system_fields"),
-                    "{} calls the maintainer path",
-                    path.display()
-                );
+                // The declaration path for an extension's `system` custom fields
+                // (ADR-112 section 12) is held to the same line.
+                for name in ["maintaining_system_fields", "declare_system_custom_fields"] {
+                    assert!(!product.contains(name), "{} calls {name}", path.display());
+                }
             }
         }
     }

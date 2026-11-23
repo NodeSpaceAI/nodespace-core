@@ -1206,7 +1206,7 @@ mod tests {
             task.content
         );
         assert!(
-            task.content.contains("under a prefix such as `custom:`"),
+            task.content.contains("goes in the type's `custom_fields`"),
             "{}",
             task.content
         );

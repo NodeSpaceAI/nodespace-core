@@ -183,44 +183,10 @@ struct Allowed {
 const ALLOWLIST: &[Allowed] = &[
     Allowed {
         file: "services/node_service/schema.rs",
-        function: "resolve_field_owners",
-        field_kind: "fields",
-        why: "This IS the chain-merged helper: it calls get_schema_node once \
-              per schema in the extends chain and merges the results. \
-              Reading .fields off each per-hop result is the correct, \
-              intentional implementation of chain-walking, not the bug this \
-              guard watches for.",
-    },
-    Allowed {
-        file: "services/node_service/schema.rs",
         function: "resolve_relationships",
         field_kind: "relationships",
         why: "The relationship counterpart to resolve_field_owners above — \
               same per-hop chain-walk, same reasoning.",
-    },
-    Allowed {
-        file: "services/node_service/schema.rs",
-        function: "validate_schema_field_rename_against",
-        field_kind: "fields",
-        why: "Three own-only reads, all intentional. (0) The destination name \
-              is checked against the schema's OWN declarations as passed in \
-              (update_schema applies several renames in one transaction and \
-              hands each the schema as earlier renames left it, so a name \
-              freed by an earlier entry can be reused); inherited fields are \
-              checked separately through resolve_field_owners, counting only \
-              those declared by an ancestor. (1) The source field \
-              being renamed must be OWN-declared on type_id — you can only \
-              rename a field the type itself declares; renaming an inherited \
-              field would mean renaming the ancestor's field, which is a \
-              different operation on a different schema. (2) The descendant- \
-              collision check walks type_id's subtype closure and checks \
-              each descendant's own fields only, deliberately not its \
-              resolved effective set — ADR-078 redeclaration checks already \
-              guarantee no descendant redeclares anything type_id currently \
-              owns, so only a descendant's OWN name can newly collide with \
-              the rename target. (The destination name IS checked against \
-              the chain-merged effective set, via resolve_field_owners, \
-              elsewhere in this same function.)",
     },
     Allowed {
         file: "services/node_service/schema.rs",
@@ -231,30 +197,8 @@ const ALLOWLIST: &[Allowed] = &[
               only valid for a field type_id itself declares.",
     },
     Allowed {
-        file: "schema/field_references.rs",
-        function: "find_field_references",
-        field_kind: "fields",
-        why: "Own-only on purpose: the fields asked about are the ones a \
-              change to this type can rename or remove, and only a field the \
-              type itself declares can be (an inherited one belongs to the \
-              ancestor's schema and is changed there). What names an \
-              inherited field is found by calling this for the ancestor. \
-              Types that extend this one are searched for what names these \
-              fields; they are not asked about their own.",
-    },
-    Allowed {
-        file: "playbook/workflow_state.rs",
-        function: "get_workflow_state",
-        field_kind: "fields",
-        why: "Documented degraded fallback ONLY: the primary source is an \
-              independent resolve_field_owners call; this own-declarations- \
-              only read off get_schema_with_relationships is used solely \
-              when that primary call fails (a transient DB error), and the \
-              failure is recorded in `degraded` so it's never silent.",
-    },
-    Allowed {
         file: "schema/mod.rs",
-        function: "update_schema",
+        function: "update_schema_as",
         field_kind: "relationships",
         why: "Two own-only reads while mutating params.schema_id's OWN \
               declaration list, neither about inheritance. (1) \
@@ -273,22 +217,12 @@ const ALLOWLIST: &[Allowed] = &[
     },
     Allowed {
         file: "schema/mod.rs",
-        function: "update_schema",
+        function: "update_schema_as",
         field_kind: "fields",
         why: "Phase 2 clones `schema.fields` as the starting point for \
               applying this call's add/remove_fields mutations before \
               writing the schema back — the field counterpart of this \
               function's `relationships` entry's reason (2) above.",
-    },
-    Allowed {
-        file: "schema/mod.rs",
-        function: "validate_no_subtype_redeclaration",
-        field_kind: "fields",
-        why: "Compares a name a base type is adding against what each \
-              subtype in its closure declares ITSELF: an override exists \
-              only where the subtype's own list holds the name, so the \
-              subtype's inherited set (which includes the base) is the \
-              wrong thing to read.",
     },
     Allowed {
         file: "schema/mod.rs",

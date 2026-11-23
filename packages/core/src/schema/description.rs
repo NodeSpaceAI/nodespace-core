@@ -116,8 +116,8 @@ fn standing(schema: &SchemaNode, names: &HashMap<String, String>) -> String {
         format!(
             "It is a built-in type, so a field marked built in cannot be changed or removed; a \
              field not so marked can be, once what names it is dealt with. You can add a field \
-             of your own under a prefix such as `custom:`, and add your own values to a list \
-             that accepts them.{extends}"
+             of your own, which goes in the type's `custom_fields` and exists on every node of \
+             the type, and add your own values to a list that accepts them.{extends}"
         )
     } else {
         format!("It is your own type, so its fields can be added, changed and removed.{extends}")
@@ -299,7 +299,10 @@ mod tests {
             text.contains("built-in type, so a field marked built in cannot be changed"),
             "{text}"
         );
-        assert!(text.contains("under a prefix such as `custom:`"), "{text}");
+        assert!(
+            text.contains("goes in the type's `custom_fields`"),
+            "{text}"
+        );
         assert!(
             text.contains(
                 "- **status** (enum): Values: open, done. More values can be added. \
@@ -324,7 +327,7 @@ mod tests {
             ..Default::default()
         };
         let own = SchemaField {
-            name: "custom:effort".to_string(),
+            name: "effort".to_string(),
             protection: SchemaProtectionLevel::User,
             ..Default::default()
         };
@@ -337,7 +340,7 @@ mod tests {
         };
         assert!(line("status").contains("Built in"), "{text}");
         assert!(!line("priority").contains("Built in"), "{text}");
-        assert!(!line("custom:effort").contains("Built in"), "{text}");
+        assert!(!line("effort").contains("Built in"), "{text}");
     }
 
     #[test]

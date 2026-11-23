@@ -372,7 +372,7 @@ describe('Core Plugins Integration', () => {
               id: 'custom',
               name: 'Custom',
               description: 'Create custom node',
-              contentTemplate: 'custom:'
+              contentTemplate: ''
             }
           ]
         }
@@ -551,11 +551,11 @@ describe('Core Plugins Integration', () => {
         const metadata = issueNodePlugin.extractMetadata!({
           nodeType: 'issue',
           status,
-          properties: { 'custom:estimate': 3 }
+          properties: { 'estimate': 3 }
         });
         expect(metadata.taskState, status).toBe(expected);
         expect(metadata.status).toBe(status);
-        expect(metadata['custom:estimate']).toBe(3);
+        expect(metadata['estimate']).toBe(3);
       }
       // A click on the icon writes the status a task's click writes.
       for (const state of ['pending', 'inProgress', 'completed']) {

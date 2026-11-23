@@ -264,7 +264,7 @@ mod event_emission_tests {
         // property-change automation fires) and MERGE properties (not wholesale
         // replace), matching the single-update path.
         let (service, _temp_dir) = create_test_service().await?;
-        let node = create_root_node(&service, "text").await?;
+        let node = create_root_node(&service, "task").await?;
         let node_id = node.id.clone();
 
         // Baseline property via the single-update path.
@@ -273,7 +273,7 @@ mod event_emission_tests {
             .update_node_unchecked(
                 &node_id,
                 nodespace_core::models::NodeUpdate {
-                    properties: Some(json!({ "custom:keep": "yes" })),
+                    properties: Some(json!({ "priority": "low" })),
                     ..Default::default()
                 },
             )
@@ -287,7 +287,7 @@ mod event_emission_tests {
             .bulk_update(vec![(
                 node_id.clone(),
                 nodespace_core::models::NodeUpdate {
-                    properties: Some(json!({ "custom:add": "new" })),
+                    properties: Some(json!({ "status": "in_progress" })),
                     ..Default::default()
                 },
             )])
@@ -316,11 +316,11 @@ mod event_emission_tests {
         let updated = service.get_node(&node_id).await?.expect("node exists");
         let props = updated.properties.to_string();
         assert!(
-            props.contains("custom:keep") && props.contains("yes"),
+            props.contains("priority") && props.contains("low"),
             "pre-existing property must survive the bulk update (merge): {props}"
         );
         assert!(
-            props.contains("custom:add") && props.contains("new"),
+            props.contains("status") && props.contains("in_progress"),
             "new property must be present after the bulk update: {props}"
         );
         Ok(())

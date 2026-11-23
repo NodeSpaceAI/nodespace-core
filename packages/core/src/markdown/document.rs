@@ -7,12 +7,6 @@
 
 use serde_json::{Map, Value};
 
-/// The namespaces an extension field may carry.
-const EXTENSION_PREFIXES: [&str; 3] = ["custom:", "org:", "plugin:"];
-
-/// The prefix a front matter key without a declared field is stored under.
-const CUSTOM_PREFIX: &str = "custom:";
-
 /// Front matter split off the start of a document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrontMatter {
@@ -121,38 +115,16 @@ pub fn title_line_problem(line: &str) -> Option<&'static str> {
 
 /// The properties a root takes from its front matter, ready to store.
 ///
-/// - A key starting with `_` is reserved for bookkeeping and is left out.
-/// - A key already in an extension namespace (`custom:`, `org:`, `plugin:`)
-///   is stored as given.
-/// - A key `is_declared` says the root's type declares is stored as that
-///   field, so the type's own rules validate its value.
-/// - Any other key is stored as `custom:<key>`: a core type takes only its
-///   declared fields, and `custom:` is the namespace for one a user adds. A
-///   key that names a core type is also stored that way, so it is never read
-///   as that type's bucket.
-pub fn front_matter_properties(
-    fields: Map<String, Value>,
-    is_declared: impl Fn(&str) -> bool,
-) -> Map<String, Value> {
-    let mut properties = Map::new();
-    for (key, value) in fields {
-        if key.starts_with('_') {
-            continue;
-        }
-        // A prefix with nothing after it names no field, so it is not a
-        // namespace: the key is stored under `custom:` like any other.
-        let namespaced = EXTENSION_PREFIXES
-            .iter()
-            .any(|p| key.strip_prefix(p).is_some_and(|rest| !rest.is_empty()));
-        let declared = is_declared(&key) && crate::models::CoreNodeType::from_id(&key).is_none();
-        let stored = if namespaced || declared {
-            key
-        } else {
-            format!("{CUSTOM_PREFIX}{key}")
-        };
-        properties.insert(stored, value);
-    }
-    properties
+/// A key starting with `_` is reserved for bookkeeping and is left out. Every
+/// other key is returned as given: the write that stores it accepts a key the
+/// root's type declares and refuses any other, naming the key and the type
+/// (ADR-112 section 11), so a front matter key is never turned into a field
+/// and never dropped silently.
+pub fn front_matter_properties(fields: Map<String, Value>) -> Map<String, Value> {
+    fields
+        .into_iter()
+        .filter(|(key, _)| !key.starts_with('_'))
+        .collect()
 }
 
 /// The content of a document's root node: the plain title. A title taken from
@@ -273,38 +245,22 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_namespace_is_not_a_namespace() {
-        let Value::Object(fields) = json!({"custom:": 1, "plugin:": 2, "org:x": 3}) else {
-            unreachable!()
-        };
-        let props = front_matter_properties(fields, |_| false);
-        assert_eq!(props["custom:custom:"], json!(1));
-        assert_eq!(props["custom:plugin:"], json!(2));
-        assert_eq!(props["org:x"], json!(3));
-    }
-
-    #[test]
-    fn keys_are_stored_by_the_namespace_rule() {
+    fn front_matter_keys_are_returned_as_given_except_bookkeeping() {
         let fields = json!({
             "decision_status": "accepted",
             "author": "ann",
-            "custom:x": 1,
-            "org:y": 2,
             "_hidden": 3,
             "text": {"a": 1}
         });
         let Value::Object(fields) = fields else {
             unreachable!()
         };
-        let props = front_matter_properties(fields, |k| k == "decision_status" || k == "text");
+        let props = front_matter_properties(fields);
         assert_eq!(props["decision_status"], json!("accepted"));
-        assert_eq!(props["custom:author"], json!("ann"));
-        assert_eq!(props["custom:x"], json!(1));
-        assert_eq!(props["org:y"], json!(2));
+        assert_eq!(props["author"], json!("ann"));
+        assert_eq!(props["text"], json!({"a": 1}));
         assert!(!props.contains_key("_hidden"));
-        assert!(!props.contains_key("custom:_hidden"));
-        assert_eq!(props["custom:text"], json!({"a": 1}));
-        assert_eq!(props.len(), 6 - 1);
+        assert_eq!(props.len(), 3);
     }
 
     #[test]

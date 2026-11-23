@@ -973,7 +973,8 @@ pub(crate) async fn declared_collection_type(
 ///
 /// NodeSpace stores properties in a type-namespaced format:
 /// `{"task": {"status": "open"}}` — so we check inside the type namespace too.
-/// Also checks `custom:key` namespace prefix format.
+/// A custom field is stored under its own name in its type's bucket, so it is
+/// found the same way a core field is (ADR-112).
 ///
 /// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
 /// `_playbookChainDepth`, ...) are excluded, same convention and same check
@@ -1030,40 +1031,6 @@ fn get_node_property_at_scope(
                     if let Some(val) = type_obj.get(key) {
                         return Some(val.clone());
                     }
-                }
-            }
-        }
-
-        // Try with colon namespace prefix (e.g., "status" → "custom:status").
-        // The filter checks the raw stored key `k` (with its colon prefix),
-        // not the colon-stripped bare name -- matching node_to_cel_value's
-        // rule that a leading `_` only makes a key internal when it's on the
-        // WHOLE stored key. "custom:_internal" is a legal, visible user
-        // field, not bookkeeping, even though its bare name starts with `_`.
-        for (k, v) in obj {
-            if k.starts_with('_') {
-                continue;
-            }
-            if let Some(bare) = k.find(':').map(|i| &k[i + 1..]) {
-                if bare == key {
-                    return Some(v.clone());
-                }
-            }
-        }
-
-        // A prefixed field inside a bucket in scope, nearest first —
-        // `update_node` stores `custom:x` on a core type under that type's
-        // namespace, not at the top level.
-        for scope in scope_chain {
-            let Some(type_obj) = obj.get(*scope).and_then(|v| v.as_object()) else {
-                continue;
-            };
-            for (k, v) in type_obj {
-                if k.starts_with('_') {
-                    continue;
-                }
-                if k.find(':').map(|i| &k[i + 1..]) == Some(key) {
-                    return Some(v.clone());
                 }
             }
         }
@@ -1349,7 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn get_property_with_namespace_prefix() {
+    fn get_property_reads_a_custom_field_by_its_name() {
         let node = crate::models::Node {
             id: "n1".to_string(),
             node_type: "task".to_string(),
@@ -1357,13 +1324,13 @@ mod tests {
             version: 1,
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
-            properties: json!({"custom:amount": 1500}),
+            properties: json!({"amount": 1500}),
             mentions: vec![],
             mentioned_in: vec![],
             title: None,
             lifecycle_status: "active".to_string(),
         };
-        // "amount" should match "custom:amount"
+        // a custom field is read by the name it is stored under
         assert_eq!(get_node_property(&node, "amount"), Some(json!(1500)));
     }
 
@@ -1390,11 +1357,10 @@ mod tests {
         assert_eq!(get_node_property(&node, "missing"), None);
     }
 
-    /// Parity with `cel::node_to_cel_value`: a prefixed field stored inside
-    /// the type bucket resolves by its bare name, and an unprefixed field of
-    /// the same bare name wins.
+    /// Parity with `cel::node_to_cel_value`: a custom field stored inside the
+    /// type bucket resolves by the name it is stored under.
     #[test]
-    fn get_property_strips_prefix_inside_the_type_namespace() {
+    fn get_property_reads_a_custom_field_inside_the_type_namespace() {
         let node = crate::models::Node {
             id: "n1".to_string(),
             node_type: "task".to_string(),
@@ -1404,8 +1370,7 @@ mod tests {
             modified_at: chrono::Utc::now(),
             properties: json!({"task": {
                 "status": "open",
-                "custom:status": "shadow",
-                "custom:review_notes": "ran the tests",
+                "review_notes": "ran the tests",
             }}),
             mentions: vec![],
             mentioned_in: vec![],
@@ -1420,10 +1385,9 @@ mod tests {
     }
 
     /// Parity with `cel::node_to_cel_value_at_scope` across an `extends`
-    /// chain: an ancestor bucket's unprefixed key beats a nearer bucket's
-    /// prefixed one.
+    /// chain: a field is read from the bucket of the scope that holds it.
     #[test]
-    fn get_property_prefers_unprefixed_keys_across_the_whole_scope_chain() {
+    fn get_property_reads_a_field_from_the_scope_that_holds_it() {
         let node = crate::models::Node {
             id: "n1".to_string(),
             node_type: "issue".to_string(),
@@ -1432,7 +1396,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             properties: json!({
-                "issue": {"custom:status": "shadow"},
+                "issue": {"estimate": "3"},
                 "task": {"status": "open"},
             }),
             mentions: vec![],
@@ -1443,6 +1407,10 @@ mod tests {
         assert_eq!(
             get_node_property_at_scope(&node, "status", &["issue", "task"]),
             Some(json!("open"))
+        );
+        assert_eq!(
+            get_node_property_at_scope(&node, "estimate", &["issue", "task"]),
+            Some(json!("3"))
         );
     }
 
@@ -1460,7 +1428,7 @@ mod tests {
             properties: json!({
                 "_playbookChainDepth": 3,
                 "task": {"status": "open", "_seed": "abc123"},
-                "custom:_internal": "visible-to-user"
+                "_internal": "visible-to-user"
             }),
             mentions: vec![],
             mentioned_in: vec![],
@@ -1475,14 +1443,9 @@ mod tests {
         // A normal property alongside an internal one in the same namespace
         // is unaffected.
         assert_eq!(get_node_property(&node, "status"), Some(json!("open")));
-        // A colon-namespaced field is not internal just because its bare
-        // name (after stripping the namespace) starts with `_` -- only a
-        // leading `_` on the whole stored key means bookkeeping. This
-        // matches node_to_cel_value's identical rule.
-        assert_eq!(
-            get_node_property(&node, "_internal"),
-            Some(json!("visible-to-user"))
-        );
+        // A key that starts with `_` is bookkeeping wherever it is stored,
+        // as in node_to_cel_value.
+        assert_eq!(get_node_property(&node, "_internal"), None);
     }
 
     // -----------------------------------------------------------------------
@@ -1533,7 +1496,11 @@ mod tests {
                 svc,
                 json!({
                     "name": type_name,
-                    "fields": [{"name": "status", "type": "text"}, {"name": "title", "type": "text"}]
+                    "fields": [
+                        {"name": "status", "type": "text"}, {"name": "title", "type": "text"},
+                        {"name": "priority", "type": "text"}, {"name": "email", "type": "text"},
+                        {"name": "name", "type": "text"}
+                    ]
                 }),
             )
             .await

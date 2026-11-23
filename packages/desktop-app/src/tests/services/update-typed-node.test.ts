@@ -374,16 +374,16 @@ describe('updateNode routing for typed core types', () => {
       async (id, version) =>
         ({
           ...makeNode(id, 'task', { status: 'open' }),
-          properties: { 'custom:store': 'Costco' },
+          properties: { 'store': 'Costco' },
           version: version + 1
         }) as Node
     );
     const typedSpy = vi.spyOn(backendAdapter, 'updateTaskNode');
 
-    store.updateNode('t1', { properties: { 'custom:store': 'Costco' } }, viewerSource);
+    store.updateNode('t1', { properties: { 'store': 'Costco' } }, viewerSource);
 
     await vi.waitFor(() => expect(genericSpy).toHaveBeenCalledTimes(1));
-    expect(genericSpy.mock.calls[0][2]).toEqual({ properties: { 'custom:store': 'Costco' } });
+    expect(genericSpy.mock.calls[0][2]).toEqual({ properties: { 'store': 'Costco' } });
     expect(typedSpy).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(store.getNode('t1')?.version).toBe(2));
   });
@@ -441,7 +441,7 @@ describe('updateNode routing for typed core types', () => {
     store.updatePersonNode('p1', { firstName: 'Grace' }, viewerSource);
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     store.updatePersonNode('p1', { email: 'grace@example.com' }, viewerSource);
-    store.updateNode('p1', { properties: { 'custom:team': 'Core' } }, viewerSource, {
+    store.updateNode('p1', { properties: { 'team': 'Core' } }, viewerSource, {
       persist: 'immediate'
     });
     releaseFirst();
@@ -450,7 +450,7 @@ describe('updateNode routing for typed core types', () => {
     expect(calls).toEqual([
       'typed:{"firstName":"Grace"}@v1',
       'typed:{"email":"grace@example.com"}@v2',
-      'generic:{"properties":{"custom:team":"Core"}}@v3'
+      'generic:{"properties":{"team":"Core"}}@v3'
     ]);
   });
 
@@ -578,14 +578,14 @@ describe('updateNode routing for typed core types', () => {
     });
     store.updateNode(
       'pr1',
-      { properties: { 'custom:budget': 5 } },
+      { properties: { 'budget': 5 } },
       viewerSource,
       { persist: 'immediate', onPersistError: genericError }
     );
     releaseFirst();
 
     await vi.waitFor(() => expect(genericSpy).toHaveBeenCalledTimes(1), { timeout: 3000 });
-    expect(genericSpy.mock.calls[0][2]).toEqual({ properties: { 'custom:budget': 5 } });
+    expect(genericSpy.mock.calls[0][2]).toEqual({ properties: { 'budget': 5 } });
     await vi.waitFor(() => expect(typedError).toHaveBeenCalledTimes(1));
     expect(genericError).not.toHaveBeenCalled();
   });

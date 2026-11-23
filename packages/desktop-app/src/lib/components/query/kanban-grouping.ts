@@ -7,6 +7,7 @@
  * components.
  */
 
+import { declaredFields } from '$lib/types/schema-node';
 import type { Node } from '$lib/types';
 import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
 import { enumValueAtScope } from '$lib/utils/schema-enum-values';
@@ -47,7 +48,7 @@ export interface KanbanColumn {
  * other values are still visible via List/Table, just not this board.
  */
 export function eligibleGroupByFields(schema: SchemaNode | null): SchemaField[] {
-  return (schema?.fields ?? []).filter(
+  return declaredFields(schema).filter(
     (f) =>
       f.type === 'enum' &&
       !(f.coreValues ?? []).some((v) => v.value === UNASSIGNED) &&

@@ -8,8 +8,8 @@
  *
  * Token syntax: `{fieldName}`, where fieldName is any run of characters up to
  * the next `}`. This matches the Rust scanner, which takes everything between
- * the braces rather than a restricted character class — so a namespaced field
- * name (`{custom:capacity}`) resolves here exactly as it does on the backend.
+ * the braces rather than a restricted character class, so a token resolves
+ * here exactly as it does on the backend.
  * A narrower pattern would silently leave such tokens un-substituted in the UI
  * while the backend-computed title resolved them, and the two would disagree.
  */

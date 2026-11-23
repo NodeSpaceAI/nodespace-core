@@ -1203,8 +1203,8 @@ impl NodeBehavior for DateNodeBehavior {
 /// Validation includes:
 /// - Non-empty content (schema name)
 /// - Properties must be valid JSON object
-/// - Field names must be unique (alphanumeric and underscores, with an optional
-///   `<namespace>:` prefix — see [`validate_schema_field_name`])
+/// - Field names must be unique (alphanumeric and underscores — see
+///   [`validate_schema_field_name`])
 /// - Enum fields must have at least one value defined (in `coreValues` or `userValues`)
 ///
 /// # Strongly-Typed Validation
@@ -1216,41 +1216,18 @@ pub struct SchemaNodeBehavior;
 
 /// Validate a schema field name.
 ///
-/// A field name is either a bare name (`capacity`) or a namespaced name carrying
-/// exactly one `<namespace>:` prefix (`custom:capacity`). Both the namespace and
-/// the bare name must be non-empty and contain only alphanumerics and underscores.
+/// A field name is non-empty and contains only alphanumerics and underscores.
+/// It is the key the field's values are stored, read, filtered and indexed
+/// under, whichever list declares it (ADR-112): there is no prefix, and a name
+/// carrying a `:` is refused.
 ///
-/// Both forms are well-formed, and which one is *required* depends on the type
-/// being described rather than on the name alone: fields of a user-defined type
-/// are stored bare, while extending a core type requires a prefix so a future
-/// core property cannot collide with a user's field. Neither `create_schema`
-/// route adds a prefix — both store the name they are given, so the two routes
-/// produce identical stored keys.
-///
-/// This function therefore decides only whether a name is *well-formed*. The
-/// core-type prefix requirement is enforced where the target schema is known
-/// (`update_schema`'s `add_fields` path); it cannot be enforced here, which sees
-/// a name with no indication of the type it belongs to. Rejecting either form
-/// here would reject names the rest of the system handles correctly: CEL strips
-/// the prefix, the graph resolver matches with and without it, and identifier
-/// validation in the query path permits it.
-///
-/// A leading `_` is the one exception, and it is rejected rather than warned
-/// about. `_` marks internal bookkeeping on both sides of the property
-/// round-trip: the write path leaves such keys outside the type's namespace,
-/// and `flatten_namespaced_properties` drops them from every read surface
-/// unconditionally. A field declared with that prefix could therefore be
-/// written but never read back — accepting it would store data that is
-/// unreachable by construction, so this is a hard error rather than a warning
-/// like the reserved-core-property collision (which stores a field that does
-/// work, and only *may* be shadowed later).
-///
-/// The check is on the stored key, which is the full name verbatim, so only a
-/// leading `_` on the whole name is fatal: `custom:_internal` stores under a
-/// key beginning `c`, survives the flattener, and stays legal. The rejection
-/// names that alternative, so it redirects rather than merely refuses — a
-/// caller reaching for `_internal` wants a private-looking field, and the
-/// namespaced form gives them one that actually round-trips.
+/// A leading `_` is rejected rather than warned about. `_` marks internal
+/// bookkeeping on both sides of the property round-trip: the write path leaves
+/// such keys outside the type's namespace, and `flatten_namespaced_properties`
+/// drops them from every read surface unconditionally. A field declared with
+/// that prefix could therefore be written but never read back, so this is a
+/// hard error rather than a warning like the reserved-core-property collision
+/// (which stores a field that does work, and only *may* be shadowed later).
 pub(crate) fn validate_schema_field_name(name: &str) -> Result<(), NodeValidationError> {
     let invalid = |reason: &str| {
         Err(NodeValidationError::InvalidProperties(format!(
@@ -1260,54 +1237,23 @@ pub(crate) fn validate_schema_field_name(name: &str) -> Result<(), NodeValidatio
     };
 
     if name.starts_with('_') {
-        // Name the legal alternative rather than only the rule: a caller
-        // reaching for `_internal` wants a private-looking field, and a
-        // namespaced name is exactly that and does round-trip. Built from the
-        // caller's own name so the suggestion is theirs to paste, not a
-        // generic example they have to translate — except for an all-underscore
-        // name, which leaves nothing to suggest and falls back to the rule
-        // alone rather than proposing the equally invalid 'custom:'.
         let suggestion = name.trim_start_matches('_');
         let remedy = if suggestion.is_empty() {
-            "Use a '<namespace>:' prefix instead, e.g. 'custom:name'.".to_string()
+            String::new()
         } else {
-            format!(
-                "Use a '<namespace>:' prefix instead, e.g. 'custom:{}', which round-trips normally.",
-                suggestion
-            )
+            format!(" Name it '{suggestion}' instead.")
         };
         return invalid(&format!(
             "a leading '_' is reserved for internal bookkeeping — such a field is \
              dropped from every read path, so it could be written but never read \
-             back. {remedy}"
+             back.{remedy}"
         ));
     }
 
-    let is_valid_segment =
-        |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_');
-
-    let mut parts = name.split(':');
-    // `split` always yields at least one element, so this cannot panic.
-    let bare_name = match (parts.next(), parts.next(), parts.next()) {
-        // Bare name: `capacity`
-        (Some(bare), None, _) => bare,
-        // Namespaced name: `custom:capacity`
-        (Some(namespace), Some(bare), None) => {
-            if !is_valid_segment(namespace) {
-                return invalid(
-                    "namespace prefix must contain only alphanumeric characters and underscores",
-                );
-            }
-            bare
-        }
-        // More than one ':' — e.g. `custom:a:b`
-        _ => return invalid("must contain at most one ':' namespace prefix"),
-    };
-
-    if !is_valid_segment(bare_name) {
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
         return invalid(
-            "must contain only alphanumeric characters and underscores, \
-             optionally preceded by a '<namespace>:' prefix",
+            "must contain only alphanumeric characters and underscores. A field is stored \
+             under exactly the name it is declared with; no prefix is added or read",
         );
     }
 
@@ -1441,19 +1387,43 @@ impl SchemaNodeBehavior {
         }
 
         // Validate field name uniqueness
-        let field_names: HashSet<_> = schema.fields.iter().map(|f| &f.name).collect();
-        if field_names.len() != schema.fields.len() {
+        // across both lists: a name is declared once on a schema (ADR-112 §5)
+        let declared = schema.fields.len() + schema.custom_fields.len();
+        let field_names: HashSet<_> = schema.declared_fields().map(|f| &f.name).collect();
+        if field_names.len() != declared {
             return Err(NodeValidationError::InvalidProperties(
                 "Schema contains duplicate field names".to_string(),
             ));
         }
 
+        // Only a built-in type has users' added fields; a user-defined type
+        // declares every field in `fields` (ADR-112 §7).
+        if !schema.is_core && !schema.custom_fields.is_empty() {
+            return Err(NodeValidationError::InvalidProperties(
+                "Only a built-in type has custom_fields; declare a user-defined type's fields in \
+                 `fields`"
+                    .to_string(),
+            ));
+        }
+        if let Some(field) = schema
+            .custom_fields
+            .iter()
+            .find(|f| f.protection == crate::models::SchemaProtectionLevel::Core)
+        {
+            return Err(NodeValidationError::InvalidProperties(format!(
+                "Custom field '{}' cannot have core protection: core fields are the ones \
+                 NodeSpace ships",
+                field.name
+            )));
+        }
+
         // Validate each field
-        for field in &schema.fields {
+        for field in schema.declared_fields() {
             validate_schema_field(field)?;
         }
 
-        let defined_fields: HashSet<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        let defined_fields: HashSet<&str> =
+            schema.declared_fields().map(|f| f.name.as_str()).collect();
 
         // Validate title_template syntax: every '{' must have a matching '}' and a non-empty field name
         if let Some(template) = &schema.title_template {
@@ -1574,7 +1544,7 @@ impl NodeBehavior for SchemaNodeBehavior {
         let Ok(schema) = crate::models::schema_node::from_storage(node.clone(), Vec::new()) else {
             return Some(text);
         };
-        for field in &schema.fields {
+        for field in schema.declared_fields() {
             let label = if field.friendly_name.trim().is_empty() {
                 &field.name
             } else {
@@ -4493,15 +4463,13 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_field_name_accepts_bare_and_namespaced() {
+    fn test_schema_field_name_accepts_bare_names() {
         for name in [
             "capacity",
             "contact_email",
             "field1",
-            "custom:capacity",
-            "custom:contact_email",
-            "org:cost_center",
-            "plugin:external_id",
+            "cost_center",
+            "external_id",
         ] {
             assert!(
                 validate_schema_field_name(name).is_ok(),
@@ -4515,12 +4483,12 @@ mod tests {
     fn test_schema_field_name_rejects_malformed_names() {
         for name in [
             "",                // empty
-            "custom:",         // empty bare name
-            ":capacity",       // empty namespace
-            "custom:a:b",      // more than one prefix
+            "team:",           // a ':' is not part of a field name
+            ":capacity",       // a ':' is not part of a field name
+            "team:capacity",   // a prefixed name: no prefix is used
+            "a:b:c",           // more than one ':'
             "custom capacity", // space
-            "custom.capacity", // dot is not a namespace separator
-            "custom:has space",
+            "custom.capacity", // dot
         ] {
             assert!(
                 validate_schema_field_name(name).is_err(),
@@ -4531,40 +4499,11 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_node_accepts_namespaced_field_names() {
-        let behavior = SchemaNodeBehavior;
-
-        // Namespaced field names are what the description-inference path produces,
-        // so validation must accept them.
-        let namespaced_node = Node::new(
-            "schema".to_string(),
-            "venue".to_string(),
-            json!({
-                "isCore": false,
-                "version": 1,
-                "fields": [
-                    {
-                        "name": "custom:contact_email",
-                        "type": "text",
-                        "protection": "user",
-                        "indexed": false
-                    }
-                ]
-            }),
-        );
-
-        assert!(
-            behavior.validate(&namespaced_node).is_ok(),
-            "Namespaced field names should pass validation"
-        );
-    }
-
-    #[test]
-    fn test_schema_node_validates_namespaced_names_at_nesting_depth() {
+    fn test_schema_node_validates_field_names_at_nesting_depth() {
         let behavior = SchemaNodeBehavior;
 
         // Name validation recurses through `fields` and `item_fields`, so the
-        // namespace rule must hold at depth, not just on top-level fields.
+        // name rule must hold at depth, not just on top-level fields.
         let nested = Node::new(
             "schema".to_string(),
             "venue".to_string(),
@@ -4573,13 +4512,13 @@ mod tests {
                 "version": 1,
                 "fields": [
                     {
-                        "name": "custom:address",
+                        "name": "address",
                         "type": "object",
                         "protection": "user",
                         "indexed": false,
                         "fields": [
                             {
-                                "name": "custom:postal_code",
+                                "name": "postal_code",
                                 "type": "text",
                                 "protection": "user",
                                 "indexed": false
@@ -4587,13 +4526,13 @@ mod tests {
                         ]
                     },
                     {
-                        "name": "custom:sessions",
+                        "name": "sessions",
                         "type": "array",
                         "protection": "user",
                         "indexed": false,
                         "item_fields": [
                             {
-                                "name": "custom:room",
+                                "name": "room",
                                 "type": "text",
                                 "protection": "user",
                                 "indexed": false
@@ -4606,7 +4545,7 @@ mod tests {
 
         assert!(
             behavior.validate(&nested).is_ok(),
-            "Namespaced nested and item field names should pass validation"
+            "Nested and item field names should pass validation"
         );
 
         // A malformed nested name must still be rejected at depth.
@@ -4618,13 +4557,13 @@ mod tests {
                 "version": 1,
                 "fields": [
                     {
-                        "name": "custom:address",
+                        "name": "address",
                         "type": "object",
                         "protection": "user",
                         "indexed": false,
                         "fields": [
                             {
-                                "name": "custom:a:b",
+                                "name": "a:b",
                                 "type": "text",
                                 "protection": "user",
                                 "indexed": false
@@ -4642,57 +4581,34 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_node_title_template_resolves_namespaced_field() {
+    fn test_schema_node_validates_custom_fields() {
         let behavior = SchemaNodeBehavior;
+        let field = |name: &str| crate::models::SchemaField {
+            name: name.to_string(),
+            field_type: crate::models::SchemaFieldType::Text,
+            ..Default::default()
+        };
+        let mut core = crate::models::SchemaNode::new("task", "Task");
+        core.is_core = true;
+        core.fields = vec![field("status")];
+        core.custom_fields = vec![field("effort")];
+        assert!(behavior.validate_schema_node(&core).is_ok());
 
-        // Templates are checked against the STORED field names, so a schema
-        // created from a description must reference the namespaced form.
-        let resolved = Node::new(
-            "schema".to_string(),
-            "venue".to_string(),
-            json!({
-                "isCore": false,
-                "version": 1,
-                "titleTemplate": "{custom:contact_email}",
-                "fields": [
-                    {
-                        "name": "custom:contact_email",
-                        "type": "text",
-                        "protection": "user",
-                        "indexed": false
-                    }
-                ]
-            }),
-        );
+        // One name, once, across both lists.
+        core.custom_fields = vec![field("status")];
+        assert!(behavior.validate_schema_node(&core).is_err());
 
-        assert!(
-            behavior.validate(&resolved).is_ok(),
-            "titleTemplate referencing a namespaced field should validate"
-        );
+        // Only a built-in type has custom_fields.
+        let mut user = crate::models::SchemaNode::new("crate", "Crate");
+        user.custom_fields = vec![field("effort")];
+        assert!(behavior.validate_schema_node(&user).is_err());
 
-        // The bare name is a different key and must not resolve.
-        let unresolved = Node::new(
-            "schema".to_string(),
-            "venue".to_string(),
-            json!({
-                "isCore": false,
-                "version": 1,
-                "titleTemplate": "{contact_email}",
-                "fields": [
-                    {
-                        "name": "custom:contact_email",
-                        "type": "text",
-                        "protection": "user",
-                        "indexed": false
-                    }
-                ]
-            }),
-        );
-
-        assert!(
-            behavior.validate(&unresolved).is_err(),
-            "Bare name must not resolve against a namespaced field"
-        );
+        // A custom field is never core's.
+        core.custom_fields = vec![crate::models::SchemaField {
+            protection: crate::models::SchemaProtectionLevel::Core,
+            ..field("effort")
+        }];
+        assert!(behavior.validate_schema_node(&core).is_err());
     }
 
     #[test]

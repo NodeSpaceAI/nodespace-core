@@ -8,6 +8,7 @@
  * a `member_of` grouping — so this helper only creates the node.
  */
 
+import { declaredFields } from '$lib/types/schema-node';
 import { isA, isExactly } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
@@ -76,7 +77,7 @@ function seedContent(typeId: string): string {
  * disagree, a create the frontend allows is rejected.
  */
 export function requiredFieldsWithoutDefault(schema: SchemaNode | null): SchemaField[] {
-  return (schema?.fields ?? []).filter(
+  return declaredFields(schema).filter(
     (f) => f.required === true && f.default === undefined && isUserVisibleField(f)
   );
 }

@@ -231,7 +231,7 @@ async fn a_users_change_survives_a_restart_and_marks_the_paths_theirs() -> Resul
             &service,
             json!({
                 "schema_id": "task",
-                "add_fields": [{ "name": "custom:estimate", "type": "number" }],
+                "add_fields": [{ "name": "estimate", "type": "number" }],
                 "description": "A unit of work."
             }),
         )

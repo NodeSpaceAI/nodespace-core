@@ -10,21 +10,18 @@ fn default_schema_version() -> u32 {
 
 /// Derive a display label for a field whose `friendlyName` was omitted at
 /// `create_schema`/`update_schema` time, e.g. `due_date` -> `Due date`,
-/// `custom:capacity` -> `Capacity`, `estimatedHours` -> `Estimated hours`,
-/// `employeeIDNumber` -> `Employee id number`.
+/// `estimatedHours` -> `Estimated hours`, `employeeIDNumber` -> `Employee id
+/// number`.
 ///
-/// Namespace prefixes (`custom:`, `org:`, `plugin:`, ...) are stripped before
-/// humanizing — a display-only operation with no effect on the stored name.
-/// This is reachable *today*, not just as a future hazard: adding
-/// `custom:storyPoints` next to an existing `custom:story_points` derives
-/// "Story points" for both, since the two have different storage keys but the same
-/// stripped/humanized text. This function does not resolve that on its own —
+/// Humanizing is display-only, with no effect on the stored name. Two names can
+/// humanize alike: adding `storyPoints` next to an existing `story_points`
+/// derives "Story points" for both, since the two have different storage keys
+/// but the same humanized text. This function does not resolve that on its own —
 /// callers (`apply_friendly_name_defaults` in `packages/core/src/schema/mod.rs`)
 /// are responsible for disambiguating a derived value that collides with
 /// another field already in the schema.
 pub fn derive_friendly_name(name: &str) -> String {
-    let base = name.rsplit(':').next().unwrap_or(name);
-    let chars: Vec<char> = base.chars().collect();
+    let chars: Vec<char> = name.chars().collect();
 
     let mut words: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -679,6 +676,14 @@ pub struct SchemaNode {
     /// inherited through `extends`.
     #[serde(default)]
     pub fields: Vec<SchemaField>,
+    /// The fields users added to this core type (ADR-112): declared here
+    /// beside the protected `fields` and stored under their own names in the
+    /// type's bucket. Only `update_schema` writes the list, and only a
+    /// built-in schema has one; a user-defined type declares every field in
+    /// `fields`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub custom_fields: Vec<SchemaField>,
     /// The relationships this schema declares to other types, stored as
     /// declaration edges between schema nodes (ADR-070). A read of one
     /// schema's definition adds the inherited ones, like `fields`.
@@ -722,6 +727,7 @@ impl SchemaNode {
             parent: SchemaParentRule::default(),
             schema_version: default_schema_version(),
             fields: Vec::new(),
+            custom_fields: Vec::new(),
             relationships: Vec::new(),
             title_template: None,
             properties_header_summary_template: None,
@@ -729,9 +735,39 @@ impl SchemaNode {
         }
     }
 
-    /// The field this schema itself declares under `name`.
+    /// The field this schema itself declares under `name`, in `fields` or in
+    /// `custom_fields`.
     pub fn get_field(&self, name: &str) -> Option<&SchemaField> {
-        self.fields.iter().find(|f| f.name == name)
+        self.fields
+            .iter()
+            .chain(&self.custom_fields)
+            .find(|f| f.name == name)
+    }
+
+    /// Every field this schema itself declares: the core ones, then the ones
+    /// users added.
+    pub fn declared_fields(&self) -> impl Iterator<Item = &SchemaField> {
+        self.fields.iter().chain(&self.custom_fields)
+    }
+
+    /// The list `update_schema` edits: `custom_fields` on a built-in schema,
+    /// whose own `fields` it never touches, and `fields` on a user-defined
+    /// one (ADR-112 section 4).
+    pub fn editable_fields_mut(&mut self) -> &mut Vec<SchemaField> {
+        if self.is_core {
+            &mut self.custom_fields
+        } else {
+            &mut self.fields
+        }
+    }
+
+    /// [`Self::editable_fields_mut`], read-only.
+    pub fn editable_fields(&self) -> &[SchemaField] {
+        if self.is_core {
+            &self.custom_fields
+        } else {
+            &self.fields
+        }
     }
 
     /// Every value of an enum field, core values first. `None` when the
@@ -1145,15 +1181,6 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_friendly_name_strips_namespace_prefix() {
-        // ADR-063: a prefix only ever appears on a field added to a core
-        // type; stripping it for display cannot collide with the storage key
-        // of a bare core field (see derive_friendly_name's doc comment).
-        assert_eq!(derive_friendly_name("custom:capacity"), "Capacity");
-        assert_eq!(derive_friendly_name("org:cost_center"), "Cost center");
-    }
-
-    #[test]
     fn test_derive_friendly_name_splits_camel_case() {
         assert_eq!(derive_friendly_name("estimatedHours"), "Estimated hours");
     }
@@ -1169,15 +1196,6 @@ mod tests {
     #[test]
     fn test_derive_friendly_name_empty_falls_back_to_raw_name() {
         assert_eq!(derive_friendly_name(""), "");
-        assert_eq!(derive_friendly_name(":"), ":");
-    }
-
-    #[test]
-    fn test_derive_friendly_name_prefix_with_empty_base_falls_back_to_raw_name() {
-        // Unreachable in practice (the field-name validator rejects an empty
-        // bare segment before this ever runs), but pinned explicitly so the
-        // fallback behavior is documented rather than incidental.
-        assert_eq!(derive_friendly_name("custom:"), "custom:");
     }
 
     #[test]

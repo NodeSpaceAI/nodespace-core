@@ -14,9 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nodespace_core::markdown::{
-    content_without_title_line, front_matter_properties, prepare_nodes_from_markdown,
-    root_content_for_title, split_front_matter, transform_links_in_nodes_with_mentions,
-    PreparedNode,
+    content_without_title_line, prepare_nodes_from_markdown, root_content_for_title,
+    split_front_matter, transform_links_in_nodes_with_mentions, PreparedNode,
 };
 use nodespace_core::models::CoreNodeType;
 use nodespace_core::services::{
@@ -112,13 +111,35 @@ fn import_identity_key(source: &str, relative_path: &str) -> String {
 }
 
 /// A document's front matter split from the rest: the properties its root
-/// takes (an imported root is a `text` node, which declares no field, so every
-/// key is an extension field) and the document without the block.
+/// takes and the document without the block.
+///
+/// An imported root is a `text` node, which declares no field, and no schema
+/// admits a key it does not declare (ADR-112 section 11). The block is kept
+/// whole as one bookkeeping value, `_front_matter`, so no key of it is turned
+/// into a field or dropped.
 fn split_document(content: String) -> (String, serde_json::Map<String, serde_json::Value>) {
     match split_front_matter(&content) {
-        Some(front) => (front.body, front_matter_properties(front.fields, |_| false)),
+        Some(front) => {
+            let mut properties = serde_json::Map::new();
+            if !front.fields.is_empty() {
+                properties.insert(
+                    "_front_matter".to_string(),
+                    serde_json::Value::Object(front.fields),
+                );
+            }
+            (front.body, properties)
+        }
         None => (content, serde_json::Map::new()),
     }
+}
+
+/// How many keys the front matter held, read from the properties
+/// [`split_document`] built.
+fn front_matter_key_count(properties: &serde_json::Map<String, serde_json::Value>) -> usize {
+    properties
+        .get("_front_matter")
+        .and_then(|block| block.as_object())
+        .map_or(0, |block| block.len())
 }
 
 #[derive(Clone)]
@@ -310,7 +331,7 @@ async fn import_single_file(
             let front_matter_keys = if nodes_created == 0 {
                 0
             } else {
-                front_matter.len()
+                front_matter_key_count(&front_matter)
             };
             if let Some(ref coll) = collection {
                 let collection_service = CollectionService::new(node_service.store(), node_service);
@@ -556,7 +577,7 @@ async fn run_batch_import(
             file_path: p.file_path.to_string_lossy().to_string(),
             root_id: Some(p.root_id.clone()),
             nodes_created: 0,
-            front_matter_keys: p.root_properties.len(),
+            front_matter_keys: front_matter_key_count(&p.root_properties),
             success: true,
             error: None,
             collection: p.collection_path.clone(),
@@ -3702,12 +3723,20 @@ mod tests {
             let root = ns.get_node(root_id).await.unwrap().unwrap();
             assert_eq!(root.node_type, "text");
             assert_eq!(root.content, "The Title");
+            // The block is kept whole as bookkeeping, not turned into fields
+            // of a type that declares none.
             let props = &root.properties["text"];
-            assert_eq!(props["custom:author"], serde_json::json!("ann"));
-            assert_eq!(props["custom:count"], serde_json::json!(3));
-            assert_eq!(props["custom:draft"], serde_json::json!(true));
-            assert_eq!(props["custom:tags"], serde_json::json!(["a", "b"]));
-            assert_eq!(props["custom:owner"], serde_json::json!({"team": "core"}));
+            assert_eq!(
+                root.properties["_front_matter"],
+                serde_json::json!({
+                    "author": "ann",
+                    "count": 3,
+                    "draft": true,
+                    "tags": ["a", "b"],
+                    "owner": {"team": "core"}
+                })
+            );
+            assert!(props.get("author").is_none(), "{props}");
             assert_eq!(result.front_matter_keys, 5);
             // No `---` node and no node for the fields: only the body.
             assert_eq!(

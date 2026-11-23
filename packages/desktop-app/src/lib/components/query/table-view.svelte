@@ -11,6 +11,7 @@
 -->
 
 <script lang="ts">
+  import { declaredFields } from '$lib/types/schema-node';
   import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
   import { labelForField } from '$lib/utils/schema-field-label';
   import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
@@ -45,8 +46,8 @@
       { field: 'content', label: '' }
     ];
 
-    if (schema?.fields) {
-      for (const field of schema.fields.filter(isUserVisibleField)) {
+    if (schema) {
+      for (const field of declaredFields(schema).filter(isUserVisibleField)) {
         cols.push({ field: field.name, label: labelForField(field) });
       }
     }

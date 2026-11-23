@@ -4146,6 +4146,25 @@ mod tests {
     use tokio::sync::watch;
     use tokio_stream::StreamExt;
 
+    /// Declare a text field `name` in the `custom_fields` of the built-in type
+    /// `type_id`, through `update_schema` as a user does.
+    async fn declare_custom_field(
+        svc: &NodeServiceImpl,
+        type_id: &str,
+        name: &str,
+        field_type: &str,
+    ) {
+        nodespace_core::schema::handle_update_schema(
+            &svc.node_service,
+            serde_json::json!({
+                "schema_id": type_id,
+                "add_fields": [{ "name": name, "type": field_type }]
+            }),
+        )
+        .await
+        .expect("a custom field is added through update_schema");
+    }
+
     async fn make_service() -> (Arc<NodeServiceImpl>, TempDir) {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("test.db");
@@ -5653,8 +5672,9 @@ mod tests {
         let stored = svc.node_service.get_node(&node_id).await.unwrap().unwrap();
         assert_eq!(stored.properties["task"]["status"], "open");
 
-        // The typed client's generic update still writes an extension field.
-        svc.update_node(update(r#"{"custom:store": "Costco"}"#, true))
+        // The typed client's generic update still writes a custom field.
+        declare_custom_field(&svc, "task", "store", "text").await;
+        svc.update_node(update(r#"{"store": "Costco"}"#, true))
             .await
             .expect("an extension field has no typed path");
 
@@ -5664,7 +5684,7 @@ mod tests {
             .expect("the flat update is validated by the shared pipeline");
         let stored = svc.node_service.get_node(&node_id).await.unwrap().unwrap();
         assert_eq!(stored.properties["task"]["status"], "done");
-        assert_eq!(stored.properties["task"]["custom:store"], "Costco");
+        assert_eq!(stored.properties["task"]["store"], "Costco");
 
         // ...and is validated there: a value outside the vocabulary is refused.
         assert!(svc
@@ -6190,6 +6210,7 @@ mod tests {
     async fn update_task_node_response_is_the_stored_node() {
         let (svc, _tmp) = make_service().await;
         let task_id = "d1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        declare_custom_field(&svc, "task", "estimate", "number").await;
         svc.create_node(Request::new(crate::nodespace::CreateNodeRequest {
             id: Some(task_id.to_string()),
             node_type: "task".to_string(),
@@ -6198,7 +6219,7 @@ mod tests {
             collections: Vec::new(),
             collection_ids: Vec::new(),
             lifecycle_status: Some("archived".to_string()),
-            properties: r#"{"priority":"high","custom:estimate":3}"#.to_string(),
+            properties: r#"{"priority":"high","estimate":3}"#.to_string(),
             position: None,
         }))
         .await
@@ -6233,7 +6254,7 @@ mod tests {
                 "task": {
                     "status": "done",
                     "priority": null,
-                    "custom:estimate": 3
+                    "estimate": 3
                 }
             })
         );
@@ -6244,10 +6265,7 @@ mod tests {
         assert_eq!(typed["lifecycleStatus"], "archived");
         assert_eq!(typed["status"], "done");
         assert!(typed.get("priority").is_none(), "{typed}");
-        assert_eq!(
-            typed["properties"],
-            serde_json::json!({ "custom:estimate": 3 })
-        );
+        assert_eq!(typed["properties"], serde_json::json!({ "estimate": 3 }));
     }
 
     /// An absent priority is left unchanged.
@@ -8564,6 +8582,7 @@ mod tests {
     #[tokio::test]
     async fn create_document_splits_a_markdown_document_and_create_node_does_not() {
         let (svc, _tmp) = make_service().await;
+        declare_custom_field(&svc, "decision", "author", "text").await;
         let request = |content: &str| {
             Request::new(crate::nodespace::CreateNodeRequest {
                 id: None,
@@ -8607,7 +8626,7 @@ mod tests {
             .unwrap();
         assert_eq!(node.content, "Pick");
         assert_eq!(node.properties["decision"]["decision_status"], "accepted");
-        assert_eq!(node.properties["decision"]["custom:author"], "ann");
+        assert_eq!(node.properties["decision"]["author"], "ann");
         assert_eq!(
             svc.node_service
                 .get_children(&doc.node_id)

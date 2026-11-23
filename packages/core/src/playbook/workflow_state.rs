@@ -261,7 +261,7 @@ pub async fn get_workflow_state(
             );
             schema
                 .as_ref()
-                .map(|s| s.fields.clone())
+                .map(|s| s.declared_fields().cloned().collect())
                 .unwrap_or_default()
         }
     };
@@ -677,7 +677,7 @@ async fn walk_path_against_schema(
                 );
                 record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
                 current_schema
-                    .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
+                    .map(|s| s.declared_fields().map(|f| f.name.clone()).collect())
                     .unwrap_or_default()
             }
         };

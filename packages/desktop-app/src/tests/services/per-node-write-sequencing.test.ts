@@ -238,7 +238,7 @@ describe('per-node write sequencing', () => {
     await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
 
     // A property change via a shortcut, then more typing — both queue behind it.
-    store.updateNode('text-2', { properties: { 'custom:flag': true } }, viewerSource);
+    store.updateNode('text-2', { properties: { 'flag': true } }, viewerSource);
     store.updateNode('text-2', { content: 'ab' }, viewerSource);
 
     firstWriteGate.resolve();
@@ -247,7 +247,7 @@ describe('per-node write sequencing', () => {
     const payloads = updateSpy.mock.calls.map(([, , payload]) => payload);
     expect(payloads).toEqual([
       { content: 'a' },
-      { properties: { 'custom:flag': true } },
+      { properties: { 'flag': true } },
       { content: 'ab' }
     ]);
   });
@@ -269,7 +269,7 @@ describe('per-node write sequencing', () => {
 
     // A batch commits behind the in-flight write, then typing resumes.
     store.startBatch('text-3');
-    store.addToBatch('text-3', { properties: { 'custom:kind': 'quote' } });
+    store.addToBatch('text-3', { properties: { 'kind': 'quote' } });
     store.commitBatch('text-3');
     store.updateNode('text-3', { content: 'ab' }, viewerSource);
 
@@ -279,7 +279,7 @@ describe('per-node write sequencing', () => {
     const payloads = updateSpy.mock.calls.map(([, , payload]) => payload);
     expect(payloads).toEqual([
       { content: 'a' },
-      { properties: { 'custom:kind': 'quote' } },
+      { properties: { 'kind': 'quote' } },
       { content: 'ab' }
     ]);
   });
@@ -319,7 +319,7 @@ describe('per-node write sequencing', () => {
       onPersistError: sentFieldError
     });
     const skippedWriteError = vi.fn();
-    store.updateNode('task-3', { properties: { 'custom:flag': true } }, viewerSource, {
+    store.updateNode('task-3', { properties: { 'flag': true } }, viewerSource, {
       onPersistError: skippedWriteError
     });
 

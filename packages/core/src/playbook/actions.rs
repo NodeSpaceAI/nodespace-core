@@ -918,7 +918,7 @@ fn strip_matching_quotes(s: &str) -> &str {
 /// back into a `Node` and read through `graph_resolver::get_node_property`
 /// (the same namespace-aware lookup `for_each`'s `{item.properties.<type>.*}`
 /// bindings ultimately rely on), so `estimate` correctly finds
-/// `properties.agg_issue.estimate` / `properties["custom:estimate"]`, not
+/// `properties.agg_issue.estimate` / `properties["estimate"]`, not
 /// just a flat top-level `estimate` key.
 ///
 /// Falls back to a flat top-level lookup (`item.get(field)`) when an item
@@ -5465,9 +5465,9 @@ mod tests {
 
             let existing = Node::new_with_id(
                 "3dee0ede-ed4f-598d-a749-1770eba65579".to_string(),
-                "text".to_string(),
+                "task".to_string(),
                 "original".to_string(),
-                json!({"text": {"custom:tag": "keep-me"}}),
+                json!({"task": {"priority": "low"}}),
             );
             svc.create_node(existing).await.unwrap();
 
@@ -5494,8 +5494,8 @@ mod tests {
                 "update_node must stamp the chain depth even though the action's own params never set `properties`"
             );
             assert_eq!(
-                updated.properties["text"]["custom:tag"],
-                json!("keep-me"),
+                updated.properties["task"]["priority"],
+                json!("low"),
                 "the depth stamp must merge in, not replace, the node's existing properties"
             );
             assert_eq!(updated.content, "updated");

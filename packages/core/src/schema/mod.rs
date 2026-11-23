@@ -276,22 +276,6 @@ fn describe_missing_top_level_keys(params: &Value) -> Result<(), MarkdownError> 
     )))
 }
 
-/// Whether a field name carries a `<namespace>:` prefix (`custom:capacity`).
-///
-/// Requires exactly one `:` with a non-empty segment on each side, so neither a
-/// bare name (`capacity`) nor a malformed one (`:capacity`, `custom:`,
-/// `a:b:c`) counts as prefixed. `validate_schema_field_name` rejects the
-/// malformed forms outright, but this does not lean on that: a check that
-/// silently depends on validation order in another module is one refactor away
-/// from admitting the names it exists to exclude.
-fn has_namespace_prefix(name: &str) -> bool {
-    let mut parts = name.split(':');
-    matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(namespace), Some(bare), None) if !namespace.is_empty() && !bare.is_empty()
-    )
-}
-
 /// Warn on explicit field names that shadow a reserved core property.
 ///
 /// A name colliding with a reserved core property is reported as a warning
@@ -326,12 +310,10 @@ fn warn_reserved_property_names(fields: Vec<SchemaField>) -> (Vec<SchemaField>, 
 /// carries a populated `friendly_name`, so no reader anywhere else needs a
 /// fallback or null-check.
 ///
-/// Collision disambiguation exists because stripping a namespace prefix for
-/// display (`derive_friendly_name`'s job) is a display-only operation, but it
-/// is reachable *today*, not just in some future release: adding
-/// `custom:storyPoints` next to an existing `custom:story_points` derives
-/// "Story points" for both, since they are different storage keys but the
-/// same stripped/humanized display text. Only a *derived* value is
+/// Collision disambiguation exists because humanizing a name
+/// (`derive_friendly_name`'s job) is a display-only operation that can give two
+/// storage keys one label: adding `storyPoints` next to an existing
+/// `story_points` derives "Story points" for both. Only a *derived* value is
 /// ever adjusted — a friendly_name the caller explicitly supplied is never
 /// rewritten out from under them, even if it collides; that ambiguity is
 /// their call, not this function's to silently correct.
@@ -352,8 +334,7 @@ fn apply_friendly_name_defaults(existing: &[SchemaField], new_fields: &mut [Sche
 }
 
 /// Append a disambiguator to `label` so it no longer collides with another
-/// field's display label, using `name`'s namespace prefix when it has one
-/// (`"Status" -> "Status (custom)"`) or the full field name otherwise
+/// field's display label, using the full field name
 /// (`"Employee name" -> "Employee name (employeeName)"`). `name` is unique
 /// within a schema (a duplicate is rejected before this runs), so the result
 /// is guaranteed unique too.
@@ -364,24 +345,7 @@ fn apply_friendly_name_defaults(existing: &[SchemaField], new_fields: &mut [Sche
 /// omitted `friendly_name` on create/`add_fields`, so a blank value can never
 /// reach storage through either path.
 pub(crate) fn disambiguate_friendly_name(label: &str, name: &str) -> String {
-    match name.split_once(':') {
-        Some((prefix, _)) if !prefix.is_empty() => format!("{label} ({prefix})"),
-        _ => format!("{label} ({name})"),
-    }
-}
-
-/// Whether `schema_id` names a schema NodeSpace ships, rather than a
-/// user-defined one. A missing schema is reported as non-core; the update path
-/// below surfaces the not-found error with better context.
-async fn schema_is_core(
-    node_service: &Arc<NodeService>,
-    schema_id: &str,
-) -> Result<bool, MarkdownError> {
-    let schema = node_service
-        .get_schema_node(schema_id)
-        .await
-        .map_err(|e| MarkdownError::internal_error(format!("Failed to get schema: {}", e)))?;
-    Ok(schema.is_some_and(|s| s.is_core))
+    format!("{label} ({name})")
 }
 
 /// Reject relationships whose `targetType` does not name an existing schema.
@@ -839,8 +803,7 @@ fn extend_inherited_field(
 /// its descendant already carries would list it twice with two meanings. The
 /// parent's author resolves it (rename the value, or drop the descendant's).
 ///
-/// The descendants are read once for the whole call, through the same closure
-/// `validate_no_shadowed_extension_fields` walks.
+/// The descendants are read once for the whole call.
 async fn reject_descendant_value_collisions(
     node_service: &Arc<NodeService>,
     schema_id: &str,
@@ -1585,7 +1548,7 @@ async fn validate_no_subtype_redeclaration(
             continue;
         };
         let clash = |name: &str| {
-            let as_field = schema.fields.iter().any(|f| f.name == name);
+            let as_field = schema.declared_fields().any(|f| f.name == name);
             let as_relationship = schema.relationships.iter().any(|r| r.name == name);
             (as_field, as_relationship)
         };
@@ -1608,130 +1571,6 @@ async fn validate_no_subtype_redeclaration(
         }
     }
     Ok(())
-}
-
-/// Refuse an extension field named after a declared field (ADR-097 §6).
-///
-/// A rule or a query reads an extension field by its bare name
-/// (`custom:amount` as `amount`), and a declared field always wins that name,
-/// anywhere in the type's chain. So a `custom:status` declared on `task`, or
-/// on a type extending it, could be stored and never read. The node write
-/// refuses the same name (`NodeService::reject_shadowed_extension_fields`).
-///
-/// `fields` is the schema's own field list as the edit would leave it, and
-/// `parent` the type it would extend. The check cannot live in
-/// [`validate_no_field_redeclaration`], which runs only for a schema that has
-/// a parent: a type with none can still hold both `X` and `custom:X` itself.
-///
-/// The pair is refused wherever its two names would sit in one chain, and
-/// whichever of them the edit brings: both on this schema, one here and one
-/// on a type above, or one here or above and one on a type that extends this
-/// schema. Two types that this edit does not touch are not compared: an
-/// earlier edit to one of them already was.
-async fn validate_no_shadowed_extension_fields(
-    node_service: &Arc<NodeService>,
-    schema_id: &str,
-    parent: Option<&str>,
-    fields: &[SchemaField],
-) -> Result<(), MarkdownError> {
-    use crate::services::node_service::extension_field_bare_name;
-
-    /// A field's name and the type that declares it.
-    type Declared<'a> = (&'a str, &'a str);
-
-    /// The first extension field among `extension_side` that is read by the
-    /// name of a field among `declared_side`, with that field.
-    /// `org:custom:x` reads as `custom:x`, which no declared `custom:x`
-    /// (read as `x`) shadows, so it is never a match.
-    fn shadowed<'a>(
-        extension_side: &[Declared<'a>],
-        declared_side: &[Declared<'a>],
-    ) -> Option<(Declared<'a>, Declared<'a>)> {
-        extension_side.iter().find_map(|&(name, owner)| {
-            let bare = extension_field_bare_name(name)?;
-            if extension_field_bare_name(bare).is_some() {
-                return None;
-            }
-            let declared = declared_side.iter().find(|(other, _)| *other == bare)?;
-            Some(((name, owner), *declared))
-        })
-    }
-
-    let (inherited, inherited_owners) = match parent {
-        Some(parent) => {
-            let (inherited, owners, _chain) =
-                resolve_field_owners_or_error(node_service, parent).await?;
-            (inherited, owners)
-        }
-        None => Default::default(),
-    };
-    // Every field this schema would hold or inherit once the edit lands.
-    let here_and_above: Vec<Declared> = fields
-        .iter()
-        .map(|f| (f.name.as_str(), schema_id))
-        .chain(inherited.iter().map(|f| {
-            let owner = inherited_owners.get(&f.name).map(String::as_str);
-            (f.name.as_str(), owner.or(parent).unwrap_or(schema_id))
-        }))
-        .collect();
-
-    if let Some(pair) = shadowed(&here_and_above, &here_and_above) {
-        return Err(shadowed_field_error(schema_id, pair));
-    }
-
-    let subtypes = node_service
-        .store()
-        .get_subtype_closure(schema_id)
-        .await
-        .map_err(|e| {
-            MarkdownError::internal_error(format!(
-                "Failed to resolve the types extending '{schema_id}': {e}"
-            ))
-        })?;
-    let mut extending = Vec::new();
-    for subtype in subtypes.iter().filter(|id| id.as_str() != schema_id) {
-        let schema = node_service.get_schema_node(subtype).await.map_err(|e| {
-            MarkdownError::internal_error(format!("Failed to get schema '{subtype}': {e}"))
-        })?;
-        if let Some(schema) = schema {
-            extending.push((subtype.as_str(), schema.fields));
-        }
-    }
-    let below: Vec<Declared> = extending
-        .iter()
-        .flat_map(|(subtype, fields)| fields.iter().map(|f| (f.name.as_str(), *subtype)))
-        .collect();
-    if let Some(pair) =
-        shadowed(&below, &here_and_above).or_else(|| shadowed(&here_and_above, &below))
-    {
-        return Err(shadowed_field_error(schema_id, pair));
-    }
-    Ok(())
-}
-
-/// The refusal for an extension field `name` (declared by `owner`) that would
-/// share a chain with the declared field `bare` (declared by `bare_owner`),
-/// worded for the name the edit to `schema_id` can change.
-fn shadowed_field_error(
-    schema_id: &str,
-    ((name, owner), (bare, bare_owner)): ((&str, &str), (&str, &str)),
-) -> MarkdownError {
-    let why = format!(
-        "a rule or query reads '{name}' as '{bare}', and the declared field wins that name, so \
-         '{name}' could never be read"
-    );
-    MarkdownError::invalid_params(if owner == schema_id {
-        format!(
-            "'{name}' cannot be declared: '{bare}' is a declared field of the type \
-             '{bare_owner}', and {why}. Use '{bare}', or give the extension field another name."
-        )
-    } else {
-        format!(
-            "'{bare}' cannot be a declared field of the type '{bare_owner}' in the same chain \
-             as '{owner}': '{owner}' declares the extension field '{name}', and {why}. Use \
-             another name for '{bare}', or rename '{name}' on '{owner}' first."
-        )
-    })
 }
 
 /// Resolve a schema's effective field set: its own fields plus every
@@ -1773,7 +1612,7 @@ pub async fn resolve_effective_fields(
         // structurally protected the way most `get_schema_node` call sites
         // are; review it with the same care ADR-078 changes always need.
         if let Some(schema) = schema {
-            chain_fields.push(schema.fields);
+            chain_fields.push(schema.declared_fields().cloned().collect());
         }
     }
 
@@ -2340,8 +2179,6 @@ pub async fn create_schema(
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
     }
-    validate_no_shadowed_extension_fields(node_service, &schema_id, extends_parent, &stored_fields)
-        .await?;
     validate_structural_rules(
         node_service,
         &schema_id,
@@ -2879,7 +2716,89 @@ async fn validate_context_path_changes(
 /// - `description`: New description (optional)
 pub async fn update_schema(
     node_service: &Arc<NodeService>,
+    params: UpdateSchemaParams,
+) -> Result<SchemaUpdateOutput, MarkdownError> {
+    update_schema_as(node_service, params, FieldDeclarer::User).await
+}
+
+/// Who is declaring the fields an `update_schema` call adds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldDeclarer {
+    /// The agent, the UI or the CLI: a field it adds is a `user` field.
+    User,
+    /// The code of an extension, declaring state it maintains itself: a field
+    /// it adds is a `system` field.
+    Extension,
+}
+
+/// Declare `fields` as `system` custom fields of the built-in type
+/// `schema_id`, from an extension's own code (ADR-112 section 12, ADR-082).
+///
+/// The one path a `system` field is declared by. The agent's `update_schema`,
+/// the UI and the CLI refuse a `system` field in `add_fields`, and none of them
+/// can change or remove one once declared (`system` protection), so a field
+/// declared here is only the extension's to maintain. Its values are written
+/// through [`NodeService::maintaining_system_fields`].
+///
+/// Declaring a field that is already declared on the type, identically and as
+/// `system`, changes nothing, so an extension may declare at every bind. A
+/// name any schema in the type's chain already declares otherwise (a core
+/// field, a user's custom field, a relationship) is refused with the
+/// collision named, and nothing is declared; the extension reports it instead
+/// of taking the database over.
+pub async fn declare_system_custom_fields(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    fields: Vec<SchemaField>,
+) -> Result<(), MarkdownError> {
+    let schema = node_service
+        .get_schema_node(schema_id)
+        .await
+        .map_err(|e| MarkdownError::internal_error(format!("Failed to get schema: {e}")))?
+        .ok_or_else(|| MarkdownError::invalid_params(format!("Schema '{schema_id}' not found")))?;
+    if !schema.is_core {
+        return Err(MarkdownError::invalid_params(format!(
+            "Schema '{schema_id}' is user-defined and has no custom_fields: an extension keeps \
+             state on a built-in type"
+        )));
+    }
+    let mut to_add = Vec::new();
+    for field in fields {
+        if field.protection != crate::models::SchemaProtectionLevel::System {
+            return Err(MarkdownError::invalid_params(format!(
+                "Field '{}' must be declared with system protection",
+                field.name
+            )));
+        }
+        match schema.custom_fields.iter().find(|f| f.name == field.name) {
+            Some(existing)
+                if serde_json::to_value(existing).ok() == serde_json::to_value(&field).ok() =>
+            {
+                continue
+            }
+            _ => to_add.push(field),
+        }
+    }
+    if to_add.is_empty() {
+        return Ok(());
+    }
+    update_schema_as(
+        node_service,
+        UpdateSchemaParams {
+            schema_id: schema_id.to_string(),
+            add_fields: Some(to_add),
+            ..Default::default()
+        },
+        FieldDeclarer::Extension,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn update_schema_as(
+    node_service: &Arc<NodeService>,
     mut params: UpdateSchemaParams,
+    declarer: FieldDeclarer,
 ) -> Result<SchemaUpdateOutput, MarkdownError> {
     // `extends`/`extended_by` must not be removable through the generic
     // by-name path — see `reject_reserved_relationship_removal_names`. The
@@ -3139,98 +3058,26 @@ pub async fn update_schema(
         }
     }
 
-    // --- Phase 0: Reject an extension field named after a declared field ---
+    // --- Phase 0: Keep a custom field's declaration inside what a caller may write ---
     //
-    // Checked over the field list this call would leave, against the parent
-    // it would leave, so one check covers `add_fields`, `rename_fields` and
-    // an `extends` re-target, and a call that also removes or renames the
-    // declared field away is legal. Ahead of the renames being applied,
-    // and ahead of the play check: `force` cannot make the name
-    // legal, so the caller is not asked for it first.
-    {
-        let mut fields_after = schema_before.fields.clone();
-        for rename in params.rename_fields.iter().flatten() {
-            if let Some(field) = fields_after.iter_mut().find(|f| f.name == rename.from) {
-                field.name = rename.to.clone();
-            }
-        }
-        if let Some(ref remove_names) = params.remove_fields {
-            fields_after.retain(|f| !remove_names.contains(&f.name));
-        }
-        fields_after.extend(params.add_fields.iter().flatten().cloned());
-        // Extending an inherited field's values declares the field on this
-        // schema, read from the parent being left. In a call that also takes
-        // a new parent, the new chain does not account for that name, so it
-        // is counted here.
-        if let (Some(additions), Some(old_parent), Some(_)) = (
-            &params.add_field_values,
-            &schema_before.extends,
-            &params.extends,
-        ) {
-            let inherited = resolve_effective_fields(node_service, old_parent).await?;
-            for field in inherited {
-                let extended = additions.iter().any(|a| a.field == field.name);
-                if extended && !fields_after.iter().any(|f| f.name == field.name) {
-                    fields_after.push(field);
-                }
-            }
-        }
-
-        // A new parent is validated before its chain is read: one that does
-        // not exist resolves to an empty chain, and the re-target block's
-        // own refusal would come only after the renames were applied.
-        let parent_after = match params.extends.as_deref().map(str::trim) {
-            Some(new_parent) => {
-                validate_extends_target(node_service, &params.schema_id, new_parent).await?;
-                Some(new_parent)
-            }
-            None => schema_before.extends.as_deref(),
-        };
-        validate_no_shadowed_extension_fields(
-            node_service,
-            &params.schema_id,
-            parent_after,
-            &fields_after,
-        )
-        .await?;
-    }
-
-    // --- Phase 0: Reject unprefixed field names on a type NodeSpace owns ---
-    //
-    // A bare name on a core type can be claimed by a core property in a future
-    // release, and the user's field would then collide with it. User-defined
-    // types carry no such risk — NodeSpace never adds core fields to them — so
-    // their fields are stored under the caller's names.
-    //
-    // This runs before the renames are applied rather than validating the final
-    // field list, because a rename migrates node property data. Validating afterwards
-    // would report the generic final-schema error instead. Both routes that can introduce a name are checked
-    // here: `add_fields` supplies one directly, and `rename_fields` can turn an
-    // already-prefixed field into a bare one.
-    if schema_is_core(node_service, &params.schema_id).await? {
-        let reject = |name: &str, how: &str| {
-            MarkdownError::invalid_params(format!(
-                "Field '{name}' {how} core schema '{}' must carry a namespace prefix \
-                 (e.g. 'custom:{name}'). Unprefixed names on core types are reserved \
-                 for core properties.",
-                params.schema_id
-            ))
-        };
-
-        if let Some(ref add_fields) = params.add_fields {
-            for field in add_fields {
-                if !has_namespace_prefix(&field.name) {
-                    return Err(reject(&field.name, "added to"));
-                }
-            }
-        }
-
-        if let Some(ref renames) = params.rename_fields {
-            for rename in renames {
-                if !has_namespace_prefix(&rename.to) {
-                    return Err(reject(&rename.to, "renamed on"));
-                }
-            }
+    // A name that equals a declared field or relationship anywhere in the
+    // chain is refused by the redeclaration checks below, in both directions
+    // (ADR-112 section 5). What is checked here is the declaration itself: a
+    // caller adds fields with the protection a caller may give (`core` is
+    // NodeSpace's own and `system` is an extension's, declared by its code,
+    // never through this path).
+    let allowed = match declarer {
+        FieldDeclarer::User => crate::models::SchemaProtectionLevel::User,
+        FieldDeclarer::Extension => crate::models::SchemaProtectionLevel::System,
+    };
+    for field in params.add_fields.iter().flatten() {
+        if field.protection != allowed {
+            return Err(MarkdownError::invalid_params(format!(
+                "Field '{}' cannot be added to schema '{}' with {} protection: a field added \
+                 through update_schema is a user field. A system field is declared by the \
+                 extension code that maintains it.",
+                field.name, params.schema_id, field.protection
+            )));
         }
     }
 
@@ -3439,6 +3286,29 @@ pub async fn update_schema(
         .ok_or_else(|| {
             MarkdownError::invalid_params(format!("Schema '{}' not found", params.schema_id))
         })?;
+    // On a built-in schema the field operations address `custom_fields`
+    // (ADR-112 section 4), and `add_field_values` may extend a field of either
+    // list. The whole call is judged over one list holding both, and the two
+    // are told apart again where the schema is written: a name is custom when
+    // it was custom before the call or this call adds it.
+    let mut custom_names: std::collections::HashSet<String> = schema
+        .custom_fields
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    if schema.is_core {
+        for rename in params.rename_fields.iter().flatten() {
+            if rename.from != rename.to && custom_names.remove(&rename.from) {
+                custom_names.insert(rename.to.clone());
+            }
+        }
+        for name in params.remove_fields.iter().flatten() {
+            custom_names.remove(name);
+        }
+        custom_names.extend(params.add_fields.iter().flatten().map(|f| f.name.clone()));
+    }
+    let custom_fields = std::mem::take(&mut schema.custom_fields);
+    schema.fields.extend(custom_fields);
     // The schema as stored: the starting point for the in-transaction data
     // migration of identity renames.
     let schema_as_stored = schema.clone();
@@ -3825,12 +3695,16 @@ pub async fn update_schema(
     let previous_extends = schema.extends.clone();
     let updated_extends = extends.clone();
     let expected_version = schema.envelope.version;
+    let (custom_fields, core_fields): (Vec<SchemaField>, Vec<SchemaField>) = fields
+        .into_iter()
+        .partition(|f| schema.is_core && custom_names.contains(&f.name));
     let updated_schema = SchemaNode {
         is_abstract: params.is_abstract.unwrap_or(schema.is_abstract),
         extends,
         children: params.children.clone().unwrap_or(schema.children),
         parent: params.parent.clone().unwrap_or(schema.parent),
-        fields,
+        fields: core_fields,
+        custom_fields,
         relationships,
         title_template: params.title_template.clone().or(schema.title_template),
         properties_header_summary_template: params
@@ -4275,22 +4149,6 @@ mod schema_test;
 mod tests {
     use super::*;
     use crate::models::schema::SchemaProtectionLevel;
-
-    #[test]
-    fn test_has_namespace_prefix() {
-        assert!(has_namespace_prefix("custom:capacity"));
-        assert!(has_namespace_prefix("org:region"));
-
-        assert!(!has_namespace_prefix("capacity"));
-
-        // Malformed forms are not prefixes. `validate_schema_field_name` also
-        // rejects these, but this must not depend on that happening first.
-        assert!(!has_namespace_prefix(":capacity"));
-        assert!(!has_namespace_prefix("custom:"));
-        assert!(!has_namespace_prefix("a:b:c"));
-        assert!(!has_namespace_prefix(":"));
-        assert!(!has_namespace_prefix(""));
-    }
 
     #[test]
     fn test_normalize_schema_id() {

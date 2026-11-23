@@ -11,7 +11,7 @@
  *   `node.startDate`) and is written through the type's typed update, or, for
  *   a type with none (the chat family), as a `properties` patch keyed by the
  *   storage name.
- * - **Extension field** — every other field: a `custom:` field on a core type
+ * - **Extension field** — every other field: a custom field (ADR-112) on a core type
  *   or any field of a user-defined type. It lives flat in `node.properties`.
  *
  * Extracted from generic-schema-form.svelte so it is unit-testable without

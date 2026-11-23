@@ -4,7 +4,7 @@
  * `QueryNode`, `QueryNodeUpdate`, `QueryFilter` and `SortConfig` are generated
  * from Rust's `nodespace-types` (`./generated`): the query schema's fields
  * travel as typed top-level fields (`targetType`, `filters`, `viewConfig`, …),
- * and `properties` carries only extension fields (`custom:…`). Storage uses the
+ * and `properties` carries only custom fields (ADR-112). Storage uses the
  * schema's snake_case names (`target_type`, `view_config`, …) under
  * `properties.query`, the shape a query is created with (see
  * `buildMaterializedProperties`); nothing else reads it.

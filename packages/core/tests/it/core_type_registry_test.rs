@@ -387,14 +387,14 @@ async fn an_undeclared_key_in_a_core_bucket_is_rejected() {
 
     let error = message(create(&svc, "task", "A task", json!({ "colour": "red" })).await);
     assert!(
-        error.contains("'colour' is not a field of the core type 'task'"),
+        error.contains("'colour' is not a field of the type 'task'"),
         "{error}"
     );
 
     // A primitive declares no fields, so its bucket takes no bare key at all.
     let error = message(create(&svc, "text", "A line", json!({ "colour": "red" })).await);
     assert!(
-        error.contains("'colour' is not a field of the core type 'text'"),
+        error.contains("'colour' is not a field of the type 'text'"),
         "{error}"
     );
 
@@ -412,545 +412,184 @@ async fn an_undeclared_key_in_a_core_bucket_is_rejected() {
     assert!(error.contains("'colour' is not a field"), "{error}");
 }
 
+/// A key is accepted when a schema in the chain declares it, in `fields` or in
+/// `custom_fields`, or when it starts with `_`; it is a lookup, not a pattern
+/// (ADR-112 section 3). A custom field is stored under its bare name in the
+/// bucket of the type that declares it.
 #[tokio::test]
-async fn a_namespaced_key_and_a_bookkeeping_key_are_accepted() {
+async fn a_custom_field_is_stored_under_its_bare_name_and_an_undeclared_key_is_refused() {
     let (svc, _tmp) = test_service().await;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "colour", "type": "text" }] }),
+    )
+    .await
+    .expect("a custom field of task");
 
     let id = create(
         &svc,
         "task",
         "A task",
-        json!({
-            "status": "open",
-            "custom:colour": "red",
-            "org:cost_center": "42",
-            "plugin:external_id": "x-1",
-            "_seed": { "tier": "core" }
-        }),
+        json!({ "status": "open", "colour": "red", "_seed": { "tier": "core" } }),
     )
     .await
-    .expect("declared, namespaced and bookkeeping keys are all allowed");
-
+    .expect("declared and bookkeeping keys are allowed");
     let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.properties["task"]["custom:colour"], "red");
-    assert_eq!(node.properties["task"]["org:cost_center"], "42");
-    assert_eq!(node.properties["task"]["plugin:external_id"], "x-1");
+    assert_eq!(node.properties["task"]["colour"], "red");
     assert_eq!(node.properties["_seed"]["tier"], "core");
 
-    // A prefix alone, or an unknown one, is not an extension field.
-    for key in ["custom:", "vendor:thing"] {
-        let error = message(create(&svc, "task", "A task", json!({ key: "x" })).await);
-        assert!(error.contains("is not a field of the core type"), "{error}");
-    }
-}
-
-/// An extension field named after a field the type declares could never be
-/// read: a rule reads `custom:status` as `status`, and the declared field
-/// wins that name. The write is refused and names the declared field
-/// (ADR-097 §6). The same name on a type that declares no such field is an
-/// ordinary extension field.
-#[tokio::test]
-async fn an_extension_field_named_after_a_declared_field_is_rejected() {
-    let (svc, _tmp) = test_service().await;
-
-    for (key, bare) in [
-        ("custom:status", "status"),
-        ("org:priority", "priority"),
-        ("plugin:due_date", "due_date"),
-    ] {
+    // Undeclared, and no spelling makes it declared.
+    for key in ["shade", "team:shade", "vendor:thing"] {
         let error = message(create(&svc, "task", "A task", json!({ key: "x" })).await);
         assert!(
-            error.contains(&format!(
-                "'{key}' cannot be set: '{bare}' is a declared field of the type 'task'"
-            )),
+            error.contains(&format!("'{key}' is not a field of the type 'task'")),
             "{error}"
         );
     }
-
-    // On an update as on a create.
-    let id = create(&svc, "task", "A task", json!({})).await.unwrap();
-    let version = svc.get_node(&id).await.unwrap().unwrap().version;
-    let error = message(
-        svc.update_node(
-            &id,
-            version,
-            NodeUpdate::new().with_properties(json!({ "custom:status": "blocked" })),
-        )
-        .await,
-    );
-    assert!(error.contains("'status' is a declared field"), "{error}");
-
-    // Written straight into the bucket, it is refused the same way.
-    let error = message(
-        create(
-            &svc,
-            "task",
-            "A task",
-            json!({ "task": { "status": "open", "custom:status": "x" } }),
-        )
-        .await,
-    );
-    assert!(error.contains("'status' is a declared field"), "{error}");
-
-    // `text` declares no `status`, so there the name shadows nothing.
-    let id = create(&svc, "text", "A line", json!({ "custom:status": "x" }))
-        .await
-        .expect("no declared field of that name");
-    let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.properties["text"]["custom:status"], "x");
 }
 
-/// The refusal follows the read, which takes a declared name from anywhere
-/// in the chain: on a user subtype of a core type, an extension field named
-/// after an inherited field, or after one of the subtype's own, is refused in
-/// the subtype's open bucket too, and the message names the declaring type.
+/// A custom field is readable by its bare name through a filter and through
+/// a rule (the CEL bridge that plays read).
 #[tokio::test]
-async fn a_subtype_refuses_an_extension_field_named_after_any_field_in_its_chain() {
-    let (svc, _tmp) = test_service().await;
-    handle_create_schema(
-        &svc,
-        json!({
-            "name": "Chore",
-            "extends": "task",
-            "fields": [{ "name": "room", "type": "text" }]
-        }),
-    )
-    .await
-    .expect("a user subtype of a core type");
-
-    for (key, owner) in [("custom:status", "task"), ("custom:room", "chore")] {
-        let error = message(create(&svc, "chore", "A chore", json!({ key: "x" })).await);
-        assert!(
-            error.contains(&format!("is a declared field of the type '{owner}'")),
-            "{key}: {error}"
-        );
-    }
-    create(&svc, "chore", "A chore", json!({ "custom:colour": "red" }))
-        .await
-        .expect("no declared field of that name");
-}
-
-/// The names of the fields a schema declares itself, and what it extends.
-async fn declared(svc: &Arc<NodeService>, schema_id: &str) -> (Vec<String>, Option<String>) {
-    let schema = svc
-        .get_schema_node(schema_id)
-        .await
-        .unwrap()
-        .unwrap_or_else(|| panic!("schema '{schema_id}' must exist"));
-    let names = schema.fields.iter().map(|f| f.name.clone()).collect();
-    (names, schema.extends)
-}
-
-/// Refused with the message that names the declared field and its type, and
-/// with the schema left as it was.
-async fn assert_edit_refused(
-    svc: &Arc<NodeService>,
-    edit: serde_json::Value,
-    name: &str,
-    bare: &str,
-    owner: &str,
-) {
-    let expected =
-        format!("'{name}' cannot be declared: '{bare}' is a declared field of the type '{owner}'");
-    assert_edit_refused_with(svc, edit, &expected).await;
-}
-
-async fn assert_edit_refused_with(svc: &Arc<NodeService>, edit: serde_json::Value, expected: &str) {
-    let schema_id = edit["schema_id"].as_str().unwrap().to_string();
-    let before = declared(svc, &schema_id).await;
-    let error = handle_update_schema(svc, edit.clone())
-        .await
-        .expect_err("the schema edit must be refused")
-        .to_string();
-    assert!(error.contains(expected), "{edit}: {error}");
-    assert_eq!(declared(svc, &schema_id).await, before, "{edit}");
-}
-
-/// A schema edit refuses the name a write refuses (ADR-097 §6): a field
-/// declared as `custom:status` beside `status` could be written and never
-/// read. Under every prefix, and for a name declared anywhere in the chain.
-#[tokio::test]
-async fn add_fields_refuses_an_extension_field_named_after_a_declared_field() {
-    let (svc, _tmp) = test_service().await;
-
-    for (name, bare) in [
-        ("custom:status", "status"),
-        ("org:priority", "priority"),
-        ("plugin:due_date", "due_date"),
-    ] {
-        let edit = json!({
-            "schema_id": "task",
-            "add_fields": [{ "name": name, "type": "text" }]
-        });
-        assert_edit_refused(&svc, edit, name, bare, "task").await;
-    }
-
-    // On a user subtype: a name an ancestor declares, and one of its own.
-    create_schema(
-        &svc,
-        json!({
-            "name": "Chore",
-            "extends": "task",
-            "fields": [{ "name": "room", "type": "text" }]
-        }),
-    )
-    .await;
-    for (name, bare, owner) in [
-        ("custom:status", "status", "task"),
-        ("custom:room", "room", "chore"),
-    ] {
-        let edit = json!({
-            "schema_id": "chore",
-            "add_fields": [{ "name": name, "type": "text" }]
-        });
-        assert_edit_refused(&svc, edit, name, bare, owner).await;
-    }
-
-    // The declared field and its shadow arriving in one call.
-    let edit = json!({
-        "schema_id": "chore",
-        "add_fields": [
-            { "name": "floor", "type": "text" },
-            { "name": "custom:floor", "type": "text" }
-        ]
-    });
-    assert_edit_refused(&svc, edit, "custom:floor", "floor", "chore").await;
-
-    // A prefixed name that matches no declared field is an ordinary
-    // extension field, with a default every create takes.
+async fn a_custom_field_is_readable_by_its_bare_name_through_a_filter_and_a_rule() {
+    use nodespace_core::services::query_service::{
+        FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
+    };
+    let temp_dir = TempDir::new().unwrap();
+    let mut store = Arc::new(
+        SqliteStore::new(temp_dir.path().join("t.db"))
+            .await
+            .unwrap(),
+    );
+    let svc = Arc::new(NodeService::new(&mut store).await.unwrap());
     handle_update_schema(
         &svc,
-        json!({
-            "schema_id": "task",
-            "add_fields": [{ "name": "custom:effort", "type": "text", "default": "small" }]
-        }),
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
     )
     .await
-    .expect("no declared field of that name");
-    let id = create(&svc, "task", "A task", json!({})).await.unwrap();
-    let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.properties["task"]["custom:effort"], "small");
-}
-
-/// A rename introduces a name as an addition does. It is refused before the
-/// rename moves any node's data.
-#[tokio::test]
-async fn rename_fields_refuses_a_destination_named_after_a_declared_field() {
-    let (svc, _tmp) = test_service().await;
-    handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "task",
-            "add_fields": [{ "name": "custom:effort", "type": "text" }]
-        }),
-    )
-    .await
-    .expect("an ordinary extension field");
-    let id = create(&svc, "task", "A task", json!({ "custom:effort": "small" }))
+    .unwrap();
+    let small = create(&svc, "task", "Small", json!({ "effort": 1 }))
+        .await
+        .unwrap();
+    create(&svc, "task", "Large", json!({ "effort": 8 }))
         .await
         .unwrap();
 
-    let edit = json!({
-        "schema_id": "task",
-        "rename_fields": [{ "from": "custom:effort", "to": "custom:status" }]
-    });
-    assert_edit_refused(&svc, edit, "custom:status", "status", "task").await;
+    let query = QueryDefinition {
+        target_type: "task".to_string(),
+        filters: vec![QueryFilter {
+            filter_type: FilterType::Property,
+            operator: FilterOperator::Equals,
+            property: Some("effort".to_string()),
+            value: Some(json!(1)),
+            ..Default::default()
+        }],
+        sorting: None,
+        limit: None,
+    };
+    let found = QueryService::new(store.clone())
+        .execute(&query)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+        [small.as_str()]
+    );
+
+    let node = svc.get_node(&small).await.unwrap().unwrap();
+    let cel = nodespace_core::playbook::cel::node_to_cel_value(&node);
+    let cel_cond = format!("{cel:?}");
+    assert!(
+        cel_cond.contains("effort"),
+        "the rule bridge reads the bare name: {cel_cond}"
+    );
+}
+
+/// Removing a custom field leaves its values in place (ADR-112, Neutral): the
+/// node that holds one is still writable, a write that sets the key afresh is
+/// refused, and adding the name again picks the value up.
+#[tokio::test]
+async fn removing_a_custom_field_leaves_its_values_and_the_node_stays_writable() {
+    let (svc, _tmp) = test_service().await;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
+    )
+    .await
+    .unwrap();
+    let id = create(&svc, "task", "A task", json!({ "effort": 3 }))
+        .await
+        .unwrap();
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["effort"], "force": true }),
+    )
+    .await
+    .unwrap();
+
     let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.properties["task"]["custom:effort"], "small");
-
-    // A user-defined type takes bare and prefixed names alike. Renaming the
-    // declared field away in the same call leaves nothing to shadow.
-    create_schema(
-        &svc,
-        json!({
-            "name": "Gadget",
-            "fields": [
-                { "name": "size", "type": "text" },
-                { "name": "custom:weight", "type": "text" }
-            ]
-        }),
-    )
-    .await;
-    let edit = json!({
-        "schema_id": "gadget",
-        "rename_fields": [{ "from": "custom:weight", "to": "custom:size" }]
-    });
-    assert_edit_refused(&svc, edit, "custom:size", "size", "gadget").await;
-    handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "gadget",
-            "rename_fields": [
-                { "from": "size", "to": "width" },
-                { "from": "custom:weight", "to": "custom:size" }
-            ]
-        }),
+    assert_eq!(node.properties["task"]["effort"], 3, "the value stays");
+    svc.update_node(
+        &id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "status": "in_progress" })),
     )
     .await
-    .expect("'size' is no longer declared once the call completes");
-}
+    .expect("the node stays writable");
+    let error = message(create(&svc, "task", "Another", json!({ "effort": 4 })).await);
+    assert!(error.contains("'effort' is not a field"), "{error}");
 
-/// A new schema is refused when its own fields hold both names, and when the
-/// type it extends declares the bare one. No schema is left behind.
-#[tokio::test]
-async fn create_schema_refuses_an_extension_field_named_after_a_declared_field() {
-    let (svc, _tmp) = test_service().await;
-
-    let own = json!({
-        "name": "Gadget",
-        "fields": [
-            { "name": "size", "type": "text" },
-            { "name": "custom:size", "type": "text" }
-        ]
-    });
-    let inherited = json!({
-        "name": "Chore",
-        "extends": "task",
-        "fields": [{ "name": "custom:status", "type": "text" }]
-    });
-    for (params, id, name, bare, owner) in [
-        (own, "gadget", "custom:size", "size", "gadget"),
-        (inherited, "chore", "custom:status", "status", "task"),
-    ] {
-        let error = handle_create_schema(&svc, params)
-            .await
-            .expect_err("the schema must be refused")
-            .to_string();
-        assert!(
-            error.contains(&format!(
-                "'{name}' cannot be declared: '{bare}' is a declared field of the type '{owner}'"
-            )),
-            "{error}"
-        );
-        assert!(svc.get_schema_node(id).await.unwrap().is_none(), "{id}");
-    }
-}
-
-/// A schema given a new parent is checked against the chain it would join.
-#[tokio::test]
-async fn a_new_parent_is_refused_when_it_declares_the_name_of_an_extension_field() {
-    let (svc, _tmp) = test_service().await;
-    create_schema(
+    // Re-adding with a type the stored value does not fit is refused.
+    let error = handle_update_schema(
         &svc,
-        json!({ "name": "Asset", "fields": [{ "name": "size", "type": "text" }] }),
-    )
-    .await;
-    create_schema(
-        &svc,
-        json!({ "name": "Gadget", "fields": [{ "name": "custom:size", "type": "text" }] }),
-    )
-    .await;
-
-    let edit = json!({ "schema_id": "gadget", "extends": "asset", "force": true });
-    assert_edit_refused(&svc, edit, "custom:size", "size", "asset").await;
-
-    // Dropping the field in the same call leaves nothing to shadow.
-    handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "gadget",
-            "extends": "asset",
-            "remove_fields": ["custom:size"],
-            "force": true
-        }),
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "boolean" }] }),
     )
     .await
-    .expect("the new chain's 'size' is no longer shadowed");
-    assert_eq!(declared(&svc, "gadget").await.1.as_deref(), Some("asset"));
-}
-
-/// The declared field can arrive above an extension field that is already
-/// there: a type that extends the edited one declares `custom:colour`, and
-/// the edit would put `colour` in its chain. Refused on the edited type, so
-/// the extending type's field, and its default, stay writable.
-#[tokio::test]
-async fn a_declared_field_is_refused_above_an_extension_field_of_the_same_name() {
-    let (svc, _tmp) = test_service().await;
-    create_schema(
-        &svc,
-        json!({ "name": "Asset", "fields": [{ "name": "colour", "type": "text" }] }),
-    )
-    .await;
-    create_schema(
-        &svc,
-        json!({ "name": "Gadget", "fields": [{ "name": "size", "type": "text" }] }),
-    )
-    .await;
-    create_schema(
-        &svc,
-        json!({
-            "name": "Widget",
-            "extends": "gadget",
-            "fields": [{ "name": "custom:colour", "type": "text", "default": "red" }]
-        }),
-    )
-    .await;
-
-    let on_gadget = "'colour' cannot be a declared field of the type 'gadget' in the same chain \
-                     as 'widget': 'widget' declares the extension field 'custom:colour'";
-    let added = json!({
-        "schema_id": "gadget",
-        "add_fields": [{ "name": "colour", "type": "text" }]
-    });
-    assert_edit_refused_with(&svc, added, on_gadget).await;
-    let renamed = json!({
-        "schema_id": "gadget",
-        "rename_fields": [{ "from": "size", "to": "colour" }]
-    });
-    assert_edit_refused_with(&svc, renamed, on_gadget).await;
-    // Through a new parent, the declaring type is the one named.
-    let reparented = json!({ "schema_id": "gadget", "extends": "asset" });
-    let on_asset =
-        "'colour' cannot be a declared field of the type 'asset' in the same chain as 'widget'";
-    assert_edit_refused_with(&svc, reparented, on_asset).await;
-
-    let id = create(&svc, "widget", "A widget", json!({})).await.unwrap();
-    let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.properties["widget"]["custom:colour"], "red");
-
-    // A name no extending type reads is still added.
-    handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "gadget",
-            "add_fields": [{ "name": "weight", "type": "text" }]
-        }),
-    )
-    .await
-    .expect("no extension field is read as 'weight'");
-}
-
-/// The mirror of the case above: the extension field is the one already
-/// there, on a type above, and the declared field would arrive below it. And
-/// the reverse order, where the extension field arrives above a declared
-/// field of an extending type.
-#[tokio::test]
-async fn a_declared_field_is_refused_below_an_extension_field_of_the_same_name() {
-    let (svc, _tmp) = test_service().await;
-    handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "task",
-            "add_fields": [{ "name": "custom:effort", "type": "text", "default": "m" }]
-        }),
-    )
-    .await
-    .expect("an ordinary extension field");
-
-    let below_task = "'effort' cannot be a declared field of the type 'chore' in the same chain \
-                      as 'task': 'task' declares the extension field 'custom:effort'";
-    let error = handle_create_schema(
-        &svc,
-        json!({
-            "name": "Chore",
-            "extends": "task",
-            "fields": [{ "name": "effort", "type": "text" }]
-        }),
-    )
-    .await
-    .expect_err("the schema must be refused")
+    .expect_err("3 is not a boolean")
     .to_string();
-    assert!(error.contains(below_task), "{error}");
-    assert!(svc.get_schema_node("chore").await.unwrap().is_none());
-
-    create_schema(
+    assert!(error.contains("effort"), "{error}");
+    handle_update_schema(
         &svc,
-        json!({
-            "name": "Chore",
-            "extends": "task",
-            "fields": [{ "name": "room", "type": "text" }]
-        }),
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
     )
-    .await;
-    let added = json!({
-        "schema_id": "chore",
-        "add_fields": [{ "name": "effort", "type": "text" }]
-    });
-    assert_edit_refused_with(&svc, added, below_task).await;
-    let renamed = json!({
-        "schema_id": "chore",
-        "rename_fields": [{ "from": "room", "to": "effort" }]
-    });
-    assert_edit_refused_with(&svc, renamed, below_task).await;
-
-    // The extending type's writes still take the extension field's default.
-    let id = create(&svc, "chore", "A chore", json!({})).await.unwrap();
-    let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.properties["task"]["custom:effort"], "m");
-
-    // The other order: the extension field arrives above the declared one.
-    let edit = json!({
-        "schema_id": "task",
-        "add_fields": [{ "name": "custom:room", "type": "text" }]
-    });
-    assert_edit_refused(&svc, edit, "custom:room", "room", "chore").await;
-
-    // Through a new parent that declares the extension field.
-    create_schema(
-        &svc,
-        json!({ "name": "Asset", "fields": [{ "name": "custom:size", "type": "text" }] }),
-    )
-    .await;
-    create_schema(
-        &svc,
-        json!({ "name": "Gadget", "fields": [{ "name": "size", "type": "text" }] }),
-    )
-    .await;
-    let reparented = json!({ "schema_id": "gadget", "extends": "asset" });
-    let below_asset =
-        "'size' cannot be a declared field of the type 'gadget' in the same chain as 'asset'";
-    assert_edit_refused_with(&svc, reparented, below_asset).await;
+    .await
+    .expect("the same name with a type the value fits");
 }
 
-/// Extending an inherited field's values declares that field on the schema
-/// itself. In a call that also leaves the parent it came from, the new chain
-/// does not account for the name, and an extension field added beside it in
-/// the same call is still refused.
+/// No schema is open (ADR-112 section 11): a user subtype of a core type and a
+/// user-defined type refuse a key no schema in their chain declares, naming
+/// the key and the type.
 #[tokio::test]
-async fn a_field_declared_by_extending_its_values_counts_under_a_new_parent() {
+async fn a_subtype_and_a_user_defined_type_are_closed() {
     let (svc, _tmp) = test_service().await;
+    seed_bug(&svc).await;
     create_schema(
         &svc,
-        json!({
-            "name": "Ticket",
-            "fields": [{
-                "name": "state",
-                "type": "enum",
-                "extensible": true,
-                "coreValues": [{ "value": "open", "label": "Open" }]
-            }]
-        }),
-    )
-    .await;
-    create_schema(
-        &svc,
-        json!({ "name": "Asset", "fields": [{ "name": "size", "type": "text" }] }),
-    )
-    .await;
-    create_schema(
-        &svc,
-        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+        json!({ "name": "Invoice", "fields": [{ "name": "total", "type": "number" }] }),
     )
     .await;
 
-    let edit = json!({
-        "schema_id": "bug",
-        "extends": "asset",
-        "add_fields": [{ "name": "custom:state", "type": "text" }],
-        "add_field_values": [{
-            "field": "state",
-            "values": [{ "value": "paused", "label": "Paused", "mapsTo": "open" }]
-        }]
-    });
-    assert_edit_refused(&svc, edit, "custom:state", "state", "bug").await;
+    let error = message(create(&svc, "bug", "An issue", json!({ "anything": 1 })).await);
+    assert!(
+        error.contains("'anything' is not a field of the type 'bug'"),
+        "{error}"
+    );
+    let error = message(create(&svc, "invoice", "An invoice", json!({ "anything": 1 })).await);
+    assert!(
+        error.contains("'anything' is not a field of the type 'invoice'"),
+        "{error}"
+    );
+    create(&svc, "invoice", "An invoice", json!({ "total": 1 }))
+        .await
+        .expect("a declared field");
 }
 
-/// `undeclared_core_keys` says ahead of a write which flat keys the closed
+/// `undeclared_keys` says ahead of a write which flat keys the closed
 /// bucket will refuse. The two must agree key for key, in both directions: a
 /// key it lists that is accepted would be renamed by a caller for nothing,
 /// and one it misses is still refused.
 #[tokio::test]
-async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
+async fn undeclared_keys_lists_exactly_the_keys_a_write_refuses() {
     let (svc, _tmp) = test_service().await;
     handle_create_schema(
         &svc,
@@ -978,8 +617,6 @@ async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
         ("priority", &text),
         ("room", &text),
         ("size", &text),
-        ("custom:colour", &text),
-        ("custom:", &text),
         ("vendor:thing", &text),
         ("_seed", &text),
         // A bucket's own name addresses the bucket when it holds an object,
@@ -995,7 +632,7 @@ async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
         for (key, value) in cases {
             let properties = json!({ key: value });
             let listed = svc
-                .undeclared_core_keys(node_type, properties.as_object().unwrap())
+                .undeclared_keys(node_type, properties.as_object().unwrap())
                 .await
                 .unwrap();
             // Refused for this reason, by this message. A write refused for
@@ -1003,7 +640,7 @@ async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
             // is not one the closed bucket turned away.
             let refused = create(&svc, node_type, "One", properties.clone())
                 .await
-                .is_err_and(|e| e.to_string().contains("is not a field of the core type"));
+                .is_err_and(|e| e.to_string().contains("is not a field of the type"));
             assert_eq!(
                 listed.iter().any(|k| k == key),
                 refused,
@@ -1015,42 +652,21 @@ async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
     // already, so the key reaches no bucket and is not refused this way.
     let beside = json!({ "task": { "status": "open" }, "colour": "red" });
     let listed = svc
-        .undeclared_core_keys("task", beside.as_object().unwrap())
+        .undeclared_keys("task", beside.as_object().unwrap())
         .await
         .unwrap();
     let refused = create(&svc, "task", "One", beside.clone())
         .await
-        .is_err_and(|e| e.to_string().contains("is not a field of the core type"));
+        .is_err_and(|e| e.to_string().contains("is not a field of the type"));
     assert_eq!(!listed.is_empty(), refused, "a key beside the own bucket");
 
-    // A type that is not a core type refuses nothing, and neither does one
-    // that does not exist: that is the write's own error.
+    // A type that does not exist lists nothing: that is the write's own error.
     let colour = json!({ "colour": "red" });
     assert!(svc
-        .undeclared_core_keys("no-such-type", colour.as_object().unwrap())
+        .undeclared_keys("no-such-type", colour.as_object().unwrap())
         .await
         .unwrap()
         .is_empty());
-}
-
-/// The rule is the core type's bucket's. A subtype's own bucket follows its
-/// own schema, and a user-defined type stays open.
-#[tokio::test]
-async fn a_subtype_bucket_and_a_user_type_stay_open() {
-    let (svc, _tmp) = test_service().await;
-    seed_bug(&svc).await;
-    create_schema(&svc, json!({ "name": "Invoice", "fields": [] })).await;
-
-    let issue = create(&svc, "bug", "An issue", json!({ "anything": 1 }))
-        .await
-        .expect("the issue bucket is the user's");
-    let node = svc.get_node(&issue).await.unwrap().unwrap();
-    assert_eq!(node.properties["bug"]["anything"], 1);
-    assert!(node.properties["task"].get("anything").is_none());
-
-    create(&svc, "invoice", "An invoice", json!({ "anything": 1 }))
-        .await
-        .expect("a user-defined type is open");
 }
 
 /// Nested declarations are validated at every depth: `fields` of an object
@@ -1162,7 +778,7 @@ async fn a_typed_clients_generic_update_may_not_name_a_typed_core_field() {
     }
 
     // What the generic update is still for: extension fields.
-    svc.ensure_no_typed_core_fields(&task, None, &json!({ "custom:colour": "red" }))
+    svc.ensure_no_typed_core_fields(&task, None, &json!({ "colour": "red" }))
         .await
         .expect("an extension field has no typed path");
 

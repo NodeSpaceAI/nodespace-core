@@ -791,7 +791,7 @@ mod tests {
                 "provider": "openai-compat",
                 "turn_status": "processing",
                 "context_tokens": 42,
-                "custom:pinned": true
+                "pinned": true
             },
             "task": { "status": "open" }
         }));
@@ -803,7 +803,7 @@ mod tests {
         assert_eq!(chat.context_tokens, 42);
         // Only the extension field is left; the dormant `task` bucket is not
         // part of the chain.
-        assert_eq!(chat.envelope.properties, json!({ "custom:pinned": true }));
+        assert_eq!(chat.envelope.properties, json!({ "pinned": true }));
     }
 
     #[test]
@@ -844,7 +844,7 @@ mod tests {
                 "reasoning": "Two tasks match.",
                 "outcome": "clarified",
                 "options": ["Login bug", "Logout bug"],
-                "custom:flag": 1
+                "flag": 1
             } }),
         );
         let message = AiChatMessageNode::from_node(node).unwrap();
@@ -854,7 +854,7 @@ mod tests {
         assert_eq!(message.reasoning.as_deref(), Some("Two tasks match."));
         assert_eq!(message.outcome, Some(AiChatTurnOutcome::Clarified));
         assert_eq!(message.options, ["Login bug", "Logout bug"]);
-        assert_eq!(message.envelope.properties, json!({ "custom:flag": 1 }));
+        assert_eq!(message.envelope.properties, json!({ "flag": 1 }));
     }
 
     #[test]

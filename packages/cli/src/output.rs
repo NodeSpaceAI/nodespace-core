@@ -669,7 +669,7 @@ fn write_human_node(node: &NodeData) {
 /// in snake_case, like every other CLI payload.
 ///
 /// The keys are the ones `schema create` and `schema update` take
-/// (`fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+/// (`fields`, `custom_fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
 /// `title_template`, `properties_header_summary_template`), so what a caller
 /// reads here is what it writes there. Field and relationship entries keep
 /// their camelCase metadata keys on both sides.
@@ -685,6 +685,7 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
         parent,
         schema_version,
         fields,
+        custom_fields,
         relationships,
         title_template,
         properties_header_summary_template,
@@ -704,7 +705,11 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
         "fields": fields,
         "relationships": relationships,
     });
-    // Omitted when they declare nothing, as on the wire.
+    // Omitted when they declare nothing, as on the wire. A built-in type's
+    // `custom_fields` are the ones users added (ADR-112), apart from `fields`.
+    if !custom_fields.is_empty() {
+        value["custom_fields"] = json!(custom_fields);
+    }
     if *is_abstract {
         value["abstract"] = json!(true);
     }
@@ -987,6 +992,17 @@ fn format_human_schema(schema: &SchemaNode) -> String {
             clean(&field.name),
             clean(&field.field_type.to_string())
         );
+    }
+    if !schema.custom_fields.is_empty() {
+        let _ = writeln!(out, "custom_fields:");
+        for field in &schema.custom_fields {
+            let _ = writeln!(
+                out,
+                "    {}: {}",
+                clean(&field.name),
+                clean(&field.field_type.to_string())
+            );
+        }
     }
     if !schema.relationships.is_empty() {
         let _ = writeln!(out, "relationships:");
@@ -1623,7 +1639,7 @@ mod tests {
             "id": "p1",
             "nodeType": "person",
             "content": "",
-            "properties": {"custom:team": "Core"},
+            "properties": {"team": "Core"},
             "firstName": "Ada",
             "email": "ada@example.com",
         });
@@ -1635,7 +1651,7 @@ mod tests {
             serde_json::json!({
                 "first_name": "Ada",
                 "email": "ada@example.com",
-                "custom:team": "Core"
+                "team": "Core"
             })
         );
         assert!(out["properties"].get("firstName").is_none());

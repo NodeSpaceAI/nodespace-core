@@ -777,7 +777,7 @@ async fn test_update_schema_remove_fields_allows_user_protected_field_on_core_sc
 /// A batch mixing an allowed removal with a forbidden one must reject the
 /// whole call rather than applying the allowed half before hitting the
 /// protected one — the same all-or-nothing guarantee `update_schema` already
-/// gives the namespace-prefix and play-impact checks.
+/// gives the protection and play-impact checks.
 #[tokio::test]
 async fn test_update_schema_remove_fields_rejects_whole_batch_when_one_field_is_protected() {
     let (svc, _tmp) = create_test_service().await;
@@ -840,7 +840,7 @@ async fn test_update_schema_rename_fields_rejects_core_protected_field_and_prese
         &svc,
         json!({
             "schema_id": "task",
-            "rename_fields": [{ "from": "status", "to": "custom:status" }]
+            "rename_fields": [{ "from": "status", "to": "state" }]
         }),
     )
     .await;
@@ -864,7 +864,7 @@ async fn test_update_schema_rename_fields_rejects_core_protected_field_and_prese
         "status must survive a rejected rename"
     );
     assert!(
-        !schema.fields.iter().any(|f| f.name == "custom:status"),
+        !schema.fields.iter().any(|f| f.name == "state"),
         "the rejected destination name must not appear in the schema"
     );
 
@@ -884,7 +884,7 @@ async fn test_update_schema_rename_fields_rejects_core_protected_field_and_prese
         "status value must be untouched by a rejected rename"
     );
     assert!(
-        task_props.get("custom:status").is_none(),
+        task_props.get("state").is_none(),
         "no data should have been migrated to the rejected destination key"
     );
 }
@@ -2564,126 +2564,326 @@ async fn test_create_schema_reserved_property_warning_reaches_response() {
     );
 }
 
-/// Bare names are the convention for user-defined types, but a type NodeSpace
-/// owns is different: a bare name added to a core schema can be claimed by a
-/// core property in a future release, and the user's field would collide with
-/// it. The prefix requirement is kept exactly where that hazard exists.
+/// A field added to a built-in type goes in its `custom_fields`, under its own
+/// name (ADR-112 sections 1 and 4): `fields` is the shipped list and is not
+/// touched, and no prefix is asked for or accepted.
 #[tokio::test]
-async fn test_update_schema_core_type_requires_namespace_prefix() {
+async fn test_update_schema_core_type_adds_to_custom_fields() {
     let (svc, _tmp) = create_test_service().await;
+    let before = svc.get_schema_node("task").await.unwrap().unwrap();
 
-    let unprefixed = handle_update_schema(
+    handle_update_schema(
         &svc,
         json!({
             "schema_id": "task",
             "add_fields": [{ "name": "effort", "type": "number" }]
         }),
     )
-    .await;
+    .await
+    .expect("adding a field to a core schema should succeed");
 
-    let err = unprefixed
-        .expect_err("adding an unprefixed field to a core schema should be rejected")
-        .to_string();
-    assert!(
-        err.contains("effort") && err.contains("namespace prefix"),
-        "Error should name the field and the requirement, got: {err}"
+    let stored = svc.get_schema_node("task").await.unwrap().unwrap();
+    assert_eq!(
+        stored
+            .custom_fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
+        ["effort"]
+    );
+    assert_eq!(
+        stored.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
+        before.fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
+        "the shipped list must not change"
     );
 
-    // The same field is accepted once it carries a prefix.
+    let prefixed = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_fields": [{ "name": "team:effort", "type": "number" }]
+        }),
+    )
+    .await
+    .expect_err("a name with a prefix is not a field name")
+    .to_string();
+    assert!(prefixed.contains("team:effort"), "{prefixed}");
+}
+
+/// A generic update of the schema node cannot change either list (ADR-112
+/// section 4): `update_schema` is the only writer.
+#[tokio::test]
+async fn test_a_generic_node_update_cannot_change_custom_fields() {
+    use crate::models::NodeUpdate;
+    let (svc, _tmp) = create_test_service().await;
+    let task = svc.get_node("task").await.unwrap().unwrap();
+    let mut properties = task.properties.clone();
+    properties["customFields"] = json!([{ "name": "effort", "type": "number" }]);
+    let err = svc
+        .update_node(
+            "task",
+            task.version,
+            NodeUpdate::new().with_properties(properties),
+        )
+        .await
+        .expect_err("a generic update must not declare a field")
+        .to_string();
+    assert!(
+        err.contains("can only be changed with update_schema"),
+        "{err}"
+    );
+    assert!(svc
+        .get_schema_node("task")
+        .await
+        .unwrap()
+        .unwrap()
+        .custom_fields
+        .is_empty());
+}
+
+/// Adding, renaming and removing a custom field address `custom_fields`, and
+/// a rename moves the stored values (ADR-112, Neutral).
+#[tokio::test]
+async fn test_update_schema_renames_and_removes_a_custom_field() {
+    let (svc, _tmp) = create_test_service().await;
     handle_update_schema(
         &svc,
         json!({
             "schema_id": "task",
-            "add_fields": [{ "name": "custom:effort", "type": "number" }]
+            "add_fields": [{ "name": "effort", "type": "number" }]
         }),
     )
     .await
-    .expect("adding a namespaced field to a core schema should succeed");
+    .unwrap();
 
-    let stored = svc
-        .get_schema_node("task")
-        .await
-        .expect("get_schema_node should succeed")
-        .expect("core task schema should exist");
-    assert!(
-        stored.fields.iter().any(|f| f.name == "custom:effort"),
-        "Namespaced field should be persisted on the core schema"
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "rename_fields": [{ "from": "effort", "to": "effort_points" }],
+            // A rename is destructive and a core Play triggers on `task`
+            // (ADR-079), so confirm past the impact guard.
+            "force": true
+        }),
+    )
+    .await
+    .expect("renaming a custom field should succeed");
+    let stored = svc.get_schema_node("task").await.unwrap().unwrap();
+    assert_eq!(
+        stored
+            .custom_fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
+        ["effort_points"]
     );
+    assert!(stored.get_field("effort").is_none());
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["effort_points"], "force": true }),
+    )
+    .await
+    .expect("removing a custom field should succeed");
+    let stored = svc.get_schema_node("task").await.unwrap().unwrap();
+    assert!(stored.custom_fields.is_empty());
 }
 
-/// Renaming is the other way a bare name can land on a core type. The rename
-/// migrates node property data inside the update's transaction, so a refusal
-/// would roll it back; the requirement is still enforced before any rename
-/// runs, so a refused call never rekeys node data at all.
+/// A shipped field is not the user's to remove or rename, whatever list a
+/// call addresses.
 #[tokio::test]
-async fn test_update_schema_core_type_rename_cannot_drop_namespace_prefix() {
+async fn test_update_schema_cannot_remove_a_shipped_field_of_a_core_type() {
+    let (svc, _tmp) = create_test_service().await;
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["status"] }),
+    )
+    .await
+    .expect_err("status is core")
+    .to_string();
+    assert!(err.contains("status") && err.contains("core"), "{err}");
+}
+
+/// A custom field named like a declared field or a relationship in the chain
+/// is refused, and so is the declared name that would meet an existing custom
+/// field, in both directions (ADR-112 section 5).
+#[tokio::test]
+async fn test_a_custom_field_name_never_equals_a_declared_name_in_its_chain() {
     let (svc, _tmp) = create_test_service().await;
 
+    // A declared field of the type itself.
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "status", "type": "text" }] }),
+    )
+    .await
+    .expect_err("'status' is declared by task")
+    .to_string();
+    assert!(err.contains("status"), "{err}");
+
+    // A declared field of a type above: `issue` extends `task`.
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "issue", "add_fields": [{ "name": "due_date", "type": "text" }] }),
+    )
+    .await
+    .expect_err("'due_date' is declared by task, which issue extends")
+    .to_string();
+    assert!(err.contains("due_date"), "{err}");
+
+    // A relationship of the chain.
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "blocks", "type": "text" }] }),
+    )
+    .await
+    .expect_err("'blocks' is a relationship of task")
+    .to_string();
+    assert!(err.contains("blocks"), "{err}");
+
+    // A custom field on a type above, then the same name declared below.
     handle_update_schema(
         &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
+    )
+    .await
+    .unwrap();
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "issue", "add_fields": [{ "name": "effort", "type": "number" }] }),
+    )
+    .await
+    .expect_err("'effort' is a custom field of task, which issue extends")
+    .to_string();
+    assert!(err.contains("effort"), "{err}");
+
+    // A user type extending a built-in one cannot declare it either.
+    let err = handle_create_schema(
+        &svc,
         json!({
-            "schema_id": "task",
-            "add_fields": [{ "name": "custom:effort", "type": "number" }]
+            "name": "Bug",
+            "extends": "task",
+            "fields": [{ "name": "effort", "type": "number" }]
         }),
     )
     .await
-    .expect("adding a namespaced field to a core schema should succeed");
+    .expect_err("'effort' is a custom field of task")
+    .to_string();
+    assert!(err.contains("effort"), "{err}");
 
-    let renamed = handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "task",
-            "rename_fields": [{ "from": "custom:effort", "to": "effort" }],
-            // A rename is destructive and a core Play triggers on `task`
-            // (ADR-079), so the impact guard would reject this first. This test
-            // asserts the *namespace-prefix* rule, so confirm past that guard
-            // to reach the rejection it is actually about.
-            "force": true
-        }),
-    )
-    .await;
-
-    let err = renamed
-        .expect_err("renaming a core-schema field to a bare name should be rejected")
-        .to_string();
-    assert!(
-        err.contains("effort") && err.contains("namespace prefix"),
-        "Error should name the field and the requirement, got: {err}"
-    );
-
-    // The rejected rename must not have been applied on the way out.
-    let stored = svc
-        .get_schema_node("task")
-        .await
-        .expect("get_schema_node should succeed")
-        .expect("core task schema should exist");
-    assert!(
-        stored.fields.iter().any(|f| f.name == "custom:effort"),
-        "Original namespaced field should survive a rejected rename: {:?}",
-        stored.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
-    );
-    assert!(
-        !stored.fields.iter().any(|f| f.name == "effort"),
-        "Bare name must not reach a core schema via rename: {:?}",
-        stored.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
-    );
-
-    // Renaming between two namespaced names stays allowed.
+    // And the other direction: a field a subtype declares blocks the same
+    // name as a custom field of its base.
     handle_update_schema(
         &svc,
-        json!({
-            "schema_id": "task",
-            "rename_fields": [{ "from": "custom:effort", "to": "custom:effort_points" }],
-            // Destructive, same as the rename above — confirm past the
-            // core-Play impact guard (ADR-079).
-            "force": true
-        }),
+        json!({ "schema_id": "issue", "add_fields": [{ "name": "severity_note", "type": "text" }] }),
     )
     .await
-    .expect("renaming to another namespaced name should succeed");
+    .unwrap();
+    let err = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "severity_note", "type": "text" }] }),
+    )
+    .await
+    .expect_err("'severity_note' is a custom field of issue, which extends task")
+    .to_string();
+    assert!(err.contains("severity_note"), "{err}");
 }
 
-/// A user-defined type is unaffected by the core-type rule: bare names are the
+/// The agent, the UI and the CLI cannot declare a `system` field through
+/// `update_schema`, and cannot change or remove one an extension declared
+/// (ADR-112 section 12).
+#[tokio::test]
+async fn test_a_system_custom_field_is_declared_by_extension_code_only() {
+    use crate::models::schema::{SchemaFieldType, SchemaProtectionLevel};
+    let (svc, _tmp) = create_test_service().await;
+    let system = || SchemaField {
+        name: "maintained_state".to_string(),
+        friendly_name: "Auth status".to_string(),
+        field_type: SchemaFieldType::Text,
+        protection: SchemaProtectionLevel::System,
+        ..Default::default()
+    };
+
+    // Refused through the user-facing path, with the call changing nothing.
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "person",
+            "add_fields": [{ "name": "maintained_state", "type": "text", "protection": "system" }]
+        }),
+    )
+    .await
+    .expect_err("a caller cannot declare a system field")
+    .to_string();
+    assert!(err.contains("system"), "{err}");
+    assert!(svc
+        .get_schema_node("person")
+        .await
+        .unwrap()
+        .unwrap()
+        .custom_fields
+        .is_empty());
+
+    // Declared through the extension path; declaring it again is a no-op.
+    declare_system_custom_fields(&svc, "person", vec![system()])
+        .await
+        .unwrap();
+    declare_system_custom_fields(&svc, "person", vec![system()])
+        .await
+        .unwrap();
+    let stored = svc.get_schema_node("person").await.unwrap().unwrap();
+    assert_eq!(stored.custom_fields.len(), 1);
+    assert_eq!(
+        stored.custom_fields[0].protection,
+        SchemaProtectionLevel::System
+    );
+
+    // Not changeable or removable through the user-facing path.
+    for params in [
+        json!({ "schema_id": "person", "remove_fields": ["maintained_state"], "force": true }),
+        json!({
+            "schema_id": "person",
+            "rename_fields": [{ "from": "maintained_state", "to": "state" }],
+            "force": true
+        }),
+        json!({
+            "schema_id": "person",
+            "rename_fields": [{ "from": "maintained_state", "to": "maintained_state", "friendlyName": "X" }],
+            "force": true
+        }),
+    ] {
+        let err = handle_update_schema(&svc, params)
+            .await
+            .expect_err("a system field is not the caller's to change")
+            .to_string();
+        assert!(
+            err.contains("maintained_state") && err.contains("system"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        svc.get_schema_node("person")
+            .await
+            .unwrap()
+            .unwrap()
+            .custom_fields
+            .len(),
+        1
+    );
+
+    // A name the chain already declares is refused and nothing is declared.
+    let clash = SchemaField {
+        name: "email".to_string(),
+        ..system()
+    };
+    let err = declare_system_custom_fields(&svc, "person", vec![clash])
+        .await
+        .expect_err("'email' is a declared field of person")
+        .to_string();
+    assert!(err.contains("email"), "{err}");
+}
+
+/// A user-defined type declares every field in `fields` under its own name: bare names are the
 /// convention there, so neither adding nor renaming to one is rejected.
 #[tokio::test]
 async fn test_update_schema_user_defined_type_allows_bare_names() {
@@ -3789,15 +3989,15 @@ async fn test_update_schema_add_fields_respects_explicit_friendly_name() {
     );
 }
 
-/// `custom:storyPoints` stripped and humanized for display derives the exact
-/// same text ("Story points") as an existing `custom:story_points` field:
+/// `storyPoints` humanized for display derives the exact
+/// same text ("Story points") as an existing `story_points` field:
 /// different storage keys, same display label. The write boundary must
 /// disambiguate the derived value rather than let it collide.
 #[tokio::test]
 async fn test_update_schema_add_fields_disambiguates_friendly_name_colliding_with_existing_field() {
     let (svc, _tmp) = create_test_service().await;
 
-    for name in ["custom:story_points", "custom:storyPoints"] {
+    for name in ["story_points", "storyPoints"] {
         handle_update_schema(
             &svc,
             json!({
@@ -3817,11 +4017,9 @@ async fn test_update_schema_add_fields_disambiguates_friendly_name_colliding_wit
         .expect("get_schema_node failed")
         .expect("task schema should exist");
 
-    let existing = schema
-        .get_field("custom:story_points")
-        .expect("the first field");
+    let existing = schema.get_field("story_points").expect("the first field");
     let added = schema
-        .get_field("custom:storyPoints")
+        .get_field("storyPoints")
         .expect("the second field should have been added");
 
     assert_eq!(existing.friendly_name, "Story points");
@@ -3831,11 +4029,11 @@ async fn test_update_schema_add_fields_disambiguates_friendly_name_colliding_wit
          not silently duplicated: got {:?}",
         added.friendly_name
     );
-    // The namespace is the disambiguator, so the collision is legible, not
+    // The field name is the disambiguator, so the collision is legible, not
     // just different.
     assert!(
-        added.friendly_name.contains("custom"),
-        "expected the namespace to disambiguate the label, got {:?}",
+        added.friendly_name.contains("storyPoints"),
+        "expected the field name to disambiguate the label, got {:?}",
         added.friendly_name
     );
 }
@@ -3884,7 +4082,7 @@ async fn test_update_schema_add_fields_does_not_rewrite_an_explicit_colliding_fr
             "schema_id": "task",
             "add_fields": [
                 {
-                    "name": "custom:state",
+                    "name": "state",
                     "friendlyName": "Status",
                     "type": "text",
                     "protection": "user",
@@ -3902,7 +4100,7 @@ async fn test_update_schema_add_fields_does_not_rewrite_an_explicit_colliding_fr
         .expect("get_schema_node failed")
         .expect("task schema should exist");
     assert_eq!(
-        schema.get_field("custom:state").unwrap().friendly_name,
+        schema.get_field("state").unwrap().friendly_name,
         "Status",
         "an explicitly-supplied friendly_name must never be silently rewritten"
     );
@@ -7653,34 +7851,6 @@ async fn test_required_field_without_default_rejected_over_nodes_lacking_it() {
     assert!(msg.contains("required field 'size'"), "{msg}");
 }
 
-// ============================================================================
-// An extension field named after a declared field (ADR-097 §6)
-// ============================================================================
-
-/// `org:custom:x` reads as `custom:x`, and the declared `custom:x` reads as
-/// `x`, so neither shadows the other. Called directly: the field-name grammar
-/// refuses a second prefix before a schema edit reaches this check.
-#[tokio::test]
-async fn a_doubly_prefixed_field_is_not_shadowed_by_a_singly_prefixed_one() {
-    let (svc, _tmp) = create_test_service().await;
-    let field = |name: &str| SchemaField {
-        name: name.to_string(),
-        ..Default::default()
-    };
-
-    let fields = [field("custom:x"), field("org:custom:x")];
-    validate_no_shadowed_extension_fields(&svc, "gadget", None, &fields)
-        .await
-        .expect("neither name is read as the other");
-
-    let fields = [field("x"), field("custom:x")];
-    let error = validate_no_shadowed_extension_fields(&svc, "gadget", None, &fields)
-        .await
-        .expect_err("'custom:x' is read as the declared 'x'")
-        .to_string();
-    assert!(error.contains("'custom:x' cannot be declared"), "{error}");
-}
-
 /// A saved query that filters on a field is named by the schema write itself,
 /// so a caller that is not the agent's tool is held the same way: a removal
 /// or rename of that field is refused with the list and changes nothing until
@@ -8096,16 +8266,21 @@ async fn test_rename_rolls_back_when_an_in_transaction_check_refuses_the_call() 
     // that check runs inside the write group, after the rename's data
     // migration.
     let node = svc.get_node(&node_id).await.unwrap().unwrap();
-    svc.update_node(
-        &node_id,
-        node.version,
-        crate::models::NodeUpdate {
-            properties: Some(json!({ "memo": { "score": "not-a-number" } })),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("seed a leftover value");
+    // Written past the closed-bucket check: a leftover value is what a removed
+    // field leaves behind, and no write can introduce one now.
+    let _ = node;
+    svc.store()
+        .update_node(
+            &node_id,
+            crate::models::NodeUpdate {
+                properties: Some(json!({ "memo": { "notes": "kept", "score": "not-a-number" } })),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+        )
+        .await
+        .expect("seed a leftover value");
 
     let result = handle_update_schema(
         &svc,
@@ -8285,16 +8460,21 @@ async fn test_rename_migrates_descendant_instances_and_rolls_back_with_a_refusal
     // Refused inside the transaction (a stored value the added number field
     // rejects), after the descendant's data was migrated.
     let node = svc.get_node(&sub_id).await.unwrap().unwrap();
-    svc.update_node(
-        &sub_id,
-        node.version,
-        crate::models::NodeUpdate {
-            properties: Some(json!({ "base": { "score": "not-a-number" } })),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("seed a leftover value");
+    // Written past the closed-bucket check: a leftover value is what a removed
+    // field leaves behind, and no write can introduce one now.
+    let _ = node;
+    svc.store()
+        .update_node(
+            &sub_id,
+            crate::models::NodeUpdate {
+                properties: Some(json!({ "base": { "notes": "kept", "score": "not-a-number" } })),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+        )
+        .await
+        .expect("seed a leftover value");
     let result = handle_update_schema(
         &svc,
         json!({
