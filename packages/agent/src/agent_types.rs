@@ -138,48 +138,45 @@ impl UndeclaredRefusal {
     }
 }
 
-/// A refusal read from an error text, for a write whose error reaches only as the
-/// store's text (a user-defined type, a bulk or trusted write): the keys and type of
-/// `'k' is not a field of the type 'T': ...`, whatever prefix the tool put on it.
+/// A refusal read from the store's own text, for a write whose error reaches only as
+/// text (a user-defined type, a bulk or trusted write): the sentence
+/// `'k' is not a field of the type 'T': no schema in its chain declares it`, at the
+/// start of the text or after a `: ` prefix a tool put on it.
 ///
-/// The LAST marker is the store's own; a key that holds the marker text is the
-/// model's, and cannot move it. The sentence before the marker must be exactly the
-/// quoted keys joined by commas and the verb, or no key is named. `None` when the
-/// text holds no such sentence.
+/// The sentence is matched whole, quoted keys and fixed words, not by a marker
+/// alone: the store does not echo a key of other characters, so text the model chose
+/// cannot pass for it, and an error that merely holds the marker words is not a
+/// refusal. `None` when no such sentence is there.
 pub fn parse_undeclared_keys(text: &str) -> Option<UndeclaredRefusal> {
-    let (marker_at, marker) = [" not a field of the type '", " not fields of the type '"]
-        .iter()
-        .filter_map(|m| text.rfind(m).map(|at| (at, *m)))
-        .max_by_key(|(at, _)| *at)?;
-    let after = &text[marker_at + marker.len()..];
-    let node_type = after.split('\'').next()?;
-    let before = &text[..marker_at];
-    let sentence = before.rsplit_once(": ").map_or(before, |(_, tail)| tail);
-    let listed = sentence
-        .strip_suffix(" is")
-        .or_else(|| sentence.strip_suffix(" are"))
-        .unwrap_or(sentence);
-    let keys: Vec<String> = listed
-        .split('\'')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_string)
-        .collect();
-    let rebuilt = keys
-        .iter()
-        .map(|k| format!("'{k}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let genuine = !keys.is_empty() && rebuilt == listed;
-    Some(if genuine {
-        UndeclaredRefusal::from_parts(node_type, &keys)
-    } else {
-        UndeclaredRefusal {
-            node_type: plain_type(node_type).then(|| node_type.to_string()),
-            keys: Vec::new(),
-            unnamed: 1,
+    text.match_indices('\'')
+        .map(|(at, _)| at)
+        .filter(|&at| at == 0 || text[..at].ends_with(": "))
+        .find_map(|at| refusal_sentence(&text[at..]))
+}
+
+fn refusal_sentence(s: &str) -> Option<UndeclaredRefusal> {
+    let mut rest = s;
+    let mut keys: Vec<String> = Vec::new();
+    loop {
+        let inner = rest.strip_prefix('\'')?;
+        let (key, after) = inner.split_once('\'')?;
+        keys.push(key.to_string());
+        match after.strip_prefix(", ") {
+            Some(more) => rest = more,
+            None => {
+                rest = after;
+                break;
+            }
         }
-    })
+    }
+    let rest = rest
+        .strip_prefix(" is not a field of the type '")
+        .or_else(|| rest.strip_prefix(" are not fields of the type '"))?;
+    let (node_type, after) = rest.split_once('\'')?;
+    after
+        .starts_with(": no schema in its chain declares it")
+        .then_some(())?;
+    Some(UndeclaredRefusal::from_parts(node_type, &keys))
 }
 
 // ---------------------------------------------------------------------------

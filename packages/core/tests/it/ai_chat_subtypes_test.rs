@@ -347,7 +347,14 @@ async fn a_chat_takes_only_its_own_declared_fields() {
         properties["agent"] = json!(agent);
         let error = message(create(&svc, subtype, "Untitled", properties).await);
         let key = foreign.as_object().unwrap().keys().next().unwrap().clone();
-        assert!(error.contains(&key), "{subtype} {foreign}: {error}");
+        // The store echoes a key of letters, digits and `_`, and says "a key with
+        // other characters" for any other.
+        let shown = if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            key.as_str()
+        } else {
+            "a key with other characters"
+        };
+        assert!(error.contains(shown), "{subtype} {foreign}: {error}");
     }
 
     // A field added to the type is welcome, under its own name.

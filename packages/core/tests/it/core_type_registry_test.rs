@@ -441,8 +441,14 @@ async fn a_custom_field_is_stored_under_its_bare_name_and_an_undeclared_key_is_r
     // Undeclared, and no spelling makes it declared.
     for key in ["shade", "team:shade", "vendor:thing"] {
         let error = message(create(&svc, "task", "A task", json!({ key: "x" })).await);
+        // A key of other characters is not echoed back.
+        let shown = if key.contains(':') {
+            "a key with other characters"
+        } else {
+            key
+        };
         assert!(
-            error.contains(&format!("'{key}' is not a field of the type 'task'")),
+            error.contains(&format!("'{shown}' is not a field of the type 'task'")),
             "{error}"
         );
     }

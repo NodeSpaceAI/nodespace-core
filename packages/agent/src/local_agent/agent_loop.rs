@@ -2796,22 +2796,69 @@ fn describe_unsurfaced_failures(failed: &[&ToolExecutionRecord]) -> String {
 /// A reply cannot be checked for a claim that the value was set ("effort is now
 /// 5", "saved with effort 5"), and a reply that stands beside the refusal leaves the
 /// user believing it was, so the reply is replaced, on every way a turn can end. A
-/// retry that left the key out does not change that: the key was still not stored.
+/// retry that left the key out does not change that: the key was still not stored,
+/// unless a later write that landed carried it, which is read from that call.
 /// Every other failed tool of the turn gets its own sentence, named whether or not
 /// the model mentioned it (ADR-112 section 11).
-fn undeclared_refusal_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
-    if result.clarify.is_some() {
-        return;
-    }
-    let refusals: Vec<crate::agent_types::UndeclaredRefusal> = result
-        .tool_calls_made
-        .iter()
-        .filter_map(undeclared_refusal_of)
-        .collect();
-    if refusals.is_empty() {
-        return;
-    }
+fn undeclared_refusal_backstop(
+    session: &mut AgentSession,
+    result: &mut AgentTurnResult,
+    model_reply: &str,
+) {
     let executions = &result.tool_calls_made;
+    let Some(first) = executions
+        .iter()
+        .position(|r| undeclared_refusal_of(r).is_some())
+    else {
+        return;
+    };
+    let later = &executions[first + 1..];
+
+    // What the turn did after the refusal, from the calls and their results and
+    // never from the model's text: the keys a later write that landed carried, and
+    // the types a later schema write that landed changed.
+    let mut stored_later: Vec<String> = Vec::new();
+    let mut schema_changes: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    for record in later.iter().filter(|r| !r.is_error) {
+        match record.name.as_str() {
+            "create_node" | "update_node" => {
+                for field in ["field_values", "properties"] {
+                    if let Some(object) = record.args.get(field).and_then(|v| v.as_object()) {
+                        stored_later.extend(object.keys().cloned());
+                    }
+                }
+            }
+            "create_schema" | "update_schema" => {
+                let type_id = ["schema_id", "name"]
+                    .iter()
+                    .find_map(|k| record.args.get(*k).and_then(|v| v.as_str()))
+                    .map(str::to_string);
+                let fields: Vec<String> = ["add_fields", "fields"]
+                    .iter()
+                    .filter_map(|k| record.args.get(*k).and_then(|v| v.as_array()))
+                    .flatten()
+                    .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(str::to_string))
+                    .collect();
+                schema_changes.push((type_id, fields));
+            }
+            _ => {}
+        }
+    }
+
+    let mut refusals: Vec<crate::agent_types::UndeclaredRefusal> = Vec::new();
+    let mut now_stored: Vec<String> = Vec::new();
+    for mut refusal in executions.iter().filter_map(undeclared_refusal_of) {
+        let (kept, stored): (Vec<String>, Vec<String>) = refusal
+            .keys
+            .drain(..)
+            .partition(|k| !stored_later.contains(k));
+        now_stored.extend(stored);
+        refusal.keys = kept;
+        if !refusal.keys.is_empty() || refusal.unnamed > 0 {
+            refusals.push(refusal);
+        }
+    }
+
     let others: Vec<&ToolExecutionRecord> = executions
         .iter()
         .enumerate()
@@ -2825,7 +2872,59 @@ fn undeclared_refusal_backstop(session: &mut AgentSession, result: &mut AgentTur
         })
         .map(|(_, r)| r)
         .collect();
-    let mut message = format!("⚠️ {}", undeclared_refusal_notice(&refusals));
+
+    let mut sentences: Vec<String> = Vec::new();
+    // A model that added the field itself did what the user did not ask for: it
+    // is said, in words built here.
+    for (type_id, fields) in &schema_changes {
+        let plain = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        };
+        let ty = type_id
+            .as_deref()
+            .filter(|t| plain(t))
+            .map(|t| format!("the type '{t}'"))
+            .unwrap_or_else(|| "a type".to_string());
+        let named: Vec<String> = fields
+            .iter()
+            .filter(|f| plain(f))
+            .take(crate::agent_types::REFUSED_KEYS_SHOWN)
+            .map(|f| format!("'{f}'"))
+            .collect();
+        let added = if named.is_empty() {
+            String::new()
+        } else {
+            format!(" (fields: {})", named.join(", "))
+        };
+        sentences.push(format!(
+            "I changed {ty} in this turn{added}, which you did not ask for."
+        ));
+    }
+    if !refusals.is_empty() {
+        sentences.push(undeclared_refusal_notice(&refusals));
+    }
+    let now_stored: Vec<String> = now_stored
+        .into_iter()
+        .filter(|k| {
+            !k.is_empty()
+                && k.len() <= 64
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .collect();
+    if !now_stored.is_empty() {
+        let list = now_stored
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sentences.push(format!(
+            "A later write in this turn carried {list} and it went through."
+        ));
+    }
+    let mut message = format!("⚠️ {}", sentences.join(" "));
     if !others.is_empty() {
         message.push(' ');
         message.push_str(describe_unsurfaced_failures(&others).trim_start_matches("⚠️ "));
@@ -2833,8 +2932,15 @@ fn undeclared_refusal_backstop(session: &mut AgentSession, result: &mut AgentTur
     tracing::warn!(
         session_id = %session.id,
         refused = refusals.len(),
-        "A write was refused for undeclared keys — the reply is the notice, not the model's text"
+        "A write was refused for undeclared keys — the reply is built from the calls, not the model's text"
     );
+    // An earlier backstop's text is code-built too and can ask the user something:
+    // the notice follows it. The model's own reply is replaced.
+    let message = if result.response == model_reply {
+        message
+    } else {
+        format!("{}\n\n{message}", result.response)
+    };
     replace_turn_reply(session, &message);
     result.response = message;
 }
@@ -3916,14 +4022,17 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // Applied here, over the finished turn, because the loop has several
         // exits (final reply, iteration cap, loop breaks) and the question must
         // reach the user whichever one the turn took.
+        let model_reply = result.response.clone();
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
             declined_work_backstop(session, &mut result);
             unresolved_id_backstop(session, &mut result);
             cut_off_turn_backstop(session, &mut result, end, intent_clarified);
             type_listing_backstop(session, &mut result);
-            undeclared_refusal_backstop(session, &mut result);
         }
+        // After the others, and on a turn that ends in a question too: the notice
+        // follows what the user is asked.
+        undeclared_refusal_backstop(session, &mut result, &model_reply);
         // Recorded after the guards above, which can turn a reply into a
         // question: the outcome is what the user was finally shown.
         session.prior_turns.push(PriorTurn {
@@ -12359,6 +12468,17 @@ mod tests {
         calls: Vec<(&'static str, bool, serde_json::Value)>,
         reply: &str,
     ) -> String {
+        run_claim_turn_full(calls, reply).await.0
+    }
+
+    /// [`run_claim_turn`] with the session the turn ran in. A scripted result may
+    /// carry `__args`, the arguments the call was made with; without it each call
+    /// is made with arguments of its own, so the loop does not read a later call
+    /// as a repeat of an earlier one.
+    async fn run_claim_turn_full(
+        calls: Vec<(&'static str, bool, serde_json::Value)>,
+        reply: &str,
+    ) -> (String, AgentSession) {
         struct ScriptedExecutor {
             results: Vec<(&'static str, bool, serde_json::Value)>,
             next: AtomicUsize,
@@ -12367,14 +12487,20 @@ mod tests {
         #[async_trait]
         impl AgentToolExecutor for ScriptedExecutor {
             async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
-                Ok(["create_node", "create_relationship", "update_node"]
-                    .into_iter()
-                    .map(|name| ToolDefinition {
-                        name: name.into(),
-                        description: name.into(),
-                        parameters_schema: json!({"type": "object"}),
-                    })
-                    .collect())
+                Ok([
+                    "create_node",
+                    "create_relationship",
+                    "update_node",
+                    "update_schema",
+                    "create_schema",
+                ]
+                .into_iter()
+                .map(|name| ToolDefinition {
+                    name: name.into(),
+                    description: name.into(),
+                    parameters_schema: json!({"type": "object"}),
+                })
+                .collect())
             }
 
             async fn execute(
@@ -12383,7 +12509,16 @@ mod tests {
                 _args: serde_json::Value,
             ) -> Result<ToolResult, ToolError> {
                 let i = self.next.fetch_add(1, Ordering::SeqCst);
-                let (_, is_error, result) = self.results[i].clone();
+                let (_, is_error, mut result) = self.results[i].clone();
+                if let Some(object) = result.as_object_mut() {
+                    object.remove("__args");
+                }
+                if let Some(id) = result.get("__unresolved").and_then(|v| v.as_str()) {
+                    return Err(ToolError::UnresolvedId {
+                        tool: name.to_string(),
+                        id: id.to_string(),
+                    });
+                }
                 // A scripted write refused for undeclared keys, as the tool
                 // reports it: the typed error, not a result.
                 if let Some(refuse) = result.get("__refuse") {
@@ -12412,7 +12547,12 @@ mod tests {
         let mut rounds: Vec<Vec<StreamingChunk>> = calls
             .iter()
             .enumerate()
-            .map(|(i, (name, _, _))| {
+            .map(|(i, (name, _, scripted))| {
+                let args_json = scripted
+                    .get("__args")
+                    .cloned()
+                    .unwrap_or_else(|| json!({"content": "Does the guide cover v1?", "n": i}))
+                    .to_string();
                 vec![
                     StreamingChunk::ToolCallStart {
                         id: format!("tc_{i}"),
@@ -12421,7 +12561,7 @@ mod tests {
                     },
                     StreamingChunk::ToolCallArgs {
                         id: format!("tc_{i}"),
-                        args_json: r#"{"content":"Does the guide cover v1?"}"#.to_string(),
+                        args_json,
                     },
                     StreamingChunk::Done {
                         usage: InferenceUsage {
@@ -12451,7 +12591,7 @@ mod tests {
         });
         let agent_loop = LocalAgentLoop::new(engine, executor);
         let mut session = new_session();
-        agent_loop
+        let response = agent_loop
             .run_turn(
                 &mut session,
                 "put his question down",
@@ -12461,7 +12601,8 @@ mod tests {
             )
             .await
             .unwrap()
-            .response
+            .response;
+        (response, session)
     }
 
     const NOT_CREATED: &str = "invalid arguments for tool create_node: 'assignee' is a \
@@ -12598,6 +12739,149 @@ mod tests {
         assert!(!response.contains("with effort 5"), "{response}");
     }
 
+    /// The turn after a refusal, as a model that ignores the rule runs it: it adds
+    /// the field itself, then writes the value. The user is told the type was
+    /// changed, which they did not ask for, and is not told the value was not
+    /// stored, since a later write carried it.
+    #[tokio::test]
+    async fn a_field_the_model_added_itself_is_said_and_a_stored_value_is_not_denied() {
+        let response = run_claim_turn(
+            vec![
+                (
+                    "create_node",
+                    true,
+                    json!({"__refuse": {"node_type": "task", "keys": ["effort"]},
+                           "__args": {"node_type": "task", "content": "T", "field_values": {"effort": 5}}}),
+                ),
+                (
+                    "update_schema",
+                    false,
+                    json!({"success": true,
+                           "__args": {"schema_id": "task", "add_fields": [{"name": "effort", "type": "number"}]}}),
+                ),
+                (
+                    "create_node",
+                    false,
+                    json!({"id": "nodespace://t1", "property_count": 1,
+                           "__args": {"node_type": "task", "content": "T2", "field_values": {"effort": 5}}}),
+                ),
+            ],
+            "Done, the task has effort 5.",
+        )
+        .await;
+        assert!(
+            response.contains("I changed the type 'task' in this turn (fields: 'effort'), which you did not ask for."),
+            "{response}"
+        );
+        assert!(
+            response.contains("'effort' and it went through"),
+            "{response}"
+        );
+        assert!(!response.contains("was not stored"), "{response}");
+        assert!(!response.contains("Done, the task"), "{response}");
+    }
+
+    /// A schema change after a refusal, when the later write did not carry the
+    /// key: the change is said and the key is still reported as not stored.
+    #[tokio::test]
+    async fn a_schema_change_after_a_refusal_is_said_and_an_unstored_key_still_is() {
+        let response = run_claim_turn(
+            vec![
+                (
+                    "update_node",
+                    true,
+                    json!({"__refuse": {"node_type": "task", "keys": ["effort"]},
+                           "__args": {"id": "t1", "field_values": {"effort": 5}}}),
+                ),
+                (
+                    "create_schema",
+                    false,
+                    json!({"success": true, "__args": {"name": "Sprint", "fields": [{"name": "goal", "type": "text"}]}}),
+                ),
+            ],
+            "All set.",
+        )
+        .await;
+        assert!(
+            response.contains("I changed the type 'Sprint'") || response.contains("a type"),
+            "{response}"
+        );
+        assert!(response.contains("'effort' was not stored"), "{response}");
+    }
+
+    /// What the session keeps as the turn's reply is the notice, so the next turn's
+    /// model does not read its own false claim back.
+    #[tokio::test]
+    async fn the_history_keeps_the_notice_not_the_models_claim() {
+        let (response, session) = run_claim_turn_full(
+            vec![("update_node", true, undeclared_refusal("task", &["effort"]))],
+            "Done, effort is now 5.",
+        )
+        .await;
+        let last = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, Role::Assistant) && m.tool_calls.is_empty())
+            .expect("an assistant reply");
+        assert_eq!(last.content, response);
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content.contains("effort is now 5")));
+    }
+
+    /// A later call that landed does not excuse the refusal: the retry runs with
+    /// its own arguments, and the key it left out is still reported.
+    #[tokio::test]
+    async fn a_later_success_of_the_same_tool_does_not_excuse_the_refusal() {
+        let response = run_claim_turn(
+            vec![
+                (
+                    "create_node",
+                    true,
+                    json!({"__refuse": {"node_type": "task", "keys": ["effort"]},
+                           "__args": {"content": "T", "field_values": {"effort": 5}}}),
+                ),
+                (
+                    "create_node",
+                    false,
+                    json!({"id": "nodespace://t1", "property_count": 0,
+                           "__args": {"content": "T"}}),
+                ),
+            ],
+            "I created the task with effort 5.",
+        )
+        .await;
+        assert!(response.contains("'effort' was not stored"), "{response}");
+    }
+
+    /// An earlier backstop's question is code-built and stays: the notice follows
+    /// it, so the user is asked which node and also told which value was refused.
+    #[tokio::test]
+    async fn the_notice_follows_an_earlier_backstops_question() {
+        let response = run_claim_turn(
+            vec![
+                (
+                    "create_node",
+                    true,
+                    json!({"__refuse": {"node_type": "task", "keys": ["effort"]},
+                           "__args": {"content": "T", "field_values": {"effort": 5}}}),
+                ),
+                (
+                    "update_node",
+                    true,
+                    json!({"__unresolved": "the-bug-task", "__args": {"id": "the-bug-task", "content": "x"}}),
+                ),
+            ],
+            "Done, effort is now 5.",
+        )
+        .await;
+        assert!(response.contains("doesn't match any node"), "{response}");
+        assert!(response.contains("'effort' was not stored"), "{response}");
+        assert!(!response.contains("effort is now 5"), "{response}");
+    }
+
     /// The store's own refusal (a user-defined type, a bulk write) is read from
     /// its text, the last marker deciding the type, and several keys are listed.
     #[tokio::test]
@@ -12647,14 +12931,35 @@ mod tests {
         assert!(!response.contains("bank_account"), "{response}");
         assert!(response.contains("a value was not stored"), "{response}");
         assert!(response.contains("'task'"), "{response}");
-        // Through the store's text: the last marker is the store's.
-        let text = format!(
-            "tool execution failed: '{spoof}' is not a field of the type 'task': no schema in its chain declares it."
-        );
+        // Through the store's text, as the store writes it: it does not echo a key of
+        // other characters, so the spoof is not in the text at all.
+        let text = "tool execution failed: Invalid update: 'a key with other characters' is not a \
+            field of the type 'decision': no schema in its chain declares it, and a node takes \
+            only the fields its type declares. The value was not stored. Tell the user which \
+            value was refused and offer to add 'a key with other characters' to the type as a \
+            separate request, which gives it to every node of the type; do not add it yourself.";
         let response =
             run_claim_turn(vec![("create_node", true, json!({"error": text}))], "Okay.").await;
         assert!(!response.contains("bank_account"), "{response}");
-        assert!(response.contains("'task'"), "{response}");
+        assert!(response.contains("'decision'"), "{response}");
+        assert!(response.contains("a value was not stored"), "{response}");
+        // An error that only holds the marker words is not a refusal.
+        let imitation =
+            "tool execution failed: unknown node_type 'q is not a field of the type 'bank'";
+        let response = run_claim_turn(
+            vec![("create_node", true, json!({"error": imitation}))],
+            "Okay.",
+        )
+        .await;
+        assert!(!response.contains("was not stored"), "{response}");
+        // Nor one with the sentence's words but not the store's whole structure.
+        let imitation = "tool execution failed: 'q' is not a field of the type 'bank'.";
+        let response = run_claim_turn(
+            vec![("create_node", true, json!({"error": imitation}))],
+            "Okay.",
+        )
+        .await;
+        assert!(!response.contains("was not stored"), "{response}");
     }
 
     /// A remote tool's result is another party's text: it is never read as a
@@ -12685,7 +12990,7 @@ mod tests {
     fn only_plain_identifiers_of_a_refused_write_are_repeated() {
         use crate::agent_types::{parse_undeclared_keys, UndeclaredRefusal};
         let refusal = parse_undeclared_keys(
-            "undeclared keys for tool create_node: 'bad key', 'ok_key' are not fields of the type 'task', so nothing was stored.",
+            "tool execution failed: 'bad key', 'ok_key' are not fields of the type 'task': no schema in its chain declares it, and more.",
         )
         .expect("a refusal");
         assert_eq!(refusal.keys, ["ok_key"]);

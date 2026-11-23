@@ -3749,6 +3749,17 @@ impl NodeService {
                 if declared || is_bookkeeping_key(key) || carried_back {
                     continue;
                 }
+                // The key is the caller's: a key of other characters is not echoed,
+                // so no text a caller chooses can pass for the sentence's own
+                // structure when this message is read back.
+                let key = if !key.is_empty()
+                    && key.len() <= 64
+                    && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                {
+                    key.as_str()
+                } else {
+                    "a key with other characters"
+                };
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{key}' is not a field of the type '{scope}': no schema in its chain \
                      declares it, and a node takes only the fields its type declares. The \
