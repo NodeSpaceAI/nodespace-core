@@ -379,7 +379,7 @@ async fn a_relationship_named_as_a_property_without_a_node_is_refused_with_the_f
 async fn a_field_value_naming_a_relationship_is_refused_and_the_edge_is_set_the_named_way() {
     let (executor, _tmp) = executor_with_assigned_tasks().await;
 
-    for key in ["assignee", "assignee", "task__assignee"] {
+    for key in ["assignee", "task__assignee"] {
         let refused = executor
             .execute(
                 "update_node",

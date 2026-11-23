@@ -452,16 +452,7 @@ async fn a_custom_field_is_stored_under_its_bare_name_and_an_undeclared_key_is_r
 /// a rule (the CEL bridge that plays read).
 #[tokio::test]
 async fn a_custom_field_is_readable_by_its_bare_name_through_a_filter_and_a_rule() {
-    use nodespace_core::services::query_service::{
-        FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
-    };
-    let temp_dir = TempDir::new().unwrap();
-    let mut store = Arc::new(
-        SqliteStore::new(temp_dir.path().join("t.db"))
-            .await
-            .unwrap(),
-    );
-    let svc = Arc::new(NodeService::new(&mut store).await.unwrap());
+    let (svc, _tmp) = test_service().await;
     handle_update_schema(
         &svc,
         json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
@@ -475,20 +466,14 @@ async fn a_custom_field_is_readable_by_its_bare_name_through_a_filter_and_a_rule
         .await
         .unwrap();
 
-    let query = QueryDefinition {
-        target_type: "task".to_string(),
-        filters: vec![QueryFilter {
-            filter_type: FilterType::Property,
-            operator: FilterOperator::Equals,
-            property: Some("effort".to_string()),
-            value: Some(json!(1)),
-            ..Default::default()
-        }],
-        sorting: None,
-        limit: None,
-    };
-    let found = QueryService::new(store.clone())
-        .execute(&query)
+    // The agent's and the CLI's query layer: a filter names the field by its
+    // bare name and finds the node that holds it.
+    let input: nodespace_core::ops::query_ops::ExecuteQueryInput = serde_json::from_value(json!({
+        "target_type": "task",
+        "filters": [{ "type": "property", "operator": "equals", "property": "effort", "value": 1 }]
+    }))
+    .unwrap();
+    let found = nodespace_core::ops::query_ops::execute_query_nodes(&svc, input)
         .await
         .unwrap();
     assert_eq!(
@@ -496,12 +481,19 @@ async fn a_custom_field_is_readable_by_its_bare_name_through_a_filter_and_a_rule
         [small.as_str()]
     );
 
+    // A rule: the CEL bridge exposes the bare name, so a condition on it holds.
     let node = svc.get_node(&small).await.unwrap().unwrap();
-    let cel = nodespace_core::playbook::cel::node_to_cel_value(&node);
-    let cel_cond = format!("{cel:?}");
+    let cel_interpreter::Value::Map(map) = nodespace_core::playbook::cel::node_to_cel_value(&node)
+    else {
+        panic!("a node is a CEL map");
+    };
+    let held = map.map.get(&nodespace_core::playbook::cel::key("effort"));
     assert!(
-        cel_cond.contains("effort"),
-        "the rule bridge reads the bare name: {cel_cond}"
+        matches!(
+            held,
+            Some(cel_interpreter::Value::Int(1)) | Some(cel_interpreter::Value::UInt(1))
+        ),
+        "node.effort is the stored 1: {held:?}"
     );
 }
 
@@ -554,6 +546,345 @@ async fn removing_a_custom_field_leaves_its_values_and_the_node_stays_writable()
     )
     .await
     .expect("the same name with a type the value fits");
+}
+
+/// The trusted import skips schema validation, not the closed bucket: an
+/// undeclared key is refused there as anywhere else, while a declared field and
+/// a `_` bookkeeping key are taken.
+#[tokio::test]
+async fn the_trusted_import_refuses_an_undeclared_key() {
+    let (svc, _tmp) = test_service().await;
+    let row = |id: &str, node_type: &str, properties: serde_json::Value| {
+        (
+            id.to_string(),
+            node_type.to_string(),
+            "A node".to_string(),
+            None,
+            1.0,
+            properties,
+        )
+    };
+    let error = svc
+        .bulk_create_hierarchy_trusted(vec![row(
+            "00000000-0000-4000-8000-0000000000c1",
+            "task",
+            json!({ "bogus": 1 }),
+        )])
+        .await
+        .expect_err("an undeclared key on a core type")
+        .to_string();
+    assert!(
+        error.contains("'bogus' is not a field of the type 'task'"),
+        "{error}"
+    );
+    svc.bulk_create_hierarchy_trusted(vec![row(
+        "00000000-0000-4000-8000-0000000000c2",
+        "task",
+        json!({ "priority": "high", "_note": 1 }),
+    )])
+    .await
+    .expect("a declared field and a bookkeeping key");
+}
+
+/// A custom field cannot be named after what an instance reads as a
+/// relationship under its reverse name (a task's `blocked_by`, read from the
+/// `blocks` of another task, and its `project`, read from a project's `tasks`),
+/// and a relationship cannot be given a reverse name that a type at its target
+/// end declares as a field (ADR-112 section 5, both directions).
+#[tokio::test]
+async fn reverse_relationship_names_are_name_clashes_in_both_directions() {
+    let (svc, _tmp) = test_service().await;
+    for name in ["blocked_by", "blocks"] {
+        let error = handle_update_schema(
+            &svc,
+            json!({ "schema_id": "task", "add_fields": [{ "name": name, "type": "text" }] }),
+        )
+        .await
+        .expect_err("a relationship name read from a task")
+        .to_string();
+        assert!(
+            error.contains(name) && error.contains("relationship"),
+            "{error}"
+        );
+    }
+    // A type extending task reads the same names.
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Chore", "extends": "task", "fields": [] }),
+    )
+    .await
+    .unwrap();
+    let error = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "chore", "add_fields": [{ "name": "blocked_by", "type": "text" }] }),
+    )
+    .await
+    .expect_err("an inherited reverse name")
+    .to_string();
+    assert!(error.contains("blocked_by"), "{error}");
+
+    // A reverse name a user type declares toward task is read from a task too.
+    create_schema(&svc, json!({ "name": "Crew", "fields": [] })).await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "crew",
+            "add_relationships": [{
+                "name": "assigned",
+                "targetType": "task",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "crew_of",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .unwrap();
+    let error = handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "crew_of", "type": "text" }] }),
+    )
+    .await
+    .expect_err("a user type's reverse name")
+    .to_string();
+    assert!(
+        error.contains("crew_of") && error.contains("relationship"),
+        "{error}"
+    );
+
+    // The other direction: a field on task, then a relationship whose reverse
+    // name is that field.
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "owner_note", "type": "text" }] }),
+    )
+    .await
+    .unwrap();
+    create_schema(&svc, json!({ "name": "Team", "fields": [] })).await;
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "team",
+            "add_relationships": [{
+                "name": "work",
+                "targetType": "task",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "owner_note",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a reverse name that is a field of the target")
+    .to_string();
+    assert!(
+        error.contains("owner_note") && error.contains("reverse name"),
+        "{error}"
+    );
+}
+
+/// `add_field_values` extends a `core` field's list but not a `system` field's:
+/// the maintaining code owns those values.
+#[tokio::test]
+async fn values_cannot_be_added_to_a_system_field() {
+    let (svc, _tmp) = test_service().await;
+    let system = nodespace_core::models::SchemaField {
+        name: "stage".to_string(),
+        friendly_name: "Stage".to_string(),
+        field_type: nodespace_core::models::SchemaFieldType::Enum,
+        protection: nodespace_core::models::SchemaProtectionLevel::System,
+        extensible: Some(true),
+        core_values: Some(vec![nodespace_types::EnumValue::new(
+            "open".to_string(),
+            "Open".to_string(),
+        )]),
+        ..Default::default()
+    };
+    nodespace_core::schema::declare_system_custom_fields(&svc, "person", vec![system])
+        .await
+        .expect("an extension declares a system field");
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "person",
+            "add_field_values": [{ "field": "stage", "values": [{ "value": "late", "label": "Late" }] }]
+        }),
+    )
+    .await
+    .expect_err("a system field's values are not the caller's")
+    .to_string();
+    assert!(
+        error.contains("stage") && error.contains("system"),
+        "{error}"
+    );
+    // A core field's extensible list still takes values.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{ "field": "status", "values": [{ "value": "parked", "label": "Parked" }] }]
+        }),
+    )
+    .await
+    .expect("a core field's list is the user's to extend");
+}
+
+/// A custom field cannot take an envelope key or a type's name: either would be
+/// read as that, not as the field.
+#[tokio::test]
+async fn reserved_names_cannot_be_custom_fields() {
+    let (svc, _tmp) = test_service().await;
+    for name in [
+        "id",
+        "content",
+        "title",
+        "version",
+        "node_type",
+        "task",
+        "issue",
+    ] {
+        let error = handle_update_schema(
+            &svc,
+            json!({ "schema_id": "task", "add_fields": [{ "name": name, "type": "text" }] }),
+        )
+        .await
+        .expect_err("a reserved name")
+        .to_string();
+        assert!(error.contains(&format!("'{name}'")), "{name}: {error}");
+    }
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "text" }] }),
+    )
+    .await
+    .unwrap();
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "rename_fields": [{ "from": "effort", "to": "title" }],
+            "force": true
+        }),
+    )
+    .await
+    .expect_err("a rename to a reserved name")
+    .to_string();
+    assert!(error.contains("'title'"), "{error}");
+}
+
+/// The agent can mint no protected field: `create_schema` takes user fields only.
+#[tokio::test]
+async fn create_schema_refuses_a_system_or_core_field() {
+    let (svc, _tmp) = test_service().await;
+    for protection in ["system", "core"] {
+        let error = handle_create_schema(
+            &svc,
+            json!({
+                "name": "Gadget",
+                "fields": [{ "name": "stamp", "type": "text", "protection": protection }]
+            }),
+        )
+        .await
+        .expect_err("a protected field on a user-defined type")
+        .to_string();
+        assert!(
+            error.contains("stamp") && error.contains(protection),
+            "{error}"
+        );
+    }
+    assert!(svc.get_schema_node("gadget").await.unwrap().is_none());
+}
+
+/// An extension declares system custom fields on a built-in type only; a
+/// user-defined or missing schema is refused, declaring again is a no-op, and a
+/// later declaration of the same name and type with other metadata is taken as
+/// the same field rather than refused.
+#[tokio::test]
+async fn declaring_system_custom_fields_is_for_built_in_types() {
+    use nodespace_core::models::{SchemaField, SchemaFieldType, SchemaProtectionLevel};
+    use nodespace_core::schema::declare_system_custom_fields;
+    let (svc, _tmp) = test_service().await;
+    let field = |description: &str| SchemaField {
+        name: "stamp".to_string(),
+        friendly_name: "Stamp".to_string(),
+        field_type: SchemaFieldType::Text,
+        protection: SchemaProtectionLevel::System,
+        description: Some(description.to_string()),
+        ..Default::default()
+    };
+    create_schema(&svc, json!({ "name": "Gadget", "fields": [] })).await;
+    let error = declare_system_custom_fields(&svc, "gadget", vec![field("a")])
+        .await
+        .expect_err("a user-defined type has no custom_fields")
+        .to_string();
+    assert!(error.contains("user-defined"), "{error}");
+    let error = declare_system_custom_fields(&svc, "no-such-type", vec![field("a")])
+        .await
+        .expect_err("no such schema")
+        .to_string();
+    assert!(error.contains("not found"), "{error}");
+
+    declare_system_custom_fields(&svc, "person", vec![field("a")])
+        .await
+        .unwrap();
+    declare_system_custom_fields(&svc, "person", vec![field("changed later")])
+        .await
+        .expect("the same name and type is the field already declared");
+    let stored = svc.get_schema_node("person").await.unwrap().unwrap();
+    assert_eq!(stored.custom_fields.len(), 1);
+    assert_eq!(stored.custom_fields[0].description.as_deref(), Some("a"));
+}
+
+/// The carried-back exception covers the whole chain: a leftover value held in
+/// an ancestor's bucket is still carried back when a flat update on a subtype
+/// echoes it, though flat normalization files the key under the node's own.
+#[tokio::test]
+async fn a_leftover_in_an_ancestors_bucket_is_carried_back_by_a_flat_update() {
+    let (svc, _tmp) = test_service().await;
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "add_fields": [{ "name": "effort", "type": "number" }] }),
+    )
+    .await
+    .unwrap();
+    create_schema(
+        &svc,
+        json!({ "name": "Chore", "extends": "task", "fields": [] }),
+    )
+    .await;
+    let id = create(&svc, "chore", "A chore", json!({ "effort": 3 }))
+        .await
+        .unwrap();
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(
+        node.properties["task"]["effort"], 3,
+        "held in the ancestor's bucket"
+    );
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "task", "remove_fields": ["effort"], "force": true }),
+    )
+    .await
+    .unwrap();
+
+    svc.update_node(
+        &id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "effort": 3, "status": "in_progress" })),
+    )
+    .await
+    .expect("the echoed leftover is not a write of it");
+    let error = message(
+        svc.update_node(
+            &id,
+            node.version + 1,
+            NodeUpdate::new().with_properties(json!({ "effort": 4 })),
+        )
+        .await,
+    );
+    assert!(error.contains("'effort' is not a field"), "{error}");
 }
 
 /// No schema is open (ADR-112 section 11): a user subtype of a core type and a

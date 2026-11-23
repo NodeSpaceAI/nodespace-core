@@ -7,12 +7,21 @@
 // A key's status is a lookup in the schema (declared in `fields` or
 // `custom_fields`, or `_`-prefixed), never a property of its spelling.
 //
-// Scope: every Rust, TypeScript and Svelte file under `packages/` and
-// `scripts/`, tests included (a fixture that writes a prefixed key teaches the
-// pattern back), plus the Markdown that is served to agents (the seeded skills
-// and rules, the shipped skill and its references) and the contributor
-// guides. A line comment is out of scope in code. This is a hard check with
-// no baseline: a hit fails.
+// Scope: every Rust, TypeScript, Svelte, JavaScript, JSON, TOML, SQL and YAML
+// file under `packages/` and `scripts/`, tests included (a fixture that writes
+// a prefixed key teaches the pattern back), plus the Markdown that is served to
+// agents (the seeded skills and rules, the shipped skill and its references)
+// and the contributor guides. Comments are not code: in a Rust, TypeScript or
+// Svelte file they are stripped before the lines are matched, so a trailing
+// comment is ignored and code beside a block comment is not hidden by it. The
+// frozen ablation records (`ALLOWED_PATHS`) are measurements of past prompts and
+// are listed by name. This is a hard check with no baseline: a hit fails.
+//
+// What it cannot catch: a prefix assembled from pieces (`"cus" + "tom:"`), held
+// in a variable and matched later, or read from data. It finds the literal
+// spellings, which is how a prefix has come back every time; the write rule
+// itself is a lookup in the schema (ADR-112 section 3), so a key a caller spells
+// with a prefix is refused as undeclared whatever the code looks like.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -23,6 +32,10 @@ export { REPO };
 const PREFIX = "(?:custom|org|plugin)";
 const QUOTE = "[\"'`]";
 
+// A key as it is spelled after a prefix: letters, digits, `_`, `-`, `.` and
+// further `:` segments (`plugin:nodespace:x`), or a `{..}` / `${..}` hole.
+const KEY = "(?:[A-Za-z0-9_][A-Za-z0-9_.\\-]*(?::[A-Za-z0-9_.\\-]+)*|\\$?\\{[^}]*\\})";
+
 export const CODE_PATTERNS = {
   // `starts_with("custom:")`, `strip_prefix("org:")`, `["custom:", "org:"]`:
   // a prefix literal on its own, which is only ever matched against a key.
@@ -30,11 +43,11 @@ export const CODE_PATTERNS = {
     pattern: new RegExp(`${QUOTE}${PREFIX}:${QUOTE}`),
     summary: "a key prefix literal (custom:, org: or plugin:)",
   },
-  // `"custom:effort"`, `` `custom:${name}` ``, `format!("custom:{key}")`: a key
-  // that declares or builds a prefixed name. A Tauri command (`plugin:app|version`)
-  // is followed by `|` and is not a key.
+  // `"custom:effort"`, `` `custom:${name}` ``, `format!("custom:{key}")`,
+  // `"plugin:nodespace:x"`: a key that declares or builds a prefixed name. A
+  // Tauri command (`plugin:app|version`) is followed by `|` and is not a key.
   prefixedKey: {
-    pattern: new RegExp(`${QUOTE}${PREFIX}:(?:[A-Za-z_][A-Za-z0-9_]*|\\$?\\{[^}]*\\})${QUOTE}`),
+    pattern: new RegExp(`${QUOTE}${PREFIX}:${KEY}${QUOTE}`),
     summary: "a key carrying a custom:, org: or plugin: prefix",
   },
   prefixedKeyBuilt: {
@@ -43,11 +56,14 @@ export const CODE_PATTERNS = {
   },
 } satisfies Record<string, { pattern: RegExp; summary: string }>;
 
-// Guidance teaches the prefix in prose: `custom:` in backticks, or a prefixed
-// name written out.
+// Guidance teaches the prefix in prose: `custom:` in backticks, a prefixed name
+// written out, or the prefix described ("the org: namespace").
 export const MARKDOWN_PATTERNS = {
   prefixTaught: {
-    pattern: new RegExp(`\`${PREFIX}:|\\b${PREFIX}:[a-z_]+\\b|\\b(?:custom|org|plugin)/(?:custom|org|plugin):|${PREFIX}:/`),
+    pattern: new RegExp(
+      `\`${PREFIX}:|\\b${PREFIX}:[a-z_]+\\b|${PREFIX}:\`?\\s+(?:prefix|namespace)\\b|\\b(?:custom|org|plugin)/(?:custom|org|plugin):|${PREFIX}:/`,
+      "i",
+    ),
     summary: "guidance that teaches a custom:, org: or plugin: prefix",
   },
 } satisfies Record<string, { pattern: RegExp; summary: string }>;
@@ -64,8 +80,46 @@ export interface Hit {
   pattern: PatternName;
 }
 
-const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
-const CODE_EXTENSIONS: ReadonlySet<string> = new Set([".rs", ".ts", ".svelte"]);
+const COMMENTED_EXTENSIONS: ReadonlySet<string> = new Set([".rs", ".ts", ".svelte", ".js"]);
+const CODE_EXTENSIONS: ReadonlySet<string> = new Set([...COMMENTED_EXTENSIONS, ".json", ".toml", ".sql", ".yaml", ".yml"]);
+
+/** Measurements of past prompts, kept as they were recorded. */
+export const ALLOWED_PATHS: readonly string[] = ["packages/agent/goldens/ablation/", "scripts/results-e4b.json"];
+
+/**
+ * `text` with its comments blanked: `//` to the end of a line and `/* .. *\/`
+ * spans, outside double-quoted and backtick strings. Line numbers are kept.
+ * A single quote is not tracked (a Rust lifetime or a char would end it wrong).
+ */
+export function stripComments(text: string): string {
+  let out = "";
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (quote) {
+      out += c;
+      if (c === "\\") {
+        out += next ?? "";
+        i++;
+      } else if (c === quote) quote = null;
+    } else if (c === '"' || c === "`") {
+      quote = c;
+      out += c;
+    } else if (c === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      out += "\n";
+    } else if (c === "/" && next === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
+        if (text[i] === "\n") out += "\n";
+        i++;
+      }
+      i++;
+    } else out += c;
+  }
+  return out;
+}
 const MARKDOWN_ROOTS: readonly string[] = [
   "packages/agent/src/seeds/",
   "packages/skill/SKILL.md",
@@ -79,7 +133,7 @@ export const EXCLUDED_FILES: readonly string[] = ["scripts/check-key-prefixes.ts
 
 /** Whether a repo-relative path is scanned, and as what. */
 export function kindOf(path: string): "code" | "markdown" | null {
-  if (EXCLUDED_FILES.includes(path)) return null;
+  if (EXCLUDED_FILES.includes(path) || ALLOWED_PATHS.some((allowed) => path.startsWith(allowed))) return null;
   const ext = extensionOf(path);
   if ((path.startsWith("packages/") || path.startsWith("scripts/")) && CODE_EXTENSIONS.has(ext)) return "code";
   if (ext === ".md" && MARKDOWN_ROOTS.some((root) => path === root || path.startsWith(root))) return "markdown";
@@ -89,14 +143,15 @@ export function kindOf(path: string): "code" | "markdown" | null {
 /** Every hit in one file's text. */
 export function findHits(file: string, text: string): Hit[] {
   const kind = kindOf(file) ?? (extensionOf(file) === ".md" ? "markdown" : "code");
+  const source = kind === "code" && COMMENTED_EXTENSIONS.has(extensionOf(file)) ? stripComments(text) : text;
   const hits: Hit[] = [];
-  const lines = text.split("\n");
+  const lines = source.split("\n");
+  const original = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (kind === "code") {
-      if (COMMENT_LINE.test(line)) continue;
       const name = (Object.keys(CODE_PATTERNS) as (keyof typeof CODE_PATTERNS)[]).find((n) => CODE_PATTERNS[n].pattern.test(line));
-      if (name) hits.push({ file, line: i + 1, text: line.trim(), pattern: name });
+      if (name) hits.push({ file, line: i + 1, text: (original[i] ?? line).trim(), pattern: name });
     } else if (MARKDOWN_PATTERNS.prefixTaught.pattern.test(line)) {
       hits.push({ file, line: i + 1, text: line.trim().slice(0, 160), pattern: "prefixTaught" });
     }

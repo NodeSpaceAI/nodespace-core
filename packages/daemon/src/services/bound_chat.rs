@@ -335,6 +335,11 @@ fn describe_schema_node<'a>(
         let Ok((fields, owners, _chain)) = node_service.resolve_field_owners(&node.id).await else {
             return unreadable();
         };
+        let custom: std::collections::HashSet<String> = node_service
+            .resolve_field_lists(&node.id)
+            .await
+            .map(|(_, custom)| custom.into_iter().map(|f| f.name).collect())
+            .unwrap_or_default();
         // What the type is for is its description: the schema node's children.
         let purpose = node_service
             .get_children(&node.id)
@@ -362,6 +367,7 @@ fn describe_schema_node<'a>(
                 purpose: Some(purpose.as_str()),
                 fields: &fields,
                 owners: &owners,
+                custom: &custom,
                 names: &names,
             },
         )

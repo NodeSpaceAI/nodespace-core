@@ -2655,6 +2655,14 @@ async fn test_update_schema_renames_and_removes_a_custom_field() {
     )
     .await
     .unwrap();
+    let node_id = svc
+        .create_node(crate::models::Node::new(
+            "task".to_string(),
+            "A task".to_string(),
+            json!({ "effort": 5 }),
+        ))
+        .await
+        .unwrap();
 
     handle_update_schema(
         &svc,
@@ -2678,6 +2686,10 @@ async fn test_update_schema_renames_and_removes_a_custom_field() {
         ["effort_points"]
     );
     assert!(stored.get_field("effort").is_none());
+    // The rename moved the stored value to the new key (ADR-112, Neutral).
+    let node = svc.get_node(&node_id).await.unwrap().unwrap();
+    assert_eq!(node.properties["task"]["effort_points"], 5);
+    assert!(node.properties["task"].get("effort").is_none());
 
     handle_update_schema(
         &svc,

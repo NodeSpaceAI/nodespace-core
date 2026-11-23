@@ -151,6 +151,7 @@ async fn opening_message(node_service: &NodeService) -> String {
         .resolve_field_owners(TYPE_ID)
         .await
         .expect("fields resolve");
+    let custom = std::collections::HashSet::new();
     let purpose = node_service
         .get_children(TYPE_ID)
         .await
@@ -176,6 +177,7 @@ async fn opening_message(node_service: &NodeService) -> String {
             purpose: Some(purpose.as_str()),
             fields: &fields,
             owners: &owners,
+            custom: &custom,
             names: &names,
         },
     )

@@ -3824,8 +3824,10 @@ mod tests {
             .update_node(
                 &ticket_id,
                 stale.version,
+                // A write that overwrites the migrated field from the read
+                // taken before the rename: it must conflict, not land.
                 crate::models::NodeUpdate {
-                    content: Some("Edited from a stale read".to_string()),
+                    properties: Some(json!({ "ticket": { "urgency": "low" } })),
                     ..Default::default()
                 },
             )
@@ -3839,6 +3841,11 @@ mod tests {
         assert!(
             after.properties["ticket"].get("priority").is_none(),
             "the stale payload must not have revived the old key: {:?}",
+            after.properties
+        );
+        assert_eq!(
+            after.properties["ticket"]["urgency"], "high",
+            "the stale write must not have replaced the migrated value: {:?}",
             after.properties
         );
     }

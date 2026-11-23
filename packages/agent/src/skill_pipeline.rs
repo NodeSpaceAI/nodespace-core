@@ -742,8 +742,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Understanding and Changing a Type (ADR-100 §5)
         //
         // The skill a chat bound to a schema pins. It says which case the type
-        // is in (built in and closed, or the user's own and open) before it
-        // offers a change, guides a well-formed field, and looks up what names
+        // is in (built in, with `fields` and `custom_fields`, or the user's own,
+        // with every field its own) before it offers a change, guides a well-formed field, and looks up what names
         // a field before a rename or a removal. Schema Creation makes a new
         // type; this one explains and changes one that exists, and is reached
         // only by being pinned, so its description names no request that a
@@ -1971,6 +1971,24 @@ mod tests {
                     "{surface} must state the undeclared-key rule, missing {part:?}, got: {text}"
                 );
             }
+            // Polarity: every mention of adding the field yourself is the
+            // prohibition, so a surface flipped to "do add the field yourself"
+            // fails here although the words are still present.
+            let phrase = "add the field yourself";
+            let mut seen = 0;
+            for (at, _) in text.match_indices(phrase) {
+                seen += 1;
+                let before = &text[..at];
+                assert!(
+                    before.ends_with("do not ")
+                        || before.ends_with("never call create_schema or update_schema to "),
+                    "{surface} must forbid adding the field itself, got: {text}"
+                );
+            }
+            assert!(
+                seen > 0,
+                "{surface} must say the model does not add the field itself"
+            );
             for stale in ["custom", "org", "plugin"].map(|p| format!("{p}:")) {
                 assert!(
                     !text.contains(&stale),

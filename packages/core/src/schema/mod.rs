@@ -1722,6 +1722,162 @@ fn validate_no_same_schema_field_relationship_collision(
     Ok(())
 }
 
+/// The keys of a node's envelope, which a field of that name would be read as.
+const ENVELOPE_KEYS: [&str; 9] = [
+    "id",
+    "content",
+    "title",
+    "version",
+    "node_type",
+    "lifecycle_status",
+    "created_at",
+    "modified_at",
+    "properties",
+];
+
+/// Refuse a custom field named after an envelope key, or after a type: a type's
+/// id is the name of its bucket in `properties`, and a field of that name is
+/// read as the bucket.
+async fn reject_reserved_custom_field_name(
+    node_service: &Arc<NodeService>,
+    name: &str,
+) -> Result<(), MarkdownError> {
+    let is_type = crate::models::CoreNodeType::from_id(name).is_some()
+        || node_service
+            .get_schema_node(name)
+            .await
+            .map_err(|e| MarkdownError::internal_error(format!("Failed to get schema: {e}")))?
+            .is_some();
+    if ENVELOPE_KEYS.contains(&name) || is_type {
+        return Err(MarkdownError::invalid_params(format!(
+            "'{name}' cannot be the name of a field added to a built-in type: it names {}. \
+             Choose another name.",
+            if is_type {
+                "a type, and a type's name is the bucket its fields are stored in"
+            } else {
+                "a key every node has"
+            }
+        )));
+    }
+    Ok(())
+}
+
+/// A `system` field's vocabulary is the maintaining code's, so a caller adds no
+/// value to it (ADR-112 section 12); a `core` field's extensible list is still
+/// the user's to extend.
+fn reject_values_added_to_a_system_field(
+    field: &SchemaField,
+    schema_id: &str,
+) -> Result<(), MarkdownError> {
+    if field.protection == crate::models::SchemaProtectionLevel::System {
+        return Err(MarkdownError::invalid_params(format!(
+            "Field '{}' on schema '{schema_id}' is system-protected: the code that maintains it \
+             owns its values, so add_field_values cannot extend it.",
+            field.name
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a field name that an instance of `schema_id`, or of a type extending
+/// it, reads as a relationship (ADR-112 section 5).
+///
+/// `relationship_names_of` lists what a filter on a type can follow: the
+/// relationships the type declares or inherits under their forward names, and
+/// the ones other types declare toward it under their reverse names (a task's
+/// `blocked_by` and `project`). The field-versus-relationship checks above see
+/// forward names only, so a custom field could be named after a reverse name
+/// and never be read as the field.
+async fn reject_names_read_as_relationships(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    names: &[&str],
+) -> Result<(), MarkdownError> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let internal = |e: &dyn std::fmt::Display| {
+        MarkdownError::internal_error(format!(
+            "Failed to read the relationships of '{schema_id}': {e}"
+        ))
+    };
+    let closure = node_service
+        .store()
+        .get_subtype_closure(schema_id)
+        .await
+        .map_err(|e| internal(&e))?;
+    for type_id in std::iter::once(&schema_id.to_string()).chain(closure.iter()) {
+        let read = crate::ops::query_ops::relationship_names_of(node_service, type_id)
+            .await
+            .map_err(|e| internal(&e))?;
+        for name in names {
+            if let Some((_, far)) = read.iter().find(|(read_as, _)| read_as == name) {
+                return Err(MarkdownError::invalid_params(format!(
+                    "'{name}' cannot be a field of '{schema_id}': a '{type_id}' node reads \
+                     '{name}' as a relationship{}, and a name must resolve as a field or a \
+                     relationship, never both. Give the field a different name.",
+                    far.as_deref()
+                        .map(|far| format!(" (to a '{far}' node)"))
+                        .unwrap_or_default()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a relationship whose reverse name is a field a node at its target
+/// end already declares (ADR-112 section 5, the other direction): the target's
+/// instances would read the one name as both. The target's chain and the types
+/// extending it are compared.
+async fn reject_reverse_names_declared_as_fields(
+    node_service: &Arc<NodeService>,
+    relationships: &[crate::models::schema::SchemaRelationship],
+) -> Result<(), MarkdownError> {
+    for rel in relationships {
+        let Some(target) = rel.target_type.as_deref() else {
+            continue;
+        };
+        if rel.reverse_name.is_empty() {
+            continue;
+        }
+        let closure = node_service
+            .store()
+            .get_subtype_closure(target)
+            .await
+            .map_err(|e| {
+                MarkdownError::internal_error(format!(
+                    "Failed to read the types extending '{target}': {e}"
+                ))
+            })?;
+        let (effective, _, _) = resolve_field_owners_or_error(node_service, target).await?;
+        let mut declared: Vec<(String, String)> = effective
+            .into_iter()
+            .map(|f| (f.name, target.to_string()))
+            .collect();
+        for sub in closure.iter().filter(|id| id.as_str() != target) {
+            if let Some(schema) = node_service.get_schema_node(sub).await.map_err(|e| {
+                MarkdownError::internal_error(format!("Failed to get schema '{sub}': {e}"))
+            })? {
+                declared.extend(
+                    schema
+                        .declared_fields()
+                        .map(|f| (f.name.clone(), sub.clone())),
+                );
+            }
+        }
+        if let Some((_, owner)) = declared.iter().find(|(name, _)| *name == rel.reverse_name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Relationship '{}' cannot have the reverse name '{}': '{owner}' declares a field \
+                 of that name, and a '{target}' node would read it as both a field and the \
+                 relationship. Choose another reverse name.",
+                rel.name, rel.reverse_name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Reject a `rename_fields` destination name the schema's `extends` ancestor
 /// chain already claims — same-domain (an inherited field) or cross-domain
 /// (an inherited relationship).
@@ -2110,6 +2266,18 @@ pub async fn create_schema(
         ));
     };
 
+    // A type created through this call is the user's own, so every field of it is
+    // a user field: `core` is NodeSpace's and `system` is an extension's.
+    if let Some(field) = explicit_fields
+        .iter()
+        .find(|f| f.protection != crate::models::SchemaProtectionLevel::User)
+    {
+        return Err(MarkdownError::invalid_params(format!(
+            "Field '{}' cannot be created with {} protection: the fields of a type created \
+             here are user fields.",
+            field.name, field.protection
+        )));
+    }
     let (mut stored_fields, warnings) = warn_reserved_property_names(explicit_fields);
     // A brand-new schema has no existing fields to collide with — every
     // field in this batch is only checked against its own siblings.
@@ -2159,6 +2327,7 @@ pub async fn create_schema(
     reject_reserved_relationship_names(&relationships)?;
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets(node_service, &relationships, pending_schema_id).await?;
+    reject_reverse_names_declared_as_fields(node_service, &relationships).await?;
     // Cross-domain collision within this SAME schema's own declarations —
     // no extends chain needed to produce the ambiguity ADR-078 exists to
     // prevent, so this runs unconditionally, not just when `extends` is set.
@@ -2178,6 +2347,8 @@ pub async fn create_schema(
         validate_extends_target(node_service, &schema_id, parent_id).await?;
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
+        let own_names: Vec<&str> = stored_fields.iter().map(|f| f.name.as_str()).collect();
+        reject_names_read_as_relationships(node_service, parent_id, &own_names).await?;
     }
     validate_structural_rules(
         node_service,
@@ -2740,8 +2911,8 @@ enum FieldDeclarer {
 /// declared here is only the extension's to maintain. Its values are written
 /// through [`NodeService::maintaining_system_fields`].
 ///
-/// Declaring a field that is already declared on the type, identically and as
-/// `system`, changes nothing, so an extension may declare at every bind. A
+/// Declaring a field that is already declared on the type with the same name and
+/// type, as `system`, changes nothing, so an extension may declare at every bind. A
 /// name any schema in the type's chain already declares otherwise (a core
 /// field, a user's custom field, a relationship) is refused with the
 /// collision named, and nothing is declared; the extension reports it instead
@@ -2771,8 +2942,12 @@ pub async fn declare_system_custom_fields(
             )));
         }
         match schema.custom_fields.iter().find(|f| f.name == field.name) {
+            // Declared already under the same name and type: the extension is
+            // taking over a database it declared in before, whatever else its
+            // declaration says today, which the schema keeps as it was.
             Some(existing)
-                if serde_json::to_value(existing).ok() == serde_json::to_value(&field).ok() =>
+                if existing.protection == crate::models::SchemaProtectionLevel::System
+                    && existing.field_type == field.field_type =>
             {
                 continue
             }
@@ -3050,6 +3225,18 @@ async fn update_schema_as(
                     }
                 }
 
+                // Not when this call also re-targets `extends` or removes
+                // relationships: the name may be freed by the same call, and
+                // the redeclaration checks judge the schema as it would stand.
+                if params.extends.is_none() && params.remove_relationships.is_none() {
+                    reject_names_read_as_relationships(
+                        node_service,
+                        &params.schema_id,
+                        &[rename.to.as_str()],
+                    )
+                    .await?;
+                }
+
                 if let Some(ref parent) = rename_ancestor {
                     validate_rename_destination_against_ancestors(node_service, parent, &rename.to)
                         .await?;
@@ -3072,12 +3259,39 @@ async fn update_schema_as(
     };
     for field in params.add_fields.iter().flatten() {
         if field.protection != allowed {
-            return Err(MarkdownError::invalid_params(format!(
-                "Field '{}' cannot be added to schema '{}' with {} protection: a field added \
-                 through update_schema is a user field. A system field is declared by the \
-                 extension code that maintains it.",
-                field.name, params.schema_id, field.protection
-            )));
+            return Err(MarkdownError::invalid_params(match declarer {
+                FieldDeclarer::User => format!(
+                    "Field '{}' cannot be added to schema '{}' with {} protection: a field \
+                     added through update_schema is a user field, and only user protection is \
+                     given. (A system field is declared by the code of the extension that \
+                     maintains it; core fields are the ones NodeSpace ships.)",
+                    field.name, params.schema_id, field.protection
+                ),
+                FieldDeclarer::Extension => format!(
+                    "Field '{}' of schema '{}' must be declared with system protection, not {}.",
+                    field.name, params.schema_id, field.protection
+                ),
+            }));
+        }
+    }
+    // A built-in type's custom field is stored beside its core fields in the
+    // type's bucket, so a name an envelope key or a type's bucket already uses
+    // would be read as that instead (ADR-112 section 5).
+    if schema_before.is_core {
+        let renamed_to = params
+            .rename_fields
+            .iter()
+            .flatten()
+            .filter(|r| r.from != r.to)
+            .map(|r| r.to.as_str());
+        for name in params
+            .add_fields
+            .iter()
+            .flatten()
+            .map(|f| f.name.as_str())
+            .chain(renamed_to)
+        {
+            reject_reserved_custom_field_name(node_service, name).await?;
         }
     }
 
@@ -3422,6 +3636,7 @@ async fn update_schema_as(
         // not declare the name.
         let added: Vec<&str> = add_fields.iter().map(|f| f.name.as_str()).collect();
         validate_no_subtype_redeclaration(node_service, &params.schema_id, &added, &[]).await?;
+        reject_names_read_as_relationships(node_service, &params.schema_id, &added).await?;
         // Write-boundary friendly_name defaulting, with the current field
         // set (existing + removals already applied) as collision context —
         // see `apply_friendly_name_defaults`.
@@ -3471,6 +3686,7 @@ async fn update_schema_as(
                 .find(|f| f.name == addition.field)
                 .cloned()
             {
+                reject_values_added_to_a_system_field(&inherited, &params.schema_id)?;
                 let added =
                     extend_inherited_field(&params.schema_id, inherited, addition, &mut fields)?;
                 field_values_added += added;
@@ -3484,6 +3700,7 @@ async fn update_schema_as(
                 )));
             };
 
+            reject_values_added_to_a_system_field(field, &params.schema_id)?;
             if field.extensible != Some(true) {
                 return Err(MarkdownError::invalid_params(format!(
                     "Field '{}' on schema '{}' is not extensible — add_field_values only \
@@ -3581,6 +3798,7 @@ async fn update_schema_as(
         // schema being edited was loaded above, so a relationship targeting
         // it resolves through the ordinary existence lookup.
         validate_relationship_targets(node_service, add_rels, None).await?;
+        reject_reverse_names_declared_as_fields(node_service, add_rels).await?;
         relationships_added = add_rels.len();
         relationships.extend(add_rels.clone());
     }

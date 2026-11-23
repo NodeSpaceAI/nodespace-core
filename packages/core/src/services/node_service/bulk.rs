@@ -774,6 +774,13 @@ impl NodeService {
             }
             self.rebucket_and_validate_behaviors(None, &mut node, ownership, false)?;
             Self::ensure_system_fields_maintained(None, &node, &guard_by_type[&node.node_type])?;
+            // The bucket is as closed here as on any other write (ADR-112
+            // section 3): the import skips schema validation, not the rule
+            // that a key must be declared.
+            let (_, owners, chain, closed) = &guard_by_type[&node.node_type];
+            if *closed {
+                Self::reject_undeclared_keys(None, &node, owners, chain)?;
+            }
             self.stamp_task_started(None, &mut node).await?;
             nodes_normalized.push((
                 node.id,

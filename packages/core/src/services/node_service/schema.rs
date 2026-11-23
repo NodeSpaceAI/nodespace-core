@@ -689,6 +689,37 @@ impl NodeService {
         ))
     }
 
+    /// The fields a schema read reports for `node_type`, kept in the two lists
+    /// they are declared in (ADR-112 section 1): the shipped `fields` of the
+    /// type and every type it extends, then the `custom_fields` of the same
+    /// chain. A field is in exactly one list, so a reader that wants every
+    /// field concatenates them without removing a duplicate.
+    pub async fn resolve_field_lists(
+        &self,
+        node_type: &str,
+    ) -> Result<
+        (
+            Vec<crate::models::SchemaField>,
+            Vec<crate::models::SchemaField>,
+        ),
+        NodeServiceError,
+    > {
+        let chain = self.resolve_type_chain(node_type).await?;
+        let mut shipped = Vec::with_capacity(chain.len());
+        let mut custom = Vec::with_capacity(chain.len());
+        for schema_id in &chain {
+            let Some(schema) = self.get_schema_node(schema_id).await? else {
+                continue;
+            };
+            shipped.push(schema.fields);
+            custom.push(schema.custom_fields);
+        }
+        Ok((
+            crate::schema::extends_chain::flatten_chain_fields(shipped),
+            crate::schema::extends_chain::flatten_chain_fields(custom),
+        ))
+    }
+
     /// The effective/merged relationship set across `node_type`'s extends
     /// chain (ADR-078) — the relationship counterpart to
     /// [`Self::resolve_field_owners`]. A relationship declared only on an

@@ -45,7 +45,7 @@ schema is read under the keys `schema create` and `schema update` write it
 with: `fields`, `custom_fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
 `title_template` and `properties_header_summary_template`, next to `id`,
 `content` (the type's name), `is_core` and `schema_version`, and with
-`context_paths`, each path in the dotted form `add_context_paths` takes. `custom_fields` is a built-in type's own list of the fields users added to it (ADR-112), kept apart from the shipped `fields`: `schema update` with `add_fields` on a built-in type adds to it, and a type you defined has none. There
+`context_paths`, each path in the dotted form `add_context_paths` takes. `custom_fields` is a built-in type's own list of the fields users added to it, kept apart from the shipped `fields`: `schema update` with `add_fields` on a built-in type adds to it, and a type you defined has none. There
 is no `properties` key. `custom_fields`, `extends`, `abstract`, `children`, `parent`, the two
 templates and `context_paths` are omitted when the type doesn't declare them. A schema node reached
 through `relationship get` comes back as a plain node, with its stored

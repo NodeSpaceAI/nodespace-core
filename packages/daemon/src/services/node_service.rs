@@ -2626,12 +2626,15 @@ impl GrpcNodeService for NodeServiceImpl {
                 // would show an agent or the CLI an `issue` with only
                 // `severity` and no `status` — the schema-comprehension
                 // failure this resolver exists to prevent.
-                schema.fields = this
+                //
+                // The two lists stay apart (ADR-112): `fields` holds the
+                // shipped fields of the chain and `custom_fields` the ones
+                // users added to it, each field in exactly one of them.
+                (schema.fields, schema.custom_fields) = this
                     .node_service
-                    .resolve_field_owners(&req.schema_id)
+                    .resolve_field_lists(&req.schema_id)
                     .await
-                    .map_err(service_error_to_status)?
-                    .0;
+                    .map_err(service_error_to_status)?;
                 // Relationships likewise: an inherited relationship is as
                 // traversable from an instance as an own one. The parent
                 // stays where the schema carries it, in `extends`.
@@ -8172,6 +8175,90 @@ mod tests {
             .expect("rename_collection")
             .into_inner();
         assert_collapsed(renamed.node_data, "rename_collection");
+    }
+
+    /// A schema read keeps the two lists apart (ADR-112): `fields` holds the
+    /// shipped fields of the chain, `custom_fields` the ones users added to it,
+    /// and a field is in one of them only. On the type that owns a custom field
+    /// it is not repeated in `fields`, and on a type extending it is reported
+    /// in `custom_fields` with the inherited ones, never among `fields`.
+    #[tokio::test]
+    async fn get_schema_definition_reports_custom_fields_apart_from_fields() {
+        use nodespace_core::schema::{handle_create_schema, handle_update_schema};
+
+        let (svc, _tmp) = make_service().await;
+        let core = svc.node_service.clone();
+        for params in [
+            serde_json::json!({
+                "schema_id": "task",
+                "add_fields": [{ "name": "effort", "type": "number" }]
+            }),
+            serde_json::json!({
+                "schema_id": "issue",
+                "add_fields": [{ "name": "sprint", "type": "text" }]
+            }),
+        ] {
+            handle_update_schema(&core, params)
+                .await
+                .expect("a custom field");
+        }
+        handle_create_schema(
+            &core,
+            serde_json::json!({
+                "name": "Chore",
+                "extends": "task",
+                "fields": [{ "name": "room", "type": "text" }]
+            }),
+        )
+        .await
+        .expect("a user type extending a built-in one");
+
+        let read = |id: &'static str| {
+            let svc = svc.clone();
+            async move {
+                let response = svc
+                    .get_schema_definition(Request::new(GetSchemaDefinitionRequest {
+                        schema_id: id.to_string(),
+                    }))
+                    .await
+                    .expect("get_schema_definition should succeed")
+                    .into_inner();
+                let wire: serde_json::Value = serde_json::from_str(&response.schema_json).unwrap();
+                let names = |key: &str| -> Vec<String> {
+                    wire[key]
+                        .as_array()
+                        .map(|list| {
+                            list.iter()
+                                .map(|f| f["name"].as_str().unwrap().to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                (names("fields"), names("customFields"))
+            }
+        };
+
+        let (fields, custom) = read("task").await;
+        assert!(fields.contains(&"status".to_string()), "{fields:?}");
+        assert!(!fields.contains(&"effort".to_string()), "{fields:?}");
+        assert_eq!(custom, ["effort"]);
+
+        let (fields, custom) = read("issue").await;
+        assert!(fields.contains(&"status".to_string()), "{fields:?}");
+        assert!(
+            !fields.iter().any(|f| f == "effort" || f == "sprint"),
+            "custom fields are not among `fields`: {fields:?}"
+        );
+        assert_eq!(custom, ["sprint", "effort"]);
+
+        let (fields, custom) = read("chore").await;
+        assert!(fields.contains(&"room".to_string()), "{fields:?}");
+        assert!(!fields.contains(&"effort".to_string()), "{fields:?}");
+        assert_eq!(custom, ["effort"]);
+
+        // Omitted when the type and its chain have none, as on the wire.
+        let (_, custom) = read("project").await;
+        assert!(custom.is_empty());
     }
 
     /// `get_schema_definition` on an extending schema reports inherited

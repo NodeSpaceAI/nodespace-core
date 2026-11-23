@@ -297,7 +297,10 @@ impl EntityTypeDescriptor {
     ) -> Self {
         let chain: Vec<&SchemaNode> = std::iter::once(own).chain(ancestors).collect();
         let fields = crate::schema::extends_chain::flatten_chain_fields(
-            chain.iter().map(|s| s.fields.clone()).collect(),
+            chain
+                .iter()
+                .map(|s| s.declared_fields().cloned().collect())
+                .collect(),
         );
         let relationships = crate::schema::extends_chain::flatten_chain_by_name(
             chain
@@ -737,6 +740,29 @@ mod tests {
             "- invoice \"Invoice\" -> reference: text; amount: number, required; \
              status: enum {draft, sent} ~> billed_to (customer) [title_template: {reference}]"
         );
+    }
+
+    /// A custom field of a built-in type is a field of it like any other: the
+    /// type lists its own and an inherited one, so the prompt line and the
+    /// `create_node` field list name it (ADR-112 section 1).
+    #[test]
+    fn a_custom_field_is_listed_for_its_type_and_for_a_type_extending_it() {
+        let mut base = SchemaNode::new("task".to_string(), "Task".to_string());
+        base.is_core = true;
+        base.fields = vec![field("status", "text")];
+        base.custom_fields = vec![field("effort", "number")];
+        let mut child = SchemaNode::new("chore".to_string(), "Chore".to_string());
+        child.extends = Some("task".to_string());
+        child.fields = vec![field("room", "text")];
+
+        let own = EntityTypeDescriptor::from_chain(&base, []);
+        let names: Vec<&str> = own.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["status", "effort"]);
+
+        let inherited = EntityTypeDescriptor::from_chain(&child, [&base]);
+        let names: Vec<&str> = inherited.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["room", "status", "effort"]);
+        assert!(inherited.render_line().contains("effort: number"));
     }
 
     /// The property this whole module exists to enforce: the typed path and the

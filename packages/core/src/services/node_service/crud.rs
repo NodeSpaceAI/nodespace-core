@@ -3735,18 +3735,26 @@ impl NodeService {
             };
             for key in bucket.keys() {
                 let declared = owners.get(key).is_some_and(|owner| owner == scope);
-                let carried_back = before
-                    .and_then(|b| b.properties.get(scope.as_str()))
-                    .and_then(|bucket| bucket.get(key))
-                    .is_some_and(|stored| Some(stored) == bucket.get(key));
+                // Held under the same key and value in any bucket of the chain:
+                // a flat update that echoes a leftover names it without its
+                // bucket, and normalization files it under the node's own.
+                let carried_back = before.is_some_and(|b| {
+                    chain.iter().any(|held_in| {
+                        b.properties
+                            .get(held_in.as_str())
+                            .and_then(|held| held.get(key))
+                            .is_some_and(|stored| Some(stored) == bucket.get(key))
+                    })
+                });
                 if declared || is_bookkeeping_key(key) || carried_back {
                     continue;
                 }
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{key}' is not a field of the type '{scope}': no schema in its chain \
-                     declares it. A node takes only the fields its type declares. To keep the \
-                     value, add '{key}' to the type's fields first (update_schema), which gives \
-                     it to every node of the type."
+                     declares it, and a node takes only the fields its type declares. The \
+                     value was not stored. Tell the user which value was refused and offer to \
+                     add '{key}' to the type as a separate request, which gives it to every \
+                     node of the type; do not add it yourself."
                 )));
             }
         }

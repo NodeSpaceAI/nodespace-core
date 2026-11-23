@@ -183,6 +183,15 @@ struct Allowed {
 const ALLOWLIST: &[Allowed] = &[
     Allowed {
         file: "services/node_service/schema.rs",
+        function: "resolve_field_lists",
+        field_kind: "fields",
+        why: "A chain-merging helper like resolve_field_owners: it calls \
+              get_schema_node once per schema in the extends chain and keeps \
+              each hop's shipped and custom lists apart, so reading `.fields` \
+              per hop is the chain walk itself, not the bug this guard watches for.",
+    },
+    Allowed {
+        file: "services/node_service/schema.rs",
         function: "resolve_relationships",
         field_kind: "relationships",
         why: "The relationship counterpart to resolve_field_owners above — \

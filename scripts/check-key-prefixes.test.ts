@@ -17,6 +17,14 @@ describe("code", () => {
     ["a.ts", "const k = `custom:${name}`;"],
     ["a.ts", `if (key.startsWith('plugin:')) {`],
     ["a.svelte", `const key = "org:region";`],
+    ["a.rs", `  *p = "custom:a";`],
+    ["a.rs", `/* x */ k.starts_with("custom:")`],
+    ["a.rs", `let k = "plugin:nodespace:x";`],
+    ["a.ts", `const k = "custom:story-points";`],
+    ["a.ts", `const k = "org:Cost.Center2";`],
+    ["a.json", `{ "key": "custom:effort" }`],
+    ["a.toml", `key = "plugin:owner_person_id"`],
+    ["a.sql", `SELECT properties->'collection'->>'plugin:owner_person_id'`],
   ];
   for (const [file, line] of banned) {
     test(`flags: ${line}`, () => {
@@ -27,7 +35,9 @@ describe("code", () => {
   const allowed: [string, string][] = [
     ["a.rs", `invoke(&app, "plugin:fixture|fixture_ping")`],
     ["a.ts", `const x = atom({ plugin: 'nodespace', key: 'session' })`],
-    ["a.rs", `// stripped the custom: prefix before ADR-112`],
+    ["a.rs", `let n = 1; // the "custom:effort" key is gone`],
+    ["a.rs", `/* "custom:effort" */ let n = 1;`],
+    ["a.rs", `let url = "https://example.com//custom:x"; let n = 2;`],
     ["a.rs", `let node_id = id.strip_prefix("node:");`],
     ["a.rs", `json!({ "effort": 3 })`],
   ];
@@ -39,7 +49,13 @@ describe("code", () => {
 });
 
 describe("guidance", () => {
-  for (const line of ["Use a `custom:` prefix on a core type.", "the custom/org/plugin: prefix rule", "store it as custom:notes"]) {
+  for (const line of [
+    "Use a `custom:` prefix on a core type.",
+    "the custom/org/plugin: prefix rule",
+    "store it as custom:notes",
+    "a custom: prefix goes before the name",
+    "the org: namespace is the company's",
+  ]) {
     test(`flags: ${line}`, () => {
       expect(hitsIn("packages/agent/src/seeds/skills/x.md", line).length).toBe(1);
     });
@@ -56,6 +72,8 @@ describe("scope", () => {
     expect(kindOf("packages/agent/src/seeds/rules/agent/a.md")).toBe("markdown");
     expect(kindOf("AGENTS.md")).toBe("markdown");
     expect(kindOf("README.md")).toBeNull();
+    expect(kindOf("packages/agent/goldens/ablation/x.toml")).toBeNull();
+    expect(kindOf("packages/a/b.sql")).toBe("code");
     expect(kindOf("scripts/check-key-prefixes.ts")).toBeNull();
   });
 });

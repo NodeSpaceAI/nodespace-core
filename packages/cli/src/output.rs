@@ -1949,6 +1949,38 @@ mod tests {
         assert_eq!(out["relationships"], serde_json::json!([]));
     }
 
+    /// A built-in type's `custom_fields` are read apart from its `fields`, in the
+    /// JSON and in the human layout, and are left out when there are none.
+    #[test]
+    fn a_schema_read_lists_custom_fields_apart_from_fields_and_omits_them_when_empty() {
+        let field = |name: &str| nodespace_core::models::SchemaField {
+            name: name.to_string(),
+            friendly_name: name.to_string(),
+            field_type: nodespace_core::models::SchemaFieldType::Number,
+            ..Default::default()
+        };
+        let mut schema = SchemaNode::new("task", "Task");
+        schema.fields = vec![field("priority")];
+        let bare = schema_to_json(&schema);
+        assert!(bare.get("custom_fields").is_none(), "{bare}");
+        assert!(!format_human_schema(&schema).contains("custom_fields"));
+
+        schema.custom_fields = vec![field("effort")];
+        let out = schema_to_json(&schema);
+        assert_eq!(out["fields"][0]["name"], "priority");
+        assert_eq!(out["custom_fields"].as_array().unwrap().len(), 1);
+        assert_eq!(out["custom_fields"][0]["name"], "effort");
+        let text = format_human_schema(&schema);
+        let (shipped, added) = text
+            .split_once("custom_fields:")
+            .expect("a custom_fields section");
+        assert!(
+            shipped.contains("priority: number") && !shipped.contains("effort"),
+            "{text}"
+        );
+        assert!(added.contains("effort: number"), "{text}");
+    }
+
     #[test]
     fn a_malformed_schema_is_an_error_not_an_empty_one() {
         assert!(parse_schema("{\"id\": 1}").is_err());
