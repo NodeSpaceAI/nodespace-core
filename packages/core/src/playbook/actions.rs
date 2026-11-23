@@ -2930,6 +2930,58 @@ mod tests {
         }
     }
 
+    /// A rule's actions are user-authored, so the lift a maintainer's write
+    /// holds does not reach them: an `update_node` action that sets a system
+    /// field is refused even when `execute_actions` is called inside
+    /// `maintaining_system_fields`.
+    #[tokio::test]
+    async fn execute_actions_does_not_inherit_the_system_field_lift() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut store: Arc<crate::db::SqliteStore> = Arc::new(
+            crate::db::SqliteStore::new(temp_dir.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let chat_id = node_service
+            .create_node(Node::new(
+                "ai-chat-pty".to_string(),
+                "Session".to_string(),
+                json!({ "agent": "claude-code" }),
+            ))
+            .await
+            .unwrap();
+        let actions = vec![ParsedAction {
+            action_type: ActionType::UpdateNode,
+            params: json!({ "node_id": chat_id, "properties": { "summary": "forged" } }),
+            for_each: None,
+        }];
+        let trigger = make_test_node("trigger-1", "task");
+        let event = make_node_created_event("trigger-1", "task");
+        let context = PlaybookExecutionContext {
+            originating_event_id: "evt-1".to_string(),
+            depth: 0,
+            source_playbook_id: "play-1".to_string(),
+        };
+
+        let result = node_service
+            .maintaining_system_fields(execute_actions(
+                &actions,
+                &trigger,
+                &event,
+                &node_service,
+                context,
+            ))
+            .await;
+
+        assert!(
+            matches!(&result, ActionResult::Failed(e) if e.to_string().contains("'summary'")),
+            "{result:?}"
+        );
+        let stored = node_service.get_node(&chat_id).await.unwrap().unwrap();
+        assert!(stored.properties["ai-chat"].get("summary").is_none());
+    }
+
     // -----------------------------------------------------------------------
     // BindingContext::resolve_binding — trigger.node paths
     // -----------------------------------------------------------------------

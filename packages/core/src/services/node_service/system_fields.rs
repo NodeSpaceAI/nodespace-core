@@ -43,11 +43,18 @@ fn stored_in_chain<'a>(properties: &'a Value, chain: &[String], name: &str) -> O
 }
 
 /// Whether two stored values are the same value. Numbers compare by value:
-/// `0` and `0.0` are one number, so a client that sends a node back whole
+/// integers exactly, and `0` and `0.0` are one number, so a client that sends a node back whole
 /// with its integers as floats is not changing the field.
 fn same_value(a: Option<&Value>, b: Option<&Value>) -> bool {
     match (a, b) {
-        (Some(Value::Number(x)), Some(Value::Number(y))) => x.as_f64() == y.as_f64(),
+        (Some(Value::Number(x)), Some(Value::Number(y))) => {
+            if (x.is_i64() || x.is_u64()) && (y.is_i64() || y.is_u64()) {
+                // Integers compare exactly: an f64 cannot tell 2^53 from 2^53 + 1.
+                x == y
+            } else {
+                x.as_f64() == y.as_f64()
+            }
+        }
         _ => a == b,
     }
 }

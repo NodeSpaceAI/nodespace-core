@@ -493,6 +493,30 @@ async fn a_number_resent_as_a_float_is_not_a_change() {
     );
 }
 
+/// Integers beyond 2^53 compare exactly, not through a float.
+#[tokio::test]
+async fn a_big_integer_changed_by_one_is_a_change() {
+    let (svc, _tmp) = test_service().await;
+    let id = svc
+        .maintaining_system_fields(svc.create_node(pty_chat(
+            json!({ "agent": "claude-code", "exit_code": 9007199254740992i64 }),
+        )))
+        .await
+        .expect("the maintainer records an exit code");
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_refused(
+        "2^53 + 1",
+        svc.update_node(
+            &id,
+            node.version,
+            NodeUpdate::new().with_properties(json!({ "exit_code": 9007199254740993i64 })),
+        )
+        .await,
+        "exit_code",
+        "ai-chat-pty",
+    );
+}
+
 /// A tripwire, not the protection: the scope in `maintaining_system_fields`
 /// is what keeps a user surface out (a surface that called it would only lift
 /// the check for its own write, and nothing a user can author runs inside it).
