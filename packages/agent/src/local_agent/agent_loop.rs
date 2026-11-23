@@ -2778,7 +2778,6 @@ fn describe_unsurfaced_failures(failed: &[&ToolExecutionRecord]) -> String {
             };
             match failure_reason(record) {
                 FailureReason::NotRun(why) => format!("I couldn't run {action}: {why}."),
-                FailureReason::Refused(why) => format!("I couldn't run {action}: {why}"),
                 // A cut-short reason already ends in an ellipsis.
                 FailureReason::Failed(Some(why)) if why.ends_with('…') => {
                     format!("I couldn't complete {action}: {why}")
@@ -2791,39 +2790,156 @@ fn describe_unsurfaced_failures(failed: &[&ToolExecutionRecord]) -> String {
     format!("⚠️ {}", sentences.join(" "))
 }
 
-/// What the user is told when a write was refused for keys its type does not
-/// declare: which value, that nothing was stored, and an offer to add the field
-/// as a separate request. The keys and the type come from the model's call and
-/// reach here only as plain identifiers.
-fn undeclared_keys_reply(keys: &[String], node_type: &str) -> String {
-    let list = keys
-        .iter()
-        .map(|key| format!("'{key}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    match keys.len() {
-        0 => format!(
-            "a value was not a field of the type '{node_type}', so nothing was stored. I can add \
-             the field to every '{node_type}' as a separate request if you want it."
-        ),
-        1 => format!(
-            "nothing was stored, because {list} is not a field of the type '{node_type}'. I can \
-             add {list} to every '{node_type}' as a separate request if you want it."
-        ),
-        _ => format!(
-            "nothing was stored, because {list} are not fields of the type '{node_type}'. I can \
-             add them to every '{node_type}' as a separate request if you want them."
-        ),
+/// The user is told of a write refused for keys its type does not declare by a
+/// message built here from the refusal, whatever the model replied.
+///
+/// A reply cannot be checked for a claim that the value was set ("effort is now
+/// 5", "saved with effort 5"), and a reply that stands beside the refusal leaves the
+/// user believing it was, so the reply is replaced, on every way a turn can end. A
+/// retry that left the key out does not change that: the key was still not stored.
+/// Every other failed tool of the turn gets its own sentence, named whether or not
+/// the model mentioned it (ADR-112 section 11).
+fn undeclared_refusal_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
+    if result.clarify.is_some() {
+        return;
     }
+    let refusals: Vec<crate::agent_types::UndeclaredRefusal> = result
+        .tool_calls_made
+        .iter()
+        .filter_map(undeclared_refusal_of)
+        .collect();
+    if refusals.is_empty() {
+        return;
+    }
+    let executions = &result.tool_calls_made;
+    let others: Vec<&ToolExecutionRecord> = executions
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            r.is_error
+                && !is_duplicate_entity_refusal(r)
+                && undeclared_refusal_of(r).is_none()
+                && !executions[i + 1..]
+                    .iter()
+                    .any(|later| !later.is_error && later.name == r.name)
+        })
+        .map(|(_, r)| r)
+        .collect();
+    let mut message = format!("⚠️ {}", undeclared_refusal_notice(&refusals));
+    if !others.is_empty() {
+        message.push(' ');
+        message.push_str(describe_unsurfaced_failures(&others).trim_start_matches("⚠️ "));
+    }
+    tracing::warn!(
+        session_id = %session.id,
+        refused = refusals.len(),
+        "A write was refused for undeclared keys — the reply is the notice, not the model's text"
+    );
+    replace_turn_reply(session, &message);
+    result.response = message;
+}
+
+/// A write refused for keys its type does not declare (ADR-112 section 11), as a
+/// failed tool record shows it: the structured `refused` the loop attached to the
+/// error of `create_node` and `update_node`, or, for a write whose error reaches
+/// only as the store's text, that text read by [`parse_undeclared_keys`]. A remote
+/// tool's result is never read: it is another party's text.
+fn undeclared_refusal_of(
+    record: &ToolExecutionRecord,
+) -> Option<crate::agent_types::UndeclaredRefusal> {
+    if !record.is_error || super::remote_tools::is_external_result(&record.name, &record.result) {
+        return None;
+    }
+    if matches!(record.name.as_str(), "create_node" | "update_node") {
+        if let Some(refused) = record.result.get("refused") {
+            let keys: Vec<String> = refused
+                .get("keys")
+                .and_then(|k| k.as_array())
+                .map(|k| {
+                    k.iter()
+                        .filter_map(|k| k.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let node_type = refused
+                .get("node_type")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
+            return Some(crate::agent_types::UndeclaredRefusal::from_parts(
+                node_type, &keys,
+            ));
+        }
+    }
+    // Only a tool that writes nodes can be refused by the store this way; any
+    // other tool's error may echo the model's own text.
+    if !matches!(
+        record.name.as_str(),
+        "create_node" | "update_node" | "create_nodes_from_markdown"
+    ) {
+        return None;
+    }
+    let text = ["error", "message"]
+        .iter()
+        .find_map(|key| record.result.get(*key).and_then(|v| v.as_str()))?;
+    crate::agent_types::parse_undeclared_keys(text)
+}
+
+/// What the user is told for writes refused for undeclared keys: which values were
+/// not stored, that the type does not declare them, and an offer to add the field
+/// as a separate request. Built from the refusal alone, never from the model's
+/// reply, which may claim the value was set.
+fn undeclared_refusal_notice(refusals: &[crate::agent_types::UndeclaredRefusal]) -> String {
+    let mut seen: Vec<&crate::agent_types::UndeclaredRefusal> = Vec::new();
+    for refusal in refusals {
+        if !seen.contains(&refusal) {
+            seen.push(refusal);
+        }
+    }
+    seen.iter()
+        .map(|refusal| {
+            let in_type = refusal
+                .node_type
+                .as_deref()
+                .map(|t| format!(" of the type '{t}'"))
+                .unwrap_or_default();
+            let every = refusal
+                .node_type
+                .as_deref()
+                .map(|t| format!(" to every '{t}'"))
+                .unwrap_or_default();
+            let list = refusal
+                .keys
+                .iter()
+                .map(|k| format!("'{k}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = match (refusal.keys.is_empty(), refusal.unnamed) {
+                (_, 0) => String::new(),
+                (true, 1) => "a value".to_string(),
+                (true, n) => format!("{n} values"),
+                (false, n) => format!(" and {n} more"),
+            };
+            let what = format!("{list}{more}");
+            let plural = refusal.keys.len() + refusal.unnamed > 1;
+            let (were, are, it) = if plural {
+                ("were", "are not fields", "them")
+            } else {
+                ("was", "is not a field", "it")
+            };
+            format!(
+                "{what} {were} not stored, because {} {are}{in_type}. I can add {it}{every} as a \
+                 separate request if you want {it}.",
+                if plural { "they" } else { "it" },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Why a failed tool call failed, as [`describe_unsurfaced_failures`] words it.
 enum FailureReason {
     /// The call never reached the tool's own logic.
     NotRun(&'static str),
-    /// The write named keys its type does not declare: nothing was stored, and
-    /// the user is told which value and offered the field. A finished sentence.
-    Refused(String),
     /// The tool ran and reported an error, with its own account when it gave
     /// one.
     Failed(Option<String>),
@@ -2846,11 +2962,6 @@ fn failure_reason(record: &ToolExecutionRecord) -> FailureReason {
     else {
         return FailureReason::Failed(None);
     };
-    // A write refused for a key its type does not declare, from the tool's own
-    // check or the store's (a user-defined type, a dry run, a bulk write).
-    if let Some((keys, node_type)) = crate::agent_types::parse_undeclared_keys(text) {
-        return FailureReason::Refused(undeclared_keys_reply(&keys, &node_type));
-    }
     // The `ToolError` prefixes: the first two mean the tool's logic never ran.
     if text.starts_with("invalid arguments for tool") {
         return FailureReason::NotRun("it was called with arguments it doesn't accept");
@@ -3811,6 +3922,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             unresolved_id_backstop(session, &mut result);
             cut_off_turn_backstop(session, &mut result, end, intent_clarified);
             type_listing_backstop(session, &mut result);
+            undeclared_refusal_backstop(session, &mut result);
         }
         // Recorded after the guards above, which can turn a reply into a
         // question: the outcome is what the user was finally shown.
@@ -4914,6 +5026,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         // told about it.
                         r.is_error
                             && !is_duplicate_entity_refusal(r)
+                            && undeclared_refusal_of(r).is_none()
                             && !all_tool_executions[i + 1..].iter().any(|later| {
                                 !later.is_error
                                     && (later.name == r.name
@@ -4925,19 +5038,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     .collect();
                 let normalized = if !failed_tools.is_empty() && !normalized.is_empty() {
                     let lower = normalized.to_ascii_lowercase();
-                    // A reply that names a key the type refused has surfaced
-                    // that failure: the user knows which value was left out.
-                    let names_a_refused_key = failed_tools.iter().any(|r| {
-                        let text = ["error", "message"]
-                            .iter()
-                            .find_map(|key| r.result.get(*key).and_then(|v| v.as_str()))
-                            .unwrap_or_default();
-                        crate::agent_types::parse_undeclared_keys(text).is_some_and(|(keys, _)| {
-                            keys.iter().any(|k| lower.contains(&k.to_ascii_lowercase()))
-                        })
-                    });
-                    let mentions_error = names_a_refused_key
-                        || lower.contains("error")
+                    let mentions_error = lower.contains("error")
                         || lower.contains("fail")
                         || lower.contains("couldn't")
                         || lower.contains("could not")
@@ -5664,6 +5765,22 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     Ok(tr) => (tr.result, tr.is_error),
                     Err(crate::agent_types::ToolError::UnresolvedId { id, .. }) => {
                         (unresolved_id_refused_result(&id), true)
+                    }
+                    Err(e @ crate::agent_types::ToolError::UndeclaredKeys { .. }) => {
+                        // Keep the keys and the type as data, so the final reply
+                        // is built from them and not from the error's text.
+                        let refused = match &e {
+                            crate::agent_types::ToolError::UndeclaredKeys {
+                                node_type,
+                                keys,
+                                ..
+                            } => serde_json::json!({ "node_type": node_type, "keys": keys }),
+                            _ => serde_json::Value::Null,
+                        };
+                        (
+                            serde_json::json!({"error": e.to_string(), "refused": refused}),
+                            true,
+                        )
                     }
                     Err(e) => (serde_json::json!({"error": e.to_string()}), true),
                 };
@@ -12267,6 +12384,22 @@ mod tests {
             ) -> Result<ToolResult, ToolError> {
                 let i = self.next.fetch_add(1, Ordering::SeqCst);
                 let (_, is_error, result) = self.results[i].clone();
+                // A scripted write refused for undeclared keys, as the tool
+                // reports it: the typed error, not a result.
+                if let Some(refuse) = result.get("__refuse") {
+                    return Err(ToolError::UndeclaredKeys {
+                        tool: name.to_string(),
+                        node_type: refuse["node_type"].as_str().unwrap_or_default().to_string(),
+                        keys: refuse["keys"]
+                            .as_array()
+                            .map(|k| {
+                                k.iter()
+                                    .filter_map(|k| k.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    });
+                }
                 Ok(ToolResult {
                     tool_call_id: format!("tc_{i}"),
                     name: name.into(),
@@ -12359,70 +12492,116 @@ mod tests {
         assert!(!response.contains("successfully created"), "{response}");
     }
 
-    fn undeclared_refusal(tool: &str, node_type: &str, keys: &[&str]) -> serde_json::Value {
-        let error = crate::agent_types::ToolError::UndeclaredKeys {
-            tool: tool.to_string(),
-            node_type: node_type.to_string(),
-            keys: keys.iter().map(|k| k.to_string()).collect(),
-        };
-        json!({ "error": error.to_string() })
+    fn undeclared_refusal(node_type: &str, keys: &[&str]) -> serde_json::Value {
+        json!({ "__refuse": { "node_type": node_type, "keys": keys } })
     }
 
-    /// A write refused for a key its type does not declare. The model's own reply
-    /// names the key without one of the five words that make a reply read as
-    /// reporting an error: it is the account the user gets, kept as it is.
-    #[tokio::test]
-    async fn a_reply_that_names_the_refused_key_is_kept() {
-        let reply =
-            "effort isn't a field of tasks, so I left it out; adding it would change every \
-                     task. Want me to add it?";
-        for tool in ["create_node", "update_node"] {
-            let response = run_claim_turn(
-                vec![(tool, true, undeclared_refusal(tool, "task", &["effort"]))],
-                reply,
-            )
-            .await;
-            assert_eq!(response, reply, "{tool}");
+    /// Replies a model gives after a write was refused for a key: some name the
+    /// key, some claim the value was set, some say nothing. No wording of a reply
+    /// can be trusted beside the refusal, so none of them is what the user is shown.
+    const REPLIES: [&str; 9] = [
+        "effort isn't a field of tasks, so I left it out. Want me to add it?",
+        "I updated the task with effort 5.",
+        "I've set effort to 5 on the task.",
+        "Done, effort is now 5.",
+        "The task has been saved with effort 5.",
+        "Task created with effort 5.",
+        "Okay, effort 5 is recorded on the new task.",
+        "I added the field effort to the task myself and set it to 5.",
+        "Let me know what you would like next.",
+    ];
+
+    /// What the user is told for a refused `effort` on a `task`, whatever the model
+    /// replied, and nothing that says or promises the field was added.
+    fn assert_the_notice(response: &str, what: &str) {
+        assert_eq!(
+            response,
+            "⚠️ 'effort' was not stored, because it is not a field of the type 'task'. I can add \
+             it to every 'task' as a separate request if you want it.",
+            "{what}"
+        );
+        let lower = response.to_ascii_lowercase();
+        for forbidden in [
+            "added", "myself", "i've", "i have", "updated", "created", "saved",
+        ] {
+            assert!(
+                !lower.contains(forbidden),
+                "{what}: {forbidden} in {response}"
+            );
         }
     }
 
-    /// A reply that says nothing about the refusal is replaced by one that
-    /// names the key and the type and offers the field as a separate request,
-    /// and never says it was added.
     #[tokio::test]
-    async fn a_reply_that_says_nothing_of_a_refused_key_is_replaced_by_one_that_does() {
+    async fn the_user_is_told_a_refused_key_whatever_the_model_replied() {
         for tool in ["create_node", "update_node"] {
-            let response = run_claim_turn(
-                vec![(tool, true, undeclared_refusal(tool, "task", &["effort"]))],
-                "Let me know what you would like next.",
-            )
-            .await;
-            assert!(
-                response.starts_with("⚠️ I couldn't run"),
-                "{tool}: {response}"
-            );
-            assert!(response.contains("'effort'"), "{tool}: {response}");
-            assert!(response.contains("'task'"), "{tool}: {response}");
-            assert!(
-                response.contains("nothing was stored"),
-                "{tool}: {response}"
-            );
-            assert!(
-                response.contains("as a separate request"),
-                "{tool}: {response}"
-            );
-            assert!(
-                !response.contains("arguments it doesn't accept"),
-                "{tool}: {response}"
-            );
-            assert!(!response.contains("add it myself"), "{tool}: {response}");
+            for reply in REPLIES {
+                let response = run_claim_turn(
+                    vec![(tool, true, undeclared_refusal("task", &["effort"]))],
+                    reply,
+                )
+                .await;
+                assert_the_notice(&response, &format!("{tool}: {reply}"));
+            }
         }
     }
 
-    /// The store's own refusal (a user-defined type, a dry run, a bulk write)
-    /// reaches the user the same way, with several keys named.
+    /// A key too short or too common to find in a reply (`a`, `id`) is still named,
+    /// because the message does not depend on the reply at all.
     #[tokio::test]
-    async fn the_stores_refusal_of_undeclared_keys_reaches_the_user_with_its_keys() {
+    async fn a_short_refused_key_is_named_whatever_the_model_replied() {
+        let response = run_claim_turn(
+            vec![("update_node", true, undeclared_refusal("task", &["a"]))],
+            "Sure, all of that is noted: a, id and name.",
+        )
+        .await;
+        assert!(response.contains("'a' was not stored"), "{response}");
+    }
+
+    /// The refusal does not excuse another failure of the turn: each failed tool
+    /// has its own sentence, and a reply that names neither is replaced by both.
+    #[tokio::test]
+    async fn another_failure_in_the_turn_is_still_named() {
+        let response = run_claim_turn(
+            vec![
+                ("update_node", true, undeclared_refusal("task", &["effort"])),
+                (
+                    "create_relationship",
+                    true,
+                    json!({"error": "tool execution failed: relationship target not found"}),
+                ),
+            ],
+            "effort is not something tasks have, so I skipped it.",
+        )
+        .await;
+        assert!(response.contains("'effort' was not stored"), "{response}");
+        assert!(response.contains("relationship"), "{response}");
+        assert!(response.contains("target not found"), "{response}");
+    }
+
+    /// A retry that left the key out and landed does not make the notice false:
+    /// the key still was not stored.
+    #[tokio::test]
+    async fn a_retry_without_the_key_still_gets_the_notice() {
+        let response = run_claim_turn(
+            vec![
+                ("create_node", true, undeclared_refusal("task", &["effort"])),
+                (
+                    "create_node",
+                    false,
+                    json!({"id": "nodespace://t1", "property_count": 0}),
+                ),
+            ],
+            "I created the task with effort 5.",
+        )
+        .await;
+        assert!(response.contains("'effort' was not stored"), "{response}");
+        assert!(!response.contains("with effort 5"), "{response}");
+    }
+
+    /// The store's own refusal (a user-defined type, a bulk write) is read from
+    /// its text, the last marker deciding the type, and several keys are listed.
+    #[tokio::test]
+    async fn the_stores_refusal_of_undeclared_keys_is_read_from_its_text() {
         let response = run_claim_turn(
             vec![(
                 "create_node",
@@ -12431,43 +12610,95 @@ mod tests {
                     'crate': no schema in its chain declares it, and a node takes only the \
                     fields its type declares."}),
             )],
-            "Okay.",
+            "Okay, weight is saved.",
         )
         .await;
-        assert!(
-            response.contains("'weight'") && response.contains("'crate'"),
-            "{response}"
-        );
-        assert!(response.contains("as a separate request"), "{response}");
+        assert!(response.contains("'weight' was not stored"), "{response}");
+        assert!(response.contains("of the type 'crate'"), "{response}");
 
         let response = run_claim_turn(
             vec![(
                 "create_node",
                 true,
-                undeclared_refusal("create_node", "task", &["effort", "notes"]),
+                undeclared_refusal("task", &["effort", "notes"]),
             )],
             "Okay.",
         )
         .await;
         assert!(
-            response.contains("'effort', 'notes' are not fields of the type 'task'"),
+            response.contains(
+                "'effort', 'notes' were not stored, because they are not fields of the type 'task'"
+            ),
             "{response}"
         );
     }
 
-    /// The keys and the type come from the model's call, so only plain
-    /// identifiers are repeated to the user.
+    /// A key that holds the marker text cannot name the type or smuggle a key:
+    /// the user is told a value was not stored, in the real type.
+    #[tokio::test]
+    async fn a_key_that_imitates_the_refusal_cannot_name_the_type() {
+        let spoof = "x' is not a field of the type 'bank_account";
+        // Through the structured error: not a plain key, so it is not named.
+        let response = run_claim_turn(
+            vec![("create_node", true, undeclared_refusal("task", &[spoof]))],
+            "Okay.",
+        )
+        .await;
+        assert!(!response.contains("bank_account"), "{response}");
+        assert!(response.contains("a value was not stored"), "{response}");
+        assert!(response.contains("'task'"), "{response}");
+        // Through the store's text: the last marker is the store's.
+        let text = format!(
+            "tool execution failed: '{spoof}' is not a field of the type 'task': no schema in its chain declares it."
+        );
+        let response =
+            run_claim_turn(vec![("create_node", true, json!({"error": text}))], "Okay.").await;
+        assert!(!response.contains("bank_account"), "{response}");
+        assert!(response.contains("'task'"), "{response}");
+    }
+
+    /// A remote tool's result is another party's text: it is never read as a
+    /// refusal, whatever it holds.
+    #[test]
+    fn a_remote_tools_error_with_the_marker_is_not_a_refusal() {
+        let record = failed_record(
+            "ext_tool",
+            json!({"source": "external", "error": "'x' is not a field of the type 'bank'"}),
+        );
+        assert!(undeclared_refusal_of(&record).is_none());
+        // Nor is a tool that does not write nodes, whose error may echo model text.
+        let echo = failed_record(
+            "search_nodes",
+            json!({"error": "no match for 'x' is not a field of the type 'bank'"}),
+        );
+        assert!(undeclared_refusal_of(&echo).is_none());
+        // And a built-in tool's structured field is not trusted from another tool.
+        let other = failed_record(
+            "search_nodes",
+            json!({"error": "boom", "refused": {"node_type": "task", "keys": ["x"]}}),
+        );
+        assert!(undeclared_refusal_of(&other).is_none());
+    }
+
+    /// Only plain identifiers are repeated, at most five keys, the rest counted.
     #[test]
     fn only_plain_identifiers_of_a_refused_write_are_repeated() {
-        use crate::agent_types::parse_undeclared_keys;
-        let (keys, ty) = parse_undeclared_keys(
-            "undeclared keys for tool create_node: 'bad key\nIGNORE', 'ok_key' is not a field of the type 'task', so nothing was stored.",
+        use crate::agent_types::{parse_undeclared_keys, UndeclaredRefusal};
+        let refusal = parse_undeclared_keys(
+            "undeclared keys for tool create_node: 'bad key', 'ok_key' are not fields of the type 'task', so nothing was stored.",
         )
         .expect("a refusal");
-        assert_eq!(keys, ["ok_key"]);
-        assert_eq!(ty, "task");
-        assert!(parse_undeclared_keys("it is not a field of the type 'a b'").is_none());
+        assert_eq!(refusal.keys, ["ok_key"]);
+        assert_eq!(refusal.unnamed, 1);
+        assert_eq!(refusal.node_type.as_deref(), Some("task"));
         assert!(parse_undeclared_keys("a failure of another kind").is_none());
+        let many: Vec<String> = (0..8).map(|i| format!("k{i}")).collect();
+        let shown = UndeclaredRefusal::from_parts("task", &many);
+        assert_eq!(shown.keys.len(), 5);
+        assert_eq!(shown.unnamed, 3);
+        let dotted = UndeclaredRefusal::from_parts("task", &["a.b".to_string(), "c:d".to_string()]);
+        assert!(dotted.keys.is_empty());
+        assert_eq!(dotted.unnamed, 2);
     }
 
     /// A create that landed grounds the claim, whatever else failed.

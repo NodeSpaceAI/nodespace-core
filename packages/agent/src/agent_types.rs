@@ -95,34 +95,91 @@ fn undeclared_keys_message(keys: &[String], node_type: &str) -> String {
     )
 }
 
-/// The keys and the type of a refusal for undeclared keys, read from an error
-/// text: this crate's own ([`ToolError::UndeclaredKeys`]) or the store's
-/// (`'k' is not a field of the type 'T': ...`), whatever prefix the tool put on it.
-/// Only a key or type of plain identifier characters is returned, since both come
-/// from the model's call; `keys` is empty when none is.
-pub fn parse_undeclared_keys(text: &str) -> Option<(Vec<String>, String)> {
+/// How many refused keys a notice names; the rest are counted.
+pub const REFUSED_KEYS_SHOWN: usize = 5;
+
+/// The keys and the type of a write refused for keys its type does not declare, as
+/// far as they can be repeated to a user: they come from the model's call, so only
+/// a key of letters, digits and `_` and a type of those and `-` is named, and what
+/// is not is counted in `unnamed` and left unsaid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UndeclaredRefusal {
+    /// The type the write was for, when it can be named.
+    pub node_type: Option<String>,
+    /// The keys that can be named, in order, at most [`REFUSED_KEYS_SHOWN`].
+    pub keys: Vec<String>,
+    /// How many keys are not named: not plain, or past the cap.
+    pub unnamed: usize,
+}
+
+fn plain_key(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn plain_type(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+impl UndeclaredRefusal {
+    /// A refusal from the structured error: the keys and the type as the tool
+    /// reported them.
+    pub fn from_parts(node_type: &str, keys: &[String]) -> Self {
+        let named: Vec<String> = keys.iter().filter(|k| plain_key(k)).cloned().collect();
+        let unnamed = keys.len() - named.len().min(keys.len());
+        let shown: Vec<String> = named.iter().take(REFUSED_KEYS_SHOWN).cloned().collect();
+        Self {
+            node_type: plain_type(node_type).then(|| node_type.to_string()),
+            unnamed: unnamed + named.len() - shown.len(),
+            keys: shown,
+        }
+    }
+}
+
+/// A refusal read from an error text, for a write whose error reaches only as the
+/// store's text (a user-defined type, a bulk or trusted write): the keys and type of
+/// `'k' is not a field of the type 'T': ...`, whatever prefix the tool put on it.
+///
+/// The LAST marker is the store's own; a key that holds the marker text is the
+/// model's, and cannot move it. The sentence before the marker must be exactly the
+/// quoted keys joined by commas and the verb, or no key is named. `None` when the
+/// text holds no such sentence.
+pub fn parse_undeclared_keys(text: &str) -> Option<UndeclaredRefusal> {
     let (marker_at, marker) = [" not a field of the type '", " not fields of the type '"]
         .iter()
-        .filter_map(|m| text.find(m).map(|at| (at, *m)))
-        .min_by_key(|(at, _)| *at)?;
+        .filter_map(|m| text.rfind(m).map(|at| (at, *m)))
+        .max_by_key(|(at, _)| *at)?;
     let after = &text[marker_at + marker.len()..];
     let node_type = after.split('\'').next()?;
     let before = &text[..marker_at];
     let sentence = before.rsplit_once(": ").map_or(before, |(_, tail)| tail);
-    let plain = |s: &str| {
-        !s.is_empty()
-            && s.len() <= 64
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
-    };
-    let keys: Vec<String> = sentence
+    let listed = sentence
+        .strip_suffix(" is")
+        .or_else(|| sentence.strip_suffix(" are"))
+        .unwrap_or(sentence);
+    let keys: Vec<String> = listed
         .split('\'')
         .skip(1)
         .step_by(2)
-        .filter(|k| plain(k))
         .map(str::to_string)
         .collect();
-    plain(node_type).then(|| (keys, node_type.to_string()))
+    let rebuilt = keys
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let genuine = !keys.is_empty() && rebuilt == listed;
+    Some(if genuine {
+        UndeclaredRefusal::from_parts(node_type, &keys)
+    } else {
+        UndeclaredRefusal {
+            node_type: plain_type(node_type).then(|| node_type.to_string()),
+            keys: Vec::new(),
+            unnamed: 1,
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
