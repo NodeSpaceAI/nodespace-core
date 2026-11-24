@@ -190,7 +190,7 @@ async function main(): Promise<number> {
       console.error(`  ${v.file}`);
       console.error(`    ${v.text}\n`);
     }
-    console.error('These break the design system spec (the DESIGN.md design document in the NodeSpace workspace).');
+    console.error('These break the design system spec (the document "Design system" in the NodeSpace workspace).');
     console.error('Fix them — do not re-record the baseline to make this pass.\n');
     return 1;
   }

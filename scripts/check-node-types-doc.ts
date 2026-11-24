@@ -107,6 +107,17 @@ export function renderNodeTypesSheet(dump: CoreSchemaDump): string {
   return `${out.join("\n")}\n`;
 }
 
+/**
+ * One message per seeded schema whose id is not a registry type: the sheet is
+ * rendered per registered type, so such a schema would otherwise go unlisted.
+ */
+export function unregisteredSchemas(dump: CoreSchemaDump): string[] {
+  const registered = new Set(dump.types.map((type) => type.id));
+  return dump.schemas
+    .filter((schema) => !registered.has(schema.id))
+    .map((schema) => `the code seeds a \`${schema.id}\` schema for a type the registry doesn't list`);
+}
+
 /** At most this many differing lines are listed per side. */
 const MAX_LINES_PER_SIDE = 25;
 
@@ -154,6 +165,12 @@ async function dumpCoreSchemas(): Promise<CoreSchemaDump> {
 if (import.meta.main) {
   const write = process.argv.includes("--write");
   const dump = await dumpCoreSchemas();
+  const orphans = unregisteredSchemas(dump);
+  if (orphans.length > 0) {
+    console.error(`❌ The core schemas and the type registry disagree (${orphans.length}):`);
+    for (const problem of orphans) console.error(`  - ${problem}`);
+    process.exit(1);
+  }
   const generated = renderNodeTypesSheet(dump);
   const path = join(REPO, SHEET_PATH);
   if (write) {

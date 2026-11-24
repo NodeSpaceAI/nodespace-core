@@ -7,6 +7,7 @@ import {
   compareNodeTypesSheet,
   renderNodeTypesSheet,
   SHEET_PATH,
+  unregisteredSchemas,
   type CoreSchemaDump,
   type DumpedField,
 } from "./check-node-types-doc";
@@ -132,5 +133,20 @@ describe("compareNodeTypesSheet", () => {
 
   test("a missing committed sheet is reported", () => {
     expect(compareNodeTypesSheet(null, sheet())).toEqual([`${SHEET_PATH} does not exist.`]);
+  });
+});
+
+describe("unregisteredSchemas", () => {
+  test("a dump whose schemas are all registered reports nothing", () => {
+    expect(unregisteredSchemas(dump())).toEqual([]);
+  });
+
+  test("a seeded schema for a type the registry does not list is reported", () => {
+    const d = dump();
+    d.schemas.push({ id: "ghost", fields: [] });
+    const problems = unregisteredSchemas(d);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("`ghost`");
+    expect(problems[0]).toContain("registry doesn't list");
   });
 });
