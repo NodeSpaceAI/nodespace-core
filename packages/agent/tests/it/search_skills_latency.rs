@@ -23,8 +23,9 @@
 //! invariant — that `search_skills` RETURNS correct `schema_metadata` when called
 //! — is enforced by the `search_skills_response_includes_schema_metadata` unit test.
 //!
-//! Each scenario is run N=10 times for variance. Results are written to
-//! `nodespace-docs/development/benchmarks/search-skills-latency.md`.
+//! Each scenario is run N=10 times for variance. The report is printed, and
+//! written to `search-skills-latency.md` in the directory named by
+//! `SEARCH_SKILLS_BENCH_REPORT_DIR` when that variable is set.
 //!
 //! Ignored by default — these are latency benchmarks, not correctness checks,
 //! and would otherwise run for real (slowly) on any machine with a reachable
@@ -46,25 +47,14 @@ use nodespace_nlp_engine::{ChatInferenceEngine, ModelFamily, StreamingChunk, Too
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Walk up from `CARGO_MANIFEST_DIR` searching for a `nodespace-docs` sibling directory.
-///
-/// Works correctly in both primary checkout and worktree layouts without
-/// hardcoding a level count (which differs between the two contexts).
-fn find_docs_benchmarks_dir() -> Option<std::path::PathBuf> {
-    let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for _ in 0..10 {
-        let candidate = dir.join("../nodespace-docs/development/benchmarks");
-        if let Ok(canonical) = candidate.canonicalize() {
-            return Some(canonical);
-        }
-        // Also check if the parent of nodespace-docs exists (dir may not exist yet)
-        let docs_parent = dir.join("../nodespace-docs/development");
-        if docs_parent.exists() {
-            return Some(dir.join("../nodespace-docs/development/benchmarks"));
-        }
-        dir = dir.join("..");
-    }
-    None
+/// Environment variable naming the directory the benchmark report is written to.
+const REPORT_DIR_ENV: &str = "SEARCH_SKILLS_BENCH_REPORT_DIR";
+
+/// The directory the report is written to, or `None` when `REPORT_DIR_ENV` is unset or empty.
+fn report_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os(REPORT_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
 }
 
 // ---------------------------------------------------------------------------
@@ -732,17 +722,12 @@ async fn bench_search_skills_e2e_latency() {
     }
 
     // -----------------------------------------------------------------------
-    // Write report to nodespace-docs
+    // Write the report when a directory is named
     // -----------------------------------------------------------------------
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let report = build_report(&model_name, &scenarios, N_RUNS, &date);
 
-    // Walk up from CARGO_MANIFEST_DIR searching for a nodespace-docs sibling.
-    // Handles both the primary checkout and worktree layouts without hardcoding
-    // a level count (which differs between the two contexts).
-    let docs_dir = find_docs_benchmarks_dir();
-
-    let report_path = match docs_dir {
+    let report_path = match report_dir() {
         Some(dir) => {
             let _ = std::fs::create_dir_all(&dir);
             let p = dir.join("search-skills-latency.md");
@@ -758,9 +743,7 @@ async fn bench_search_skills_e2e_latency() {
             }
         }
         None => {
-            eprintln!(
-                "\nWARN: nodespace-docs/development/benchmarks/ not found — report not saved"
-            );
+            eprintln!("\nNote: {REPORT_DIR_ENV} is not set, so the report is not saved");
             None
         }
     };
@@ -769,8 +752,8 @@ async fn bench_search_skills_e2e_latency() {
     eprintln!("\n========== BENCHMARK REPORT ==========\n{report}");
     eprintln!("======================================");
 
-    if report_path.is_some() {
-        eprintln!("Report persisted. Commit it from nodespace-docs to record the measurement.");
+    if let Some(path) = report_path {
+        eprintln!("Report persisted at {}.", path.display());
     }
 }
 

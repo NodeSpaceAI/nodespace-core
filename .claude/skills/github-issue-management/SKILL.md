@@ -39,50 +39,45 @@ Sync issues belong in nodespace-sync (ADR-081): anything about the NodeSpace Syn
 
 ### Step 1: Read the Workflow Guide (MANDATORY)
 
-**ALWAYS read this file first:**
+GitHub issues are the public intake only; the team's work is tracked in NodeSpace. The issue workflow lives in the NodeSpace workspace: the skills "Filing and Editing an Issue in nodespace-core" and "Working an Issue in nodespace-core" (attached to the nodespace-core project node, 54751b77-462a-44e9-af89-409245df92d9), and the decision "GitHub issues are the public intake only, and the team's work is tracked in NodeSpace". Find and read them with the CLI before drafting:
+
 ```bash
-# Read the complete workflow guide (lives in nodespace-docs, the single docs repo)
-Read /Users/malibio/nodespace/nodespace-docs/development/issue-workflow.md
+nodespace search "Filing and Editing an Issue"
+nodespace node get <id-from-the-search-result>
 ```
 
 **Extract and confirm understanding of:**
-- ❌ **Forbidden content**: Timeline estimates, effort estimates (lines 172-207)
-- ✅ **Issue naming**: Natural language, no prefixes (lines 95-116)
+- ❌ **Forbidden content**: Timeline estimates, effort estimates
+- ✅ **Issue naming**: Natural language, no prefixes
 - ✅ **Required sections**: Overview, Acceptance Criteria, Technical Specifications
-- ✅ **Reference formatting**: Simple `#number` format (lines 7-76)
-- ✅ **Self-contained**: All implementation details included (lines 208-230)
-- ✅ **Quality gates**: Pre-creation checklist (lines 244-252)
+- ✅ **Reference formatting**: Simple `#number` format
+- ✅ **Self-contained**: All implementation details included
+- ✅ **Quality gates**: Pre-creation checklist below
 
-### Step 2: Search nodespace-docs for Relevant Architecture (MANDATORY)
+### Step 2: Search NodeSpace for Relevant Design (MANDATORY)
 
-**Every issue that changes, reverses, or contradicts an existing architectural decision, convention, or documented policy MUST be checked against `nodespace-docs` before creation.** This repo carries no docs of its own — ADRs, architecture, and standards live only in `../nodespace-docs/`, so this is the only place the check can happen.
+**Every issue that changes, reverses, or contradicts an existing architectural decision, convention, or documented policy MUST be checked against the NodeSpace workspace before creation.** This repo carries no design documents of its own: decisions, design documents and standards live as nodes in the workspace.
 
 ```bash
-# Always pull first — local nodespace-docs can be behind remote
-cd /Users/malibio/nodespace/nodespace-docs && git pull origin main
+# Search decisions, design documents and skills for terms central to the issue's subject
+nodespace search "<key term(s) from the issue subject>"
 ```
 
-**Search for relevant prior decisions before drafting the issue:**
-```bash
-# Search ADRs and architecture docs for terms central to the issue's subject
-grep -rli "<key term(s) from the issue subject>" /Users/malibio/nodespace/nodespace-docs/decisions /Users/malibio/nodespace/nodespace-docs/architecture /Users/malibio/nodespace/nodespace-docs/components 2>/dev/null
-```
-
-Read any ADR or architecture doc that matches — not just the filename, the full content — before drafting the issue. Pay particular attention to:
-- **Status**: an ADR marked `Accepted` is a live constraint until formally superseded; a `Superseded` ADR names what replaced it — follow that chain to the current decision.
+Read every decision or design document that matches in full, not just the title, before drafting the issue. Pay particular attention to:
+- **Status**: an accepted decision is a live constraint until formally superseded; a superseded one names what replaced it, so follow that chain to the current decision.
 - **Decision** and **Rationale** sections: does the issue's proposed solution match, extend, or reverse this?
 
-**If the issue's proposed solution contradicts, reverses, or supersedes an existing ADR or documented convention:**
-- The issue is a decision change, not just an implementation task. Say so explicitly in the issue body — do not let it read as a routine fix.
-- The issue MUST name the specific ADR(s)/doc(s) being reversed or superseded, with path and a one-line summary of what they currently say (see "Architecture Impact" in Required Structure below).
-- Flag in the issue that a companion `nodespace-docs` change (a new superseding ADR, or an edit to the existing one) is required as part of the work — don't leave the docs silently out of sync with what the code ends up doing. `nodespace-docs` commits/pushes go straight to `main` per that repo's own workflow (no branches/PRs there).
+**If the issue's proposed solution contradicts, reverses, or supersedes an existing decision or documented convention:**
+- The issue is a decision change, not just an implementation task. Say so explicitly in the issue body; do not let it read as a routine fix.
+- The issue MUST name the specific decision(s) or document(s) being reversed or superseded, by title, with a one-line summary of what they currently say (see "Architecture Impact" in Required Structure below).
+- Flag in the issue that a companion change to the NodeSpace record (a new superseding decision node, or an edit to the existing one) is required as part of the work, so the record is not left out of sync with what the code ends up doing.
 - If you are not certain whether the proposed change reverses a prior decision, treat it as uncertain and flag it for the user rather than silently proceeding either way.
 
-**If no relevant ADR or architecture doc exists:** note that in the issue (e.g., "No prior ADR found for this area") so the reviewer knows the search happened rather than was skipped.
+**If no relevant decision or design document exists:** note that in the issue (e.g., "No prior decision found for this area") so the reviewer knows the search happened rather than was skipped.
 
-**Every issue lists the docs it implements, in a `## Documentation` section — whether or not it changes a decision.** The implementer reads these before starting, and the reviewer checks the code against them, so the issue body points at the design instead of restating it (restated design drifts from the docs). List each relevant ADR and architecture/component doc as a markdown link to its file on `main` (`https://github.com/NodeSpaceAI/nodespace-docs/blob/main/<path>`), with the section anchor when one section is what matters, and say in a few words what each one governs for this issue. Name the docs the change must update too (for example `components/node-types.md` for any node-type change).
+**Every issue lists the design it implements, in a `## Documentation` section, whether or not it changes a decision.** The implementer reads these before starting, and the reviewer checks the code against them, so the issue body points at the design instead of restating it (restated design drifts from the record). Link each relevant decision, design document and skill to its node as `nodespace://<node id>` with its title, taking the id from the CLI search result, and say in a few words what each one governs for this issue. Never write an id you did not read from the workspace. Name the documents the change must update too (for any node-type change, the regenerated `packages/core/shape-record/node-types.md`).
 
-**When the issue comes out of a design decision, write the docs first.** Commit and push the ADR and doc updates to nodespace-docs `main`, then file the issue linking them. An issue whose design exists only in its own body (or in a conversation) is the drift this rule prevents. If the docs can't be written yet, the decision isn't settled: ask the user rather than filing.
+**When the issue comes out of a design decision, record the decision first.** Write the decision or design document in the workspace, then file the issue linking it. An issue whose design exists only in its own body (or in a conversation) is the drift this rule prevents. If the design can't be written yet, the decision isn't settled: ask the user rather than filing.
 
 ### Step 3: Validate Content Against Rules
 
@@ -100,8 +95,8 @@ Read any ADR or architecture doc that matches — not just the filename, the ful
 - Acceptance Criteria (checkboxes with testable requirements)
 - Technical Specifications (file paths, patterns, references)
 - Self-contained details (implementer can work without asking questions)
-- **Documentation** (always): the ADRs and architecture/component docs the issue implements, linked, each with what it governs here, plus any doc the change must update. "No prior docs for this area" when Step 2 found none
-- **Architecture Impact** (only when Step 2 found a relevant ADR/doc): names the specific ADR(s) affected, whether this issue reverses/supersedes/extends them, and whether a companion `nodespace-docs` change is required
+- **Documentation** (always): the decisions and design documents the issue implements, linked to their nodes, each with what it governs here, plus any doc the change must update. "No prior docs for this area" when Step 2 found none
+- **Architecture Impact** (only when Step 2 found a relevant decision or document): names the specific decision(s) affected, whether this issue reverses/supersedes/extends them, and whether a companion change to the NodeSpace record is required
 
 #### ✅ REFERENCE FORMATTING:
 - GitHub issues use simple `#number` format (not "Issue #number - Title")
@@ -135,15 +130,15 @@ bun run gh:create --title "Natural Descriptive Title" \
 [High-level approach]
 
 ## Documentation
-- [ADR-NNN](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/decisions/NNN-title.md) §N - what it decides for this issue
-- [Doc](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/architecture/doc.md#section) - what it specifies here
-- Updates: [doc this change must keep current]
+- [Decision title](nodespace://<node id>) - what it decides for this issue
+- [Design document title](nodespace://<node id>) - what it specifies here
+- Updates: [document this change must keep current]
 
 ## Architecture Impact
-[Only include this section if Step 2's nodespace-docs search found a relevant ADR/doc.
-Name the specific ADR(s) affected (path + one-line summary of the current decision),
+[Only include this section if Step 2's search found a relevant decision or document.
+Name the specific decision(s) affected (title + one-line summary of the current decision),
 state whether this issue reverses/supersedes/extends it, and note whether a companion
-nodespace-docs change (new ADR or edit) is required as part of the work.]
+change to the NodeSpace record (new decision node or edit) is required as part of the work.]
 
 ## Acceptance Criteria
 - [ ] Testable requirement 1
@@ -278,14 +273,14 @@ Enhanced Search Component with Fuzzy Matching
 Fix Button Click Handler in Navigation Menu
 ```
 
-### ❌ Violation 5: Skipping the nodespace-docs Architecture Check
+### ❌ Violation 5: Skipping the NodeSpace Design Check
 
 **WRONG:**
 ```markdown
 ## Proposed Solution
 Add a ci.yml workflow that runs tests on every PR.
 ```
-*(Silent — no mention that ADR-047 already decided GitHub Actions is scoped to
+*(Silent — no mention that the CI gating decision already decided GitHub Actions is scoped to
 release/signing only and that a `ci.yml` test-gate was explicitly rejected.)*
 
 **CORRECT:**
@@ -294,11 +289,11 @@ release/signing only and that a `ci.yml` test-gate was explicitly rejected.)*
 Add a ci.yml workflow that runs tests on every PR.
 
 ## Architecture Impact
-This reverses ADR-047 (../nodespace-docs/decisions/047-ci-gating-policy.md),
+This reverses the CI gating decision (nodespace://<node id>),
 which decided local pre-push hooks are the sole test gate and explicitly
 rejected a ci.yml test-running workflow. This issue requires a companion
-nodespace-docs change: either a new ADR superseding ADR-047, or an edit to
-ADR-047 updating its Status and Decision to reflect the reversal.
+change to the NodeSpace record: either a new decision superseding it, or an
+edit to it updating its status and decision to reflect the reversal.
 ```
 
 ### ❌ Violation 4: Missing Self-Contained Details
@@ -346,9 +341,9 @@ Brief summary of the bug and its impact.
 - Screenshot/video demonstrating issue
 
 ## Documentation
-- [ADR-NNN](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/decisions/NNN-title.md) §N - what it decides for this issue
-- [Doc](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/architecture/doc.md#section) - what it specifies here
-- Updates: [doc this change must keep current]
+- [Decision title](nodespace://<node id>) - what it decides for this issue
+- [Design document title](nodespace://<node id>) - what it specifies here
+- Updates: [document this change must keep current]
 
 ## Root Cause
 
@@ -404,14 +399,14 @@ What user problem does this solve?
 High-level approach to solving the problem.
 
 ## Documentation
-- [ADR-NNN](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/decisions/NNN-title.md) §N - what it decides for this issue
-- [Doc](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/architecture/doc.md#section) - what it specifies here
-- Updates: [doc this change must keep current]
+- [Decision title](nodespace://<node id>) - what it decides for this issue
+- [Design document title](nodespace://<node id>) - what it specifies here
+- Updates: [document this change must keep current]
 
 ## Architecture Impact
-[Only include this section if Step 2's nodespace-docs search found a relevant ADR/doc.
-Name the specific ADR(s) affected, state whether this issue reverses/supersedes/extends
-the existing decision, and note whether a companion nodespace-docs change is required.]
+[Only include this section if Step 2's search found a relevant decision or document.
+Name the specific decision(s) affected, state whether this issue reverses/supersedes/extends
+the existing decision, and note whether a companion change to the NodeSpace record is required.]
 
 ## Implementation Approach
 
@@ -532,9 +527,9 @@ bun run gh:list --status open
 **This skill succeeds when:**
 - ✅ Issue follows ALL workflow guide standards
 - ✅ Zero forbidden content (estimates, bad formatting)
-- ✅ nodespace-docs was searched for relevant ADRs/architecture before drafting
-- ✅ Any reversed/superseded ADR is named explicitly with an Architecture Impact section
-- ✅ A Documentation section links every ADR and doc the issue implements (written and pushed first when the issue comes from a new decision)
+- ✅ The NodeSpace workspace was searched for relevant decisions and design documents before drafting
+- ✅ Any reversed/superseded decision is named explicitly with an Architecture Impact section
+- ✅ A Documentation section links every decision and design document the issue implements by node (recorded first when the issue comes from a new decision)
 - ✅ All quality gates passed
 - ✅ Self-contained and implementable
 - ✅ Created/updated via proper bun commands

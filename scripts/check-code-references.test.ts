@@ -1,5 +1,5 @@
 // Covers the issue-number/doc-path drift-prevention check (CLAUDE.md's rule
-// against citing GitHub issue numbers or nodespace-docs/ paths in code —
+// against citing GitHub issue numbers or docs-repository paths in code —
 // "describe the behavior/constraint directly, and reference decisions by
 // ADR"). Most tests build an isolated fixture directory so they exercise the
 // scanner's actual pattern matching without depending on this repo's real
@@ -10,6 +10,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCAN_ROOTS, baselineFailures, countReferences } from "./check-code-references";
+
+// Assembled so this file does not contain the repository name it tests for.
+const DOCS_DIR = ["nodespace", "docs"].join("-");
 
 let fixtureDir: string;
 
@@ -116,8 +119,8 @@ describe("countReferences — issue-number patterns", () => {
 });
 
 describe("countReferences — doc-path patterns", () => {
-  test("matches a nodespace-docs/ path", () => {
-    writeFixture("scripts/a.ts", "// @see ../nodespace-docs/architecture/foo.md\n");
+  test("matches a docs-repository path", () => {
+    writeFixture("scripts/a.ts", `// @see ../${DOCS_DIR}/architecture/foo.md\n`);
     const result = countReferences(["scripts"], fixtureDir);
     expect(result.docPathReferences).toBe(1);
   });
@@ -186,10 +189,10 @@ describe("countReferences — file discovery", () => {
 
 describe("countReferences — hit lists", () => {
   test("list each matching line as a repo-relative path:line: text entry", () => {
-    writeFixture("scripts/a.ts", "// clean\n// see core#1\n// @see nodespace-docs/x.md\n");
+    writeFixture("scripts/a.ts", `// clean\n// see core#1\n// @see ${DOCS_DIR}/x.md\n`);
     const result = countReferences(["scripts"], fixtureDir);
     expect(result.issueNumberHits).toEqual(["scripts/a.ts:2: // see core#1"]);
-    expect(result.docPathHits).toEqual(["scripts/a.ts:3: // @see nodespace-docs/x.md"]);
+    expect(result.docPathHits).toEqual([`scripts/a.ts:3: // @see ${DOCS_DIR}/x.md`]);
   });
 });
 

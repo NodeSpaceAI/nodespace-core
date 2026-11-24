@@ -46,6 +46,7 @@
     "skill:check": "cargo run -q -p nodespace-cli --example gen_skill_md -- --check",
     "gen:types": "bun run scripts/gen-types.ts",
     "types:check": "bun run scripts/gen-types.ts --check",
+    "node-types:gen": "bun run scripts/check-node-types-doc.ts --write",
     "node-types:check": "bun run scripts/check-node-types-doc.ts",
     "shape:gen": "cargo run -q -p nodespace-core --example shape_record -- generate",
     "shape:check": "cargo run -q -p nodespace-core --example shape_record -- check",

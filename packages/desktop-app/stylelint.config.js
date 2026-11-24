@@ -7,7 +7,7 @@
  * shadows, unauthorized motion) lives there. This config is the CSS-side gate;
  * postcss-html gives Stylelint a parser for embedded `<style>` blocks.
  *
- * The governing spec is DESIGN.md in the nodespace-docs repo. The rules encode
+ * The governing spec is the document "Design system" in the NodeSpace workspace. The rules encode
  * three of its hard constraints:
  *
  *   1. Colors come from CSS custom properties, never raw literals in components.

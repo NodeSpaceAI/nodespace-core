@@ -50,10 +50,16 @@ describe("classify", () => {
     expect(classify(["scripts/eval/golden/case-1.json"]).rust).toBe(true);
   });
 
-  test("the node-types.md check runs in the Rust tier, so its script and its example reach it", () => {
-    // The gate and test:changed import the script, so it is gate machinery.
-    expect(classify(["scripts/check-node-types-doc.ts"]).fullReason).toContain("check-node-types-doc.ts");
-    expect(classify(["packages/core/examples/dump_core_schemas.rs"]).rust).toBe(true);
+  test("the node types sheet check runs in the Rust tier, so its script, sheet and example reach it", () => {
+    for (const file of [
+      "scripts/check-node-types-doc.ts",
+      "packages/core/shape-record/node-types.md",
+      "packages/core/examples/dump_core_schemas.rs",
+    ]) {
+      const scope = classify([file]);
+      expect(scope.fullReason).toBeNull();
+      expect(scope.rust).toBe(true);
+    }
   });
 
   test("the shape record check runs in the Rust tier, so everything that can change the snapshot reaches it", () => {

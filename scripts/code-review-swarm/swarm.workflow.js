@@ -31,7 +31,7 @@ const RUN_DATE = args.runDate || '(date not given)'
 const CORE_REPO = args.coreRepo || 'the live core checkout'
 const SYNC_REPO = args.syncRepo || 'the live sync checkout'
 const DOCS_TEXT = args.docsRepo
-  ? `The architecture docs and ADRs are in ${args.docsRepo} (a git checkout of nodespace-docs; run git -C ${args.docsRepo} fetch origin main and read origin/main versions with git show).`
+  ? `The architecture docs and ADRs are in ${args.docsRepo} (a git checkout; run git -C ${args.docsRepo} fetch origin main and read origin/main versions with git show).`
   : 'No docs checkout is available on this machine: skip the ADR checks and say in your result that you could not check the docs.'
 const DOCS_REF = args.docsRepo || 'the docs checkout (not available on this machine)'
 
