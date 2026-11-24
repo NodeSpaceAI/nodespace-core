@@ -90,15 +90,12 @@ export const TIERS = {
     command: "cargo clippy --version && bun run rust:lint",
     timeoutMs: 60 * MINUTE,
   },
-  // Compares the per-type reference in the docs repository with the registry
-  // and the seeded core schemas (ADR-086). Part of the Rust tier: it runs a
-  // nodespace-core example. This is the working-tree form test:changed runs;
-  // the merge gate compares with a commit of the docs remote's main
-  // (nodeTypesCheckAt). A machine with no docs checkout can't run either:
-  // the caller finds that out first and says so on its own output, since a
-  // stage that skipped itself would show as a pass.
+  // Regenerates the node types reference from the registry and the seeded
+  // core schemas and fails when the committed sheet differs (ADR-086). Part of
+  // the Rust tier: it runs a nodespace-core example. It reads nothing outside
+  // this checkout.
   nodeTypesCheck: {
-    label: "node-types:check (node-types.md vs. the core schemas)",
+    label: "node-types:check (committed node types sheet vs. the core schemas)",
     command: "bun run node-types:check",
     timeoutMs: 20 * MINUTE,
   },
@@ -123,24 +120,6 @@ export const TIERS = {
     timeoutMs: 10 * MINUTE,
   },
 } satisfies Record<string, StageSpec>;
-
-export const NODE_TYPES_CHECK_PUBLISHED_LABEL = "node-types:check (published node-types.md vs. the core schemas)";
-
-/**
- * The merge gate's node-types.md check, against the reference at `commit` of
- * the docs checkout. `fetchFailed` says the commit is the published main only
- * as last fetched; the label carries it, because the gate repeats a failing
- * stage's label where the reason for an ejection is read.
- */
-export function nodeTypesCheckAt(commit: string, fetchFailed: boolean): StageSpec {
-  return {
-    label: fetchFailed
-      ? `${NODE_TYPES_CHECK_PUBLISHED_LABEL} [the docs fetch failed: compared as last fetched]`
-      : NODE_TYPES_CHECK_PUBLISHED_LABEL,
-    command: `bun run node-types:check --at ${commit}`,
-    timeoutMs: 20 * MINUTE,
-  };
-}
 
 /** A fresh directory for one run's stage logs, named for the worktree and `kind`. */
 export function createLogDir(kind: string): string {

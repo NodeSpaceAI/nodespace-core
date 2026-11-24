@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Prevents new drift against CLAUDE.md's rule against citing GitHub issue
-// numbers or nodespace-docs/ paths in code comments ("describe the
+// numbers or docs-repository paths in code comments ("describe the
 // behavior/constraint directly, and reference decisions by ADR").
 //
 // Both baselines are at 0: doc-path references and bare issue-number
@@ -52,17 +52,9 @@ const EXCLUDE_DIR_NAMES = new Set([
 
 // This checker's own source and test necessarily describe the patterns they
 // scan for in comments/messages/fixtures, which would otherwise self-match.
-//
-// search_skills_latency.rs computes a real `nodespace-docs` sibling-directory
-// path at runtime to write a benchmark report — functional filesystem logic,
-// gracefully skipped when the directory is absent, not a stale documentation
-// citation. That's a different thing from the rule this check enforces (a
-// comment pointing a human at a doc for context), so it's excluded rather
-// than rewritten to hide a real dependency.
 const EXCLUDE_FILE_NAMES = new Set([
   "check-code-references.ts",
   "check-code-references.test.ts",
-  "search_skills_latency.rs",
 ]);
 
 const ISSUE_NUMBER_PATTERNS: RegExp[] = [
@@ -81,14 +73,16 @@ const ISSUE_NUMBER_PATTERNS: RegExp[] = [
   // `color: #888;` CSS.
   /(?<![\w&#]|Invoice |['"](?=#\d{3,5}['"]))#\d{3,5}\b(?!;)/,
 ];
-// Also catches the pre-nodespace-docs shape, an in-repo `docs/<section>/`
+// Also catches the pre-docs-repository shape, an in-repo `docs/<section>/`
 // path (e.g. `docs/architecture/development/process/`), which predates the
 // docs move and no longer exists in this repo. Scoped to the sibling repo's
 // actual top-level sections (architecture/components/decisions/development)
 // rather than a bare `docs\//`, which would also match unrelated generic
 // paths already in the codebase (markdown-fixture paths like
 // `docs/architecture.md` or `docs/intro.md`, and external doc-site URLs).
-const DOC_PATH_PATTERN = /nodespace-docs\/|\bdocs\/(?:architecture|components|decisions|development)\//;
+// The repository name is assembled so that this file does not itself contain it.
+const DOCS_REPO_DIR = ["nodespace", "docs"].join("-");
+const DOC_PATH_PATTERN = new RegExp(`${DOCS_REPO_DIR}/|\\bdocs/(?:architecture|components|decisions|development)/`);
 
 // Ratchet baselines. See the file-level comment: lower on paydown, never raise.
 export const BASELINES = {
@@ -127,7 +121,7 @@ export interface ReferenceCounts {
 }
 
 /**
- * Scans SCAN_ROOTS for issue-number and nodespace-docs/ path references in
+ * Scans SCAN_ROOTS for issue-number and docs-repository path references in
  * code comments/strings, line by line. A pure function of the filesystem —
  * no baseline comparison here, so it's independently testable against
  * injected fixtures.
@@ -175,7 +169,7 @@ export function baselineFailures(counts: ReferenceCounts): string[] {
   }
   if (counts.docPathReferences > BASELINES.docPathReferences) {
     failures.push(
-      `${counts.docPathReferences} nodespace-docs/ path references in code, up from the ` +
+      `${counts.docPathReferences} docs-repository path references in code, up from the ` +
         `${BASELINES.docPathReferences}-reference baseline in scripts/check-code-references.ts. ` +
         "Inline the essential fact, or cite an ADR, instead of a path into a separate repo. Matching lines:\n" +
         counts.docPathHits.join("\n"),

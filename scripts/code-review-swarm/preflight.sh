@@ -8,7 +8,7 @@
 # env:   SWARM_DIR  state dir, one per night
 #        CORE_REPO  core checkout (default: the git toplevel containing this kit)
 #        SYNC_REPO  sync checkout (default: $HOME/nodespace/sync, then a sibling of core named like the sync repo)
-#        DOCS_REPO  docs checkout, optional (default: $HOME/nodespace/docs, then ../nodespace-docs)
+#        DOCS_REPO  a checkout of design documents, optional (no default)
 #        BASE_REF   ref to pin in both repos (default: origin/main)
 set -euo pipefail
 
@@ -50,13 +50,8 @@ if [ -z "${SYNC_REPO:-}" ] || { [ ! -d "$SYNC_REPO/.git" ] && [ ! -f "$SYNC_REPO
   exit 1
 fi
 
-if [ -z "${DOCS_REPO:-}" ]; then
-  for c in "$HOME/nodespace/docs" "$CORE_REPO/../nodespace-docs"; do
-    if [ -d "$c/.git" ] || [ -f "$c/.git" ]; then DOCS_REPO="$(cd "$c" && pwd)"; break; fi
-  done
-fi
 DOCS_REPO="${DOCS_REPO:-}"
-[ -n "$DOCS_REPO" ] || echo "note: no docs checkout found; reviewers will skip the ADR checks (set DOCS_REPO to fix)" >&2
+[ -n "$DOCS_REPO" ] || echo "note: DOCS_REPO is not set; reviewers will skip the ADR checks" >&2
 
 mkdir -p "$S"/{findings,verdicts,review,filed,scratch,logs}
 S="$(cd "$S" && pwd)"

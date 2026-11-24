@@ -30,10 +30,10 @@ Rough size (the exact numbers are printed by `make-units.ts`): part 1 about 25 u
 - `gh` logged in with access to NodeSpaceAI (`gh auth status`); it lists existing issues and files the approved ones.
 - `bun`, `git`, `jq`.
 - A Claude Code session that has the Workflow tool. Keep the machine awake for the whole run, for example `caffeinate -i -t 43200` in another terminal.
-- Checkouts: this repo (core), the sync repo, and optionally the docs repo (without it the reviewers skip the ADR checks). Locations are found like this, or set them with environment variables:
+- Checkouts: this repo (core), the sync repo, and optionally a checkout of design documents (without it the reviewers skip the ADR checks). Locations are found like this, or set them with environment variables:
   - `CORE_REPO`: default is the git checkout that contains this kit.
   - `SYNC_REPO`: default `$HOME/nodespace/sync`, then a sibling directory of this checkout named `nodespace-` plus `sync`. preflight stops with a message if neither exists.
-  - `DOCS_REPO`: default `$HOME/nodespace/docs`, then `../nodespace-docs` next to core. Optional.
+  - `DOCS_REPO`: a checkout of design documents. No default; optional.
   - `SWARM_DIR`: the state directory. Default `$HOME/nodespace-swarm/night-<part>`, one directory per night, so the parts never share state.
 - Do not run more than one swarm at a time.
 

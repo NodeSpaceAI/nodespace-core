@@ -23,7 +23,7 @@ export interface GateScope {
   frontend: boolean;
   /**
    * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests, the
-   * generated-TypeScript drift check, the node-types.md check and the
+   * generated-TypeScript drift check, the node types sheet check and the
    * built-in shape record check (its snapshot, change log and inputs all live
    * under packages/core/).
    */
@@ -69,6 +69,9 @@ const GENERATED_TYPES_INPUTS = [
   "packages/desktop-app/src/lib/types/generated/",
   "packages/desktop-app/.prettierrc",
   "scripts/gen-types.ts",
+  // The node types sheet check runs in the Rust tier too (it runs a
+  // nodespace-core example); the sheet itself is under packages/core/.
+  "scripts/check-node-types-doc.ts",
 ];
 
 /**
@@ -84,7 +87,6 @@ const GATE_FILES = [
   "scripts/gate-stage.ts",
   "scripts/test-changed.ts",
   "scripts/test-app-units.ts",
-  "scripts/check-node-types-doc.ts",
   "scripts/setup-rust-tooling.ts",
   "scripts/merge-pr.ts",
   ".husky/",
