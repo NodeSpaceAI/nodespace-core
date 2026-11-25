@@ -894,12 +894,17 @@ describe('a session, whichever harness it runs in', () => {
   });
 });
 
-/** The harnesses read the launch from the process they run in: sets it, and answers how to put it back. */
+/**
+ * The harnesses read the launch from the process they run in: sets it, and answers how to put it back.
+ * The data directory override is cleared for the run, so the journal is found under the launch's own
+ * HOME whatever the machine running the tests has set, and put back afterwards.
+ */
 function launchedBy(env: Record<string, string>): () => void {
   const saved = { ...process.env };
+  delete process.env.NODESPACE_HOME;
   Object.assign(process.env, env);
   return () => {
-    for (const name of ['HOME', 'NODESPACE_SESSION', 'NODESPACE_LAUNCHED_FOR']) {
+    for (const name of ['HOME', 'NODESPACE_HOME', 'NODESPACE_SESSION', 'NODESPACE_LAUNCHED_FOR']) {
       if (saved[name] === undefined) delete process.env[name];
       else process.env[name] = saved[name];
     }
