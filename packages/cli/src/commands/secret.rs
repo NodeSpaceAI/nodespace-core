@@ -8,7 +8,8 @@
 //!
 //! The daemon asks the person at the screen to confirm a `set` or a `delete` in
 //! a system dialog before it changes anything; the command says so on standard
-//! error while it waits.
+//! error while it waits. That dialog exists only on macOS: on Windows and Linux
+//! `set` and `delete` are refused (remote tools are macOS-only).
 
 use std::io::{IsTerminal, Read, Write};
 
@@ -24,12 +25,13 @@ use tonic::transport::Channel;
 #[derive(Subcommand, Debug)]
 pub enum SecretAction {
     /// Store a credential under a name. The value is read from a hidden prompt
-    /// on a terminal, or from standard input; it is never an argument.
+    /// on a terminal, or from standard input; it is never an argument. macOS
+    /// only: elsewhere there is no way to confirm the change and it is refused.
     Set {
         /// Name a tool refers to as `keychain:<name>` (letters, digits, `.`, `_`, `-`).
         name: String,
     },
-    /// Remove a credential.
+    /// Remove a credential. macOS only, like `set`.
     Delete {
         /// The name to remove.
         name: String,

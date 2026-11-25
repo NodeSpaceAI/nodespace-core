@@ -368,8 +368,8 @@ impl SecretBackend for InMemorySecretBackend {
 }
 
 /// The operating system's credential store (macOS keychain, Windows Credential
-/// Manager). On other platforms every call reports the store as unavailable and
-/// the `env:` reference is the way to supply a credential.
+/// Manager). On other platforms every call reports the store as unavailable:
+/// remote tools and `nodespace secret set` / `delete` are macOS-only.
 pub struct KeychainBackend;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -448,7 +448,7 @@ impl SecretBackend for KeychainBackend {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn unavailable() -> SecretError {
     SecretError::Store(
-        "the operating system credential store is not available on this platform; use an `env:` reference"
+        "the operating system credential store is not available on this platform: remote tools and `nodespace secret set` / `delete` need macOS"
             .to_string(),
     )
 }
