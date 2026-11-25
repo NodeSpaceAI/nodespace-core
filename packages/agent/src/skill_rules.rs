@@ -244,6 +244,12 @@ pub const ADD_ENUM_VALUES: SchemaRule = SchemaRule {
 /// deletion as unsupported rather than looking for it. The relationship
 /// prerequisite is stated up front because discovering it only through the
 /// runtime rejection reads as a second dead end.
+///
+/// The imperative form (the in-app agent's) sends the deletion itself to the
+/// Node Deletion skill as a separate request: Schema Creation's whitelist has
+/// no `delete_node`, and adding it would make this skill destructive and raise
+/// its retrieval bar. The prose form (the CLI skill) still walks the whole
+/// `schema delete` sequence, since the CLI has no whitelist.
 pub const DELETE_A_SCHEMA: SchemaRule = SchemaRule {
     id: "delete-a-schema",
     imperative: agent_form!("delete-a-schema"),
@@ -253,9 +259,6 @@ pub const DELETE_A_SCHEMA: SchemaRule = SchemaRule {
         "unsupported",
         "empty shell",
         "remove_relationships",
-        "mirror of the",
-        "instance data",
-        "extends",
         "re-target",
         "instances",
     ],
