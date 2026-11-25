@@ -573,12 +573,40 @@ jobs:
             --bin nodespaced --bin nodespace \
             --target aarch64-apple-darwin
 
+      # The team's Developer ID provisioning profile for the daemon's App ID
+      # (base64 in a secret). Without the secret the daemon ships as the bare
+      # signed binary and keeps no approval across a restart. With it, the
+      # profile is checked before it is used (App ID, keychain access group,
+      # team, expiry, the signing certificate) and a bad one fails the build
+      # here instead of producing a daemon macOS refuses to start. The file is
+      # written readable by the runner user only, never printed, and removed
+      # after the .pkg is built.
+      - name: Write and check the daemon provisioning profile
+        env:
+          NODESPACED_PROVISION_PROFILE_B64: ${{ secrets.NODESPACED_PROVISION_PROFILE }}
+        run: |
+          if [[ -z "${NODESPACED_PROVISION_PROFILE_B64}" ]]; then
+            echo "::notice::No daemon provisioning profile secret: this build ships an UNPROVISIONED daemon (no team keychain, approvals end at restart)."
+            exit 0
+          fi
+          umask 077
+          profile="$RUNNER_TEMP/nodespaced.provisionprofile"
+          trap 'rm -f "${profile}"' ERR
+          printf '%s' "${NODESPACED_PROVISION_PROFILE_B64}" | base64 --decode > "${profile}"
+          SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY}" bash scripts/validate-daemon-profile.sh "${profile}"
+          echo "NODESPACED_PROVISION_PROFILE=${profile}" >> "$GITHUB_ENV"
+          echo "::notice::This build ships a PROVISIONED daemon (team keychain)."
+
       - name: Build .pkg installer
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/build-pkg.sh
+
+      - name: Remove the daemon provisioning profile
+        if: always()
+        run: rm -f "$RUNNER_TEMP/nodespaced.provisionprofile"
 
       - name: Install .pkg and verify it actually lands correctly
         shell: bash

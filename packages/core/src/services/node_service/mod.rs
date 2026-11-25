@@ -4375,6 +4375,49 @@ mod tests {
         assert!(svc.store().get_node(NESTED).await.unwrap().is_none());
     }
 
+    /// A retype ends the node's approval before the write that causes it: a
+    /// retype the schema refuses (a child cannot become a collection) has
+    /// already ended it, which a record ended only after a successful write
+    /// would not have.
+    #[tokio::test]
+    async fn a_retype_ends_the_nodes_approval_before_its_write() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+        use crate::tool_approvals as ta;
+
+        let (svc, _tmp) = create_test_service().await;
+        const ROOT: &str = "66666666-6666-6666-6666-6666666666a1";
+        const CHILD: &str = "66666666-6666-6666-6666-6666666666a2";
+        for (id, parent) in [(ROOT, None), (CHILD, Some(ROOT))] {
+            svc.create_node_with_parent(CreateNodeParams {
+                id: Some(id.into()),
+                node_type: "text".into(),
+                content: id.into(),
+                parent_id: parent.map(Into::into),
+                position: InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        }
+        let scope = svc.approval_scope();
+        let node = svc.store().get_node(CHILD).await.unwrap().unwrap();
+        let pending = ta::begin(&scope, CHILD, "tag", None);
+        ta::as_own_write(&scope, CHILD, async { ta::reported_update(&scope, &node) }).await;
+        pending.landed();
+        assert!(svc.tool_approval_recorded(CHILD));
+
+        svc.store()
+            .switch_node_type_atomic(CHILD, "collection", json!({}), None)
+            .await
+            .expect_err("a child cannot become a collection");
+
+        assert!(
+            !svc.tool_approval_recorded(CHILD),
+            "the approval ended before the refused write"
+        );
+    }
+
     /// A schema node is always a root. It may have `has_child` children (its
     /// description), but no write path can give it a parent: create, move,
     /// relationship create, a raw edge insert, or switching a child's type to

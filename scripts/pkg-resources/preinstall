@@ -27,7 +27,29 @@ set -euo pipefail
 VOLUME="${3:-/}"
 APP="${VOLUME%/}/Applications/NodeSpace.app"
 
+# A daemon installed by a package built with the team's provisioning profile is
+# a bundle under usr/local/lib/nodespace with a relative link at
+# usr/local/bin/nodespaced. A package built without it (a downgrade, or an
+# unprovisioned build) installs a regular file at that path, and an installer
+# that writes through a link would put the file into the old bundle. So the old
+# link and bundle go first; the payload then writes what it carries.
+# --- BEGIN daemon-link (verified by scripts/pkg-daemon-bundle.test.ts) ---
+remove_daemon_bundle() {
+    local root="${VOLUME%/}"
+    local link="${root}/usr/local/bin/nodespaced"
+    # Only a link into the daemon's own bundle: any other link (a Homebrew link
+    # into its Cellar, say) is not ours to remove.
+    if [[ -L "${link}" ]]; then
+        case "$(/usr/bin/readlink -- "${link}")" in
+            *NodeSpaceDaemon.app/*) /bin/rm -f -- "${link}" ;;
+        esac
+    fi
+    /bin/rm -rf -- "${root}/usr/local/lib/nodespace/NodeSpaceDaemon.app"
+}
+# --- END daemon-link ---
+
 if [[ ! -e "${APP}" ]]; then
+    remove_daemon_bundle
     exit 0
 fi
 
@@ -37,3 +59,5 @@ if [[ "${product}" != "community" ]]; then
     echo "The NodeSpace app on this Mac is a different NodeSpace product, or an older NodeSpace that does not say which product it is. To replace it, move /Applications/NodeSpace.app to the Trash, then run this installer again. Your databases stay on this Mac." >&2
     exit 1
 fi
+
+remove_daemon_bundle

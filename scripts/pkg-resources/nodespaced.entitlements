@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Restricted entitlements: the operating system honours them only when
+         the signed bundle carries a provisioning profile of the team that
+         grants them (Contents/embedded.provisionprofile), otherwise it kills
+         the program at launch. build-pkg.sh signs with this file only when it
+         was given the profile (NODESPACED_PROVISION_PROFILE). The access group
+         is the one packages/daemon/src/team_keychain.rs names (ACCESS_GROUP):
+         the data-protection keychain items of the daemon (credentials, their
+         names index, the approval key and the saved approvals) live under it,
+         and only a program signed with it can read or write them. -->
+    <key>com.apple.application-identifier</key>
+    <string>F4M5J7YNLS.app.nodespace.daemon</string>
+    <key>com.apple.developer.team-identifier</key>
+    <string>F4M5J7YNLS</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>F4M5J7YNLS.app.nodespace.daemon</string>
+    </array>
+</dict>
+</plist>

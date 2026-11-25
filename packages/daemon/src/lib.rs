@@ -19,6 +19,7 @@ pub mod services;
 pub mod single_instance;
 #[cfg(unix)]
 pub mod stdio_log_rotation;
+pub mod team_keychain;
 pub mod tray;
 pub mod user_presence;
 

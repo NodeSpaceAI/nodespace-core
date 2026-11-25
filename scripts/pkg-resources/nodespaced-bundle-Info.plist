@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- The app-like bundle that carries nodespaced and its provisioning
+         profile (build-pkg.sh, only when given the profile). The identifier is
+         the application identifier the profile was made for, without the team
+         prefix. -->
+    <key>CFBundleIdentifier</key>
+    <string>app.nodespace.daemon</string>
+    <key>CFBundleName</key>
+    <string>NodeSpaceDaemon</string>
+    <key>CFBundleExecutable</key>
+    <string>nodespaced</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__PKG_VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__PKG_VERSION__</string>
+    <!-- No Dock icon and no menu bar of its own: the tray is the daemon's. -->
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>

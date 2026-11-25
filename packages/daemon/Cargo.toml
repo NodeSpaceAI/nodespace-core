@@ -32,6 +32,8 @@ chrono = { workspace = true }
 nodespace-core = { workspace = true }
 # Overwrites the credential value of a Set request once it is stored.
 zeroize = "1"
+# Naming a state directory in the saved approvals' keychain account.
+sha2 = "0.10"
 nodespace-agent = { workspace = true }
 nodespace-nlp-engine = { workspace = true }
 
@@ -63,6 +65,7 @@ objc2-local-authentication = { version = "0.3", default-features = false, featur
 block2 = "0.6"
 # Checking a connecting program's code signature (SecCode) against the team requirement.
 security-framework = "3.7"
+# Reading the daemon's own keychain-access-groups entitlement (SecTask).
 core-foundation = "0.10"
 
 # Named Pipe owner-only DACL construction (ADR-052 -- the Windows equivalent
@@ -82,7 +85,6 @@ tempfile = "3.0"
 # Building a database file of another release's shape from its DDL, and
 # hashing it to show a refused open left it untouched.
 libsql = { workspace = true }
-sha2 = "0.10"
 # Integration tests need PtySession::launch_for_test to spawn shell utilities
 # (echo, cat) without a real agent binary. The `testing` feature exposes that
 # helper as part of the agent crate's public surface.

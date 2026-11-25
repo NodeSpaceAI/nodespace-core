@@ -29,6 +29,9 @@ const PKG_INSTALLED_PATHS: &[&str] = &[
     "/Library/LaunchAgents/app.nodespace.daemon.plist",
     "/usr/local/bin/nodespace",
     "/usr/local/bin/nodespaced",
+    // The daemon's bundle (a package built with the team's provisioning
+    // profile installs it, and makes the path above a link to it).
+    "/usr/local/lib/nodespace/NodeSpaceDaemon.app",
 ];
 #[cfg(not(target_os = "macos"))]
 const PKG_INSTALLED_PATHS: &[&str] = &[];
@@ -294,7 +297,7 @@ fn leftovers_message(leftovers: &[PathBuf], state_dir: &Path) -> String {
         "NodeSpace was not fully uninstalled.\n\
          Removed: the daemon service and files in your own home. Your data at {} has been preserved.\n\
          These files need administrator rights and were left in place:\n  {}\n\
-         To remove them, run:\n  sudo rm -- {}\n\
+         To remove them, run:\n  sudo rm -r -- {}\n\
          Until they are removed, launchd starts the daemon again at the next login.\n\
          /Applications/NodeSpace.app and the installer receipt also remain: move the app to the \
          Trash, and run `sudo pkgutil --forget com.nodespace.pkg` to drop the receipt.",
@@ -940,7 +943,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("need administrator rights and were left in place"));
         assert!(message.contains(
-            "sudo rm -- '/Library/LaunchAgents/app.nodespace.daemon.plist' '/usr/local/bin/nodespace'"
+            "sudo rm -r -- '/Library/LaunchAgents/app.nodespace.daemon.plist' '/usr/local/bin/nodespace'"
         ));
         assert!(!message.contains("/usr/local/bin/nodespaced"));
         assert!(!message.contains("NodeSpace uninstalled."));
@@ -1251,5 +1254,35 @@ mod tests {
         std::os::unix::fs::symlink(&cellar, &link).expect("symlink");
 
         assert!(root_owned_leftovers(&[link.to_str().expect("utf8")]).is_empty());
+    }
+
+    /// The daemon's bundle is a directory and its old path a link: both are
+    /// listed (a dangling link too), and the printed command can remove a
+    /// directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_bundle_and_a_link_to_it_are_leftovers_and_the_command_removes_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = dir.path().join("NodeSpaceDaemon.app");
+        fs::create_dir_all(bundle.join("Contents")).expect("mkdir");
+        let dangling = dir.path().join("nodespaced");
+        std::os::unix::fs::symlink(bundle.join("Contents/MacOS/nodespaced"), &dangling)
+            .expect("symlink");
+
+        let found = root_owned_leftovers(&[
+            bundle.to_str().expect("utf8"),
+            dangling.to_str().expect("utf8"),
+        ]);
+        assert_eq!(found, vec![bundle.clone(), dangling.clone()]);
+
+        let message = leftovers_message(&found, dir.path());
+        assert!(message.contains("sudo rm -r -- "));
+        assert!(message.contains(bundle.to_str().expect("utf8")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_installed_paths_name_the_daemon_bundle() {
+        assert!(PKG_INSTALLED_PATHS.contains(&"/usr/local/lib/nodespace/NodeSpaceDaemon.app"));
     }
 }

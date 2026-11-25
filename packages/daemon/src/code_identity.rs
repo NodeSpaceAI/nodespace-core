@@ -1,20 +1,23 @@
 //! Whether this `nodespaced` may hold an approval key: a check of its own code
 //! signature when it starts.
 //!
-//! The approval key lives only in the daemon's memory, so what protects it is
-//! that no other program can read that memory or run as this daemon. On macOS
-//! that holds for a release build signed with the hardened runtime and no
-//! `get-task-allow` entitlement: a debugger or another process of the same user
-//! cannot attach to it. So a release build makes a key only when the kernel
-//! says its signature is valid (and not ad hoc, by `codesign -s -` or by the
-//! linker), the hardened runtime is on,
-//! debugging is not allowed and no debugger has attached
-//! (`csops(getpid(), CS_OPS_STATUS)`). One that fails gets no key, and nothing
-//! is approved or offered.
+//! What protects the key is that no other program can read it or run as this
+//! daemon. On macOS that holds for a release build signed with the hardened
+//! runtime and no `get-task-allow` entitlement: a debugger or another process
+//! of the same user cannot attach to it. So a release build makes a key only
+//! when the kernel says its signature is valid (and not ad hoc, by
+//! `codesign -s -` or by the linker), the hardened runtime is on, debugging is
+//! not allowed and no debugger has attached (`csops(getpid(), CS_OPS_STATUS)`).
+//! One that fails gets no key, and nothing is approved or offered.
 //!
-//! A development build (debug assertions on) makes a key anyway, with a loud
-//! warning: it is for working on NodeSpace and is not a security boundary.
-//! Other platforms make none.
+//! Where the key lives: a signed release that holds the team keychain access
+//! group keeps it in the team keychain (see [`crate::team_keychain`]), so
+//! approvals outlast a restart; every other build that makes a key keeps it in
+//! memory only, and its approvals end with the process.
+//!
+//! A development build (debug assertions on) makes a key anyway, in memory,
+//! with a loud warning: it is for working on NodeSpace and is not a security
+//! boundary. Other platforms make none.
 
 use nodespace_core::secrets::ApprovalKey;
 
@@ -121,26 +124,71 @@ pub fn decide(macos: bool, development_build: bool, status: Option<CodeStatus>) 
     }
 }
 
-/// This daemon's approval key, made once at start, or why it has none. Logs
-/// the warning of a development build and the reason a release build has no
-/// key.
-pub fn approval_key_for_this_process() -> Result<ApprovalKey, String> {
-    match decide(
-        cfg!(target_os = "macos"),
-        cfg!(debug_assertions),
-        this_process(),
-    ) {
+/// The approval key of a daemon and whether it outlives the process.
+pub struct IssuedKey {
+    /// The key, or why this daemon has none.
+    pub key: Result<ApprovalKey, String>,
+    /// The key is kept in the team keychain, so approvals saved there still
+    /// hold after a restart. False for every key held in memory only.
+    pub durable: bool,
+}
+
+/// The approval key for a process whose decision is `decision`, using `team`
+/// (the team keychain) when there is one. A signed release that has the team
+/// keychain keeps its key there; a development build and any process without
+/// the team keychain make one in memory, which ends with the process. A team
+/// keychain that fails gives an in-memory key too, with a warning: the
+/// approvals then end at the next restart, and nothing is trusted from a store
+/// that did not answer.
+pub fn approval_key_from(
+    decision: Decision,
+    team: Option<&dyn nodespace_core::secrets::SecretBackend>,
+) -> IssuedKey {
+    match decision {
         Decision::Make { warning } => {
+            let release = warning.is_none();
             if let Some(warning) = warning {
                 tracing::warn!("{warning}");
             }
-            ApprovalKey::generate().map_err(|e| e.to_string())
+            if let (true, Some(team)) = (release, team) {
+                match nodespace_core::secrets::load_or_create_approval_key(team) {
+                    Ok(key) => {
+                        return IssuedKey {
+                            key: Ok(key),
+                            durable: true,
+                        }
+                    }
+                    Err(e) => tracing::warn!(
+                        "the team keychain gave no approval key ({e}); approvals will end when this daemon stops"
+                    ),
+                }
+            }
+            IssuedKey {
+                key: ApprovalKey::generate().map_err(|e| e.to_string()),
+                durable: false,
+            }
         }
         Decision::None(why) => {
             tracing::warn!("{why}");
-            Err(why)
+            IssuedKey {
+                key: Err(why),
+                durable: false,
+            }
         }
     }
+}
+
+/// This daemon's approval key, made once at start, or why it has none. Logs
+/// the warning of a development build and the reason a release build has no
+/// key.
+pub fn approval_key_for_this_process() -> IssuedKey {
+    let decision = decide(
+        cfg!(target_os = "macos"),
+        cfg!(debug_assertions),
+        this_process(),
+    );
+    let team = crate::team_keychain::team_backend();
+    approval_key_from(decision, team.as_deref())
 }
 
 #[cfg(test)]
@@ -209,5 +257,96 @@ mod tests {
             "{:#x}",
             status.0
         );
+    }
+
+    use nodespace_core::secrets::{InMemorySecretBackend, SecretBackend, SecretError};
+
+    fn release() -> Decision {
+        Decision::Make { warning: None }
+    }
+
+    fn development() -> Decision {
+        Decision::Make {
+            warning: Some("dev".into()),
+        }
+    }
+
+    /// Fails every call; panics if it is touched when it must not be.
+    struct Failing;
+    impl SecretBackend for Failing {
+        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            Err(SecretError::Store("down".into()))
+        }
+        fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+            Err(SecretError::Store("down".into()))
+        }
+        fn delete(&self, _: &str) -> Result<bool, SecretError> {
+            Err(SecretError::Store("down".into()))
+        }
+    }
+
+    #[test]
+    fn a_signed_release_with_the_team_keychain_keeps_the_same_key_across_restarts() {
+        let team = InMemorySecretBackend::default();
+        let first = approval_key_from(release(), Some(&team));
+        let second = approval_key_from(release(), Some(&team));
+        assert!(first.durable && second.durable);
+        assert_eq!(
+            first.key.unwrap().as_bytes(),
+            second.key.unwrap().as_bytes()
+        );
+    }
+
+    #[test]
+    fn a_development_build_never_reads_or_writes_the_team_keychain_and_keeps_no_key() {
+        let team = InMemorySecretBackend::default();
+        team.set(
+            nodespace_core::secrets::APPROVAL_KEY_ACCOUNT,
+            &"ab".repeat(32),
+        )
+        .unwrap();
+        let before = team.snapshot();
+        let a = approval_key_from(development(), Some(&team));
+        let b = approval_key_from(development(), Some(&team));
+        assert!(!a.durable && !b.durable);
+        assert_ne!(a.key.unwrap().as_bytes(), b.key.unwrap().as_bytes());
+        assert_eq!(team.snapshot(), before);
+    }
+
+    #[test]
+    fn a_process_without_the_team_keychain_makes_a_new_key_each_time() {
+        let a = approval_key_from(release(), None);
+        let b = approval_key_from(release(), None);
+        assert!(!a.durable && !b.durable);
+        assert_ne!(a.key.unwrap().as_bytes(), b.key.unwrap().as_bytes());
+    }
+
+    #[test]
+    fn a_team_keychain_that_fails_or_holds_a_planted_item_gives_a_memory_key() {
+        let failed = approval_key_from(release(), Some(&Failing));
+        assert!(!failed.durable && failed.key.is_ok());
+        let planted = InMemorySecretBackend::default();
+        planted
+            .set(nodespace_core::secrets::APPROVAL_KEY_ACCOUNT, "planted")
+            .unwrap();
+        let issued = approval_key_from(release(), Some(&planted));
+        assert!(!issued.durable && issued.key.is_ok());
+        // The item is left as it was.
+        assert_eq!(
+            planted
+                .get(nodespace_core::secrets::APPROVAL_KEY_ACCOUNT)
+                .unwrap()
+                .as_deref(),
+            Some("planted")
+        );
+    }
+
+    #[test]
+    fn no_decision_to_make_a_key_gives_none_and_touches_nothing() {
+        let team = InMemorySecretBackend::default();
+        let issued = approval_key_from(Decision::None("no".into()), Some(&team));
+        assert_eq!(issued.key.err().as_deref(), Some("no"));
+        assert!(!issued.durable);
+        assert!(team.snapshot().is_empty());
     }
 }

@@ -114,10 +114,11 @@ impl fmt::Debug for SecretValue {
 }
 
 /// The key for tool approval tags: 32 bytes from the operating system's random
-/// source, made by the daemon when it starts and kept only in its memory. It is
-/// never stored, so nothing outside the daemon can read or replace it, and the
-/// approvals made under it last as long as that daemon runs. Debug prints a
-/// placeholder; the bytes are overwritten when it is dropped.
+/// source, made by the daemon. A signed release keeps it in the team keychain
+/// ([`load_or_create_approval_key`]), so approvals outlast a restart and no
+/// other program can read or replace it; any other build keeps it only in its
+/// memory, and the approvals made under it last as long as that daemon runs.
+/// Debug prints a placeholder; the bytes are overwritten when it is dropped.
 pub struct ApprovalKey(Zeroizing<[u8; 32]>);
 
 impl ApprovalKey {
@@ -144,6 +145,65 @@ impl ApprovalKey {
 impl fmt::Debug for ApprovalKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ApprovalKey(<redacted>)")
+    }
+}
+
+impl ApprovalKey {
+    /// The key as 64 lowercase hex digits, for a store that holds text.
+    pub fn to_hex(&self) -> Zeroizing<String> {
+        let mut text = Zeroizing::new(String::with_capacity(64));
+        for byte in self.0.iter() {
+            text.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+            text.push(char::from_digit(u32::from(byte & 0xf), 16).unwrap_or('0'));
+        }
+        text
+    }
+
+    /// A key from [`to_hex`](Self::to_hex)'s text; `None` for anything else.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        let digits = text.as_bytes();
+        if digits.len() != 64 {
+            return None;
+        }
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        for (i, pair) in digits.chunks(2).enumerate() {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            bytes[i] = (hi * 16 + lo) as u8;
+        }
+        Some(Self(bytes))
+    }
+}
+
+/// Account of the approval key in the team keychain.
+pub const APPROVAL_KEY_ACCOUNT: &str = "approval-key";
+/// Account of the saved remote-tool approvals in the team keychain.
+pub const APPROVAL_RECORDS_ACCOUNT: &str = "approval-records";
+
+/// The approval key kept in `backend` (the team keychain): the one stored there,
+/// or a new one that is stored first and read back, so every daemon of this
+/// user starts with the same key. An item that is not a key is an error, never
+/// replaced: whatever is stored under the account was not put there by this
+/// daemon, and a key is not made over it.
+pub fn load_or_create_approval_key(
+    backend: &dyn SecretBackend,
+) -> Result<ApprovalKey, SecretError> {
+    if let Some(text) = backend.get(APPROVAL_KEY_ACCOUNT)? {
+        let text = Zeroizing::new(text);
+        return ApprovalKey::from_hex(&text)
+            .ok_or_else(|| SecretError::Store("the stored approval key is not a key".to_string()));
+    }
+    let key = ApprovalKey::generate()?;
+    backend.set(APPROVAL_KEY_ACCOUNT, &key.to_hex())?;
+    let stored = backend
+        .get(APPROVAL_KEY_ACCOUNT)?
+        .map(Zeroizing::new)
+        .and_then(|text| ApprovalKey::from_hex(&text));
+    match stored {
+        Some(stored) if stored.as_bytes() == key.as_bytes() => Ok(key),
+        _ => Err(SecretError::Store(
+            "the approval key could not be read back after it was stored".to_string(),
+        )),
     }
 }
 
@@ -209,6 +269,14 @@ impl SecretStore {
     /// The operating system's credential store.
     pub fn keychain() -> Self {
         Self::new(Arc::new(KeychainBackend))
+    }
+
+    /// The team keychain: the data-protection keychain under the team's
+    /// access group, which only programs signed by the team (with the group
+    /// in their entitlements) can read or write. `security` and other programs
+    /// of the user cannot overwrite what it holds.
+    pub fn team_keychain(access_group: &str) -> Self {
+        Self::new(Arc::new(TeamKeychainBackend::new(access_group)))
     }
 
     fn value_account(name: &str) -> String {
@@ -430,6 +498,103 @@ impl SecretBackend for KeychainBackend {
             Err(e) => Err(store_error(e)),
         }
     }
+}
+
+/// The data-protection keychain under a team access group (macOS). An item
+/// there can be read or written only by a program whose signature carries the
+/// group in its `keychain-access-groups` entitlement, which the operating system
+/// grants only against a provisioning profile of the team. A build without it
+/// (a development build, an ad hoc or Homebrew build) gets
+/// `errSecMissingEntitlement` from every call, which is an error here: there is
+/// no fallback to the login keychain, so a program that cannot reach the team
+/// keychain holds nothing from it and plants nothing in it.
+pub struct TeamKeychainBackend {
+    access_group: String,
+}
+
+impl TeamKeychainBackend {
+    pub fn new(access_group: &str) -> Self {
+        Self {
+            access_group: access_group.to_string(),
+        }
+    }
+}
+
+/// What a team keychain failure says; never an item.
+#[cfg(target_os = "macos")]
+fn team_error(error: &security_framework::base::Error) -> SecretError {
+    /// `errSecMissingEntitlement`.
+    const MISSING_ENTITLEMENT: i32 = -34018;
+    let why = if error.code() == MISSING_ENTITLEMENT {
+        "this build does not carry the team keychain access group"
+    } else {
+        "the team keychain failed"
+    };
+    SecretError::Store(why.to_string())
+}
+
+#[cfg(target_os = "macos")]
+impl TeamKeychainBackend {
+    fn options(&self, account: &str) -> security_framework::passwords_options::PasswordOptions {
+        let mut options =
+            security_framework::passwords_options::PasswordOptions::new_generic_password(
+                KEYCHAIN_SERVICE,
+                account,
+            );
+        options.use_protected_keychain();
+        options.set_access_group(&self.access_group);
+        options
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl SecretBackend for TeamKeychainBackend {
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        security_framework::passwords::set_generic_password_options(
+            value.as_bytes(),
+            self.options(account),
+        )
+        .map_err(|e| team_error(&e))
+    }
+    fn get(&self, account: &str) -> Result<Option<String>, SecretError> {
+        /// `errSecItemNotFound`.
+        const ITEM_NOT_FOUND: i32 = -25300;
+        match security_framework::passwords::generic_password(self.options(account)) {
+            Ok(bytes) => String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|_| SecretError::Store("a team keychain item is not text".to_string())),
+            Err(e) if e.code() == ITEM_NOT_FOUND => Ok(None),
+            Err(e) => Err(team_error(&e)),
+        }
+    }
+    fn delete(&self, account: &str) -> Result<bool, SecretError> {
+        /// `errSecItemNotFound`.
+        const ITEM_NOT_FOUND: i32 = -25300;
+        match security_framework::passwords::delete_generic_password_options(self.options(account))
+        {
+            Ok(()) => Ok(true),
+            Err(e) if e.code() == ITEM_NOT_FOUND => Ok(false),
+            Err(e) => Err(team_error(&e)),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl SecretBackend for TeamKeychainBackend {
+    fn set(&self, _account: &str, _value: &str) -> Result<(), SecretError> {
+        Err(team_unavailable())
+    }
+    fn get(&self, _account: &str) -> Result<Option<String>, SecretError> {
+        Err(team_unavailable())
+    }
+    fn delete(&self, _account: &str) -> Result<bool, SecretError> {
+        Err(team_unavailable())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn team_unavailable() -> SecretError {
+    SecretError::Store("the team keychain is only available on macOS".to_string())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -850,5 +1015,85 @@ mod tests {
         // And a set does not overwrite the unreadable index with a one-name list.
         assert!(s.set("a", "v").is_err());
         assert_eq!(backend.snapshot().get(INDEX_ACCOUNT).unwrap(), "not json");
+    }
+
+    #[test]
+    fn an_approval_key_round_trips_through_hex_and_nothing_else_parses() {
+        let key = ApprovalKey::generate().unwrap();
+        let text = key.to_hex();
+        assert_eq!(text.len(), 64);
+        assert!(text.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+        assert_eq!(
+            ApprovalKey::from_hex(&text).unwrap().as_bytes(),
+            key.as_bytes()
+        );
+        assert_eq!(
+            ApprovalKey::from_hex(&text.to_uppercase())
+                .unwrap()
+                .as_bytes(),
+            key.as_bytes()
+        );
+        for bad in ["", "ab", &"g".repeat(64), &"a".repeat(63), &"a".repeat(65)] {
+            assert!(ApprovalKey::from_hex(bad).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_stored_key_is_made_once_and_then_read() {
+        let backend = InMemorySecretBackend::default();
+        let first = load_or_create_approval_key(&backend).unwrap();
+        let again = load_or_create_approval_key(&backend).unwrap();
+        assert_eq!(first.as_bytes(), again.as_bytes());
+        assert_eq!(
+            backend
+                .snapshot()
+                .get(APPROVAL_KEY_ACCOUNT)
+                .map(String::as_str),
+            Some(first.to_hex().as_str())
+        );
+    }
+
+    #[test]
+    fn an_item_that_is_not_a_key_is_an_error_and_is_left_alone() {
+        let backend = InMemorySecretBackend::default();
+        backend.set(APPROVAL_KEY_ACCOUNT, "not a key").unwrap();
+        assert!(load_or_create_approval_key(&backend).is_err());
+        assert_eq!(
+            backend.get(APPROVAL_KEY_ACCOUNT).unwrap().as_deref(),
+            Some("not a key")
+        );
+    }
+
+    /// A store that takes a write and keeps nothing.
+    struct Forgetful;
+    impl SecretBackend for Forgetful {
+        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            Ok(())
+        }
+        fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+            Ok(None)
+        }
+        fn delete(&self, _: &str) -> Result<bool, SecretError> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_read_back_is_not_used() {
+        assert!(load_or_create_approval_key(&Forgetful).is_err());
+    }
+
+    /// A build without the team's entitlement (this test binary) reaches
+    /// nothing in the team keychain, on every call, and nothing falls back to
+    /// another keychain.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_build_without_the_entitlement_gets_an_error_from_every_team_keychain_call() {
+        let backend = TeamKeychainBackend::new("TEAMTEST00.app.nodespace.test");
+        let missing = |e: SecretError| e.to_string().contains("team keychain access group");
+        assert!(missing(backend.get("approval-key").unwrap_err()));
+        assert!(missing(backend.set("approval-key", "v").unwrap_err()));
+        assert!(missing(backend.delete("approval-key").unwrap_err()));
+        assert!(load_or_create_approval_key(&backend).is_err());
     }
 }
