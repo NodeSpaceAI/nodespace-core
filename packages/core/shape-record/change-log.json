@@ -244,6 +244,22 @@
       "summary": "A field name no longer carries a namespace prefix, and the core-type comparison no longer ignores a field of a core schema whose name contains a colon. A database created by an earlier build that holds such a field in a core schema's `fields` is refused at open (a schema mismatch) until it is reset. Values stored under a prefixed key stay in their buckets and count as undeclared: a write naming one is refused unless it carries the stored value back unchanged.",
       "userProducible": true,
       "decision": "accepted_reset_required"
+    },
+    {
+      "id": "spec-context-paths-decisions",
+      "after": "0.3.13",
+      "covers": [
+        "schemas.spec.contextPaths"
+      ],
+      "area": "seeded_content",
+      "class": "reconcile",
+      "summary": "The spec schema ships the context path decisions, so reading a spec with its context returns the decisions linked from it; it shipped none.",
+      "userProducible": true,
+      "seeded": {
+        "aspect": "context_paths",
+        "editedUsersAffected": false,
+        "mustNotWaitForDecision": false
+      }
     }
   ]
 }
