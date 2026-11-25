@@ -2515,6 +2515,38 @@ mod tests {
         );
     }
 
+    /// Schema Creation stays non-destructive: deleting a type is a separate
+    /// request for Node Deletion, so the skill's body must not tell the model
+    /// to delete one itself, and its whitelist must not hold `delete_node`
+    /// (which would move it onto the destructive retrieval bar).
+    #[test]
+    fn schema_creation_sends_schema_deletion_to_node_deletion() {
+        let seeds = seed_skill_nodes();
+        let schema_skill = seeds
+            .iter()
+            .find(|s| s.title == "Schema Creation")
+            .expect("Schema Creation skill must exist");
+        assert!(
+            !tmpl_tool_whitelist(schema_skill).contains(&"delete_node".to_string()),
+            "Schema Creation must stay non-destructive"
+        );
+        let body = skill_body("Schema Creation");
+        let rule = body
+            .split("DELETING A SCHEMA")
+            .nth(1)
+            .expect("the delete-a-schema rule is part of the body")
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert!(rule.contains("Node Deletion"), "{rule}");
+        assert!(rule.contains("separate"), "{rule}");
+        assert!(rule.contains("never call delete_node here"), "{rule}");
+        assert!(
+            !rule.contains("then delete the schema node"),
+            "the rule must not tell the model to delete the schema itself: {rule}"
+        );
+    }
+
     /// `UNIQUE_FIELD_FLAGS` reaches the Schema Creation body through an
     /// include marker — a future edit to that file could silently drop the
     /// `unique-field-flags` include with no compiler
