@@ -4,8 +4,8 @@ track architecture decisions and who made them	Schema Creation	Window	2	0.788	Re
 log the design decisions for the system and who authored each one	Recording a Decision	Window	1	1.000	Recording a Decision	1.000	Play Authoring	+0.117	Play Authoring
 create a record of who made which architecture decision	Recording a Decision	Window	1	1.132	Recording a Decision	1.132	Node Creation	+0.249	Node Creation
 keep a history of decisions made about how the system is built	Schema Creation	Window	3	0.855	Recording a Decision	1.014	Recording a Decision	-0.159	Graph Editing
-track equipment checkout and return status	Schema Creation	Window	2	0.790	Instrumenting a Change	0.851	Instrumenting a Change	-0.062	Schema Creation
-track albums I mean to listen to	Schema Creation	Window	4	0.714	Instrumenting a Change	0.783	Instrumenting a Change	-0.069	Schema Creation
+track equipment checkout and return status	Schema Creation	Window	2	0.790	Shipping a Change	0.849	Shipping a Change	-0.059	Schema Creation
+track albums I mean to listen to	Schema Creation	Window	4	0.714	Researching	0.781	Researching	-0.068	Schema Creation
 I need a tracker for the venues I book	Schema Creation	Window	2	0.856	Researching	0.894	Researching	-0.039	Schema Creation
 start keeping tabs on who owes me money	Schema Creation	Window	3	0.805	Answering a Question	0.883	Answering a Question	-0.078	Graph Editing
 set up something to log my freelance gigs	Schema Creation	Window	1	0.846	Schema Creation	0.846	Researching	+0.007	Schema Creation
@@ -170,7 +170,7 @@ create a task for Anoop regarding v1 export format or only v2 coverage of the mi
 create a task for Priya to confirm the API rate limit before finishing SDK docs	Creating a Task	Window	1	0.914	Creating a Task	0.914	Node Creation	+0.049	Node Creation
 create a task for Marcus about which database region we picked that is blocking the deploy checklist	Creating a Task	Window	1	0.924	Creating a Task	0.924	Play Workflow State	+0.049	Play Workflow State
 create a task for Dana: whether legal approved the launch copy and I am blocked on the press release until she replies	Creating a Task	Window	-	-	Reviewing a Task	0.937	Reviewing a Task	-	Play Authoring
-mark the checklist item for Query engine rewrite release branch as work to be tracked	Creating a Task	First	-	-	Instrumenting a Change	0.928	Instrumenting a Change	-	Graph Editing
+mark the checklist item for Query engine rewrite release branch as work to be tracked	Creating a Task	First	1	0.926	Creating a Task	0.926	Graph Editing	+0.007	Graph Editing
 find out why a checklist box on the release branch is unticked after being marked done and write up what was found as work in Query engine rewrite	Creating a Task	First	1	0.955	Creating a Task	0.955	Play Workflow State	+0.004	Play Workflow State
 raise the unticked checklist box on the release branch as a task in Query engine rewrite	Creating a Task	First	1	0.942	Creating a Task	0.942	Graph Editing	+0.016	Graph Editing
 investigate why a task can be done with an unticked checklist box and record the cause and a regression check as a task under Query engine rewrite	Creating a Task	First	-	-	Reviewing a Task	0.984	Reviewing a Task	-	Play Workflow State

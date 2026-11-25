@@ -2002,6 +2002,10 @@ const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
     // lead the procedure lane for the requests Creating a Task owns; the
     // matrix ranks those.
     ("Addressing Review Findings", &["skills_win_their_requests"]),
+    // Names getting a bug or a finding tracked as work, so that it does not
+    // lead the request Stage 1 words as "mark ... as work to be tracked",
+    // which Creating a Task owns; the matrix ranks that request.
+    ("Instrumenting a Change", &["skills_win_their_requests"]),
     ("Shipping a Change", &["skills_win_their_requests"]),
     (
         "Schema Creation",
