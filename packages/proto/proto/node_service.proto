@@ -1327,8 +1327,8 @@ message OptionalTimestampClear {
   string value = 2;
 }
 
-// The task schema's fields and nothing else: content and extension fields
-// (`custom:…`) are written through UpdateNode. status has no clear path (the
+// The task schema's fields and nothing else: content and any fields the user
+// has added to the task type are written through UpdateNode. status has no clear path (the
 // task schema requires it).
 message UpdateTaskNodeRequest {
   string node_id = 1;

@@ -1619,13 +1619,14 @@ fn def_create_node() -> ToolDefinition {
             fields, and the rest becomes child nodes in order (the result's child_count says how \
             many), so do not create them again. A single line is just the title, and any other type \
             keeps 'content' as given. To import an existing document or page, prefer \
-            create_nodes_from_markdown. The example's user said: \"open a ticket for \
-            dana to rotate the signing keys on deploy in S-24, it's in dev, and it depends on the vault \
-            migration\". Note depends_on: the type lists no field for it, so it is carried under a key \
-            named after the user's own wording rather than dropped. Example call: {\"node_type\": \
-            \"ticket\", \"content\": \"Rotate signing keys on deploy\", \"field_values\": {\"status\": \
-            \"in_dev\", \"assignee\": \"dana\", \"sprint\": \"S-24\", \"depends_on\": \"the vault \
-            migration\"}}".into(),
+            create_nodes_from_markdown. A type takes only the fields it declares: a key the type \
+            does not list is refused, the refusal names the key and the type, and nothing is created. \
+            When that happens, tell the user which value was refused and offer to add the field to the \
+            type as a separate request; never add the field yourself and never leave the value out \
+            without saying so. The example's user said: \"open a ticket for dana to rotate the signing \
+            keys on deploy in S-24, and it's in dev\". Example call: {\"node_type\": \"ticket\", \
+            \"content\": \"Rotate signing keys on deploy\", \"field_values\": {\"status\": \
+            \"in_dev\", \"assignee\": \"dana\", \"sprint\": \"S-24\"}}".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -12236,6 +12237,28 @@ mod tests {
         // A type with a title_template rejects content, so it cannot be required.
         assert!(!required.contains(&json!("content")));
         assert!(required.contains(&json!("node_type")));
+    }
+
+    #[test]
+    fn create_node_description_says_an_undeclared_key_is_refused() {
+        let def = def_create_node();
+        let d = def.description.as_str();
+        assert!(
+            d.contains("is refused"),
+            "must say an undeclared key is refused"
+        );
+        assert!(
+            d.contains("offer to add the field to the type as a separate request"),
+            "must tell the model to offer the field as a separate request"
+        );
+        assert!(
+            d.contains("never add the field yourself"),
+            "must forbid the model adding the field itself"
+        );
+        assert!(
+            !d.contains("depends_on") && !d.contains("rather than dropped"),
+            "the example must not pass an undeclared key or say one is kept"
+        );
     }
 
     #[test]
