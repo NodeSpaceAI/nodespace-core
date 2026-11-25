@@ -67,7 +67,7 @@ fn verified_ui_pid(pid_file: &Path, expected_binary: &Path) -> Option<i32> {
     let contents = std::fs::read_to_string(pid_file).ok()?;
     let pid: i32 = contents.trim().parse().ok()?;
     let expected = expected_binary.to_string_lossy();
-    let out = Command::new("ps")
+    let out = crate::child_env::scrubbed("ps")
         .args(["-p", &pid.to_string(), "-o", "args="])
         .output()
         .ok()?;
@@ -135,7 +135,7 @@ fn signal_ui_to_quit(_pid_file: Option<&Path>, ui_binary: Option<&Path>) {
         // The daemon is spawned `DETACHED_PROCESS`, so it has no console and
         // Windows would open (and flash) one for `taskkill`.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = Command::new("taskkill")
+        let _ = crate::child_env::scrubbed("taskkill")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/F", "/IM"])
             .arg(image_name)
@@ -798,7 +798,7 @@ impl TrayState {
 /// `database`. Split out from [`TrayState::open_ui`] so the exact args/env are
 /// assertable in tests without actually spawning a process.
 fn build_ui_command(path: &Path, database: Option<&DatabaseId>) -> Command {
-    let mut command = Command::new(path);
+    let mut command = crate::child_env::scrubbed_ui(path);
     // The app outlives any one generation of the daemon's log, which
     // `stdio_log_rotation` swaps out from under our own stdio. An inherited
     // fd would keep writing into the rotated — and eventually unlinked —
