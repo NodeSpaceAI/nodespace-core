@@ -104,6 +104,8 @@ bun run rust:test     # Rust backend tests only
 - 🌟 [Star this repo](https://github.com/NodeSpaceAI/nodespace-core) if NodeSpace is useful to you
 - 🐛 [Report a bug](https://github.com/NodeSpaceAI/nodespace-core/issues/new)
 
+GitHub issues are the public intake. A report is read, shaped into work in the team's own tracker, and answered on the issue, which is then closed with a pointer to where the work lives. Day-to-day status and assignment are not tracked on GitHub.
+
 ---
 
 ## License

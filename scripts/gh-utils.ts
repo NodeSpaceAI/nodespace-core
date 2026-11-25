@@ -1,15 +1,20 @@
 #!/usr/bin/env bun
 
 /**
- * GitHub Project Management Utilities for NodeSpace
- * 
+ * GitHub utilities for NodeSpace, for the public-intake side only.
+ *
+ * GitHub issues are the public intake: the team's own work is tracked in
+ * NodeSpace, never filed, assigned or given a status on GitHub. This script
+ * views an intake issue, comments on one, opens a pull request, and files or
+ * updates the de-duplicated issue a failing scheduled check reports.
+ *
  * PURE TYPESCRIPT - NO SHELL COMMANDS
  * Eliminates Claude Code approval prompts by using direct API calls only
- * 
+ *
  * Usage:
- *   bun run gh:status 57,58,59 "In Progress"
- *   bun run gh:assign 60,61,62 "@me"
- *   bun run gh:list --status open
+ *   bun run gh:view 45
+ *   bun run gh:comment 45 --body "Comment text"
+ *   bun run gh:tracking-issue --title "Title" --body-file body.md
  */
 
 import { GitHubClient } from "./github-client.ts";
@@ -17,107 +22,11 @@ import { GitHubClient } from "./github-client.ts";
 class NodeSpaceGitHubManager {
   private client: GitHubClient;
 
-  // Status options — mirrors GitHubClient.statusOptions (the real
-  // "NodeSpace" board, org NodeSpaceAI, project #2).
-  private readonly statusOptions = {
-    "Backlog": "230488b9",
-    "Todo": "32c30124",
-    "In Progress": "9f8d4e33",
-    "In Review": "099b7674",
-    "Done": "58fb1205",
-    "Blocked": "f50ca67a"
-  } as const;
-
   // Accepts an injected client so tests can stub GitHub API access instead
   // of hitting the network (and instead of depending on which account is
   // actually authenticated when the suite runs).
   constructor(client?: GitHubClient) {
     this.client = client ?? new GitHubClient();
-  }
-
-  async updateIssueStatus(issueNumbers: number[], status: keyof typeof this.statusOptions) {
-    const results = await this.client.updateIssueStatus(issueNumbers, status);
-    
-    for (const result of results) {
-      if (result.success) {
-        console.log(`✅ Issue #${result.issueNumber} updated to '${status}'`);
-      } else {
-        console.error(`❌ Failed to update issue #${result.issueNumber}: ${result.error}`);
-      }
-    }
-
-    return results;
-  }
-
-  async assignIssues(issueNumbers: number[], assignee: string = "@me") {
-    // Resolve @me to whoever is actually authenticated (API requires an
-    // actual username) — never a hardcoded literal.
-    const login = assignee === "@me" ? await this.client.getAuthenticatedUser() : assignee.replace("@", "");
-    const assignees = [login];
-
-    const results = await this.client.assignIssues(issueNumbers, assignees);
-
-    for (const result of results) {
-      if (result.success) {
-        console.log(`✅ Issue #${result.issueNumber} assigned to ${login}`);
-      } else {
-        console.error(`❌ Failed to assign issue #${result.issueNumber}: ${result.error}`);
-      }
-    }
-
-    return results;
-  }
-
-  async unassignIssues(issueNumbers: number[], assignee: string = "@me") {
-    // Resolve @me to whoever is actually authenticated (API requires an
-    // actual username) — never a hardcoded literal.
-    const login = assignee === "@me" ? await this.client.getAuthenticatedUser() : assignee.replace("@", "");
-    const assignees = [login];
-
-    const results = await this.client.unassignIssues(issueNumbers, assignees);
-
-    for (const result of results) {
-      if (result.success) {
-        console.log(`✅ Issue #${result.issueNumber} unassigned from ${login}`);
-      } else {
-        console.error(`❌ Failed to unassign issue #${result.issueNumber}: ${result.error}`);
-      }
-    }
-
-    return results;
-  }
-
-  async listIssues(options: { status?: string, label?: string, assignee?: string } = {}) {
-    const apiOptions: { state?: "open" | "closed" | "all"; labels?: string[]; assignee?: string } = {};
-    
-    if (options.status) {
-      apiOptions.state = options.status === "open" ? "open" : options.status === "closed" ? "closed" : "all";
-    }
-    
-    if (options.label) {
-      apiOptions.labels = [options.label];
-    }
-
-    if (options.assignee) {
-      apiOptions.assignee =
-        options.assignee === "@me" ? await this.client.getAuthenticatedUser() : options.assignee.replace("@", "");
-    }
-
-    const issues = await this.client.listIssues(apiOptions);
-    
-    console.log(`\n📋 Issues (${issues.length} found):`);
-    console.log("=".repeat(80));
-    
-    for (const issue of issues) {
-      const assigneeNames = issue.assignees.map(a => a.login).join(", ") || "Unassigned";
-      const labelNames = issue.labels.map(l => l.name).join(", ") || "No labels";
-      
-      console.log(`#${issue.number}: ${issue.title}`);
-      console.log(`   State: ${issue.state} | Assignees: ${assigneeNames}`);
-      console.log(`   Labels: ${labelNames}\n`);
-    }
-
-    return issues;
   }
 
   async viewIssue(issueNumber: number, web: boolean = false) {
@@ -137,46 +46,6 @@ class NodeSpaceGitHubManager {
       
     } catch (error: unknown) {
       console.error(`❌ Failed to view issue #${issueNumber}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  async createIssue(title: string, body: string, labels?: string[], assignees?: string[]) {
-    try {
-      const issue = await this.client.createIssue(title, body, labels, assignees);
-
-      console.log("✅ Issue created:");
-      console.log(`#${issue.number}: ${title}`);
-      console.log(`URL: ${issue.url}`);
-      // GitHubClient.createIssue itself warns (console.warn) when the
-      // board add or the status write fails -- no need to re-derive that
-      // from `issue.addedToProject` here too.
-
-      return issue;
-    } catch (error: unknown) {
-      console.error(`❌ Failed to create issue: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
-    }
-  }
-
-  async editIssue(issueNumber: number, options: {
-    title?: string;
-    body?: string;
-    labels?: string[];
-    state?: "open" | "closed";
-  }) {
-    try {
-      await this.client.updateIssue(issueNumber, options);
-      
-      console.log(`✅ Issue #${issueNumber} updated:`);
-      if (options.title) console.log(`  Title: ${options.title}`);
-      if (options.body) console.log(`  Body updated`);
-      if (options.labels) console.log(`  Labels: ${options.labels.join(", ")}`);
-      if (options.state) console.log(`  State: ${options.state}`);
-      
-      return true;
-    } catch (error: unknown) {
-      console.error(`❌ Failed to edit issue #${issueNumber}: ${error instanceof Error ? error.message : String(error)}`);
-      throw error;
     }
   }
 
@@ -208,15 +77,12 @@ class NodeSpaceGitHubManager {
       const issue = await this.client.getIssue(issueNumber);
 
       const prTitle = title || issue.title;
+      // The closing keyword is for an issue that came from outside the team,
+      // so its reporter is notified when the change lands.
       const prBody = `Closes #${issueNumber}`;
 
       // Create the PR
       const pr = await this.createPR(prTitle, prBody);
-
-      // Update project status to In Review (the board has no separate
-      // "Ready for Review" option)
-      console.log("\n📊 Updating project status to 'In Review'...");
-      await this.updateIssueStatus([issueNumber], "In Review");
 
       console.log("\n🎉 PR workflow completed successfully!");
       return pr;
@@ -303,7 +169,7 @@ class NodeSpaceGitHubManager {
 // CLI Interface
 
 // Shared --body / --body-file parsing for the CLI cases below
-// (issues:create, issues:comment/pr:comment, tracking-issue:find-or-create).
+// (issues:comment/pr:comment, tracking-issue:find-or-create).
 // Prefers --body when both are given, matching each call site's previous
 // behavior. Returns undefined only when NEITHER flag is present -- an
 // explicit `--body ""` is returned as `""`, not treated as absent.
@@ -341,165 +207,6 @@ async function main() {
 
   try {
     switch (command) {
-      case "issues:status": {
-        const issueNumbers = args[1]?.split(",").map(n => parseInt(n.trim()));
-        const status = args[2] as keyof typeof manager["statusOptions"];
-        
-        if (!issueNumbers || !status) {
-          console.error('Usage: bun run gh:status 57,58,59 "In Progress"');
-          process.exit(1);
-        }
-        
-        await manager.updateIssueStatus(issueNumbers, status);
-        break;
-      }
-      
-      case "issues:assign": {
-        const issueNumbers = args[1]?.split(",").map(n => parseInt(n.trim()));
-        const assignee = args[2] || "@me";
-        
-        if (!issueNumbers) {
-          console.error('Usage: bun run gh:assign 60,61,62 "@me"');
-          process.exit(1);
-        }
-        
-        await manager.assignIssues(issueNumbers, assignee);
-        break;
-      }
-      
-      case "issues:unassign": {
-        const issueNumbers = args[1]?.split(",").map(n => parseInt(n.trim()));
-        const assignee = args[2] || "@me";
-        
-        if (!issueNumbers) {
-          console.error('Usage: bun run gh:unassign 60,61,62 "@me"');
-          process.exit(1);
-        }
-        
-        await manager.unassignIssues(issueNumbers, assignee);
-        break;
-      }
-
-      case "issues:create": {
-        // Support both positional args and named flags
-        let title: string | undefined;
-        let body: string = "";
-        let labels: string[] | undefined;
-        let assignees: string[] | undefined;
-
-        // Check if using named flags or positional args
-        const hasNamedFlags = args.some(arg => arg.startsWith("--"));
-
-        if (hasNamedFlags) {
-          // Named flags mode
-          const titleIndex = args.indexOf("--title");
-          const labelsIndex = args.indexOf("--labels");
-          const assigneesIndex = args.indexOf("--assignees");
-
-          if (titleIndex !== -1 && args[titleIndex + 1]) {
-            title = args[titleIndex + 1];
-          }
-
-          const parsedBody = await parseBodyArg(args);
-          if (parsedBody !== undefined) {
-            body = parsedBody;
-          }
-
-          if (labelsIndex !== -1 && args[labelsIndex + 1]) {
-            labels = args[labelsIndex + 1].split(",").map(l => l.trim());
-          }
-
-          if (assigneesIndex !== -1 && args[assigneesIndex + 1]) {
-            assignees = args[assigneesIndex + 1].split(",").map(a => a.replace("@", "").trim());
-          }
-        } else {
-          // Positional args mode (backward compatibility)
-          title = args[1];
-          body = args[2] || "";
-          const labelsStr = args[3];
-          const assigneesStr = args[4];
-
-          labels = labelsStr ? labelsStr.split(",").map(l => l.trim()) : undefined;
-          assignees = assigneesStr ? assigneesStr.split(",").map(a => a.replace("@", "").trim()) : undefined;
-        }
-
-        if (!title) {
-          console.error('Usage:');
-          console.error('  Named flags:   bun run gh:create --title "Title" --body "Body" --labels "label1,label2"');
-          console.error('  With file:     bun run gh:create --title "Title" --body-file /path/to/body.md --labels "label1,label2"');
-          console.error('  Positional:    bun run gh:create "Issue Title" "Issue body" "label1,label2" "user1,user2"');
-          process.exit(1);
-        }
-
-        await manager.createIssue(title, body, labels, assignees);
-        break;
-      }
-
-      case "issues:edit": {
-        const issueNumber = parseInt(args[1]);
-        if (!issueNumber) {
-          console.error('Usage: bun run gh:edit 45 --title "New Title" --body "New body" --labels "label1,label2" --state "open|closed"');
-          process.exit(1);
-        }
-
-        const options: {
-          title?: string;
-          body?: string;
-          labels?: string[];
-          state?: "open" | "closed";
-        } = {};
-
-        const titleIndex = args.indexOf("--title");
-        const bodyIndex = args.indexOf("--body");
-        const labelsIndex = args.indexOf("--labels");
-        const stateIndex = args.indexOf("--state");
-        
-        if (titleIndex !== -1 && args[titleIndex + 1]) {
-          options.title = args[titleIndex + 1];
-        }
-        
-        if (bodyIndex !== -1 && args[bodyIndex + 1]) {
-          options.body = args[bodyIndex + 1];
-        }
-        
-        if (labelsIndex !== -1 && args[labelsIndex + 1]) {
-          options.labels = args[labelsIndex + 1].split(",").map(l => l.trim());
-        }
-        
-        if (stateIndex !== -1 && args[stateIndex + 1]) {
-          const state = args[stateIndex + 1];
-          if (state === "open" || state === "closed") {
-            options.state = state;
-          } else {
-            console.error('State must be "open" or "closed"');
-            process.exit(1);
-          }
-        }
-
-        if (Object.keys(options).length === 0) {
-          console.error('At least one option must be provided: --title, --body, --labels, or --state');
-          process.exit(1);
-        }
-
-        await manager.editIssue(issueNumber, options);
-        break;
-      }
-      
-      case "issues:list": {
-        const options: { status?: string; label?: string; assignee?: string } = {};
-
-        const statusIndex = args.indexOf("--status");
-        const labelIndex = args.indexOf("--label");
-        const assigneeIndex = args.indexOf("--assignee");
-        
-        if (statusIndex !== -1) options.status = args[statusIndex + 1];
-        if (labelIndex !== -1) options.label = args[labelIndex + 1];
-        if (assigneeIndex !== -1) options.assignee = args[assigneeIndex + 1];
-        
-        await manager.listIssues(options);
-        break;
-      }
-
       case "issues:view": {
         const issueNumber = parseInt(args[1]);
         const web = args.includes("--web");
@@ -584,41 +291,26 @@ async function main() {
       case "help":
       default:
         console.log(`
-🚀 NodeSpace GitHub Project Manager
+NodeSpace GitHub utilities (public intake only)
 
-📋 Issue Management:
-  bun run gh:create --title "Title" --body "Body" --labels "label1,label2"  # Create issue
-  bun run gh:create --title "Title" --body-file /path/to/body.md --labels "label1,label2"  # Create from file
-  bun run gh:edit 45 --title "New Title"      # Edit issue title
-  bun run gh:edit 45 --body "New body"        # Edit issue body
-  bun run gh:edit 45 --labels "tag1,tag2"     # Update labels
-  bun run gh:edit 45 --state "closed"         # Close/reopen issue
-  bun run gh:comment 45 --body "Comment text" # Add comment to issue
-  bun run gh:comment 45 --body-file /path/to/comment.md  # Add comment from file
-  bun run gh:tracking-issue --title "Title" --body-file body.md --labels "bug,foundation"
-                                               # Find an open issue with this exact title and
-                                               # comment on it, or create one if none exists
-                                               # (dedup for scheduled monitoring workflows)
-  bun run gh:status 57,58,59 "In Progress"    # Update status
-  bun run gh:assign 60,61,62 "@me"            # Assign issues
-  bun run gh:unassign 60,61,62 "@me"          # Unassign issues
-  bun run gh:list --status open               # List issues
-  bun run gh:list --label foundation          # Filter by label
-  bun run gh:list --assignee "@me"            # Your issues
+GitHub issues are the public intake. The team's own work is tracked in
+NodeSpace: do not file, assign or set the status of a GitHub issue for it.
 
-🎯 Issue Workflow:
-  bun run scripts/gh-utils.ts issues:view 45   # View issue details
-  bun run scripts/gh-utils.ts issues:view 45 --web  # Open in browser
+  bun run gh:view 45                          # View an intake issue
+  bun run gh:view 45 --web                    # Print its browser URL
+  bun run gh:comment 45 --body "Comment text" # Reply on an issue or pull request
+  bun run gh:comment 45 --body-file /path/to/comment.md
+  bun run gh:pr 45 ["Title"]                  # Open a pull request with body "Closes #45"
+                                              # (only for an issue that came from outside);
+                                              # works only from a branch named like its
+                                              # remote branch. From a worktree- branch use:
+                                              # gh pr create --head <remote-branch> --body "Closes #45"
+  bun run gh:tracking-issue --title "Title" --body-file body.md --labels "bug"
+                                              # For a scheduled check that fails: comment
+                                              # on the open issue with this exact title,
+                                              # or create one if none exists
 
-📝 PR Management:
-  bun run scripts/gh-utils.ts pr:create 45     # Create PR workflow
-  bun run gh:comment 45 --body "PR comment"    # Add comment to PR (same as issue)
-  bun run quality:fix                          # Run quality checks
-
-📊 Available Statuses:
-  ${Object.keys(manager["statusOptions"]).map(s => `"${s}"`).join(", ")}
-
-🚀 All commands use TypeScript API (no Claude Code approval prompts)
+All commands use the TypeScript API (no Claude Code approval prompts).
         `);
         break;
     }

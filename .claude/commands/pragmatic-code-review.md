@@ -39,7 +39,7 @@ The pragmatic-code-reviewer agent will need to gather the following information:
 ## Pre-Review Steps
 
 1. **Extract issue number** from the current branch name (e.g., `feature/issue-98-description` → issue #98)
-2. **Fetch issue requirements** using `bun run gh:view <issue-number>` if issue number found
+2. **Fetch the requirements**: the task in NodeSpace named in the PR description (`nodespace node get <id>`); for a PR that closes an outside-reported GitHub issue, `bun run gh:view <issue-number>`
 3. **Parse acceptance criteria** from the issue body (look for `- [ ]` checklist items)
 
 ## Your Task
@@ -50,10 +50,10 @@ The pragmatic-code-reviewer agent will need to gather the following information:
 
 The pragmatic-code-reviewer agent should perform a comprehensive code review focusing on:
 
-1. **Requirements Validation** (if issue found):
-   - Does the code implement ALL acceptance criteria from the GitHub issue?
+1. **Requirements Validation** (if a task or issue found):
+   - Does the code implement ALL acceptance criteria from the NodeSpace task (or the outside-reported GitHub issue it closes)?
    - Are there any missing features or incomplete implementations?
-   - Does the implementation match the technical specifications in the issue?
+   - Does the implementation match the technical specifications in the task?
    - Check off which acceptance criteria are met vs. missing
 
 2. **Code Quality**:
@@ -87,7 +87,7 @@ The pragmatic-code-reviewer agent should perform a comprehensive code review foc
 - Not addressed: Z
 - New issues found: N
 
-**Requirements Check** (if issue found):
+**Requirements Check** (if a task or issue found):
 - ✅/❌ Each acceptance criterion with status
 - 📝 Notes on any deviations or concerns
 

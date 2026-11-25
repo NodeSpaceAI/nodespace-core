@@ -12,41 +12,6 @@ import { readFileSync, existsSync, statSync } from "fs";
 import { homedir } from "os";
 import path from "path";
 
-interface ProjectItem {
-  id: string;
-  content?: {
-    number: number;
-    title: string;
-    repository?: { nameWithOwner: string };
-  };
-  fieldValues: {
-    nodes: Array<{
-      field: {
-        id: string;
-        name: string;
-      };
-      value?: {
-        id: string;
-        name: string;
-      };
-    }>;
-  };
-}
-
-interface ProjectItemsQueryResponse {
-  organization: {
-    projectV2: {
-      items: {
-        pageInfo: {
-          hasNextPage: boolean;
-          endCursor: string | null;
-        };
-        nodes: ProjectItem[];
-      };
-    };
-  };
-}
-
 interface GitHubIssue {
   number: number;
   title: string;
@@ -56,57 +21,17 @@ interface GitHubIssue {
   body: string;
 }
 
-// The board status `createIssue` gives a new issue: filed, not yet queued.
-const NEW_ISSUE_STATUS = "Backlog";
-
 export class GitHubClient {
   private octokit: Octokit;
   
-  // The NodeSpaceAI organization owns both the repo and the ProjectV2 board.
   private readonly owner = "NodeSpaceAI";
   private readonly repo = "nodespace-core";
-  private readonly projectNumber = 2;
-  private readonly projectId = "PVT_kwDODxjmQM4BUxjb";
-  private readonly statusFieldId = "PVTSSF_lADODxjmQM4BUxjbzhDzQv0";
-
-  // Status option IDs — verified live against the real "NodeSpace" board
-  // (org NodeSpaceAI, project #2). The previous IDs pointed at a project
-  // node that no longer resolves at all.
-  private readonly statusOptions = {
-    "Backlog": "230488b9",
-    "Todo": "32c30124",
-    "In Progress": "9f8d4e33",
-    "In Review": "099b7674",
-    "Done": "58fb1205",
-    "Blocked": "f50ca67a"
-  } as const;
-
-  // Cached result of getAuthenticatedUser() so repeated "@me" resolutions
-  // within one process don't re-hit the API.
-  private cachedLogin: string | null = null;
 
   constructor(token?: string) {
     const authToken = token || this.getGitHubToken();
     this.octokit = new Octokit({
       auth: authToken,
     });
-  }
-
-  /**
-   * Resolve the actually-authenticated GitHub account (no shell commands —
-   * uses the same Octokit client/token as every other call in this class).
-   *
-   * This exists so "@me" resolves to whoever is really logged in via `gh`,
-   * instead of a hardcoded username.
-   */
-  async getAuthenticatedUser(): Promise<string> {
-    if (this.cachedLogin) {
-      return this.cachedLogin;
-    }
-
-    const { data } = await this.octokit.rest.users.getAuthenticated();
-    this.cachedLogin = data.login;
-    return this.cachedLogin;
   }
 
   /**
@@ -160,224 +85,6 @@ export class GitHubClient {
 1. Set GITHUB_TOKEN environment variable
 2. Run: gh auth login
 3. Ensure gh CLI is properly configured`);
-  }
-
-  /**
-   * Get project items using GraphQL API with pagination
-   */
-  async getProjectItems(): Promise<ProjectItem[]> {
-    const allItems: ProjectItem[] = [];
-    let hasNextPage = true;
-    let cursor: string | null = null;
-
-    while (hasNextPage) {
-      const query = `
-        query GetProjectItems($owner: String!, $projectNumber: Int!, $cursor: String) {
-          organization(login: $owner) {
-            projectV2(number: $projectNumber) {
-              items(first: 100, after: $cursor) {
-                pageInfo {
-                  hasNextPage
-                  endCursor
-                }
-                nodes {
-                  id
-                  content {
-                    ... on Issue {
-                      number
-                      title
-                      repository {
-                        nameWithOwner
-                      }
-                    }
-                  }
-                  fieldValues(first: 10) {
-                    nodes {
-                      ... on ProjectV2ItemFieldSingleSelectValue {
-                        field {
-                          ... on ProjectV2SingleSelectField {
-                            id
-                            name
-                          }
-                        }
-                        value: name
-                        optionId: id
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `;
-
-      const response: ProjectItemsQueryResponse = await this.octokit.graphql<ProjectItemsQueryResponse>(query, {
-        owner: this.owner,
-        projectNumber: this.projectNumber,
-        cursor,
-      });
-
-      const items = response.organization.projectV2.items.nodes.filter(
-        item => item.content?.number // Only return items that are issues
-      );
-
-      allItems.push(...items);
-
-      hasNextPage = response.organization.projectV2.items.pageInfo.hasNextPage;
-      cursor = response.organization.projectV2.items.pageInfo.endCursor;
-    }
-
-    return allItems;
-  }
-
-  /**
-   * Get project item ID for specific issue number in this repository. The
-   * board is shared with other repositories, so the number alone is ambiguous.
-   */
-  async getItemIdForIssue(issueNumber: number): Promise<string | null> {
-    const items = await this.getProjectItems();
-    const fullName = `${this.owner}/${this.repo}`;
-    const item = items.find(
-      item => item.content?.number === issueNumber && item.content.repository?.nameWithOwner === fullName
-    );
-    return item?.id || null;
-  }
-
-  /**
-   * Update issue status in project (no shell commands)
-   */
-  async updateIssueStatus(
-    issueNumbers: number[], 
-    status: keyof typeof this.statusOptions
-  ): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
-    if (!(status in this.statusOptions)) {
-      throw new Error(`Invalid status: ${status}. Valid options: ${Object.keys(this.statusOptions).join(", ")}`);
-    }
-
-    const results = [];
-
-    for (const issueNumber of issueNumbers) {
-      try {
-        // An issue that isn't on the board yet has no status to set. Add it
-        // rather than failing: setting a status is a statement about where the
-        // work stands, and refusing because the row is missing turns a
-        // bookkeeping gap into a blocked workflow step. This also back-fills
-        // issues created before creation started adding them.
-        let itemId = await this.getItemIdForIssue(issueNumber);
-
-        if (!itemId) {
-          const nodeId = await this.getIssueNodeId(issueNumber);
-          itemId = await this.addIssueToProject(nodeId);
-        }
-
-        await this.setItemStatus(itemId, status);
-
-        results.push({ issueNumber, success: true });
-        
-      } catch (error: unknown) {
-        results.push({
-          issueNumber,
-          success: false,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * Assign issues (no shell commands)
-   */
-  async assignIssues(
-    issueNumbers: number[], 
-    assignees: string[]
-  ): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
-    const results = [];
-
-    for (const issueNumber of issueNumbers) {
-      try {
-        await this.octokit.rest.issues.addAssignees({
-          owner: this.owner,
-          repo: this.repo,
-          issue_number: issueNumber,
-          assignees: assignees
-        });
-
-        // The GitHub API silently ignores usernames it can't assign (e.g. not
-        // a collaborator) instead of erroring, which is exactly how this got
-        // reported as a false success. Re-query before declaring victory.
-        const issue = await this.getIssue(issueNumber);
-        const landed = new Set(issue.assignees.map(a => a.login.toLowerCase()));
-        const missing = assignees.filter(a => !landed.has(a.toLowerCase()));
-
-        if (missing.length > 0) {
-          results.push({
-            issueNumber,
-            success: false,
-            error: `Assignment did not take effect for: ${missing.join(", ")} (not a valid collaborator?)`
-          });
-        } else {
-          results.push({ issueNumber, success: true });
-        }
-
-      } catch (error: unknown) {
-        results.push({
-          issueNumber,
-          success: false,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * Unassign issues (no shell commands)
-   */
-  async unassignIssues(
-    issueNumbers: number[], 
-    assignees: string[]
-  ): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
-    const results = [];
-
-    for (const issueNumber of issueNumbers) {
-      try {
-        await this.octokit.rest.issues.removeAssignees({
-          owner: this.owner,
-          repo: this.repo,
-          issue_number: issueNumber,
-          assignees: assignees
-        });
-
-        // Verify removal actually landed before declaring success — same
-        // rationale as assignIssues above.
-        const issue = await this.getIssue(issueNumber);
-        const stillAssigned = new Set(issue.assignees.map(a => a.login.toLowerCase()));
-        const notRemoved = assignees.filter(a => stillAssigned.has(a.toLowerCase()));
-
-        if (notRemoved.length > 0) {
-          results.push({
-            issueNumber,
-            success: false,
-            error: `Unassignment did not take effect for: ${notRemoved.join(", ")}`
-          });
-        } else {
-          results.push({ issueNumber, success: true });
-        }
-
-      } catch (error: unknown) {
-        results.push({
-          issueNumber,
-          success: false,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-
-    return results;
   }
 
   /**
@@ -459,164 +166,20 @@ export class GitHubClient {
   async createIssue(
     title: string,
     body: string,
-    labels?: string[],
-    assignees?: string[]
-  ): Promise<{ number: number; url: string; addedToProject: boolean }> {
+    labels?: string[]
+  ): Promise<{ number: number; url: string }> {
     const response = await this.octokit.rest.issues.create({
       owner: this.owner,
       repo: this.repo,
       title,
       body,
-      labels: labels || [],
-      assignees: assignees || []
+      labels: labels || []
     });
-
-    // Put the issue on the board immediately. Nothing else does this, so an
-    // issue created without it never gets a project item — and every later
-    // `gh:status` call on it fails with "Issue not found in project",
-    // including the ones the startup sequence in CLAUDE.md makes mandatory.
-    // Board placement is a convenience, not the point of creating the issue,
-    // so a failure here is reported rather than thrown: the issue itself
-    // exists and its number is what the caller actually needs.
-    const itemId = await this.addIssueToProject(response.data.node_id).catch(() => null);
-    const addedToProject = itemId !== null;
-
-    // Warn here rather than leaving it to each caller to re-derive from
-    // `addedToProject` -- this is the one place that actually knows the add
-    // failed, so every current and future caller gets the warning "for
-    // free". Notably, `findOrCreateTrackingIssue` (scripts/gh-utils.ts) is
-    // invoked from scheduled CI workflows (verify-macos-installer.yml,
-    // homebrew-drift-check.yml) using the workflow's plain
-    // `secrets.GITHUB_TOKEN`, which can never carry Projects v2 write
-    // scope -- the add above silently no-ops on every one of those runs
-    // without this.
-    if (!addedToProject) {
-      console.warn(
-        `⚠️  Issue #${response.data.number} was created but could not be added to the project board ` +
-          "(likely a token without Projects v2 write scope, e.g. a scheduled workflow's " +
-          "GITHUB_TOKEN). It will be added automatically the next time `gh:status` is run " +
-          "on it with a token that has project write access.",
-      );
-    } else {
-      // A new issue is filed, not queued: put it in Backlog. Without a status
-      // the item sits on the board in no column, and reads back with a blank
-      // status that is easy to mistake for the issue not being on the board.
-      // The cause is printed: with the add having just succeeded, a failure
-      // here is most likely a stale status field or option id, and the
-      // message is what tells that apart from an outage.
-      await this.setItemStatus(itemId, NEW_ISSUE_STATUS).catch((error: unknown) => {
-        console.warn(
-          `⚠️  Issue #${response.data.number} was added to the project board but its status could not be ` +
-            `set to '${NEW_ISSUE_STATUS}' (${error instanceof Error ? error.message : String(error)}). ` +
-            "Run `gh:status` on it to set one.",
-        );
-      });
-    }
 
     return {
       number: response.data.number,
-      url: response.data.html_url,
-      addedToProject
+      url: response.data.html_url
     };
-  }
-
-  /**
-   * Write the Status field of one project item.
-   */
-  private async setItemStatus(itemId: string, status: keyof typeof this.statusOptions): Promise<void> {
-    const mutation = `
-      mutation UpdateProjectItemField($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
-        updateProjectV2ItemFieldValue(input: {
-          projectId: $projectId
-          itemId: $itemId
-          fieldId: $fieldId
-          value: $value
-        }) {
-          projectV2Item {
-            id
-          }
-        }
-      }
-    `;
-
-    await this.octokit.graphql(mutation, {
-      projectId: this.projectId,
-      itemId,
-      fieldId: this.statusFieldId,
-      value: {
-        singleSelectOptionId: this.statusOptions[status]
-      }
-    });
-  }
-
-  /**
-   * Add an existing issue to the ProjectV2 board by its GraphQL node ID.
-   *
-   * Idempotent on GitHub's side: adding an issue already on the board returns
-   * that same item rather than erroring or duplicating it, so this is safe to
-   * call on an issue whose membership is unknown.
-   */
-  async addIssueToProject(issueNodeId: string): Promise<string> {
-    const mutation = `
-      mutation AddIssueToProject($projectId: ID!, $contentId: ID!) {
-        addProjectV2ItemById(input: {
-          projectId: $projectId
-          contentId: $contentId
-        }) {
-          item {
-            id
-          }
-        }
-      }
-    `;
-
-    const result = await this.octokit.graphql<{
-      addProjectV2ItemById: { item: { id: string } };
-    }>(mutation, {
-      projectId: this.projectId,
-      contentId: issueNodeId
-    });
-
-    return result.addProjectV2ItemById.item.id;
-  }
-
-  /**
-   * The GraphQL node ID for an issue number, needed by the ProjectV2
-   * mutations (which key on node IDs, not the REST issue number).
-   */
-  async getIssueNodeId(issueNumber: number): Promise<string> {
-    const response = await this.octokit.rest.issues.get({
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: issueNumber
-    });
-    return response.data.node_id;
-  }
-
-  /**
-   * Update issue (no shell commands)
-   */
-  async updateIssue(
-    issueNumber: number,
-    updates: {
-      title?: string;
-      body?: string;
-      labels?: string[];
-      state?: "open" | "closed";
-    }
-  ): Promise<void> {
-    const params: RestEndpointMethodTypes["issues"]["update"]["parameters"] = {
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: issueNumber
-    };
-
-    if (updates.title !== undefined) params.title = updates.title;
-    if (updates.body !== undefined) params.body = updates.body;
-    if (updates.labels !== undefined) params.labels = updates.labels;
-    if (updates.state !== undefined) params.state = updates.state;
-
-    await this.octokit.rest.issues.update(params);
   }
 
   /**
