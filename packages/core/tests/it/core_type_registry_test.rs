@@ -1063,6 +1063,124 @@ async fn a_reverse_name_clashes_with_a_field_of_its_own_schema_or_any_type() {
         error.contains("effort") && error.contains("reverse name"),
         "{error}"
     );
+    assert!(
+        error.contains("any node") && !error.contains("a any"),
+        "a wildcard target reads as 'any node': {error}"
+    );
+}
+
+/// A field of a subtype is read on its nodes, and a subtype's nodes sit at the
+/// end of a relationship whose target is the base: a reverse name equal to such
+/// a field clashes whether the subtype is created with both or gains both later.
+#[tokio::test]
+async fn a_reverse_name_clashes_with_a_field_of_a_subtype_being_written() {
+    let (svc, _tmp) = test_service().await;
+    create_schema(&svc, json!({ "name": "Base", "fields": [] })).await;
+
+    let error = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Sub",
+            "extends": "base",
+            "fields": [{ "name": "room", "type": "text" }],
+            "relationships": [{
+                "name": "uses",
+                "targetType": "base",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "room",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("the reverse name is a field of the new subtype of the target")
+    .to_string();
+    assert!(
+        error.contains("room") && error.contains("reverse name"),
+        "{error}"
+    );
+    assert!(svc.get_schema_node("sub").await.unwrap().is_none());
+
+    create_schema(
+        &svc,
+        json!({ "name": "Sub", "extends": "base", "fields": [] }),
+    )
+    .await;
+    let error = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "sub",
+            "add_fields": [{ "name": "room", "type": "text" }],
+            "add_relationships": [{
+                "name": "uses",
+                "targetType": "base",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "room",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("the call leaves a field of the subtype named as the reverse name")
+    .to_string();
+    assert!(
+        error.contains("room") && error.contains("reverse name"),
+        "{error}"
+    );
+}
+
+/// A field the same call removes does not clash: the type is read after the
+/// call, not before it.
+#[tokio::test]
+async fn a_field_removed_in_the_same_call_does_not_clash_with_a_reverse_name() {
+    let (svc, _tmp) = test_service().await;
+    create_schema(
+        &svc,
+        json!({ "name": "Gadget", "fields": [{ "name": "cf", "type": "text" }] }),
+    )
+    .await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "gadget",
+            "remove_fields": ["cf"],
+            "add_relationships": [{
+                "name": "pairs_with",
+                "targetType": "gadget",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "cf",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .expect("the field is gone once the call lands, so the reverse name is free");
+
+    // Without the removal the same relationship is refused.
+    create_schema(
+        &svc,
+        json!({ "name": "Widget", "fields": [{ "name": "cf", "type": "text" }] }),
+    )
+    .await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "widget",
+            "add_relationships": [{
+                "name": "pairs_with",
+                "targetType": "widget",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "cf",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a field the call keeps still clashes");
 }
 
 /// Names the CEL bridge overwrites or the schema layer reserves cannot be

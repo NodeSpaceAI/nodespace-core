@@ -1865,15 +1865,48 @@ impl ParentChange<'static> {
     };
 }
 
+/// The schema a write is about to leave in place, for checks that must read its
+/// fields as the call leaves them rather than as the store holds them.
+#[derive(Clone, Copy)]
+struct PendingFields<'a> {
+    id: &'a str,
+    /// The type it extends once the call lands.
+    extends: Option<&'a str>,
+    fields: &'a [SchemaField],
+}
+
 /// Refuse a relationship whose reverse name is a field a node at its target
 /// end already declares (ADR-112 section 5, the other direction): the target's
 /// instances would read the one name as both. The target's chain and the types
 /// extending it are compared.
+///
+/// The schema being written is not stored yet, or not as this call leaves it,
+/// so it is passed as `pending`: its own fields count in place of the stored
+/// ones when it is the target or extends it (directly or through its chain).
 async fn reject_reverse_names_declared_as_fields(
     node_service: &Arc<NodeService>,
     relationships: &[crate::models::schema::SchemaRelationship],
-    pending: Option<(&str, &[SchemaField])>,
+    pending: Option<PendingFields<'_>>,
 ) -> Result<(), MarkdownError> {
+    // Fields the stored copy of the pending schema declares that this call
+    // leaves out: they no longer clash, so they are not read from the store.
+    let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(pending) = &pending {
+        if let Some(stored) = node_service
+            .get_schema_node(pending.id)
+            .await
+            .map_err(|e| {
+                MarkdownError::internal_error(format!("Failed to get schema '{}': {e}", pending.id))
+            })?
+        {
+            removed.extend(
+                stored
+                    .declared_fields()
+                    .map(|f| f.name.clone())
+                    .filter(|name| !pending.fields.iter().any(|f| f.name == *name)),
+            );
+        }
+    }
     for rel in relationships {
         if rel.reverse_name.is_empty() {
             continue;
@@ -1891,12 +1924,21 @@ async fn reject_reverse_names_declared_as_fields(
                             .map(|f| (f.name.clone(), schema.envelope.id.clone())),
                     );
                 }
-                if let Some((id, fields)) = pending {
-                    declared.extend(fields.iter().map(|f| (f.name.clone(), id.to_string())));
+                if let Some(pending) = &pending {
+                    declared.extend(
+                        pending
+                            .fields
+                            .iter()
+                            .map(|f| (f.name.clone(), pending.id.to_string())),
+                    );
                 }
                 declared
                     .into_iter()
-                    .find(|(name, _)| *name == rel.reverse_name)
+                    .find(|(name, owner)| {
+                        *name == rel.reverse_name
+                            && !(removed.contains(name)
+                                && pending.as_ref().is_some_and(|p| p.id == owner.as_str()))
+                    })
                     .map(|(_, owner)| (owner, "any".to_string()))
             }
             Some(target) => {
@@ -1925,23 +1967,42 @@ async fn reject_reverse_names_declared_as_fields(
                         );
                     }
                 }
-                // The schema being written is not stored yet, or not as this
-                // call leaves it: its own fields count when it is the target.
-                if let Some((id, fields)) = pending.filter(|(id, _)| *id == target) {
-                    declared.extend(fields.iter().map(|f| (f.name.clone(), id.to_string())));
+                // Its own fields count when it is the target or sits under it:
+                // a node of the pending type is a node at the target's end.
+                if let Some(pending) = pending.as_ref().filter(|p| {
+                    p.id == target
+                        || p.extends
+                            .is_some_and(|parent| closure.iter().any(|id| id == parent))
+                }) {
+                    declared.extend(
+                        pending
+                            .fields
+                            .iter()
+                            .map(|f| (f.name.clone(), pending.id.to_string())),
+                    );
                 }
                 declared
                     .into_iter()
-                    .find(|(name, _)| *name == rel.reverse_name)
+                    .find(|(name, owner)| {
+                        *name == rel.reverse_name
+                            && !(removed.contains(name)
+                                && pending.as_ref().is_some_and(|p| p.id == owner.as_str()))
+                    })
                     .map(|(_, owner)| (owner, target.to_string()))
             }
         };
         if let Some((owner, target)) = clash {
             return Err(MarkdownError::invalid_params(format!(
                 "Relationship '{}' cannot have the reverse name '{}': '{owner}' declares a field \
-                 of that name, and a '{target}' node would read it as both a field and the \
+                 of that name, and {} would read it as both a field and the \
                  relationship. Choose another reverse name.",
-                rel.name, rel.reverse_name
+                rel.name,
+                rel.reverse_name,
+                if target == "any" {
+                    "any node".to_string()
+                } else {
+                    format!("a '{target}' node")
+                }
             )));
         }
     }
@@ -2397,10 +2458,19 @@ pub async fn create_schema(
     reject_reserved_relationship_names(&relationships)?;
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets(node_service, &relationships, pending_schema_id).await?;
+    let extends_parent = params
+        .extends
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
     reject_reverse_names_declared_as_fields(
         node_service,
         &relationships,
-        Some((schema_id.as_str(), stored_fields.as_slice())),
+        Some(PendingFields {
+            id: schema_id.as_str(),
+            extends: extends_parent,
+            fields: stored_fields.as_slice(),
+        }),
     )
     .await?;
     // Cross-domain collision within this SAME schema's own declarations —
@@ -2413,11 +2483,6 @@ pub async fn create_schema(
     // schema behind. Cycle detection is trivially satisfied at creation time
     // (nothing extends a schema that doesn't exist yet) but runs anyway: the
     // same helper serves `update_schema`, where re-targeting can close a loop.
-    let extends_parent = params
-        .extends
-        .as_deref()
-        .map(str::trim)
-        .filter(|p| !p.is_empty());
     if let Some(parent_id) = extends_parent {
         validate_extends_target(node_service, &schema_id, parent_id).await?;
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
@@ -3892,7 +3957,11 @@ async fn update_schema_as(
         reject_reverse_names_declared_as_fields(
             node_service,
             add_rels,
-            Some((params.schema_id.as_str(), fields.as_slice())),
+            Some(PendingFields {
+                id: params.schema_id.as_str(),
+                extends: new_parent_trimmed.as_deref().or(schema.extends.as_deref()),
+                fields: fields.as_slice(),
+            }),
         )
         .await?;
         relationships_added = add_rels.len();
