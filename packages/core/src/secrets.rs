@@ -448,7 +448,7 @@ impl SecretBackend for KeychainBackend {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn unavailable() -> SecretError {
     SecretError::Store(
-        "the operating system credential store is not available on this platform; use an `env:` reference"
+        "the operating system credential store is not available on this platform: remote tools and `nodespace secret set` / `delete` need macOS"
             .to_string(),
     )
 }

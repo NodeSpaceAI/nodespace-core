@@ -965,7 +965,7 @@ nodespace secret delete github-token
 nodespace secret list-names
 ```
 
-The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text. Before `set` or `delete` changes anything, the daemon asks the user to confirm in a system dialog on the Mac's own screen (Touch ID, a paired Apple Watch or the login password); a program cannot answer it. Run over SSH, the dialog still appears on the Mac's screen. Where no dialog can be shown (a locked screen, another user at the console, a daemon running outside a logged-in session, or a platform without one) the change is refused; on such a platform use an `env:<NAME>` reference instead.
+The value is never an argument, so it does not land in shell history. A name is 1 to 64 characters from letters, digits, `.`, `_` and `-`. A value is 1 to 16384 bytes of UTF-8 text. Before `set` or `delete` changes anything, the daemon asks the user to confirm in a system dialog on the Mac's own screen (Touch ID, a paired Apple Watch or the login password); a program cannot answer it. Run over SSH, the dialog still appears on the Mac's screen. Where no dialog can be shown (a locked screen, another user at the console, or a daemon running outside a logged-in session) the change is refused. Remote tools are macOS-only: on Windows and Linux there is no such dialog, so `secret set` and `secret delete` are unavailable, and no remote tool can be approved or offered there. Do not suggest an `env:<NAME>` reference as a workaround; it cannot make a remote tool available on those platforms.
 
 ### Approve a remote tool
 
@@ -1463,11 +1463,11 @@ Manage the daemon's registry of local databases (list, create, register, remove,
 
 Manage the credentials remote tools refer to as `keychain:<name>` (set, delete, list-names). Values are never shown and never passed as arguments
 
-**`nodespace secret set`** — Store a credential under a name. The value is read from a hidden prompt on a terminal, or from standard input; it is never an argument
+**`nodespace secret set`** — Store a credential under a name. The value is read from a hidden prompt on a terminal, or from standard input; it is never an argument. macOS only: elsewhere there is no way to confirm the change and it is refused
 
 - `<NAME>` — Name a tool refers to as `keychain:<name>` (letters, digits, `.`, `_`, `-`) (required)
 
-**`nodespace secret delete`** — Remove a credential
+**`nodespace secret delete`** — Remove a credential. macOS only, like `set`
 
 - `<NAME>` — The name to remove (required)
 

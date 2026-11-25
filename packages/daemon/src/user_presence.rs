@@ -241,7 +241,8 @@ impl UserPresence {
     /// No way to ask: every change that needs a confirmation is refused.
     pub fn unavailable() -> Self {
         Self::new(Arc::new(Unavailable(
-            "this device has no way to confirm a change at its screen",
+            "this device has no way to confirm a change at its screen: remote tools and \
+             `nodespace secret set` / `delete` need macOS",
         )))
     }
 
@@ -900,6 +901,20 @@ mod tests {
             UserPresence::unavailable().confirm("r".into()).await,
             Err(PresenceRefusal::Unavailable(_))
         ));
+    }
+
+    /// The refusal on a device that cannot ask says what needs macOS, so a
+    /// user on Windows or Linux is not left looking for a way to confirm.
+    #[tokio::test]
+    async fn the_no_screen_refusal_says_remote_tools_and_secret_changes_need_macos() {
+        match UserPresence::unavailable().confirm("r".into()).await {
+            Err(PresenceRefusal::Unavailable(why)) => {
+                assert!(why.contains("macOS"), "{why}");
+                assert!(why.contains("remote tools"), "{why}");
+                assert!(why.contains("nodespace secret set"), "{why}");
+            }
+            other => panic!("expected an unavailable refusal, got {other:?}"),
+        }
     }
 
     /// While one dialog is open a second is refused without being shown.
