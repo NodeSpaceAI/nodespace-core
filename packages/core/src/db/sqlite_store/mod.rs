@@ -527,12 +527,54 @@ impl SqliteStore {
         self.path.display().to_string()
     }
 
-    /// Ends the remote-tool approval a write of `id` (of type `node_type` as
-    /// written) can change, as the write is made: before the read-back whose
-    /// notification reports it, which can fail, find the node gone or be
-    /// cancelled after the write has landed.
-    pub(crate) fn end_tool_approval(&self, id: &str, node_type: &str) {
-        crate::tool_approvals::written(&self.approval_scope(), id, node_type);
+    /// Ends the remote-tool approval a write of `id` can change, as the write
+    /// is made: before the read-back whose notification reports it, which can
+    /// fail, find the node gone or be cancelled after the write has landed.
+    /// The write is of type `written_type` as written; `previous_type` is what
+    /// the node was before it, when it had one (a write that retypes a schema
+    /// away ends every record of the database, as one that retypes a node into
+    /// a schema does).
+    pub(crate) fn end_tool_approval(
+        &self,
+        id: &str,
+        previous_type: Option<&str>,
+        written_type: &str,
+    ) {
+        Self::end_tool_approval_in(&self.approval_scope(), id, previous_type, written_type);
+    }
+
+    /// [`Self::end_tool_approval`] for the database named `scope`, for a
+    /// caller that cannot borrow the store.
+    pub(crate) fn end_tool_approval_in(
+        scope: &str,
+        id: &str,
+        previous_type: Option<&str>,
+        written_type: &str,
+    ) {
+        if let Some(previous) = previous_type.filter(|p| *p != written_type) {
+            crate::tool_approvals::written(scope, id, previous);
+        }
+        crate::tool_approvals::written(scope, id, written_type);
+    }
+
+    /// The type stored for `id`, read on the connection that holds the write
+    /// guard (so no other write lands between this read and the one it
+    /// precedes); `None` when there is no such node.
+    pub(crate) async fn stored_node_type(
+        conn: &libsql::Connection,
+        id: &str,
+    ) -> Result<Option<String>> {
+        let mut rows = conn
+            .query(
+                "SELECT node_type FROM node WHERE id = ?1",
+                libsql::params![id.to_string()],
+            )
+            .await
+            .context("Failed to read the stored node type")?;
+        Ok(match rows.next().await? {
+            Some(row) => Some(row.get::<String>(0)?),
+            None => None,
+        })
     }
 
     /// Acquire exclusive use of the writer connection. See

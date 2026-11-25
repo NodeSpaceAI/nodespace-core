@@ -359,12 +359,25 @@ fn node_text(text: &str, max: usize) -> String {
     shown_text(text, max, false)
 }
 
-/// A credential reference as the dialog shows it: like [`node_text`], but the
-/// `:` of `keychain:<name>` and `env:<NAME>` is kept (a reference is checked
-/// against that grammar when it is written, so it holds nothing else), and cut
-/// at [`MAX_DIALOG_CREDENTIAL`].
-fn reference_text(text: &str) -> String {
-    shown_text(text, MAX_DIALOG_CREDENTIAL, true)
+/// One credential entry of the dialog, `<what> from <reference>`: the
+/// reference is what identifies the credential, so it is cut last and the
+/// name the node chose for it is cut first (a long name cannot push the
+/// reference out). Like [`node_text`], but the `:` of `keychain:<name>` and
+/// `env:<NAME>` is kept (a reference is checked against that grammar when it
+/// is written, so it holds nothing else).
+fn credential_text(entry: &str) -> String {
+    match entry.rsplit_once(" from ") {
+        Some((what, reference)) => format!(
+            "{} from {}",
+            node_text(what, MAX_DIALOG_CREDENTIAL_NAME),
+            shown_text(reference, MAX_DIALOG_CREDENTIAL_REFERENCE, true)
+        ),
+        None => shown_text(
+            entry,
+            MAX_DIALOG_CREDENTIAL_NAME + MAX_DIALOG_CREDENTIAL_REFERENCE,
+            true,
+        ),
+    }
 }
 
 /// Each character of `text` as the dialog shows it (see [`node_text`]): the
@@ -486,11 +499,14 @@ pub struct ApprovalDialog<'a> {
     pub starts_from_path: &'a str,
 }
 
-/// Most credential references the dialog names one by one; the rest are
-/// counted.
-const MAX_DIALOG_CREDENTIALS: usize = 4;
+/// Most characters the credentials of one dialog take, all together. The
+/// credentials are named by length, not by count: a node cannot push a
+/// keychain reference out of the list with others ahead of it.
+const MAX_DIALOG_CREDENTIALS_CHARS: usize = 3000;
+/// Most characters of the name a credential is given that the dialog shows.
+const MAX_DIALOG_CREDENTIAL_NAME: usize = 24;
 /// Most characters of one credential reference the dialog shows.
-const MAX_DIALOG_CREDENTIAL: usize = 64;
+const MAX_DIALOG_CREDENTIAL_REFERENCE: usize = 48;
 
 /// The dialog's reason for approving a tool. The system shows it after
 /// "nodespaced is trying to". In this order: the code, the tool's name, and
@@ -498,10 +514,10 @@ const MAX_DIALOG_CREDENTIAL: usize = 64;
 /// replace, a program started from the `PATH`); then what it runs (the full
 /// program path) or where it sends a call (the method and the host), whole up
 /// to [`MAX_DIALOG_TARGET`] characters and else its start and its end, with
-/// what is said about its pin; then the credentials it uses (at most
-/// [`MAX_DIALOG_CREDENTIALS`] named, keychain references first, in an order
-/// of the daemon's, each cut at [`MAX_DIALOG_CREDENTIAL`], the others
-/// counted); then the arguments, or the rest of the address, cut. The real
+/// what is said about its pin; then the credentials it uses (keychain
+/// references first, in an order of the daemon's, each name and reference
+/// cut, named while they fit in [`MAX_DIALOG_CREDENTIALS_CHARS`] together,
+/// the others counted); then the arguments, or the rest of the address, cut. The real
 /// code, the warnings and what is approved therefore come before anything
 /// long, and a panel that shortens a long reason cuts only the parts after
 /// them. Everything a node holds is shown as ASCII, with the brackets, colons
@@ -516,15 +532,19 @@ pub fn approval_reason(dialog: &ApprovalDialog<'_>) -> String {
                 .cmp(&credential_order(b))
                 .then_with(|| a.cmp(b))
         });
-        let mut named: Vec<String> = ordered
-            .into_iter()
-            .take(MAX_DIALOG_CREDENTIALS)
-            .map(|c| reference_text(c))
-            .collect();
-        let more = dialog
-            .credentials
-            .len()
-            .saturating_sub(MAX_DIALOG_CREDENTIALS);
+        let mut named: Vec<String> = Vec::new();
+        let mut used = 0;
+        let mut more = 0;
+        for entry in ordered {
+            let text = credential_text(entry);
+            let width = text.chars().count() + 2;
+            if more == 0 && used + width <= MAX_DIALOG_CREDENTIALS_CHARS {
+                used += width;
+                named.push(text);
+            } else {
+                more += 1;
+            }
+        }
         if more > 0 {
             named.push(format!("+{more} more"));
         }
@@ -1244,7 +1264,7 @@ mod tests {
         ));
         assert!(
             reason.ends_with(
-                ", with the credentials T1 from keychain:a, header X-Key from keychain:b, bearer from keychain:c, T4 from keychain:d, +2 more"
+                ", with the credentials T1 from keychain:a, header X-Key from keychain:b, bearer from keychain:c, T4 from keychain:d, A from env:A_VAR, Z from env:Z_VAR"
             ),
             "{reason}"
         );
@@ -1261,7 +1281,7 @@ mod tests {
     }
 
     /// However many credentials a tool names, and however long, the program
-    /// or host comes first, whole, and only a few are named, each cut.
+    /// or host comes first, whole, and each credential is named cut.
     #[test]
     fn many_long_credentials_come_after_the_program_and_are_bounded() {
         let creds: Vec<String> = (0..7)
@@ -1280,12 +1300,74 @@ mod tests {
             ),
             "{reason}"
         );
-        assert!(reason.contains("C3 from keychain:"), "{reason}");
-        assert!(!reason.contains("C4 from"), "{reason}");
-        assert!(reason.ends_with(", +3 more"), "{reason}");
+        for i in 0..7 {
+            assert!(reason.contains(&format!("C{i} from keychain:")), "{reason}");
+        }
+        assert!(!reason.contains("more"), "{reason}");
         assert!(
-            !reason.contains(&"k".repeat(MAX_DIALOG_CREDENTIAL)),
+            !reason.contains(&"k".repeat(MAX_DIALOG_CREDENTIAL_REFERENCE + 1)),
             "{reason}"
+        );
+    }
+
+    /// Credentials the node orders first (by the reference it chose) cannot
+    /// push a keychain reference out of the list: every keychain reference is
+    /// named, however many others come before it in the node's own order.
+    #[test]
+    fn decoys_cannot_push_a_keychain_reference_out_of_the_list() {
+        let mut creds: Vec<String> = (0..20)
+            .map(|i| format!("D{i} from keychain:aaa{i:02}"))
+            .collect();
+        creds.push("REAL from keychain:zzz-real".to_string());
+        let reason = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &creds,
+            "runs",
+            "/usr/bin/git",
+            "",
+        ));
+        assert!(reason.contains("REAL from keychain:zzz-real"), "{reason}");
+        assert!(!reason.contains("more"), "{reason}");
+    }
+
+    /// A long name given to a credential cannot hide the reference after it.
+    #[test]
+    fn a_long_credential_name_does_not_hide_its_reference() {
+        let creds = vec![format!("{} from keychain:the-real-one", "N".repeat(300))];
+        let reason = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &creds,
+            "runs",
+            "/usr/bin/git",
+            "",
+        ));
+        assert!(reason.contains(" from keychain:the-real-one"), "{reason}");
+        assert!(
+            !reason.contains(&"N".repeat(MAX_DIALOG_CREDENTIAL_NAME + 1)),
+            "{reason}"
+        );
+    }
+
+    /// The credentials are capped by their length together, the rest counted,
+    /// keychain references ahead of the others.
+    #[test]
+    fn the_credentials_are_capped_by_length_not_count() {
+        let mut creds: Vec<String> = (0..400).map(|i| format!("E{i} from env:VAR_{i}")).collect();
+        creds.push("K from keychain:key".to_string());
+        let reason = approval_reason(&dialog(
+            "AAAA-BBBB-CCCC",
+            &creds,
+            "runs",
+            "/usr/bin/git",
+            "",
+        ));
+        assert!(reason.contains("K from keychain:key"), "{reason}");
+        assert!(reason.contains(", +"), "{reason}");
+        assert!(reason.contains(" more"), "{reason}");
+        assert!(
+            reason.chars().count() < MAX_DIALOG_CREDENTIALS_CHARS + 400,
+            "{}",
+            reason.len()
         );
     }
 }

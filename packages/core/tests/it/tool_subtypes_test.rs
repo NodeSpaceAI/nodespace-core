@@ -742,6 +742,113 @@ async fn a_delete_ends_the_approval_record_on_every_delete_path() {
     }
 }
 
+/// The store's batch update and its unchecked delete end the approval record of
+/// every node they write, as the other store writes do.
+#[tokio::test]
+async fn the_stores_batch_update_and_unchecked_delete_end_the_approval_record() {
+    let (svc, _tmp) = test_service().await;
+    for kind in REMOTE_KINDS {
+        let updated = create(&svc, kind, "updated", remote_properties(kind, true))
+            .await
+            .unwrap();
+        let removed = create(&svc, kind, "removed", remote_properties(kind, true))
+            .await
+            .unwrap();
+        let untouched = create(&svc, kind, "untouched", remote_properties(kind, true))
+            .await
+            .unwrap();
+        for id in [&updated, &removed, &untouched] {
+            approve_here(&svc, id).await;
+        }
+
+        svc.store()
+            .bulk_update(vec![(
+                updated.clone(),
+                NodeUpdate::new().with_properties(json!({ "tool": { "description": "Again" } })),
+            )])
+            .await
+            .unwrap();
+        assert!(!svc.tool_approval_recorded(&updated), "{kind}: bulk update");
+
+        svc.store()
+            .delete_nodes_by_ids_unchecked(std::slice::from_ref(&removed))
+            .await
+            .unwrap();
+        assert!(
+            !svc.tool_approval_recorded(&removed),
+            "{kind}: unchecked delete"
+        );
+        assert!(
+            svc.tool_approval_recorded(&untouched),
+            "{kind}: a node not written"
+        );
+    }
+}
+
+/// A schema written through the store as another type ends every approval of
+/// the database: the write is of a schema by what the node was, not only by
+/// what it is made.
+#[tokio::test]
+async fn a_schema_retyped_away_through_the_store_ends_every_approval() {
+    for path in ["update", "update with a version", "switch", "bulk update"] {
+        let (svc, _tmp) = test_service().await;
+        seed_remote_subtype(&svc).await;
+        let id = create(
+            &svc,
+            "tool-rest",
+            "lookup",
+            remote_properties("tool-rest", true),
+        )
+        .await
+        .unwrap();
+        approve_here(&svc, &id).await;
+        let store = svc.store();
+        let retype = || NodeUpdate::new().with_node_type("text".to_string());
+        match path {
+            "update" => {
+                store
+                    .update_node(
+                        REMOTE,
+                        retype(),
+                        None,
+                        nodespace_core::db::WriteContext::default(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            "update with a version" => {
+                let version = get(&svc, REMOTE).await.version;
+                store
+                    .update_node_with_version_check(
+                        REMOTE,
+                        version,
+                        retype(),
+                        None,
+                        nodespace_core::db::WriteContext::default(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+            "switch" => {
+                let properties = get(&svc, REMOTE).await.properties;
+                store
+                    .switch_node_type_atomic(REMOTE, "text", properties, None)
+                    .await
+                    .unwrap();
+            }
+            _ => {
+                store
+                    .bulk_update(vec![(REMOTE.to_string(), retype())])
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(get(&svc, REMOTE).await.node_type, "text", "{path}");
+        assert!(!svc.tool_approval_recorded(&id), "{path}");
+    }
+}
+
 /// A tool deleted through the node service and then put back exactly as it was
 /// (its old version and creation time, by writing the database file directly)
 /// is not approved: the delete took the record with it.

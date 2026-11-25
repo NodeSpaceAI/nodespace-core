@@ -172,7 +172,12 @@ pub(crate) fn inspect_program(path: &str) -> std::io::Result<ProgramInspection> 
 /// Most bytes of a `#!` line the system reads (macOS reads 512).
 const SHEBANG_BYTES: usize = 512;
 /// Most `#!` interpreters followed from a program: an interpreter that is
-/// itself a script, and so on.
+/// itself a script, and so on. macOS runs a program's interpreter only when it
+/// is not a script itself, so one level is all that counts there; Linux
+/// follows up to four.
+#[cfg(target_os = "macos")]
+const MAX_INTERPRETERS: usize = 1;
+#[cfg(not(target_os = "macos"))]
 const MAX_INTERPRETERS: usize = 4;
 /// Most symbolic links followed in one path (the system's own limit is 32).
 const MAX_LINK_HOPS: usize = 32;
@@ -195,8 +200,15 @@ fn inspect_with(
 
 /// Opens the file at `path` without waiting (a FIFO does not block the
 /// thread) and without it becoming a controlling terminal, and refuses
-/// anything but a regular file.
+/// anything but a regular file. What `path` names is checked before it is
+/// opened (opening a device can have effects of its own), and again on the
+/// open file, in case the path changed in between.
 fn open_regular(path: &std::path::Path) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    let not_regular =
+        || std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file");
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -207,10 +219,7 @@ fn open_regular(path: &std::path::Path) -> std::io::Result<(std::fs::File, std::
     let file = options.open(path)?;
     let meta = file.metadata()?;
     if !meta.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "not a regular file",
-        ));
+        return Err(not_regular());
     }
     Ok((file, meta))
 }
@@ -263,21 +272,41 @@ fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     Ok(head)
 }
 
-/// What a script's `#!` line names: the interpreter's path, and for
+/// What a script's `#!` line names: the interpreter's path, as the bytes the
+/// system reads (a path that is not UTF-8 is still that path), and for
 /// `#!/usr/bin/env X` the program `X` looked up on the `PATH`.
-fn shebang(head: &[u8]) -> (Option<String>, Option<String>) {
-    let text = String::from_utf8_lossy(head);
-    let Some(line) = text.lines().next().and_then(|l| l.strip_prefix("#!")) else {
+fn shebang(head: &[u8]) -> (Option<std::path::PathBuf>, Option<String>) {
+    let line = head.split(|b| *b == b'\n').next().unwrap_or_default();
+    let Some(line) = line.strip_prefix(b"#!") else {
         return (None, None);
     };
-    let mut words = line.split_whitespace();
+    let mut words = line
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|w| !w.is_empty());
     let Some(interpreter) = words.next() else {
         return (None, None);
     };
-    let from_path = (interpreter == "/usr/bin/env")
-        .then(|| words.find(|w| !w.starts_with('-')).map(str::to_string))
+    let from_path = (interpreter == b"/usr/bin/env")
+        .then(|| {
+            words
+                .find(|w| !w.starts_with(b"-"))
+                .map(|w| String::from_utf8_lossy(w).into_owned())
+        })
         .flatten();
-    (Some(interpreter.to_string()), from_path)
+    (Some(path_from_bytes(interpreter)), from_path)
+}
+
+/// The path whose bytes these are.
+fn path_from_bytes(bytes: &[u8]) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        std::path::PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 /// Whether `program` (whose first bytes are `head`), the interpreter its
@@ -299,7 +328,6 @@ fn replaceable_with(
             break;
         };
         starts_from_path = starts_from_path.or(from_path);
-        let interpreter = std::path::PathBuf::from(interpreter);
         if !interpreter.is_absolute() {
             replaceable = true;
             break;
@@ -747,9 +775,42 @@ mod tests {
         );
     }
 
+    /// On macOS an interpreter that is itself a script is not run, so only
+    /// the interpreter the program names counts, not what that names.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_interpreter_that_is_itself_a_script_is_not_followed_on_macos() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let inner = dir.path().join("inner");
+        std::fs::write(&inner, "x").unwrap();
+        let outer = dir.path().join("outer");
+        std::fs::write(&outer, format!("#!{} -x\n", inner.display())).unwrap();
+        let script = dir.path().join("tool");
+        std::fs::write(&script, format!("#!{}\nrun\n", outer.display())).unwrap();
+        let only_inner = |p: &std::path::Path| p == inner;
+        assert!(
+            !inspect_with(script.to_str().unwrap(), &only_inner)
+                .unwrap()
+                .replaceable
+        );
+        let only_outer = |p: &std::path::Path| p == outer;
+        assert!(
+            inspect_with(script.to_str().unwrap(), &only_outer)
+                .unwrap()
+                .replaceable
+        );
+        let by_env = dir.path().join("by-env");
+        std::fs::write(&by_env, "#!/usr/bin/env node\n").unwrap();
+        let via_env = dir.path().join("via-env");
+        std::fs::write(&via_env, format!("#!{}\n", by_env.display())).unwrap();
+        let seen = inspect_with(via_env.to_str().unwrap(), &|_| false).unwrap();
+        assert_eq!(seen.starts_from_path, None);
+    }
+
     /// An interpreter that is itself a script is followed, a few levels deep:
     /// a replaceable interpreter, or one started from the `PATH`, at any
     /// level counts. A loop ends.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn an_interpreter_that_is_itself_a_script_is_followed() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -779,6 +840,39 @@ mod tests {
                 .unwrap()
                 .replaceable
         );
+    }
+
+    /// The `#!` line is the bytes the system reads: an interpreter path that is
+    /// not UTF-8 stays that path (a lossy conversion would name another file).
+    #[cfg(unix)]
+    #[test]
+    fn a_shebang_interpreter_keeps_its_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let (interpreter, from_path) = shebang(b"#!/opt/\xff\xfe/python3 -u\nprint(1)\n");
+        assert_eq!(
+            interpreter.unwrap().as_os_str().as_bytes(),
+            b"/opt/\xff\xfe/python3"
+        );
+        assert_eq!(from_path, None);
+        assert_eq!(shebang(b"#! \t\n").0, None);
+        assert_eq!(shebang(b"no line").0, None);
+    }
+
+    /// What a path names is checked before it is opened: a folder the user
+    /// cannot open is refused as not a regular file, not as unreadable.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_is_checked_before_it_is_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let closed = dir.path().join("closed");
+        std::fs::create_dir(&closed).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let from_head = read_head(&closed).unwrap_err();
+        let from_hash = hash_program(closed.to_str().unwrap()).unwrap_err();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(from_head.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(from_hash.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// A relative `#!` interpreter is found from the working folder of
@@ -837,7 +931,7 @@ mod tests {
         );
         assert_eq!(
             shebang(b"#!/home/me/bin/python3 -u\nprint(1)\n"),
-            (Some("/home/me/bin/python3".to_string()), None)
+            (Some(std::path::PathBuf::from("/home/me/bin/python3")), None)
         );
     }
 

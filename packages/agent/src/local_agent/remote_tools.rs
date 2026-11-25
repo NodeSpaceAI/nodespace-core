@@ -2280,6 +2280,8 @@ mod tests {
             )
             .await
             .unwrap();
+        // A node below the version the approval left does not count.
+        assert!(names(&f.host(&all_kinds(), &runs)).await.is_empty());
         write(
             &f,
             &id,
