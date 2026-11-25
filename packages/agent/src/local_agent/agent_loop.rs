@@ -7423,6 +7423,68 @@ fn log_unavailable_whitelist(
 
 #[cfg(test)]
 mod tests {
+    /// Captures what the current thread logs, whatever order the tests run in.
+    /// A per-test thread-local subscriber is not enough: when the lib tests
+    /// share a process, another thread with no subscriber can register a log
+    /// callsite first and cache it as disabled, so the capturing test then
+    /// sees nothing. One process-wide subscriber, installed once, keeps every
+    /// callsite enabled; each capture routes the lines its own thread writes
+    /// into its own buffer.
+    struct LogCapture {
+        buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    thread_local! {
+        static LOG_SINK: std::cell::RefCell<Option<Arc<std::sync::Mutex<Vec<u8>>>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    struct SinkWriter;
+
+    impl std::io::Write for SinkWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            LOG_SINK.with(|sink| {
+                if let Some(buffer) = sink.borrow().as_ref() {
+                    buffer.lock().unwrap().extend_from_slice(buf);
+                }
+            });
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LogCapture {
+        /// Starts capturing this thread's logs. The code under test must run
+        /// on this thread (`#[tokio::test]` is current-thread).
+        fn start() -> Self {
+            static INSTALL: std::sync::Once = std::sync::Once::new();
+            INSTALL.call_once(|| {
+                let subscriber = tracing_subscriber::fmt()
+                    .with_writer(|| SinkWriter)
+                    .with_ansi(false)
+                    .finish();
+                tracing::subscriber::set_global_default(subscriber)
+                    .expect("no other test may install a global subscriber");
+            });
+            let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+            LOG_SINK.with(|sink| *sink.borrow_mut() = Some(buffer.clone()));
+            Self { buffer }
+        }
+
+        /// Stops capturing and returns everything logged since `start`.
+        fn finish(self) -> String {
+            String::from_utf8(self.buffer.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl Drop for LogCapture {
+        fn drop(&mut self) {
+            LOG_SINK.with(|sink| *sink.borrow_mut() = None);
+        }
+    }
+
     use super::*;
     use crate::agent_types::{PriorWrite, ToolError, ToolResult};
     use async_trait::async_trait;
@@ -7863,24 +7925,7 @@ mod tests {
         args: &str,
         result: serde_json::Value,
     ) -> (AgentSession, String) {
-        #[derive(Clone)]
-        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
-        let writer = captured.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
-        let guard = tracing::subscriber::set_default(subscriber);
+        let capture = LogCapture::start();
         let engine = Arc::new(MockEngine::tool_then_text(tool, args, "done"));
         let executor = Arc::new(MockToolExecutor::new().with_tool(
             tool,
@@ -7899,8 +7944,7 @@ mod tests {
             )
             .await
             .unwrap();
-        drop(guard);
-        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let log = capture.finish();
         (session, log)
     }
 
@@ -20602,32 +20646,9 @@ mod tests {
         tool_name: &str,
         tool_args: serde_json::Value,
     ) -> String {
-        #[derive(Clone)]
-        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
-        let writer = captured.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
-        // `#[tokio::test]` runs on the current thread, so a thread-default
-        // subscriber sees everything the turn logs.
-        let guard = tracing::subscriber::set_default(subscriber);
+        let capture = LogCapture::start();
         run_typed_turn(candidates, false, tool_name, tool_args).await;
-        drop(guard);
-
-        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-        log
+        capture.finish()
     }
 
     /// The schema decision's log line for a turn that routed to `candidates`
@@ -23783,24 +23804,7 @@ mod tests {
     /// only, with nothing from a name that could forge or reorder a log line.
     #[test]
     fn the_whitelist_warning_is_logged_once_per_turn_without_control_characters() {
-        #[derive(Clone)]
-        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
-        let writer = captured.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(move || writer.clone())
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let capture = LogCapture::start();
         let candidate = crate::agent_types::SkillCandidate {
             id: "s".to_string(),
             name: "S".to_string(),
@@ -23817,7 +23821,7 @@ mod tests {
             pinned: false,
         };
         log_unavailable_whitelist("session-1", &[candidate], &[]);
-        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let log = capture.finish();
         assert_eq!(log.lines().count(), 1, "one line: {log}");
         assert!(log.contains("WARN"), "{log}");
         assert!(log.contains("remote_one"), "{log}");
