@@ -595,8 +595,10 @@ impl NodeService {
     /// agent creates) links what it mentions without waiting for an edit.
     ///
     /// Called by the single-node creates. A markdown import links its
-    /// mentions in bulk, and a node a Play's action creates is linked when
-    /// its content is next edited.
+    /// mentions in bulk. A node a Play's reaction action creates goes
+    /// through `create_node` and is linked at creation; a node an invariant
+    /// action inserts inside its own transaction does not pass through this
+    /// call.
     ///
     /// Best-effort, after the create has committed: a mention that cannot be
     /// linked never fails or undoes the create.

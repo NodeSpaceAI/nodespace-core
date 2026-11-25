@@ -5456,6 +5456,48 @@ mod tests {
             );
         }
 
+        /// A node a reaction action creates has its `mentions` edges as
+        /// soon as the action returns: the action creates it through
+        /// `create_node`, which links what the content mentions.
+        #[tokio::test]
+        async fn create_node_action_links_the_mentions_of_its_content() {
+            let (svc, _tmp) = create_test_service().await;
+            let target_id = "7b1e0c5e-3f0a-4a52-9a43-0c2f5c1d9e11";
+            svc.create_node(Node::new_with_id(
+                target_id.to_string(),
+                "text".to_string(),
+                "the target".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            let trigger = make_trigger_node("task-1", "task", json!({}));
+            let event = make_node_created_event("task-1", "task");
+            let actions = vec![make_action(
+                ActionType::CreateNode,
+                json!({
+                    "node_type": "text",
+                    "content": format!("see nodespace://{target_id}"),
+                }),
+                None,
+            )];
+
+            let result =
+                execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 1)).await;
+            assert!(matches!(result, ActionResult::Success), "{result:?}");
+
+            let created_id = deterministic_action_output_id(
+                &rule_id_for("play-1", &actions),
+                0,
+                &["task-1".to_string()],
+            );
+            assert_eq!(
+                svc.get_mentions(&created_id).await.unwrap(),
+                vec![target_id.to_string()],
+                "the created node links its mention right after the create"
+            );
+        }
+
         /// AC: `update_node` stamps the same depth onto the node it
         /// updates, merging it alongside whatever else the action changed
         /// rather than replacing that node's other properties.
