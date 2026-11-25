@@ -120,9 +120,15 @@ fn the_committed_tauri_config_is_the_production_one() {
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
              img-src 'self' asset: https://asset.localhost data:; \
              connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:; \
-             object-src 'none'"
+             object-src 'none'; base-uri 'self'; form-action 'self'"
         )
     );
+
+    // `default-src` does not cover these two, so each is named on its own.
+    let csp = config["app"]["security"]["csp"].as_str().expect("the CSP is a string");
+    let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
+    assert!(directives.contains(&"base-uri 'self'"));
+    assert!(directives.contains(&"form-action 'self'"));
 }
 
 #[cfg(not(feature = "debug-bridge"))]
