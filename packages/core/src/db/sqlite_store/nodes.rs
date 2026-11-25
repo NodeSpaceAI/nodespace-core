@@ -1075,6 +1075,7 @@ impl SqliteStore {
             .transaction()
             .await
             .context("Failed to begin update_node transaction")?;
+        let previous_type = Self::stored_node_type(&tx, id).await?;
 
         if let Some(ref props) = properties_update {
             let props_json =
@@ -1136,7 +1137,7 @@ impl SqliteStore {
 
         // Under the guard, before anything after the write can fail or be
         // cancelled.
-        self.end_tool_approval(id, &updated_node_type);
+        self.end_tool_approval(id, previous_type.as_deref(), &updated_node_type);
         tx.commit()
             .await
             .context("Failed to commit update_node transaction")?;
@@ -1294,13 +1295,14 @@ impl SqliteStore {
 
         let db = self.write().await;
         Self::validate_node_type(&db, new_type).await?;
+        let previous_type = Self::stored_node_type(&db, node_id).await?;
         db.execute(
             "UPDATE node SET node_type = ?1, properties = ?2, version = version + 1, modified_at = ?3 WHERE id = ?4",
             libsql::params![new_type.to_string(), props_json, now, node_id.to_string()],
         )
         .await
         .context("Failed to switch node type")?;
-        self.end_tool_approval(node_id, new_type);
+        self.end_tool_approval(node_id, previous_type.as_deref(), new_type);
         drop(db);
 
         let node = self
@@ -1403,6 +1405,7 @@ impl SqliteStore {
                 .transaction()
                 .await
                 .context("Failed to begin update_node_with_version_check transaction")?;
+            let previous_type = Self::stored_node_type(&tx, id).await?;
             let rows_affected = tx.execute(
                 "UPDATE node SET content = ?1, node_type = ?2, properties = ?3, title = ?4, lifecycle_status = ?5, version = ?6, modified_at = ?7 WHERE id = ?8 AND version = ?9",
                 libsql::params![updated_content, updated_node_type, updated_props, updated_title, updated_status.clone(), new_version, now, id.to_string(), expected_version],
@@ -1411,7 +1414,7 @@ impl SqliteStore {
                 Self::leave_vector_index_if_archiving(&tx, id, Some(&updated_status)).await?;
                 // Under the guard, before anything after the write can fail
                 // or be cancelled.
-                self.end_tool_approval(id, &written_type);
+                self.end_tool_approval(id, previous_type.as_deref(), &written_type);
             }
             tx.commit()
                 .await
@@ -1995,11 +1998,28 @@ impl SqliteStore {
         let db = self.write().await;
         for chunk in ids.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            let sql = format!("DELETE FROM node WHERE id IN ({})", placeholders.join(", "));
             let params: Vec<libsql::Value> = chunk
                 .iter()
                 .map(|id| libsql::Value::Text(id.clone()))
                 .collect();
+            // The remote-tool approval of each node goes with it, under the
+            // guard and before the delete (a schema takes every record of
+            // the database with it).
+            let mut rows = db
+                .query(
+                    &format!(
+                        "SELECT id, node_type FROM node WHERE id IN ({})",
+                        placeholders.join(", ")
+                    ),
+                    params.clone(),
+                )
+                .await
+                .context("Failed to read nodes to delete")?;
+            while let Some(row) = rows.next().await? {
+                self.end_tool_approval(&row.get::<String>(0)?, None, &row.get::<String>(1)?);
+            }
+            drop(rows);
+            let sql = format!("DELETE FROM node WHERE id IN ({})", placeholders.join(", "));
             db.execute(&sql, params)
                 .await
                 .context("Failed to delete nodes by id")?;
@@ -3942,8 +3962,60 @@ impl SqliteStore {
         if updates.is_empty() {
             return Ok(());
         }
-        self.with_transaction(move |tx| Box::pin(Self::bulk_update_in_tx(tx, updates)))
-            .await
+        let scope = self.approval_scope();
+        self.with_transaction(move |tx| {
+            Box::pin(async move {
+                // The remote-tool approval of each node ends as its write is
+                // made, under the guard: by the type it had (a schema retyped
+                // away takes every record of the database) and the type it is
+                // given.
+                let ids: Vec<String> = updates.iter().map(|(id, _)| id.clone()).collect();
+                let before = Self::stored_types_in_tx(tx, &ids).await?;
+                Self::bulk_update_in_tx(tx, updates).await?;
+                let after = Self::stored_types_in_tx(tx, &ids).await?;
+                for (id, written) in &after {
+                    Self::end_tool_approval_in(
+                        &scope,
+                        id,
+                        before.get(id).map(String::as_str),
+                        written,
+                    );
+                }
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// The type stored for each of `ids` that exists, in the caller's `tx`.
+    async fn stored_types_in_tx(
+        tx: &Tx<'_>,
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        const ID_CHUNK: usize = 900;
+        let mut types = std::collections::HashMap::new();
+        for chunk in ids.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|id| libsql::Value::Text(id.clone()))
+                .collect();
+            let mut rows = tx
+                .conn()
+                .query(
+                    &format!(
+                        "SELECT id, node_type FROM node WHERE id IN ({})",
+                        placeholders.join(", ")
+                    ),
+                    params,
+                )
+                .await
+                .context("Failed to read the stored node types")?;
+            while let Some(row) = rows.next().await? {
+                types.insert(row.get::<String>(0)?, row.get::<String>(1)?);
+            }
+        }
+        Ok(types)
     }
 
     /// Delete the rows named by `ids` that exist, in the caller's `tx`, and
