@@ -2344,7 +2344,11 @@
     },
     "spec": {
       "abstract": false,
-      "contextPaths": [],
+      "contextPaths": [
+        [
+          "decisions"
+        ]
+      ],
       "customFields": {},
       "fields": {
         "boundaries": {
