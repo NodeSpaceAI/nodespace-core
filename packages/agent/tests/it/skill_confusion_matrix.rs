@@ -512,7 +512,9 @@ const CASES: &[Case] = &[
     // Work to be tracked, or found out and written up as work, as Stage 1
     // words it. The first two are what Stage 1 made of two requests an agent
     // evaluation sends. Addressing Review Findings led the second by a hair
-    // until its `not_for` named finding out why and writing it up as a task.
+    // until its `not_for` named finding out why and writing it up as a task,
+    // and Instrumenting a Change led the first by a hair (0.928 against
+    // 0.926) until its `not_for` named getting a bug tracked as work.
     first(
         "mark the checklist item for Query engine rewrite release branch as work to be tracked",
         "Creating a Task",
@@ -639,13 +641,6 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
 /// miss and nothing else: a request listed here that is also in
 /// [`REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD`] still fails if that skill leads it.
 const NOT_YET_WON: &[&str] = &[
-    // Work to be tracked, which a neighbour leads by a hair. Stage 1 turns
-    // "get that tracked as work" into "mark ... as work to be tracked", and
-    // Instrumenting a Change (0.928 against 0.926) leads it. No wording of
-    // Creating a Task's `use_for` won it without losing the requests that
-    // name a task to that skill's neighbours: it moves the tie, it does not
-    // break it.
-    "mark the checklist item for Query engine rewrite release branch as work to be tracked",
     // Reviewing a Task leads by 0.010 (0.984 against 0.974).
     "investigate why a task can be done with an unticked checklist box and record the cause and a regression check as a task under Query engine rewrite",
     // A task for a person whose query also carries the thing it waits on:

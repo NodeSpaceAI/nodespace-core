@@ -1254,7 +1254,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         use_for: "Decide what logging, metrics and tracing a code change needs so that its behaviour can be observed: what to log, which error rate and latency to measure, where a trace is needed. Use when asked what to log, measure, monitor or trace for a change.",
         tools: &["get_node_context", "get_node", "create_node", "route_clarify"],
         max_iterations: 12,
-        not_for: None,
+        not_for: Some("Get a bug or a finding tracked as work, or recorded as a task."),
         applies_to: &[
             CoreNodeType::Task.as_str(),
             CoreNodeType::Issue.as_str(),
