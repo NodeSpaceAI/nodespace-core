@@ -1,366 +1,12 @@
-// Regression test: `bun run gh:assign <n> "@me"` and
-// `bun run gh:unassign <n> "@me"` used to resolve "@me" to the hardcoded
-// literal string "malibio" regardless of who was actually authenticated via
-// `gh`, then print a success message even though the wrong account got
-// assigned. This silently mis-assigned real issues to the wrong GitHub
-// account.
-//
-// This exercises NodeSpaceGitHubManager.assignIssues/unassignIssues against a
-// stubbed GitHubClient (constructor-injected) so the assertions don't depend
-// on which account actually runs this suite -- the stub's resolved login is
-// deliberately something no real account will ever be, so a regression back
-// to a hardcoded literal fails loudly no matter who's authenticated.
+// Tests for the public-intake GitHub utilities: the de-duplicated tracking
+// issue a failing scheduled check files, and the client's issue listing it
+// relies on. The team's own work is tracked in NodeSpace, so the scripts that
+// create, edit, assign and set the status of issues no longer exist; the
+// last suite pins that.
 import { describe, expect, mock, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { NodeSpaceGitHubManager } from "./gh-utils.ts";
 import { GitHubClient } from "./github-client.ts";
-
-const RESOLVED_LOGIN = "totally-unrelated-test-account";
-
-function makeStubClient() {
-  const getAuthenticatedUser = mock(async () => RESOLVED_LOGIN);
-  const assignIssues = mock(async (issueNumbers: number[], _assignees: string[]) =>
-    issueNumbers.map((issueNumber) => ({ issueNumber, success: true })),
-  );
-  const unassignIssues = mock(async (issueNumbers: number[], _assignees: string[]) =>
-    issueNumbers.map((issueNumber) => ({ issueNumber, success: true })),
-  );
-
-  const client = {
-    getAuthenticatedUser,
-    assignIssues,
-    unassignIssues,
-  } as unknown as GitHubClient;
-
-  return { client, getAuthenticatedUser, assignIssues, unassignIssues };
-}
-
-describe("NodeSpaceGitHubManager.assignIssues", () => {
-  test('"@me" resolves via the authenticated-user API, not a hardcoded literal', async () => {
-    const { client, getAuthenticatedUser, assignIssues } = makeStubClient();
-    const manager = new NodeSpaceGitHubManager(client);
-
-    await manager.assignIssues([2288], "@me");
-
-    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
-    expect(assignIssues).toHaveBeenCalledWith([2288], [RESOLVED_LOGIN]);
-
-    // The exact regression this guards: the buggy code passed ["malibio"]
-    // unconditionally for "@me", no matter who was authenticated.
-    const [, assignedTo] = assignIssues.mock.calls[0] as [number[], string[]];
-    expect(assignedTo).not.toContain("malibio");
-    expect(assignedTo).toEqual([RESOLVED_LOGIN]);
-  });
-
-  test("an explicit username bypasses @me resolution entirely", async () => {
-    const { client, getAuthenticatedUser, assignIssues } = makeStubClient();
-    const manager = new NodeSpaceGitHubManager(client);
-
-    await manager.assignIssues([2288], "@someone-else");
-
-    expect(getAuthenticatedUser).not.toHaveBeenCalled();
-    expect(assignIssues).toHaveBeenCalledWith([2288], ["someone-else"]);
-  });
-});
-
-describe("NodeSpaceGitHubManager.listIssues", () => {
-  function makeListClient() {
-    const listIssues = mock(async (_options: { assignee?: string }) => []);
-    const getAuthenticatedUser = mock(async () => RESOLVED_LOGIN);
-    const client = { listIssues, getAuthenticatedUser } as unknown as GitHubClient;
-    return { client, listIssues, getAuthenticatedUser };
-  }
-
-  test('"@me" filters by the authenticated account', async () => {
-    const { client, listIssues, getAuthenticatedUser } = makeListClient();
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
-    try {
-      await new NodeSpaceGitHubManager(client).listIssues({ assignee: "@me" });
-    } finally {
-      logSpy.mockRestore();
-    }
-
-    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
-    expect(listIssues.mock.calls[0][0].assignee).toBe(RESOLVED_LOGIN);
-  });
-
-  test("an explicit username is passed through without the @", async () => {
-    const { client, listIssues, getAuthenticatedUser } = makeListClient();
-    const logSpy = spyOn(console, "log").mockImplementation(() => {});
-    try {
-      await new NodeSpaceGitHubManager(client).listIssues({ assignee: "@someone-else" });
-    } finally {
-      logSpy.mockRestore();
-    }
-
-    expect(getAuthenticatedUser).not.toHaveBeenCalled();
-    expect(listIssues.mock.calls[0][0].assignee).toBe("someone-else");
-  });
-});
-
-describe("NodeSpaceGitHubManager.unassignIssues", () => {
-  test('"@me" resolves via the authenticated-user API, not a hardcoded literal', async () => {
-    const { client, getAuthenticatedUser, unassignIssues } = makeStubClient();
-    const manager = new NodeSpaceGitHubManager(client);
-
-    await manager.unassignIssues([2288], "@me");
-
-    expect(getAuthenticatedUser).toHaveBeenCalledTimes(1);
-    expect(unassignIssues).toHaveBeenCalledWith([2288], [RESOLVED_LOGIN]);
-
-    const [, assignedFrom] = unassignIssues.mock.calls[0] as [number[], string[]];
-    expect(assignedFrom).not.toContain("malibio");
-    expect(assignedFrom).toEqual([RESOLVED_LOGIN]);
-  });
-
-  test("an explicit username bypasses @me resolution entirely", async () => {
-    const { client, getAuthenticatedUser, unassignIssues } = makeStubClient();
-    const manager = new NodeSpaceGitHubManager(client);
-
-    await manager.unassignIssues([2288], "@someone-else");
-
-    expect(getAuthenticatedUser).not.toHaveBeenCalled();
-    expect(unassignIssues).toHaveBeenCalledWith([2288], ["someone-else"]);
-  });
-});
-
-// Regression test: an issue that was never added to the ProjectV2 board had no
-// project item, so `getItemIdForIssue` returned null and every
-// `bun run gh:status <n> "..."` call on it failed with "Issue not found in
-// project" — including the ones CLAUDE.md's startup sequence makes mandatory.
-// Nothing in the tooling added issues to the board, so this hit every newly
-// filed issue.
-//
-// Two halves are covered here: creation now places the issue on the board, and
-// a status update self-heals a missing row instead of refusing. The second
-// matters most — it back-fills issues created before the first half existed.
-describe("GitHubClient project-board membership", () => {
-  const ISSUE_NUMBER = 2390;
-  const ISSUE_NODE_ID = "I_kwDOtestnode";
-  const NEW_ITEM_ID = "PVTI_lADOnewitem";
-  // The board's single-select option ids for "Backlog" and "Done".
-  const BACKLOG_OPTION_ID = "230488b9";
-  const DONE_OPTION_ID = "58fb1205";
-
-  function makeClientWithStubbedOctokit(options: { alreadyOnBoard: boolean }) {
-    const graphqlCalls: Array<{ query: string; vars: Record<string, unknown> }> = [];
-
-    const graphql = mock(async (query: string, vars: Record<string, unknown>) => {
-      graphqlCalls.push({ query, vars });
-      if (query.includes("addProjectV2ItemById")) {
-        return { addProjectV2ItemById: { item: { id: NEW_ITEM_ID } } };
-      }
-      if (query.includes("updateProjectV2ItemFieldValue")) {
-        return { updateProjectV2ItemFieldValue: { projectV2Item: { id: NEW_ITEM_ID } } };
-      }
-      // getProjectItems() paging query.
-      return {
-        organization: {
-          projectV2: {
-            items: {
-              nodes: options.alreadyOnBoard
-                ? [{ id: "PVTI_existing", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/nodespace-core" } } }]
-                : [],
-              pageInfo: { hasNextPage: false, endCursor: null },
-            },
-          },
-        },
-      };
-    });
-
-    const issuesCreate = mock(async () => ({
-      data: { number: ISSUE_NUMBER, html_url: "https://example.test/i", node_id: ISSUE_NODE_ID },
-    }));
-    const issuesGet = mock(async () => ({ data: { node_id: ISSUE_NODE_ID } }));
-
-    const client = new GitHubClient("stub-token");
-    (client as unknown as { octokit: unknown }).octokit = {
-      graphql,
-      rest: { issues: { create: issuesCreate, get: issuesGet } },
-    };
-
-    return { client, graphql, graphqlCalls, issuesCreate, issuesGet };
-  }
-
-  test("a same-numbered issue from another repository is not taken for this one", async () => {
-    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => ({
-      organization: {
-        projectV2: {
-          items: {
-            nodes: [
-              { id: "PVTI_other", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/other-repo" } } },
-              { id: "PVTI_core", content: { number: ISSUE_NUMBER, repository: { nameWithOwner: "NodeSpaceAI/nodespace-core" } } },
-            ],
-            pageInfo: { hasNextPage: false, endCursor: null },
-          },
-        },
-      },
-    }));
-
-    expect(await client.getItemIdForIssue(ISSUE_NUMBER)).toBe("PVTI_core");
-  });
-
-  test("creating an issue adds it to the project board", async () => {
-    const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-
-    const issue = await client.createIssue("Title", "Body");
-
-    expect(issue.number).toBe(ISSUE_NUMBER);
-    expect(issue.addedToProject).toBe(true);
-
-    const add = graphqlCalls.find((c) => c.query.includes("addProjectV2ItemById"));
-    expect(add).toBeDefined();
-    expect(add!.vars.contentId).toBe(ISSUE_NODE_ID);
-  });
-
-  test("a failed board add still returns the created issue", async () => {
-    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => {
-      throw new Error("board unreachable");
-    });
-
-    const issue = await client.createIssue("Title", "Body");
-
-    // The issue exists on GitHub regardless — reporting failure by throwing
-    // would lose the number the caller actually needs.
-    expect(issue.number).toBe(ISSUE_NUMBER);
-    expect(issue.addedToProject).toBe(false);
-  });
-
-  // Regression coverage for the silent-no-op gap: scheduled CI workflows
-  // (verify-macos-installer.yml, homebrew-drift-check.yml) reach this via
-  // NodeSpaceGitHubManager.findOrCreateTrackingIssue with a token that can
-  // never carry Projects v2 write scope, so the board add above fails on
-  // every one of those runs. `createIssue` is the one place that actually
-  // knows the add failed, so it -- not any particular caller -- must warn,
-  // otherwise a scheduled run's log reports clean success while quietly
-  // leaving the tracking issue off the board.
-  test("warns when the created issue could not be added to the project board", async () => {
-    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async () => {
-      throw new Error("board unreachable");
-    });
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      const issue = await client.createIssue("Title", "Body");
-
-      expect(issue.addedToProject).toBe(false);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`#${ISSUE_NUMBER}`));
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("project board"));
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  test("does not warn when the created issue is added to the project board successfully", async () => {
-    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      const issue = await client.createIssue("Title", "Body");
-
-      expect(issue.addedToProject).toBe(true);
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  // A project item with no Status sits on the board in no column, and reads
-  // back with a blank status that looks like the issue is not on the board.
-  test("creating an issue sets its board status to Backlog on the item the add returned", async () => {
-    const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-
-    await client.createIssue("Title", "Body");
-
-    const updates = graphqlCalls.filter((c) => c.query.includes("updateProjectV2ItemFieldValue"));
-    expect(updates).toHaveLength(1);
-    expect(updates[0].vars.itemId).toBe(NEW_ITEM_ID);
-    expect(updates[0].vars.value).toEqual({ singleSelectOptionId: BACKLOG_OPTION_ID });
-
-    // The item id comes from the add: the board is never listed to find it.
-    expect(graphqlCalls.find((c) => c.query.includes("GetProjectItems"))).toBeUndefined();
-  });
-
-  test("a failed status write still returns the created issue and warns", async () => {
-    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async (query: string) => {
-      if (query.includes("addProjectV2ItemById")) {
-        return { addProjectV2ItemById: { item: { id: NEW_ITEM_ID } } };
-      }
-      throw new Error("status field unreachable");
-    });
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      const issue = await client.createIssue("Title", "Body");
-
-      expect(issue.number).toBe(ISSUE_NUMBER);
-      expect(issue.addedToProject).toBe(true);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`#${ISSUE_NUMBER}`));
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status could not be"));
-      // The cause is in the warning, so a stale field or option id is diagnosable.
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status field unreachable"));
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  test("a failed board add attempts no status write", async () => {
-    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-    const queries: string[] = [];
-    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async (query: string) => {
-      queries.push(query);
-      throw new Error("board unreachable");
-    });
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      await client.createIssue("Title", "Body");
-
-      expect(queries).toHaveLength(1);
-      expect(queries[0]).toContain("addProjectV2ItemById");
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  test("a status update adds a missing issue to the board instead of failing", async () => {
-    const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
-
-    const results = await client.updateIssueStatus([ISSUE_NUMBER], "Done");
-
-    expect(results).toEqual([{ issueNumber: ISSUE_NUMBER, success: true }]);
-
-    // The exact regression: this used to short-circuit to
-    // { success: false, error: "Issue not found in project" }.
-    expect(results[0].error).toBeUndefined();
-
-    const add = graphqlCalls.find((c) => c.query.includes("addProjectV2ItemById"));
-    expect(add).toBeDefined();
-
-    // The status write must target the item the add returned.
-    const update = graphqlCalls.find((c) => c.query.includes("updateProjectV2ItemFieldValue"));
-    expect(update!.vars.itemId).toBe(NEW_ITEM_ID);
-    // And carry the option the caller asked for, not the one a new issue gets.
-    expect(update!.vars.value).toEqual({ singleSelectOptionId: DONE_OPTION_ID });
-  });
-
-  test("an issue already on the board is not re-added", async () => {
-    const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: true });
-
-    const results = await client.updateIssueStatus([ISSUE_NUMBER], "In Progress");
-
-    expect(results).toEqual([{ issueNumber: ISSUE_NUMBER, success: true }]);
-    expect(graphqlCalls.find((c) => c.query.includes("addProjectV2ItemById"))).toBeUndefined();
-
-    const update = graphqlCalls.find((c) => c.query.includes("updateProjectV2ItemFieldValue"));
-    expect(update!.vars.itemId).toBe("PVTI_existing");
-  });
-});
 
 // Covers NodeSpaceGitHubManager.findOrCreateTrackingIssue -- the shared
 // dedup helper scheduled monitoring workflows (verify-macos-installer.yml,
@@ -388,7 +34,6 @@ describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
     const createIssue = mock(async (_title: string, _body: string, _labels?: string[]) => ({
       number: 4242,
       url: `https://example.test/issues/4242`,
-      addedToProject: true,
     }));
 
     const client = { listIssues, addPRComment, createIssue } as unknown as GitHubClient;
@@ -537,8 +182,7 @@ describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
   });
 });
 
-// Covers GitHubClient.listIssues directly (stubbed octokit, same pattern as
-// the "GitHubClient project-board membership" suite above): pagination and
+// Covers GitHubClient.listIssues directly (stubbed octokit): pagination and
 // pull-request filtering, both load-bearing for
 // NodeSpaceGitHubManager.findOrCreateTrackingIssue's exact-title dedup —
 // an unpaginated call could silently miss an older still-open tracking
@@ -616,5 +260,38 @@ describe("GitHubClient.listIssues", () => {
 
     expect(issues).toHaveLength(1);
     expect(issues[0].number).toBe(1);
+  });
+});
+
+// GitHub issues are the public intake only: the package scripts that file,
+// edit, assign, unassign, list or set the board status of an issue are gone,
+// and the scripts that remain say so.
+describe("gh:* scripts are intake-only", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  const ghScripts = Object.keys(pkg.scripts)
+    .filter((name) => name.startsWith("gh:"))
+    .sort();
+
+  test("only view, comment, pr, tracking-issue and help remain", () => {
+    expect(ghScripts).toEqual(["gh:comment", "gh:help", "gh:pr", "gh:tracking-issue", "gh:view"]);
+  });
+
+  test("the manager has no method that creates, edits, assigns or sets the status of an issue", () => {
+    const methods = Object.getOwnPropertyNames(NodeSpaceGitHubManager.prototype);
+    for (const removed of ["createIssue", "editIssue", "assignIssues", "unassignIssues", "updateIssueStatus", "listIssues"]) {
+      expect(methods).not.toContain(removed);
+    }
+  });
+
+  test("the help text states that GitHub issues are the public intake", () => {
+    const result = Bun.spawnSync(["bun", "run", "scripts/gh-utils.ts", "help"], {
+      cwd: new URL("..", import.meta.url).pathname,
+    });
+    const out = result.stdout.toString();
+    expect(out).toContain("public intake");
+    expect(out).not.toContain("gh:assign");
+    expect(out).not.toContain("gh:status");
   });
 });

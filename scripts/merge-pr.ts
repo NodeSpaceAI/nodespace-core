@@ -765,7 +765,7 @@ async function main(): Promise<void> {
         console.log(
           `\n✓ PR #${pr} merged.\n` +
             "  Next: ExitWorktree({action: \"remove\", discard_changes: true}), then from the primary checkout\n" +
-            "  `git pull origin main` and `bun run gh:status <issue#> \"Done\"`.\n"
+            "  `git pull origin main`, then mark the task done in NodeSpace.\n"
         );
         return;
       }

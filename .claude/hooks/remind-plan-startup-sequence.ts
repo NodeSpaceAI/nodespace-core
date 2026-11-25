@@ -24,9 +24,7 @@ Include this as Step 0 in your plan:
     - EnterWorktree({name: "issue-<N>-brief-desc"})  (the tool owns the location and branch name)
     - bun install
     - bun run test  →  record baseline
-    - bun run gh:comment <N> "Frontend: X passed"
-    - bun run gh:assign <N> "@me"
-    - bun run gh:status <N> "In Progress"
+    - claim the task in NodeSpace (start it with the version you read)
 
 Also include at the end of the plan:
   Final steps:

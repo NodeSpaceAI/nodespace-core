@@ -38,9 +38,7 @@ If it is not issue work, ignore this reminder.
   3. EnterWorktree({name: "issue-<N>-brief-desc"})
   4. bun install
   5. bun run test  (record baseline)
-  6. bun run gh:comment <N> "Frontend: X passed"
-  7. bun run gh:assign <N> "@me"
-  8. bun run gh:status <N> "In Progress"
+  6. claim the task in NodeSpace (start it with the version you read)
 
 Detail: AGENTS.md, "Mandatory Startup Sequence".
 `);

@@ -39,7 +39,7 @@ The pragmatic-code-reviewer agent will need to gather the following information:
 ## Pre-Review Steps
 
 1. **Extract issue number** from the current branch name (e.g., `feature/issue-98-description` → issue #98)
-2. **Fetch issue requirements** using `bun run gh:view <issue-number>` if issue number found
+2. **Fetch the requirements**: the task in NodeSpace named in the PR description (`nodespace node get <id>`); for a PR that closes an outside-reported GitHub issue, `bun run gh:view <issue-number>`
 3. **Parse acceptance criteria** from the issue body (look for `- [ ]` checklist items)
 
 ## Your Task
