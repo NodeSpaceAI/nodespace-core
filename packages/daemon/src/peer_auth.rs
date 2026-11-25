@@ -12,13 +12,137 @@
 
 use std::io;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::unix::UCred;
 use tokio::net::{UnixListener, UnixStream};
 use tokio_stream::Stream;
+use tonic::transport::server::Connected;
+
+pub use crate::peer_signature::AuditToken;
+
+/// What the daemon learned about a peer when it accepted the connection. It is
+/// read once, at accept time, and travels with the connection into every
+/// request as the request's connect info.
+#[derive(Clone, Debug)]
+pub struct PeerInfo {
+    /// The peer's credentials as the kernel reports them (uid, pid).
+    pub cred: Option<UCred>,
+    /// The peer's audit token (macOS `LOCAL_PEERTOKEN`); `None` elsewhere and
+    /// when the kernel did not give one.
+    pub audit_token: Option<AuditToken>,
+}
+
+/// The peer's audit token, read from the connected socket.
+#[cfg(target_os = "macos")]
+fn read_audit_token(stream: &UnixStream) -> Option<AuditToken> {
+    use std::os::fd::AsRawFd;
+    /// `SOL_LOCAL`.
+    const SOL_LOCAL: libc::c_int = 0;
+    /// `LOCAL_PEERTOKEN`: the audit token of the process that connected.
+    const LOCAL_PEERTOKEN: libc::c_int = 0x006;
+    let mut token = [0u32; 8];
+    let mut len = std::mem::size_of_val(&token) as libc::socklen_t;
+    // SAFETY: `token` is a live, writable buffer of `len` bytes, which is the
+    // size of an `audit_token_t` that LOCAL_PEERTOKEN fills in.
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            SOL_LOCAL,
+            LOCAL_PEERTOKEN,
+            token.as_mut_ptr().cast(),
+            &mut len,
+        )
+    };
+    (status == 0 && len as usize == std::mem::size_of_val(&token)).then_some(AuditToken(token))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_audit_token(_stream: &UnixStream) -> Option<AuditToken> {
+    None
+}
+
+/// A connection the daemon accepted, carrying what was read about its peer at
+/// accept time. Reads and writes go straight to the socket.
+pub struct PeerStream {
+    inner: UnixStream,
+    info: PeerInfo,
+}
+
+impl PeerStream {
+    /// Read the peer's credentials and audit token off `stream`.
+    pub fn new(stream: UnixStream) -> Self {
+        let info = PeerInfo {
+            cred: stream.peer_cred().ok(),
+            audit_token: read_audit_token(&stream),
+        };
+        Self {
+            inner: stream,
+            info,
+        }
+    }
+
+    /// The socket, for the accept check.
+    pub fn stream(&self) -> &UnixStream {
+        &self.inner
+    }
+
+    pub fn info(&self) -> &PeerInfo {
+        &self.info
+    }
+}
+
+impl Connected for PeerStream {
+    type ConnectInfo = PeerInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.info.clone()
+    }
+}
+
+impl AsyncRead for PeerStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for PeerStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
 
 /// The boxed accept stream tonic serves from.
-pub type IncomingStream = Pin<Box<dyn Stream<Item = io::Result<UnixStream>> + Send>>;
+pub type IncomingStream = Pin<Box<dyn Stream<Item = io::Result<PeerStream>> + Send>>;
 
 /// Whether a peer with credentials `cred` may be served by a daemon running as
 /// effective uid `our_euid`.
@@ -56,7 +180,7 @@ pub fn owner_only_incoming(listener: UnixListener) -> IncomingStream {
 /// real same-user connection, which must then be refused.
 pub fn owner_only_incoming_for_euid(listener: UnixListener, euid: u32) -> IncomingStream {
     owner_only_incoming_with(listener, move |stream| {
-        let cred = stream.peer_cred();
+        let cred = stream.stream().peer_cred();
         let (uid, pid) = match &cred {
             Ok(c) => (Some(c.uid()), c.pid()),
             Err(_) => (None, None),
@@ -75,12 +199,15 @@ pub fn owner_only_incoming_for_euid(listener: UnixListener, euid: u32) -> Incomi
 /// failure is yielded as an error.
 pub fn owner_only_incoming_with<F>(listener: UnixListener, check: F) -> IncomingStream
 where
-    F: Fn(&UnixStream) -> bool + Send + 'static,
+    F: Fn(&PeerStream) -> bool + Send + 'static,
 {
     Box::pin(async_stream::stream! {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
+                    // The audit token is read here, once, before anything is
+                    // read from the peer.
+                    let stream = PeerStream::new(stream);
                     if check(&stream) {
                         yield Ok(stream);
                     }

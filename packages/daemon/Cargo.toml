@@ -61,6 +61,9 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString"] }
 objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "block2", "LAContext", "LAError"] }
 block2 = "0.6"
+# Checking a connecting program's code signature (SecCode) against the team requirement.
+security-framework = "3.7"
+core-foundation = "0.10"
 
 # Named Pipe owner-only DACL construction (ADR-052 -- the Windows equivalent
 # of `bind_uds_owner_only`'s 0o600 on Unix). Version pinned to match the one

@@ -12,6 +12,7 @@ pub(crate) mod durable_write;
 pub mod incompatible_database;
 #[cfg(unix)]
 pub mod peer_auth;
+pub mod peer_signature;
 pub mod router;
 pub mod services;
 #[cfg(unix)]

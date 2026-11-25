@@ -578,6 +578,8 @@ struct LocalAgentServiceInner {
     confirmations: PendingConfirmations,
     /// Who may answer one: not the daemon or a program it started.
     answer_gate: Arc<dyn AnswerGate>,
+    /// Which programs may answer or approve, by code signature.
+    peer_signature: Arc<dyn crate::peer_signature::PeerSignatureCheck>,
     /// Writes and updates the chat card a confirmation is shown on.
     chat_cards: Arc<ChatCardUi>,
     /// This device's credential store, for the runners' credentials.
@@ -703,6 +705,7 @@ impl LocalAgentServiceImpl {
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 confirmations: PendingConfirmations::default(),
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
+                peer_signature: crate::peer_signature::for_this_process(),
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
                 presence,
@@ -741,6 +744,7 @@ impl LocalAgentServiceImpl {
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 confirmations: PendingConfirmations::default(),
                 answer_gate: Arc::new(SpawnedProcessGate::for_this_process()),
+                peer_signature: crate::peer_signature::for_this_process(),
                 chat_cards: Arc::new(ChatCardUi::new(node_service_for_cards)),
                 secrets: Arc::new(nodespace_core::secrets::SecretStore::keychain()),
                 presence,
@@ -1997,6 +2001,10 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             &*self.inner.answer_gate,
             &request,
             "approve a tool",
+        ) || !crate::services::remote_confirmation::peer_signed_for(
+            &*self.inner.peer_signature,
+            &request,
+            crate::peer_signature::Scope::ApproveTool,
         ) {
             return Err(Status::permission_denied(
                 "this client may not approve a tool",
@@ -2018,6 +2026,15 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
         // pipe) gives `None`, which the gate refuses.
         let peer_pid = crate::services::remote_confirmation::peer_pid(&request);
         self.check_answer_peer(peer_pid)?;
+        if !crate::services::remote_confirmation::peer_signed_for(
+            &*self.inner.peer_signature,
+            &request,
+            crate::peer_signature::Scope::AnswerConfirmation,
+        ) {
+            return Err(Status::permission_denied(
+                "this client may not answer a confirmation",
+            ));
+        }
         let this = self.route(&request).await?;
         let req = request.into_inner();
         let accepted = this.answer_confirmation_from(
@@ -10142,6 +10159,79 @@ mod tests {
             );
         }
 
+        /// Records what it was asked and answers per scope.
+        pub(super) struct Scoped {
+            pub(super) answer: bool,
+            pub(super) approve: bool,
+            pub(super) seen: std::sync::Mutex<Vec<(bool, crate::peer_signature::Scope)>>,
+        }
+
+        impl crate::peer_signature::PeerSignatureCheck for Scoped {
+            fn allows(
+                &self,
+                token: Option<crate::peer_signature::AuditToken>,
+                scope: crate::peer_signature::Scope,
+            ) -> bool {
+                self.seen.lock().unwrap().push((token.is_some(), scope));
+                match scope {
+                    crate::peer_signature::Scope::AnswerConfirmation => self.answer,
+                    crate::peer_signature::Scope::ApproveTool => self.approve,
+                }
+            }
+        }
+
+        /// A peer the process gate admits is still refused when its code
+        /// signature is not the team's: the real check refuses this unsigned
+        /// test binary, and the refused answer reaches nothing.
+        #[tokio::test]
+        async fn a_peer_the_process_gate_admits_but_that_is_not_the_signed_app_cannot_answer() {
+            let (mut svc, _ns, _tmp) = test_service().await;
+            let inner = Arc::get_mut(&mut svc.inner).expect("sole owner");
+            inner.answer_gate = Arc::new(Lets(std::process::id()));
+            // The production check, as a daemon builds it.
+            inner.peer_signature = Arc::new(crate::peer_signature::TeamSigned::new());
+            let pending = svc.inner.confirmations.clone();
+            let (mut client, _dir) = serve(svc).await;
+            let refused = client
+                .answer_confirmation(answer("x", "d", true))
+                .await
+                .unwrap_err();
+            if cfg!(target_os = "macos") {
+                assert_eq!(refused.code(), tonic::Code::PermissionDenied);
+            }
+            assert!(pending.is_empty());
+        }
+
+        /// The scope and the token reach the check: a check that allows only
+        /// the approve scope refuses an answer, and the token the daemon read
+        /// when it accepted the connection is there on macOS.
+        #[tokio::test]
+        async fn the_answer_is_judged_with_the_connections_token_and_its_own_scope() {
+            let (mut svc, _ns, _tmp) = test_service().await;
+            let check = Arc::new(Scoped {
+                answer: false,
+                approve: true,
+                seen: Default::default(),
+            });
+            let inner = Arc::get_mut(&mut svc.inner).expect("sole owner");
+            inner.answer_gate = Arc::new(Lets(std::process::id()));
+            inner.peer_signature = check.clone();
+            let (mut client, _dir) = serve(svc).await;
+            let refused = client
+                .answer_confirmation(answer("x", "d", true))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code(), tonic::Code::PermissionDenied);
+            let seen = check.seen.lock().unwrap().clone();
+            assert_eq!(
+                seen,
+                vec![(
+                    cfg!(target_os = "macos"),
+                    crate::peer_signature::Scope::AnswerConfirmation
+                )]
+            );
+        }
+
         #[tokio::test]
         async fn an_allowed_peer_answers_a_live_question_over_the_socket_with_its_pid_judged() {
             let (mut svc, _ns, _tmp) = test_service().await;
@@ -10150,6 +10240,8 @@ mod tests {
             Arc::get_mut(&mut svc.inner)
                 .expect("sole owner")
                 .answer_gate = Arc::new(Lets(std::process::id()));
+            Arc::get_mut(&mut svc.inner).unwrap().peer_signature =
+                Arc::new(crate::peer_signature::AllowAnyPeer);
             let pending = svc.inner.confirmations.clone();
             let (mut client, _dir) = serve(svc).await;
 
@@ -10724,6 +10816,40 @@ mod tests {
             assert!(fake.asked().is_empty());
         }
 
+        /// A peer the process gate admits is refused when its signature is not
+        /// the team's: nothing is approved and nobody is asked.
+        #[tokio::test]
+        async fn a_peer_that_is_not_the_signed_app_cannot_approve_and_nobody_is_asked() {
+            let fake = FakePresence::new(Dialog::Yes);
+            let (mut svc, ns, _tmp) = approving_service(&fake).await;
+            let check = Arc::new(super::over_a_socket::Scoped {
+                answer: true,
+                approve: false,
+                seen: Default::default(),
+            });
+            let inner = Arc::get_mut(&mut svc.inner).unwrap();
+            inner.answer_gate = Arc::new(Lets(std::process::id()));
+            inner.peer_signature = check.clone();
+            let id = cli_tool(&ns, "lookup").await;
+            let digest = shown(&svc, &ns, &id).await.digest;
+            let (mut client, _dir) = serve(svc).await;
+            let denied = client
+                .approve_tool(approve(&id, &digest))
+                .await
+                .unwrap_err();
+            assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+            let node = ns.get_node(&id).await.unwrap().unwrap();
+            assert_ne!(node.properties["tool"]["enabled"], serde_json::json!(true));
+            assert!(fake.asked().is_empty());
+            assert_eq!(
+                check.seen.lock().unwrap().clone(),
+                vec![(
+                    cfg!(target_os = "macos"),
+                    crate::peer_signature::Scope::ApproveTool
+                )]
+            );
+        }
+
         /// The kernel's pid for the connection is what the gate judges: a gate
         /// that lets exactly this process through lets it approve what it was
         /// shown, and the preview then says so.
@@ -10732,6 +10858,8 @@ mod tests {
             let fake = FakePresence::new(Dialog::Yes);
             let (mut svc, ns, _tmp) = approving_service(&fake).await;
             Arc::get_mut(&mut svc.inner).unwrap().answer_gate = Arc::new(Lets(std::process::id()));
+            Arc::get_mut(&mut svc.inner).unwrap().peer_signature =
+                Arc::new(crate::peer_signature::AllowAnyPeer);
             let id = cli_tool(&ns, "lookup").await;
             let key = svc.inner.approval_key.clone().unwrap();
             let (mut client, _dir) = serve(svc).await;

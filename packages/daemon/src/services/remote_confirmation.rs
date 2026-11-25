@@ -46,14 +46,16 @@
 //!   carries no peer pid, so every answer is refused there (the feature is inert
 //!   until that is solved). See [`SpawnedProcessGate`] for the limits.
 //!
-//! **The answer is gated by the peer gate alone.** Approving a tool and
-//! changing a credential also need the person at the screen to confirm in a
-//! system dialog (see [`crate::user_presence`]); an answer to a call's question
-//! does not. A program of the user that the gate does not recognise (an
-//! orphaned descendant of an in-app shell, an agent started outside the app)
-//! can read a pending question's id and digest from its card and answer it.
-//! Closing that needs the peer's audit token and a check that it is the signed
-//! app.
+//! **The answer needs the signed app as well as the peer gate.** On macOS the
+//! daemon reads the peer's audit token when it accepts the connection and
+//! checks the connecting program's code signature against the NodeSpace team
+//! (see [`crate::peer_signature`]); an answer from anything else is refused, so
+//! a program of the user that the process gate does not recognise (an orphaned
+//! descendant of an in-app shell, an agent started outside the app) cannot
+//! answer even when it has read a pending question's id and digest from its
+//! card. Approving a tool also needs a team-signed program (the app or the
+//! `nodespace` command) and the person at the screen to confirm in a system
+//! dialog (see [`crate::user_presence`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -395,11 +397,17 @@ impl CallConfirmer for DaemonCallConfirmer {
 pub fn peer_pid<T>(request: &tonic::Request<T>) -> Option<u32> {
     #[cfg(unix)]
     {
-        request
+        let cred = request
             .extensions()
-            .get::<tonic::transport::server::UdsConnectInfo>()
-            .and_then(|info| info.peer_cred.as_ref())
-            .and_then(|cred| cred.pid())
+            .get::<crate::peer_auth::PeerInfo>()
+            .and_then(|info| info.cred)
+            .or_else(|| {
+                request
+                    .extensions()
+                    .get::<tonic::transport::server::UdsConnectInfo>()
+                    .and_then(|info| info.peer_cred)
+            });
+        cred.and_then(|cred| cred.pid())
             .and_then(|pid| u32::try_from(pid).ok())
     }
     #[cfg(not(unix))]
@@ -407,6 +415,35 @@ pub fn peer_pid<T>(request: &tonic::Request<T>) -> Option<u32> {
         let _ = request;
         None
     }
+}
+
+/// The audit token the daemon read from the connection when it accepted it
+/// (macOS only; `None` on a transport or platform without one).
+pub fn peer_audit_token<T>(
+    request: &tonic::Request<T>,
+) -> Option<crate::peer_signature::AuditToken> {
+    #[cfg(unix)]
+    {
+        request
+            .extensions()
+            .get::<crate::peer_auth::PeerInfo>()
+            .and_then(|info| info.audit_token)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = request;
+        None
+    }
+}
+
+/// Whether `check` lets the peer of `request` do `scope`. A refusal is logged
+/// by the check; the caller answers `PERMISSION_DENIED`.
+pub fn peer_signed_for<T>(
+    check: &dyn crate::peer_signature::PeerSignatureCheck,
+    request: &tonic::Request<T>,
+    scope: crate::peer_signature::Scope,
+) -> bool {
+    check.allows(peer_audit_token(request), scope)
 }
 
 /// Whether `gate` lets the peer of `request` through. A refusal is logged with
@@ -439,12 +476,8 @@ pub trait AnswerGate: Send + Sync {
 /// `setsid`) and whose parent has exited cannot be told from another program of
 /// the same user, and neither can an orphaned descendant of a recorded program
 /// (its parent gone, its group never recorded) or an agent the user started
-/// outside the app; closing that needs the peer's audit token and a
-/// code-signature check (macOS `LOCAL_PEERTOKEN` + `SecCodeCheckValidity`
-/// against the NodeSpace team id), which is not done here. Where that matters
-/// most (approving a tool, changing a credential) the daemon also asks the
-/// person at the screen; an answer to a call's question relies on this gate
-/// alone.
+/// outside the app; the peer's audit token and code signature close that on
+/// macOS ([`crate::peer_signature`]), which is judged in addition to this gate.
 ///
 /// Two more facts. The question's id and digest are stored on the chat card, so
 /// any same-user program can read them (`nodespace get`): the id is not a secret
