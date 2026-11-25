@@ -33,6 +33,10 @@ pub struct AcpLaunch {
     /// confirmed by the person at the screen that pins the program file's
     /// content, checked again right before the program starts (see
     /// `local_agent::tool_approval` and `local_agent::process::check_program_file`).
+    ///
+    /// Requirement for ACP stage 2: when it wires this field, the launch must
+    /// go through that same on-screen confirmation and content pin as remote
+    /// tools, so credentials never reach a program the person has not approved.
     pub secrets: Vec<EnvSecret>,
 }
 
