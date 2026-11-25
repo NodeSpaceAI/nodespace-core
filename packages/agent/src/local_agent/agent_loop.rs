@@ -2874,6 +2874,94 @@ fn undeclared_refusal_backstop(
     result.response = message;
 }
 
+/// A field added to a type exists on every node of that type, not on one node,
+/// and the user is told so by a sentence built here from the calls of the turn,
+/// whatever the model replied: a model that adds a field on its own, without the
+/// schema read and the explanation the procedure asks for, still leaves the user
+/// knowing what changed. Added after the reply, never in place of it. A turn that
+/// refused a write for undeclared keys already says what schema changes landed
+/// (see [`undeclared_refusal_backstop`]) and is left alone.
+fn field_added_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
+    if result.clarify.is_some()
+        || result
+            .tool_calls_made
+            .iter()
+            .any(|r| undeclared_refusal_of(r).is_some())
+    {
+        return;
+    }
+    let mut sentences: Vec<String> = Vec::new();
+    for record in result
+        .tool_calls_made
+        .iter()
+        .filter(|r| r.name == "update_schema" && super::deletion_confirmation::landed_write(r))
+    {
+        if let Some(sentence) = field_added_sentence(record) {
+            if !sentences.contains(&sentence) {
+                sentences.push(sentence);
+            }
+        }
+    }
+    if sentences.is_empty() {
+        return;
+    }
+    let notice = sentences.join(" ");
+    let message = if result.response.trim().is_empty() {
+        notice
+    } else {
+        format!("{}\n\n{notice}", result.response)
+    };
+    replace_turn_reply(session, &message);
+    result.response = message;
+}
+
+/// What one `update_schema` that added fields did, from its arguments: the type
+/// and the fields, each only when it is a plain identifier. `None` for a call
+/// that added no field, or whose type is not a plain name.
+fn field_added_sentence(record: &ToolExecutionRecord) -> Option<String> {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    let ty = record
+        .args
+        .get("schema_id")
+        .and_then(|v| v.as_str())
+        .filter(|t| plain(t))?;
+    let all: Vec<&str> = record
+        .args
+        .get("add_fields")
+        .and_then(|v| v.as_array())?
+        .iter()
+        .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+        .collect();
+    if all.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = all
+        .iter()
+        .filter(|f| plain(f))
+        .take(crate::agent_types::REFUSED_KEYS_SHOWN)
+        .map(|f| format!("'{f}'"))
+        .collect();
+    let unnamed = all.len() - named.len();
+    let list = match (named.is_empty(), unnamed) {
+        (true, _) => "new fields".to_string(),
+        (false, 0) => named.join(", "),
+        (false, n) => format!("{} and {n} more", named.join(", ")),
+    };
+    let (noun, pronoun) = if all.len() == 1 {
+        ("the field", "it")
+    } else {
+        ("the fields", "them")
+    };
+    Some(format!(
+        "I added {noun} {list} to the type '{ty}': every '{ty}' in this database has {pronoun} now, not only one."
+    ))
+}
+
 /// What a schema write that landed changed, in words built from its arguments: the
 /// type and the fields it was given, each only when it is a plain identifier.
 fn schema_change_sentence(record: &ToolExecutionRecord) -> String {
@@ -4006,6 +4094,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // After the others, and on a turn that ends in a question too: the notice
         // follows what the user is asked.
         undeclared_refusal_backstop(session, &mut result, &model_reply);
+        field_added_backstop(session, &mut result);
         // Recorded after the guards above, which can turn a reply into a
         // question: the outcome is what the user was finally shown.
         session.prior_turns.push(PriorTurn {
@@ -13173,6 +13262,123 @@ mod tests {
             format!("{clarification}\n\n{REFUSED_EFFORT}{OFFER_EFFORT}")
         );
         assert!(result.clarify.is_some());
+    }
+
+    fn update_schema_record(args: serde_json::Value, is_error: bool) -> ToolExecutionRecord {
+        ToolExecutionRecord {
+            tool_call_id: "tc".into(),
+            name: "update_schema".into(),
+            args,
+            result: if is_error {
+                json!({"error": "refused"})
+            } else {
+                json!({"success": true})
+            },
+            is_error,
+            duration_ms: 0,
+        }
+    }
+
+    fn turn_with(records: Vec<ToolExecutionRecord>, reply: &str) -> AgentTurnResult {
+        AgentTurnResult {
+            response: reply.to_string(),
+            reasoning: None,
+            tool_calls_made: records,
+            usage: Default::default(),
+            clarify: None,
+        }
+    }
+
+    /// A field added in a turn is said to exist on every node of its type, in a
+    /// sentence built from the call, after the model's own reply.
+    #[test]
+    fn a_field_added_in_a_turn_is_said_to_exist_on_every_node_of_the_type() {
+        let mut session = new_session();
+        let mut result = turn_with(
+            vec![update_schema_record(
+                json!({"schema_id": "task", "add_fields": [{"name": "effort", "type": "number"}]}),
+                false,
+            )],
+            "The effort field has been successfully added to the Task schema.",
+        );
+        field_added_backstop(&mut session, &mut result);
+        assert_eq!(
+            result.response,
+            "The effort field has been successfully added to the Task schema.\n\nI added the \
+             field 'effort' to the type 'task': every 'task' in this database has it now, not \
+             only one."
+        );
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(result.response.as_str()),
+            "the history carries what the user was shown"
+        );
+    }
+
+    /// The sentence is added by the turn itself, not only by the function: a
+    /// turn in which the model adds a field on its own ends with it, and the
+    /// session history carries what the user was shown.
+    #[tokio::test]
+    async fn a_turn_that_added_a_field_ends_with_the_sentence() {
+        let (response, session) = run_claim_turn_full(
+            vec![add_effort_to_task()],
+            "The effort field has been added.",
+        )
+        .await;
+        assert_eq!(
+            response,
+            "The effort field has been added.\n\nI added the field 'effort' to the type 'task': \
+             every 'task' in this database has it now, not only one."
+        );
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(response.as_str())
+        );
+    }
+
+    /// Several fields read in the plural, an odd name is only counted, and an
+    /// empty reply is replaced by the sentence.
+    #[test]
+    fn the_added_fields_sentence_lists_plain_names_and_counts_the_rest() {
+        let mut session = new_session();
+        let mut result = turn_with(
+            vec![update_schema_record(
+                json!({"schema_id": "ticket", "add_fields": [
+                    {"name": "effort", "type": "number"},
+                    {"name": "bad name\n!", "type": "text"}]}),
+                false,
+            )],
+            "",
+        );
+        field_added_backstop(&mut session, &mut result);
+        assert_eq!(
+            result.response,
+            "I added the fields 'effort' and 1 more to the type 'ticket': every 'ticket' in \
+             this database has them now, not only one."
+        );
+    }
+
+    /// Only a landed write that added a field says anything: a refused call, a
+    /// call that added no field and a turn with no schema write leave the reply
+    /// as it was.
+    #[test]
+    fn nothing_is_added_unless_a_field_was_added() {
+        for records in [
+            vec![update_schema_record(
+                json!({"schema_id": "task", "add_fields": [{"name": "effort", "type": "number"}]}),
+                true,
+            )],
+            vec![update_schema_record(
+                json!({"schema_id": "task", "remove_fields": ["effort"]}),
+                false,
+            )],
+            vec![],
+        ] {
+            let mut session = new_session();
+            let mut result = turn_with(records, "Done.");
+            field_added_backstop(&mut session, &mut result);
+            assert_eq!(result.response, "Done.");
+        }
     }
 
     /// A refusal that names no key is still a refused write, and is not an empty
