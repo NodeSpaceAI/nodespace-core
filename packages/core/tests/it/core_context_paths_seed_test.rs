@@ -184,6 +184,51 @@ async fn a_task_read_reaches_its_spec_plan_decisions_and_project() -> Result<()>
     Ok(())
 }
 
+/// A context read of a spec, given no paths, reaches the decisions linked
+/// from it.
+#[tokio::test]
+async fn a_spec_read_reaches_its_decisions() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let spec = create(&service, "spec", "Importing").await?;
+    let decision = create(&service, "decision", "CSV only").await?;
+    let other = create(&service, "decision", "Unlinked").await?;
+    service
+        .create_relationship(&spec, "decisions", &decision, json!({}))
+        .await?;
+    assert_eq!(
+        service
+            .get_schema_node("spec")
+            .await?
+            .expect("spec is seeded")
+            .context_paths,
+        paths(&["decisions"])
+    );
+
+    let context = read_node_context(
+        &service,
+        NodeContextInput {
+            node_id: spec,
+            paths: Vec::new(),
+        },
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+    let reached: Vec<(String, Vec<String>)> = context
+        .paths
+        .iter()
+        .map(|reached| {
+            (
+                reached.path.to_string(),
+                reached.nodes.iter().map(|n| n.node.id.clone()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(reached, [("decisions".to_string(), vec![decision])]);
+    assert!(!reached.iter().any(|(_, ids)| ids.contains(&other)));
+    Ok(())
+}
+
 /// A new database holds the shipped paths as current: stamped with their
 /// fingerprint, not marked as the user's, nothing pending. Opening it again
 /// changes none of that.

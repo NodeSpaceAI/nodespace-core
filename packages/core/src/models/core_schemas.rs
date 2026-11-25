@@ -937,7 +937,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             ],
             title_template: None,
             properties_header_summary_template: None,
-            context_paths: Vec::new(),
+            // Reading a spec brings the decisions that govern it.
+            context_paths: vec![RelationshipPath::from_names(["decisions"])],
         },
         SchemaNode {
             envelope: envelope("plan", "Plan"),
