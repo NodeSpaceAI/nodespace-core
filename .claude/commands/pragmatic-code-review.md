@@ -50,10 +50,10 @@ The pragmatic-code-reviewer agent will need to gather the following information:
 
 The pragmatic-code-reviewer agent should perform a comprehensive code review focusing on:
 
-1. **Requirements Validation** (if issue found):
-   - Does the code implement ALL acceptance criteria from the GitHub issue?
+1. **Requirements Validation** (if a task or issue found):
+   - Does the code implement ALL acceptance criteria from the NodeSpace task (or the outside-reported GitHub issue it closes)?
    - Are there any missing features or incomplete implementations?
-   - Does the implementation match the technical specifications in the issue?
+   - Does the implementation match the technical specifications in the task?
    - Check off which acceptance criteria are met vs. missing
 
 2. **Code Quality**:
@@ -87,7 +87,7 @@ The pragmatic-code-reviewer agent should perform a comprehensive code review foc
 - Not addressed: Z
 - New issues found: N
 
-**Requirements Check** (if issue found):
+**Requirements Check** (if a task or issue found):
 - ✅/❌ Each acceptance criterion with status
 - 📝 Notes on any deviations or concerns
 

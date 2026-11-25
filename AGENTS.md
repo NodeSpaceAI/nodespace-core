@@ -36,7 +36,7 @@ NodeSpace is an AI-native knowledge management system: Rust backend, Svelte 5 fr
 
 What a session needs before it can reach NodeSpace: work in a worktree entered with `EnterWorktree({name: "issue-<number>-brief-desc"})` (never on the primary checkout's `main`, and only after `git fetch origin && git pull origin main` there), run `bun install` in it, and run every `bun run` script from the worktree root, never from a package directory.
 
-**TodoWrite:** the first item is the full startup sequence as one step. The last items are "Run test:changed", "Run quality:fix and commit", "Push (lint only)", "Create PR", "bun run merge + ExitWorktree".
+**TodoWrite:** for a new task the first item is the full startup sequence as one step; when continuing from a WIP commit it is "WIP continuation sequence: git status, pull branch, review WIP commit, resume from Remaining Work". The last items are "Run test:changed", "Run quality:fix and commit", "Push (lint only)", "Create PR", "bun run merge + ExitWorktree".
 
 ## Finding and Tracking Work
 

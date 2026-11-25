@@ -1,7 +1,7 @@
 ---
 name: github-intake-triage
 description: Handle an issue that someone outside the team filed on GitHub - read it, shape it into NodeSpace work, answer and close it. Use for any GitHub issue; the team's own work is never filed there.
-allowed-tools: Bash(bun run gh:*), Read
+allowed-tools: Bash(bun run gh:*), Bash(gh issue close:*), Bash(gh pr create:*), Read
 ---
 
 ## The rule
@@ -15,12 +15,12 @@ GitHub issues are the public intake only, and the team's work is tracked in Node
 
 1. Read it: `bun run gh:view <number>` (run from the repository root, never from a subdirectory).
 2. Shape it into a NodeSpace task, or a spec for something large, following the skills "Filing and Editing an Issue in nodespace-core" and "Working an Issue in nodespace-core". Put the issue's URL in the task's `## Source` section.
-3. Reply on the issue with where the work lives, then close it: `bun run gh:comment <number> --body "..."`, then close the issue on GitHub.
+3. Reply on the issue with where the work lives, then close it: `bun run gh:comment <number> --body "..."`, then close it: `gh issue close <number> -c "<comment>"` (no `gh:` script closes an issue now).
 4. Do not report a duplicate or a report that is not wanted without saying why in the reply.
 
 ## Pull requests
 
-A pull request description names its NodeSpace task. Use the closing keyword (`Closes #N`) only for an issue that came from outside, so the reporter is notified when the change lands. `bun run gh:pr` writes that body, so use it only for such an issue. The merge queue reads the pull request, not an issue number, so a pull request without a closing keyword merges normally.
+A pull request description names its NodeSpace task. Use the closing keyword (`Closes #N`) only for an issue that came from outside, so the reporter is notified when the change lands. From a worktree, whose local branch carries the `worktree-` prefix, create the pull request with `gh pr create --repo NodeSpaceAI/nodespace-core --base main --head issue-<number>-brief-desc --title "..." --body "Closes #N"`; `bun run gh:pr` works only from a branch whose name matches the remote branch, and it writes `Closes #N` as the body, so use it only for such an issue. The merge queue reads the pull request, not an issue number, so a pull request without a closing keyword merges normally.
 
 ## Failure issues from checks
 

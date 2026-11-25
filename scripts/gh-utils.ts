@@ -300,9 +300,11 @@ NodeSpace: do not file, assign or set the status of a GitHub issue for it.
   bun run gh:view 45 --web                    # Print its browser URL
   bun run gh:comment 45 --body "Comment text" # Reply on an issue or pull request
   bun run gh:comment 45 --body-file /path/to/comment.md
-  bun run gh:pr 45 ["Title"]                  # Open a pull request; its body is
-                                              # "Closes #45", so use it only for an
-                                              # issue that came from outside
+  bun run gh:pr 45 ["Title"]                  # Open a pull request with body "Closes #45"
+                                              # (only for an issue that came from outside);
+                                              # works only from a branch named like its
+                                              # remote branch. From a worktree- branch use:
+                                              # gh pr create --head <remote-branch> --body "Closes #45"
   bun run gh:tracking-issue --title "Title" --body-file body.md --labels "bug"
                                               # For a scheduled check that fails: comment
                                               # on the open issue with this exact title,
