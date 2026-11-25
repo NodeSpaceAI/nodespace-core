@@ -21,6 +21,14 @@
 # Optional:
 #   PKG_VERSION                — defaults to the canonical app version (tauri.conf.json)
 #   SKIP_NOTARIZATION          — set to "1" to skip notarytool (local testing)
+#   NODESPACED_PROVISION_PROFILE — path to the team's Developer ID provisioning profile
+#                                for the daemon's App ID (app.nodespace.daemon). When set,
+#                                nodespaced ships in an app-like bundle that embeds the
+#                                profile and is signed with the keychain access group
+#                                entitlement (pkg-resources/nodespaced.entitlements), and
+#                                /usr/local/bin/nodespaced is a link to it. When unset, the
+#                                daemon ships as a bare signed binary with no entitlement and
+#                                keeps no approval across a restart.
 
 set -euo pipefail
 
@@ -131,6 +139,40 @@ cp "${PKG_RESOURCES}/app.nodespace.daemon.plist" \
 
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespace"
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
+
+# --- BEGIN daemon-bundle (verified by scripts/pkg-daemon-bundle.test.ts) ---
+# With the team's provisioning profile the daemon is wrapped in an app-like
+# bundle that embeds it, and signed with the keychain access group entitlement:
+# the operating system honours that entitlement (and so the daemon's team
+# keychain) only for a signed bundle with a profile that grants it. A restricted
+# entitlement without the profile makes the system kill the program at launch,
+# so the entitlements file is used here and nowhere else. Without the profile
+# the daemon stays the bare signed binary assembled above.
+DAEMON_PROFILE="${NODESPACED_PROVISION_PROFILE:-}"
+if [[ -n "${DAEMON_PROFILE}" ]]; then
+    if [[ ! -f "${DAEMON_PROFILE}" ]]; then
+        echo "error: NODESPACED_PROVISION_PROFILE is set but ${DAEMON_PROFILE} is not a file" >&2
+        exit 1
+    fi
+    echo "==> Wrapping nodespaced in a bundle with its provisioning profile"
+    DAEMON_BUNDLE_DIR="usr/local/lib/nodespace/NodeSpaceDaemon.app"
+    DAEMON_BUNDLE="${PAYLOAD_ROOT}/${DAEMON_BUNDLE_DIR}"
+    mkdir -p "${DAEMON_BUNDLE}/Contents/MacOS"
+    mv "${PAYLOAD_ROOT}/usr/local/bin/nodespaced" "${DAEMON_BUNDLE}/Contents/MacOS/nodespaced"
+    sed "s/__PKG_VERSION__/${PKG_VERSION}/g" "${PKG_RESOURCES}/nodespaced-bundle-Info.plist" \
+        > "${DAEMON_BUNDLE}/Contents/Info.plist"
+    cp "${DAEMON_PROFILE}" "${DAEMON_BUNDLE}/Contents/embedded.provisionprofile"
+    codesign --force --options runtime --timestamp \
+        --entitlements "${PKG_RESOURCES}/nodespaced.entitlements" \
+        --sign "${APP_IDENTITY}" \
+        "${DAEMON_BUNDLE}"
+    # The same path as before keeps working for the LaunchAgent, the app and
+    # every PATH lookup; it leads to the bundle's executable.
+    ln -s "../lib/nodespace/NodeSpaceDaemon.app/Contents/MacOS/nodespaced" \
+        "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
+    echo "    nodespaced is in ${DAEMON_BUNDLE_DIR}"
+fi
+# --- END daemon-bundle ---
 
 # --- BEGIN macos-chmod (verified by scripts/build-pkg-macos-chmod.test.ts) ---
 # The upload-artifact/download-artifact round-trip that hands TAURI_APP_PATH

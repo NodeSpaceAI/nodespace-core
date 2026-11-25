@@ -1296,13 +1296,17 @@ impl SqliteStore {
         let db = self.write().await;
         Self::validate_node_type(&db, new_type).await?;
         let previous_type = Self::stored_node_type(&db, node_id).await?;
+        // Ended and saved before the write that causes it: a kill between the
+        // two cannot leave approvals live under the changed type. A write that
+        // then fails has ended them needlessly, which only asks the person
+        // again.
+        self.end_tool_approval(node_id, previous_type.as_deref(), new_type);
         db.execute(
             "UPDATE node SET node_type = ?1, properties = ?2, version = version + 1, modified_at = ?3 WHERE id = ?4",
             libsql::params![new_type.to_string(), props_json, now, node_id.to_string()],
         )
         .await
         .context("Failed to switch node type")?;
-        self.end_tool_approval(node_id, previous_type.as_deref(), new_type);
         drop(db);
 
         let node = self

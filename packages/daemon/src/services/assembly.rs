@@ -364,10 +364,30 @@ pub async fn build_shared_services(
 pub fn install_approval_services(
     shared: &SharedServices,
 ) -> Arc<crate::user_presence::UserPresence> {
+    let issued = crate::code_identity::approval_key_for_this_process();
+    // The approvals made under a key that is kept are kept with it, in the
+    // same keychain; under a key held in memory they end with the process.
+    if issued.key.is_ok() && issued.durable {
+        if let Some(team) = crate::team_keychain::team_backend() {
+            match crate::nodespace_dir() {
+                Ok(dir) => nodespace_core::tool_approvals::install_persistence(Arc::new(
+                    crate::team_keychain::RecordsInKeychain::new(
+                        team,
+                        &crate::team_keychain::home_tag(&dir),
+                    ),
+                )),
+                // No state directory to tell this daemon's approvals from
+                // another's: none are saved.
+                Err(e) => tracing::warn!(
+                    "no state directory ({e}); approvals will end when this daemon stops"
+                ),
+            }
+        }
+    }
     install_approval_services_on(
         &shared.context.local_agent,
         Arc::new(crate::user_presence::UserPresence::for_this_platform()),
-        crate::code_identity::approval_key_for_this_process().map(Arc::new),
+        issued.key.map(Arc::new),
     )
 }
 

@@ -68,6 +68,8 @@ cron = "0.16"
 # there the store reports itself unavailable and `env:` references apply.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# The data-protection keychain with a team access group (the team keychain).
+security-framework = { version = "3.7", features = ["OSX_10_15"] }
 
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

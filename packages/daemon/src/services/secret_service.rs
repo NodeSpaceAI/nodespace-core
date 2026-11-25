@@ -152,7 +152,7 @@ impl SecretServiceImpl {
     /// `crate::install_approval_services` installed) before a change. Where the
     /// platform has no way to ask, every `Set` and `Delete` is refused.
     pub fn keychain_with_presence(presence: Arc<UserPresence>) -> Self {
-        let store = Arc::new(SecretStore::keychain());
+        let store = Arc::new(crate::team_keychain::credential_store());
         // A Windows named pipe carries no peer pid, so there is nothing to judge
         // there: the pipe's own access control is the barrier on that platform.
         #[cfg(unix)]

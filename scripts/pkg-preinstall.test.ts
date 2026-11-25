@@ -169,7 +169,7 @@ describe.skipIf(!onMac)("preinstall refusal matrix", () => {
       .filter((line) => !line.trim().startsWith("#"))
       .join("\n");
     const expansions = [...code.matchAll(/\$\{?([A-Za-z_0-9]+)/g)].map((m) => m[1]);
-    expect([...new Set(expansions)].sort()).toEqual(["3", "APP", "VOLUME", "product"]);
+    expect([...new Set(expansions)].sort()).toEqual(["3", "APP", "VOLUME", "link", "product", "root"]);
   });
 });
 
@@ -189,7 +189,10 @@ describe("preinstall packaging", () => {
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
       .join("\n");
-    expect(code).not.toContain("/usr/local/bin");
+    // The one place that names the install path is the removal of the daemon's
+    // old link and bundle (a link is removed, never followed or run).
+    const outsideRemoval = code.replace(/remove_daemon_bundle\(\) \{[\s\S]*?\n\}\n/, "");
+    expect(outsideRemoval).not.toContain("/usr/local/bin");
     expect(code).toContain("/usr/bin/plutil");
     expect(code).not.toMatch(/(?:^|[\s(`|;&])plutil\b/m);
   });
