@@ -2488,6 +2488,10 @@ async fn execute_create_node_in_tx(
             action_index,
         })?;
 
+    // The node's `mentions` edges are linked once this transaction commits,
+    // as a node created through `create_node` is linked at creation.
+    txc.tx.defer_mention_links(&created.id, &created.content);
+
     binding_value(&created).map_err(|e| ActionError::ServiceError {
         message: e.to_string(),
         action_index,

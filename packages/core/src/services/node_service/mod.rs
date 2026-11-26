@@ -875,6 +875,22 @@ pub(crate) struct NodeServiceTx<'t> {
     store_tx: &'t Tx<'t>,
     events: Mutex<Vec<EmittedEvent>>,
     deferred_embedding_refreshes: Mutex<Vec<DeferredEmbeddingRefresh>>,
+    deferred_mention_links: Mutex<Vec<DeferredMentionLinks>>,
+}
+
+/// A node created inside a transaction whose content mentions other nodes:
+/// its `mentions` edges are written by [`NodeService::with_transaction`] after
+/// commit, as a node created through `create_node` is linked. See
+/// [`NodeServiceTx::defer_mention_links`].
+struct DeferredMentionLinks {
+    node_id: String,
+    content: String,
+}
+
+/// What a committed transaction left to do after commit.
+struct DeferredWork {
+    embedding_refreshes: Vec<DeferredEmbeddingRefresh>,
+    mention_links: Vec<DeferredMentionLinks>,
 }
 
 /// A committed transaction's events, not yet published: in emission order,
@@ -894,6 +910,21 @@ struct DeferredEmbeddingRefresh {
 }
 
 impl<'t> NodeServiceTx<'t> {
+    /// Record a node created in this transaction whose content mentions other
+    /// nodes: its `mentions` edges are linked after commit.
+    pub(crate) fn defer_mention_links(&self, node_id: &str, content: &str) {
+        if extract_mentions(content).is_empty() {
+            return;
+        }
+        self.deferred_mention_links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(DeferredMentionLinks {
+                node_id: node_id.to_string(),
+                content: content.to_string(),
+            });
+    }
+
     /// The store-level transaction handle, for calling store `_in_tx`
     /// methods. Not exposed as `self.store.write()` or any store method that
     /// opens its own transaction — see the type's own doc comment.
@@ -963,7 +994,11 @@ impl NodeService {
     {
         let (value, committed, deferred) = self.run_transaction(f).await?;
         self.publish_committed(committed);
-        for refresh in deferred {
+        for links in deferred.mention_links {
+            self.sync_created_mentions(&links.node_id, &links.content)
+                .await;
+        }
+        for refresh in deferred.embedding_refreshes {
             self.refresh_embedding_for_rootness(
                 &refresh.node_id,
                 refresh.is_root,
@@ -980,7 +1015,7 @@ impl NodeService {
     async fn run_transaction<T, F>(
         &self,
         f: F,
-    ) -> Result<(T, CommittedEvents, Vec<DeferredEmbeddingRefresh>), NodeServiceError>
+    ) -> Result<(T, CommittedEvents, DeferredWork), NodeServiceError>
     where
         F: for<'t> FnOnce(
                 &'t NodeServiceTx<'t>,
@@ -998,6 +1033,7 @@ impl NodeService {
                         store_tx,
                         events: Mutex::new(Vec::new()),
                         deferred_embedding_refreshes: Mutex::new(Vec::new()),
+                        deferred_mention_links: Mutex::new(Vec::new()),
                     };
                     let value = IN_TRANSACTION
                         .scope((), f(&ns_tx))
@@ -1013,10 +1049,16 @@ impl NodeService {
                         events: ns_tx.events.into_inner().unwrap_or_else(|e| e.into_inner()),
                         seq,
                     };
-                    let deferred = ns_tx
-                        .deferred_embedding_refreshes
-                        .into_inner()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let deferred = DeferredWork {
+                        embedding_refreshes: ns_tx
+                            .deferred_embedding_refreshes
+                            .into_inner()
+                            .unwrap_or_else(|e| e.into_inner()),
+                        mention_links: ns_tx
+                            .deferred_mention_links
+                            .into_inner()
+                            .unwrap_or_else(|e| e.into_inner()),
+                    };
                     Ok((value, committed, deferred))
                 })
             })
