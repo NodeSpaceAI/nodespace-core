@@ -58,7 +58,7 @@ pub struct GetNodeInput {
 
 pub type GetNodeOutput = Value;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct UpdateNodeInput {
     pub node_id: String,
     /// If None, current version is auto-fetched (convenient for agents).
@@ -76,6 +76,9 @@ pub struct UpdateNodeInput {
     /// nothing and silently remove no membership.
     pub remove_from_collection_ids: Vec<String>,
     pub lifecycle_status: Option<String>,
+    /// Property keys to remove, after `properties` is merged. See
+    /// `NodeUpdate::unset_properties`.
+    pub unset_properties: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -504,6 +507,7 @@ pub async fn update_node(
         properties: input.properties,
         title: None,
         lifecycle_status: input.lifecycle_status,
+        unset_properties: input.unset_properties,
     };
 
     // When there are no field changes, skip the core update call — a no-op
@@ -729,6 +733,7 @@ pub async fn dry_run_update_node(
         properties: input.properties,
         title: None,
         lifecycle_status: input.lifecycle_status,
+        unset_properties: input.unset_properties,
     };
     let verdict = node_service.dry_run_update(&node, update).await?;
     Ok(DryRunUpdateOutput {

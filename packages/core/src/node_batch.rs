@@ -166,6 +166,7 @@ pub async fn update_nodes_batch(
             properties: update.properties,
             title: None,
             lifecycle_status: None,
+            ..Default::default()
         };
 
         match node_service

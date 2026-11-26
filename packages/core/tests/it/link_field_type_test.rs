@@ -69,6 +69,7 @@ async fn update_repo(svc: &Arc<NodeService>, id: &str, properties: Value) -> Res
             add_to_collection_ids: vec![],
             remove_from_collection_ids: vec![],
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await?;

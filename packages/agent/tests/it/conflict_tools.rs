@@ -185,6 +185,7 @@ async fn dismiss_conflict_closes_it_as_dismissed_and_survives_redetection() {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await

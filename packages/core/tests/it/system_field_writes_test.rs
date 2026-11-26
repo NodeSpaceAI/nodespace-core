@@ -218,6 +218,7 @@ async fn every_update_path_refuses_a_system_field() {
                 add_to_collection_ids: vec![],
                 remove_from_collection_ids: vec![],
                 lifecycle_status: None,
+                ..Default::default()
             },
         )
         .await,
@@ -248,6 +249,7 @@ async fn a_user_update_cannot_set_a_play_suspension_but_the_engine_does() {
             add_to_collection_ids: vec![],
             remove_from_collection_ids: vec![],
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await

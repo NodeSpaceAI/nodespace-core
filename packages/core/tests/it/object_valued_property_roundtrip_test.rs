@@ -229,6 +229,7 @@ async fn object_property_survives_an_update() -> Result<()> {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await?;
@@ -267,6 +268,7 @@ async fn object_property_survives_a_bulk_update() -> Result<()> {
             properties: Some(json!({ "address": { "city": "Hamburg" }, "notes": {} })),
             title: None,
             lifecycle_status: None,
+            ..Default::default()
         },
     )])
     .await?;

@@ -283,6 +283,7 @@ async fn object_field_rejects_a_bad_value_on_update() -> Result<()> {
             add_to_collection_ids: vec![],
             remove_from_collection_ids: vec![],
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await

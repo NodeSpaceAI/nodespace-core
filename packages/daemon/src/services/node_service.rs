@@ -662,6 +662,7 @@ impl GrpcNodeService for NodeServiceImpl {
             add_to_collection_ids: req.add_to_collection_ids,
             remove_from_collection_ids: req.remove_from_collection_ids,
             lifecycle_status: req.lifecycle_status,
+            unset_properties: req.unset_properties,
         };
 
         let output = node_ops::update_node(&this.node_service, input)
@@ -708,6 +709,7 @@ impl GrpcNodeService for NodeServiceImpl {
             add_to_collection_ids: req.add_to_collection_ids,
             remove_from_collection_ids: req.remove_from_collection_ids,
             lifecycle_status: req.lifecycle_status,
+            unset_properties: req.unset_properties,
         };
 
         let output = node_ops::dry_run_update_node(&this.node_service, input)
@@ -2559,6 +2561,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 properties: props,
                 title: None,
                 lifecycle_status: None,
+                unset_properties: item.unset_properties,
             };
 
             match this
@@ -4359,6 +4362,7 @@ mod tests {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         }
     }
 
@@ -5359,6 +5363,7 @@ mod tests {
                     content: Some("Buy eggs".to_string()),
                     node_type: None,
                     properties: None,
+                    ..Default::default()
                 }],
             }))
             .await
@@ -5618,6 +5623,7 @@ mod tests {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         });
         let updated = svc.update_node(update_req).await.unwrap().into_inner();
         assert_eq!(updated.node_data.unwrap().content, "updated");
@@ -5660,6 +5666,7 @@ mod tests {
                 remove_from_collection_ids: Vec::new(),
                 lifecycle_status: None,
                 typed_client,
+                ..Default::default()
             })
         };
 
@@ -5728,6 +5735,7 @@ mod tests {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         });
         svc.update_node(add_req).await.unwrap();
 
@@ -5753,6 +5761,7 @@ mod tests {
             remove_from_collection_ids: vec![collection_id.clone()],
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         });
         svc.update_node(remove_req).await.unwrap();
 
@@ -5820,6 +5829,7 @@ mod tests {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -6144,6 +6154,7 @@ mod tests {
                     properties: None,
                     title: None,
                     lifecycle_status: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -7075,6 +7086,7 @@ mod tests {
                 remove_from_collection_ids: Vec::new(),
                 lifecycle_status: None,
                 typed_client: false,
+                ..Default::default()
             })
         };
         svc.update_node(update(1, "résumé 🎉")).await.unwrap();
@@ -7165,6 +7177,7 @@ mod tests {
                     properties: Some(serde_json::json!({ "turn_status": "idle" })),
                     title: None,
                     lifecycle_status: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -7182,6 +7195,7 @@ mod tests {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         });
         let err = svc
             .update_node(conflict_req)

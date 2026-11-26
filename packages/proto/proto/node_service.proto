@@ -562,6 +562,13 @@ message UpdateNodeRequest {
   // client. A client that writes fields as bare keys leaves it unset; its
   // patch is validated by the same pipeline the typed update lowers into.
   bool typed_client = 10;
+  // Property keys to remove from the node, applied after `properties` is
+  // merged, through the same validation, version check and events as any
+  // other update. A key that is not set is left as it is. Bare field names, as
+  // `properties` takes them. A daemon older than this field ignores it and
+  // changes nothing, so a client that sends it reads the response back to
+  // confirm the keys are gone.
+  repeated string unset_properties = 11;
 }
 
 // UpdateNode returns NodeResponse.
@@ -1651,6 +1658,8 @@ message BatchUpdateItem {
   optional string node_type = 4;
   // JSON-encoded properties patch; unset = no change.
   optional string properties = 5;
+  // Property keys to remove; see UpdateNodeRequest.unset_properties.
+  repeated string unset_properties = 6;
 }
 
 message BatchUpdateFailure {

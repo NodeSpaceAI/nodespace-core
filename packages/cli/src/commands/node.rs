@@ -4,8 +4,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
     CreateNodeRequest, DeleteNodeRequest, ExportMarkdownRequest, GetChildrenRequest,
-    GetNodeContextRequest, GetNodeRequest, GetNodesBatchRequest, MoveNodeRequest, NodeSortOrder,
-    QueryNodesSimpleRequest, ReorderNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    GetNodeContextRequest, GetNodeRequest, GetNodesBatchRequest, MoveNodeRequest, NodeData,
+    NodeSortOrder, QueryNodesSimpleRequest, ReorderNodeRequest, UpdateNodeRequest,
+    UpdateNodesBatchRequest,
 };
 use nodespace_types::RelationshipPath;
 use serde_json::json;
@@ -178,6 +179,16 @@ pub struct UpdateArgs {
     /// `--property`, which wins for a key given both ways.
     #[arg(long = "properties", value_name = "JSON", value_parser = parse_properties_object)]
     pub properties_json: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Remove a property from the node: `--unset-property key` (repeatable).
+    /// The key is deleted, not set to null, through the same validation,
+    /// version check and events as any other update; a required field cannot
+    /// be removed. A key the node does not hold is left as it is. Applied
+    /// after --property/--properties, which may not name the same key. Needs
+    /// a daemon from the same release as this CLI: an older one would
+    /// ignore it, so the command checks the result and fails if the key is
+    /// still there.
+    #[arg(long = "unset-property", value_name = "KEY")]
+    pub unset_properties: Vec<String>,
     /// Collection path to add the node to, `:`-delimited for hierarchy
     /// (e.g. `docs:rust`). Missing segments are created. Repeatable.
     /// Mutually exclusive with --collection-id.
@@ -209,6 +220,58 @@ pub struct UpdateArgs {
         conflicts_with_all = ["collections", "collection_ids", "remove_collection_ids"]
     )]
     pub dry_run: bool,
+}
+
+/// Refuses a key that is both set and unset in one command: the order the
+/// two apply in is not something to guess at.
+fn ensure_unset_keys_not_also_set(
+    unset: &[String],
+    object: Option<&serde_json::Map<String, serde_json::Value>>,
+    entries: &[(String, serde_json::Value)],
+) -> Result<()> {
+    for key in unset {
+        if entries.iter().any(|(k, _)| k == key) || object.is_some_and(|o| o.contains_key(key)) {
+            anyhow::bail!("'{key}' is both set and unset in one update; give it once");
+        }
+    }
+    Ok(())
+}
+
+/// The keys of `unset` that `node` still holds, read the way every command
+/// prints the node's properties: flattened from the wire's per-type layout.
+fn keys_still_present<'a>(node: &NodeData, unset: &'a [String]) -> Vec<&'a str> {
+    let Ok(stored) = serde_json::from_str::<serde_json::Value>(&node.properties) else {
+        return Vec::new();
+    };
+    let properties = nodespace_types::flatten_namespaced_properties(&stored, &node.node_type);
+    unset
+        .iter()
+        .filter(|k| properties.get(k.as_str()).is_some())
+        .map(String::as_str)
+        .collect()
+}
+
+/// An older daemon does not know `unset_properties` and ignores it, so the
+/// node it returns still holds the key. Said as an error rather than printed
+/// as if the write had done what was asked.
+fn unset_not_applied(node_id: &str, keys: &[&str]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{node_id} still has {}: the daemon did not remove it. A daemon older than this CLI \
+         ignores --unset-property; update NodeSpace so both come from the same release.",
+        keys.iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn ensure_unset_applied(node: &NodeData, unset: &[String]) -> Result<()> {
+    let present = keys_still_present(node, unset);
+    if present.is_empty() {
+        Ok(())
+    } else {
+        Err(unset_not_applied(&node.id, &present))
+    }
 }
 
 /// Parses a `key=value` CLI arg into (key, JSON value). `value` is parsed as
@@ -379,7 +442,7 @@ pub struct BatchGetArgs {
 #[derive(Args, Debug)]
 pub struct BatchUpdateArgs {
     /// JSON-encoded array of update objects: [{"node_id":"…","content":"…","version":N}].
-    /// Each item may have: node_id (required), version (optional; an omitted or null version means unguarded: the item updates whatever is current), content, node_type, properties.
+    /// Each item may have: node_id (required), version (optional; an omitted or null version means unguarded: the item updates whatever is current), content, node_type, properties, unset_properties (an array of property keys to remove, not set to null; a key the node does not hold is left as it is). A daemon older than this CLI ignores unset_properties; the command then fails after the write, reporting the key still present.
     #[arg(long)]
     pub updates: String,
 }
@@ -503,12 +566,19 @@ async fn update(
         && args.collections.is_empty()
         && args.collection_ids.is_empty()
         && args.remove_collection_ids.is_empty()
+        && args.unset_properties.is_empty()
     {
         anyhow::bail!(
-            "update requires --content, --property, --properties, --collection, --collection-id, or --remove-collection-id"
+            "update requires --content, --property, --properties, --unset-property, --collection, --collection-id, or --remove-collection-id"
         );
     }
+    ensure_unset_keys_not_also_set(
+        &args.unset_properties,
+        args.properties_json.as_ref(),
+        &args.properties,
+    )?;
 
+    let unset_properties = args.unset_properties;
     let properties = merge_properties(args.properties_json, args.properties);
 
     let request = UpdateNodeRequest {
@@ -522,6 +592,7 @@ async fn update(
         remove_from_collection_ids: args.remove_collection_ids,
         lifecycle_status: None,
         typed_client: false,
+        unset_properties: unset_properties.clone(),
     };
     if args.dry_run {
         return dry_run(client, request, json).await;
@@ -535,6 +606,7 @@ async fn update(
 
     let node = response.node_data.context("daemon returned no node_data")?;
     journal.record(&node.id, node.version);
+    ensure_unset_applied(&node, &unset_properties)?;
     output::print_node(&node, json)
 }
 
@@ -575,6 +647,7 @@ async fn set_status(
         remove_from_collection_ids: Vec::new(),
         lifecycle_status: None,
         typed_client: false,
+        unset_properties: Vec::new(),
     };
     if args.dry_run {
         return dry_run(client, request, json).await;
@@ -897,7 +970,14 @@ async fn batch_get(client: &mut NodeClient, args: BatchGetArgs, json: bool) -> R
 fn parse_batch_updates(input: &str) -> Result<Vec<nodespace_daemon::nodespace::BatchUpdateItem>> {
     use nodespace_daemon::nodespace::BatchUpdateItem;
 
-    const KNOWN_KEYS: [&str; 5] = ["node_id", "version", "content", "node_type", "properties"];
+    const KNOWN_KEYS: [&str; 6] = [
+        "node_id",
+        "version",
+        "content",
+        "node_type",
+        "properties",
+        "unset_properties",
+    ];
 
     let raw: serde_json::Value =
         serde_json::from_str(input).context("--updates must be a JSON array of update objects")?;
@@ -933,12 +1013,28 @@ fn parse_batch_updates(input: &str) -> Result<Vec<nodespace_daemon::nodespace::B
                 }),
             }
         };
+        let unset_properties = match optional("unset_properties") {
+            None => Vec::new(),
+            Some(v) => v
+                .as_array()
+                .and_then(|keys| {
+                    keys.iter()
+                        .map(|k| k.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .with_context(|| {
+                    format!(
+                        "updates[{i}] field 'unset_properties' must be an array of strings, got {v}"
+                    )
+                })?,
+        };
         updates.push(BatchUpdateItem {
             node_id,
             version,
             content: text("content")?,
             node_type: text("node_type")?,
             properties: optional("properties").map(|v| v.to_string()),
+            unset_properties,
         });
     }
     Ok(updates)
@@ -951,13 +1047,19 @@ async fn batch_update(
     journal: &WriteJournal,
 ) -> Result<()> {
     let updates = parse_batch_updates(&args.updates)?;
+    let unsets: Vec<(String, Vec<String>)> = updates
+        .iter()
+        .filter(|u| !u.unset_properties.is_empty())
+        .map(|u| (u.node_id.clone(), u.unset_properties.clone()))
+        .collect();
 
     let response = client
         .update_nodes_batch(UpdateNodesBatchRequest { updates })
         .await
         .context("UpdateNodesBatch RPC failed")?
         .into_inner();
-    record_batch(client, &response.updated, journal).await;
+    let read_back = record_batch(client, &response.updated, journal).await;
+    let unapplied = batch_unset_not_applied(&unsets, &read_back);
 
     if json {
         println!(
@@ -980,7 +1082,23 @@ async fn batch_update(
             }
         }
     }
+    if let Some(err) = unapplied {
+        return Err(err);
+    }
     ensure_no_batch_failures(response.failed.len(), response.count)
+}
+
+/// The error for the first updated node whose read-back still holds a key its
+/// item asked to unset: the sign of a daemon that predates the field.
+fn batch_unset_not_applied(
+    unsets: &[(String, Vec<String>)],
+    read_back: &[NodeData],
+) -> Option<anyhow::Error> {
+    unsets.iter().find_map(|(id, keys)| {
+        let node = read_back.iter().find(|n| &n.id == id)?;
+        let present = keys_still_present(node, keys);
+        (!present.is_empty()).then(|| unset_not_applied(id, &present))
+    })
 }
 
 /// Non-zero exit whenever any item of a batch update failed (not found,
@@ -996,23 +1114,30 @@ fn ensure_no_batch_failures(failed: usize, updated: impl std::fmt::Display) -> R
 
 /// Journals the versions a batch update left its nodes at. The response names
 /// the nodes and not their versions, so they are read back; a read that fails
-/// loses the entries and nothing else. A node another process writes between
+/// loses the entries and nothing else. The nodes read are returned. A node another process writes between
 /// the batch and the read-back is journaled at that writer's version: the same
 /// unversioned read-then-write window the batch itself has.
-async fn record_batch(client: &mut NodeClient, updated: &[String], journal: &WriteJournal) {
+async fn record_batch(
+    client: &mut NodeClient,
+    updated: &[String],
+    journal: &WriteJournal,
+) -> Vec<NodeData> {
     if updated.is_empty() {
-        return;
+        return Vec::new();
     }
     let read = client
         .get_nodes_batch(GetNodesBatchRequest {
             node_ids: updated.to_vec(),
         })
         .await;
-    if let Ok(response) = read {
-        for node in &response.into_inner().nodes {
-            journal.record(&node.id, node.version);
-        }
+    let Ok(response) = read else {
+        return Vec::new();
+    };
+    let nodes = response.into_inner().nodes;
+    for node in &nodes {
+        journal.record(&node.id, node.version);
     }
+    nodes
 }
 
 #[cfg(test)]
@@ -1029,6 +1154,75 @@ mod tests {
             .metadata_mut()
             .insert("x-version-conflict", header.parse().unwrap());
         status
+    }
+
+    fn node_holding(properties: &str) -> super::NodeData {
+        super::NodeData {
+            id: "n-1".into(),
+            node_type: "ticket".into(),
+            properties: properties.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A daemon that predates `unset_properties` ignores it and returns the
+    /// node unchanged: the command must say so instead of printing the node as
+    /// if the key were gone.
+    #[test]
+    fn an_unset_the_daemon_ignored_is_reported() {
+        let unset = vec!["area".to_string()];
+        let err =
+            super::ensure_unset_applied(&node_holding(r#"{"ticket":{"area":"api"}}"#), &unset)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("'area'") && err.contains("older"), "{err}");
+        assert!(super::ensure_unset_applied(
+            &node_holding(r#"{"ticket":{"severity":"high"}}"#),
+            &unset
+        )
+        .is_ok());
+        // A null left behind is not a removal.
+        assert!(
+            super::ensure_unset_applied(&node_holding(r#"{"ticket":{"area":null}}"#), &unset)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_batch_unset_the_daemon_ignored_is_reported_for_that_node() {
+        let unsets = vec![("n-1".to_string(), vec!["area".to_string()])];
+        assert!(super::batch_unset_not_applied(
+            &unsets,
+            &[node_holding(r#"{"ticket":{"area":"api"}}"#)]
+        )
+        .is_some());
+        assert!(super::batch_unset_not_applied(&unsets, &[node_holding("{}")]).is_none());
+        assert!(super::batch_unset_not_applied(&unsets, &[]).is_none());
+    }
+
+    #[test]
+    fn a_key_both_set_and_unset_is_refused() {
+        let unset = vec!["area".to_string()];
+        let set = vec![("area".to_string(), serde_json::json!("web"))];
+        assert!(super::ensure_unset_keys_not_also_set(&unset, None, &set).is_err());
+        let mut object = serde_json::Map::new();
+        object.insert("area".into(), serde_json::json!("web"));
+        assert!(super::ensure_unset_keys_not_also_set(&unset, Some(&object), &[]).is_err());
+        assert!(super::ensure_unset_keys_not_also_set(&unset, None, &[]).is_ok());
+    }
+
+    #[test]
+    fn batch_update_reads_unset_properties_per_item() {
+        let items = super::parse_batch_updates(
+            r#"[{"node_id":"a","unset_properties":["x","y"]},{"node_id":"b"}]"#,
+        )
+        .unwrap();
+        assert_eq!(items[0].unset_properties, vec!["x", "y"]);
+        assert!(items[1].unset_properties.is_empty());
+        for bad in [r#""x""#, "[1]", r#"{"x":1}"#] {
+            let input = format!(r#"[{{"node_id":"a","unset_properties":{bad}}}]"#);
+            assert!(super::parse_batch_updates(&input).is_err(), "{bad}");
+        }
     }
 
     #[test]

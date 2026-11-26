@@ -1507,6 +1507,11 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
+        if !update.unset_properties.is_empty() {
+            properties_changed = true;
+            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
+        }
+
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         Self::ensure_schema_structure_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(None, &existing, &updated)
@@ -1546,6 +1551,7 @@ impl NodeService {
             properties: Some(updated.properties.clone()),
             title: title_update,
             lifecycle_status: None, // Schema update doesn't change lifecycle_status
+            ..Default::default()
         };
 
         // Schema nodes go through the normal update path
@@ -1636,6 +1642,11 @@ impl NodeService {
             }
         }
 
+        if !update.unset_properties.is_empty() {
+            properties_changed = true;
+            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
+        }
+
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
             .await?;
@@ -1666,6 +1677,7 @@ impl NodeService {
             properties: Some(updated.properties.clone()),
             title: title_update,
             lifecycle_status: None,
+            ..Default::default()
         };
 
         crate::db::SqliteStore::update_node_in_tx(tx.store_tx(), id, node_update)
@@ -1773,6 +1785,11 @@ impl NodeService {
             updated.lifecycle_status = status;
         }
 
+        if !update.unset_properties.is_empty() {
+            properties_changed = true;
+            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
+        }
+
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         Self::ensure_schema_structure_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
@@ -1813,6 +1830,7 @@ impl NodeService {
                 properties: Some(updated.properties.clone()),
                 title: title_update,
                 lifecycle_status: Some(updated.lifecycle_status.clone()),
+                ..Default::default()
             },
         )
         .await
@@ -2042,6 +2060,11 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
+        if !update.unset_properties.is_empty() {
+            properties_changed = true;
+            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
+        }
+
         Self::ensure_schema_core_status_unchanged(existing, &updated)?;
         Self::ensure_schema_structure_unchanged(existing, &updated)?;
         self.ensure_retype_allowed(tx, existing, &updated).await?;
@@ -2155,6 +2178,7 @@ impl NodeService {
             properties: Some(updated.properties.clone()),
             title: title_update,
             lifecycle_status,
+            ..Default::default()
         };
 
         // Perform atomic update with version check, tx-scoped.
@@ -2848,6 +2872,7 @@ impl NodeService {
             properties: Some(node.properties.clone()),
             title: None,            // Don't update title on version bump
             lifecycle_status: None, // Don't update lifecycle_status on version bump
+            ..Default::default()
         };
 
         // Perform atomic update with version check
@@ -3382,6 +3407,43 @@ impl NodeService {
         }
         Self::deep_merge_namespaced_properties(existing, new);
         cleared
+    }
+
+    /// Remove `keys` from the properties of `updated`.
+    ///
+    /// A key is a bare field name, so it is removed from every type namespace
+    /// the node holds, because an inherited field lives in the bucket of the
+    /// ancestor that declares it, not the node's own. A key the node does not
+    /// hold is left as it is. `_`-prefixed keys are internal bookkeeping and a
+    /// schema node's properties are its definition: neither is a field a
+    /// caller can unset. The result is validated like any other write, so a
+    /// required field cannot be removed.
+    pub(crate) fn remove_property_keys(
+        updated: &mut Node,
+        keys: &[String],
+    ) -> Result<(), NodeServiceError> {
+        if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
+            return Err(NodeServiceError::invalid_update(
+                "A schema's definition is changed with update_schema, not by unsetting properties",
+            ));
+        }
+        if let Some(key) = keys.iter().find(|k| k.is_empty() || k.starts_with('_')) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Cannot unset property '{key}': a property name is not empty and does not start with '_'"
+            )));
+        }
+        if let Some(namespaces) = updated.properties.as_object_mut() {
+            for namespace in namespaces
+                .iter_mut()
+                .filter(|(name, _)| !name.starts_with('_'))
+                .filter_map(|(_, value)| value.as_object_mut())
+            {
+                for key in keys {
+                    namespace.remove(key);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Deep-merge namespaced properties
