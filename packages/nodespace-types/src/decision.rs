@@ -7,21 +7,24 @@ use crate::node::NodeEnvelope;
 /// lock compares against `superseded` by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum DecisionStatus {
-    /// Put forward, not yet agreed.
+    /// Under discussion, or agreed with no work filed yet.
     #[default]
     Proposed,
-    /// Agreed; the work it governs follows it.
+    /// Agreed, with work outstanding: a task linked to it is not finished.
     Accepted,
+    /// Built, or a rule in force.
+    InEffect,
     /// Replaced by a newer decision; its field is locked.
     Superseded,
 }
 
 impl DecisionStatus {
-    pub const ALL: [(DecisionStatus, &'static str); 3] = [
+    pub const ALL: [(DecisionStatus, &'static str); 4] = [
         (DecisionStatus::Proposed, "Proposed"),
         (DecisionStatus::Accepted, "Accepted"),
+        (DecisionStatus::InEffect, "In effect"),
         (DecisionStatus::Superseded, "Superseded"),
     ];
 
@@ -29,6 +32,7 @@ impl DecisionStatus {
         match self {
             Self::Proposed => "proposed",
             Self::Accepted => "accepted",
+            Self::InEffect => "in_effect",
             Self::Superseded => "superseded",
         }
     }

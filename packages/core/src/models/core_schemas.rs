@@ -1009,8 +1009,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 "Decision status",
                 enum_values(&DecisionStatus::ALL, DecisionStatus::as_str),
                 serde_json::json!(DecisionStatus::default()),
-                "proposed while under discussion; accepted once agreed; superseded once a \
-                 newer decision replaces it, which locks it.",
+                "proposed while under discussion, or agreed with no work filed yet; accepted \
+                 once agreed with work outstanding (a linked task is not finished); in_effect \
+                 once built or a rule in force; superseded once a newer decision replaces it, \
+                 which locks it.",
             )],
             relationships: vec![relationship(
                 "supersedes",
@@ -3460,7 +3462,7 @@ mod tests {
         assert_eq!(names(decision), ["decision_status"]);
         assert_eq!(
             values(decision, "decision_status"),
-            ["proposed", "accepted", "superseded"]
+            ["proposed", "accepted", "in_effect", "superseded"]
         );
         assert_eq!(
             decision.get_field("decision_status").unwrap().default,

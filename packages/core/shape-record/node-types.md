@@ -106,7 +106,7 @@ No fields of its own.
 
 | Field | Storage | Type | Values |
 |---|---|---|---|
-| `decision_status` | `decision.decision_status` | enum, closed | `proposed`, `accepted`, `superseded` |
+| `decision_status` | `decision.decision_status` | enum, closed | `proposed`, `accepted`, `in_effect`, `superseded` |
 
 ### `person`
 

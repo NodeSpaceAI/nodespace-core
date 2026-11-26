@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "hash": "9067399d6c24c12930d899d52fba0efa8cbbb5ad4a33d4190af9f8291eb6edb1",
+  "hash": "f8f737bae1b14f6df54f867f9a4a196a201e6386bdeefe6b5f6cb94318f22556",
   "registry": {
     "agent-guidance": {
       "abstract": false,
@@ -1648,12 +1648,16 @@
               "value": "accepted"
             },
             {
+              "label": "In effect",
+              "value": "in_effect"
+            },
+            {
               "label": "Superseded",
               "value": "superseded"
             }
           ],
           "default": "proposed",
-          "description": "proposed while under discussion; accepted once agreed; superseded once a newer decision replaces it, which locks it.",
+          "description": "proposed while under discussion, or agreed with no work filed yet; accepted once agreed with work outstanding (a linked task is not finished); in_effect once built or a rule in force; superseded once a newer decision replaces it, which locks it.",
           "extensible": false,
           "friendlyName": "Decision status",
           "indexed": true,
@@ -3126,6 +3130,13 @@
     }
   },
   "seeded": {
+    "1da5e58f-64e4-414e-ab36-029da3931b09": {
+      "configVersion": "24d8e0a129bf0cab5a11ac927dfd5662002dbc49fed4546de4c20cabfe8a1f38",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require linked tasks to be finished before a decision is in effect",
+      "nodeType": "play",
+      "tier": "system"
+    },
     "3b9c304f-f480-4f1d-8653-5876bb005f7c": {
       "configVersion": "88a13762df5b76fb668d3b21ae59f568b0bae764e45e4670366b9d27b5fd6c8e",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -3186,6 +3197,13 @@
       "configVersion": "c720a5dc99b65421ac00117036cbaf5a70c0de67450e54568d6815a4cdc6bb87",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "key": "Require a completed checklist before finishing a task",
+      "nodeType": "play",
+      "tier": "system"
+    },
+    "9fa3608f-d872-4dff-b721-0c984c00d29c": {
+      "configVersion": "25eedbf6a0f46fec2d475b776c8bab7deed8af1bea2bb50a4757c9373cc5159d",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require a linked open task before accepting a decision",
       "nodeType": "play",
       "tier": "system"
     },
