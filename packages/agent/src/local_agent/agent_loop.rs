@@ -1163,6 +1163,85 @@ async fn decisions_that_may_settle<T: AgentToolExecutor + ?Sized>(
     (!rows.is_empty()).then_some(rows)
 }
 
+/// Error code carried by an `update_schema` held back for an unread built-in
+/// schema. The turn-end checks that replace an unsurfaced tool failure find the
+/// hold by it: a model that stops after the hold to ask the user is doing what
+/// the hold asked, and its reply must reach the user.
+const SCHEMA_UNREAD_ERROR: &str = "schema_not_read_first";
+
+/// Whether `record` is an `update_schema` held for [`SCHEMA_UNREAD_ERROR`].
+fn is_unread_schema_hold(record: &ToolExecutionRecord) -> bool {
+    record.name == "update_schema"
+        && record.is_error
+        && record.result.get("code").and_then(|v| v.as_str()) == Some(SCHEMA_UNREAD_ERROR)
+}
+
+/// The current definition of a built-in type, handed back in place of the
+/// first `update_schema` that adds a field to it when the turn has not read
+/// that schema.
+///
+/// The add-a-field procedure starts with reading the schema, but the
+/// procedure is pinned only in a type-bound chat; in an unbound chat it
+/// depends on retrieval, which the locked model does not follow reliably, and
+/// the field was added with no read at all. Where the model's choice stays
+/// wrong, the system makes the read it holds the facts for: the call is held
+/// back once per type per turn and the result carries the schema's `fields`
+/// and `custom_fields`. The retry goes through. `read` holds the types the
+/// turn has read, by `get_node` or by this hold, so a model that did read
+/// first is never held.
+///
+/// Only a built-in type and only `add_fields`: a type the user made is
+/// listed in the prompt, and every other `update_schema` change leaves the
+/// type's nodes as they are.
+async fn schema_to_read_before_adding_a_field<T: AgentToolExecutor + ?Sized>(
+    executor: &T,
+    read: &mut HashSet<String>,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if tool == "get_node" {
+        if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
+            read.insert(id.strip_prefix("nodespace://").unwrap_or(id).to_string());
+        }
+        return None;
+    }
+    if tool != "update_schema"
+        || !args
+            .get("add_fields")
+            .and_then(|v| v.as_array())
+            .is_some_and(|fields| !fields.is_empty())
+    {
+        return None;
+    }
+    let schema_id = args.get("schema_id")?.as_str()?;
+    nodespace_core::models::CoreNodeType::from_id(schema_id)?;
+    if !read.insert(schema_id.to_string()) {
+        return None;
+    }
+    let schema = executor
+        .execute("get_node", serde_json::json!({ "id": schema_id }))
+        .await
+        .inspect_err(|e| {
+            tracing::debug!(error = %e, "schema read failed; the field add goes ahead");
+        })
+        .ok()?;
+    if schema.is_error {
+        return None;
+    }
+    Some(serde_json::json!({
+        "code": SCHEMA_UNREAD_ERROR,
+        "error": format!(
+            "Not applied: '{schema_id}' is a built-in type and its schema was not read first. \
+             Its current definition is below (`fields`, and `custom_fields` for the fields \
+             users added). Read it. If the field the user asked for is not already there, \
+             say that the type is built in and that the field will exist on every node of \
+             the type in this database, and add it with the same call once the user has \
+             asked for it or agreed."
+        ),
+        "schema": schema.result,
+    }))
+}
+
 /// The tool result returned in place of a create held back for
 /// [`decisions_that_may_settle`].
 ///
@@ -2840,6 +2919,7 @@ fn undeclared_refusal_backstop(
         .filter(|(i, r)| {
             r.is_error
                 && !is_duplicate_entity_refusal(r)
+                && !is_unread_schema_hold(r)
                 && undeclared_refusal_of(r).is_none()
                 // An unresolved id is what an earlier backstop asked the user about.
                 && !is_unresolved_id_refusal(r)
@@ -4481,6 +4561,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // Titles whose create was held back for a decision that may settle it
         // (see `decisions_that_may_settle`); a retry of one goes through.
         let mut declined_work_checked: HashSet<String> = HashSet::new();
+        // Built-in types whose schema the turn has read (see
+        // `schema_to_read_before_adding_a_field`).
+        let mut schemas_read: HashSet<String> = HashSet::new();
         // Duplicate tool-call detector: (tool_name, canonical_args_json) pairs
         // seen so far this turn. When the model issues an identical call again
         // (same tool + identical args after round-tripping through serde to
@@ -5197,6 +5280,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         // told about it.
                         r.is_error
                             && !is_duplicate_entity_refusal(r)
+                            && !is_unread_schema_hold(r)
                             && undeclared_refusal_of(r).is_none()
                             && !all_tool_executions[i + 1..].iter().any(|later| {
                                 !later.is_error
@@ -5790,6 +5874,34 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                     canonical_args(&tc.arguments_json),
                                 ));
                                 let refused = declined_work_refused_result(&decisions);
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: refused,
+                                        is_error: true,
+                                    }),
+                                )
+                            } else if let Some(refused) = schema_to_read_before_adding_a_field(
+                                self.tool_executor.as_ref(),
+                                &mut schemas_read,
+                                &tc.function_name,
+                                &args,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    iteration = iteration,
+                                    "update_schema held back — it adds a field to a built-in type whose schema the turn has not read"
+                                );
+                                // Not a call that ran: the retry the hold asks
+                                // for must not read as a repeat of it.
+                                seen_calls.remove(&(
+                                    tc.function_name.clone(),
+                                    canonical_args(&tc.arguments_json),
+                                ));
                                 (
                                     args,
                                     Ok(crate::agent_types::ToolResult {
@@ -12596,6 +12708,7 @@ mod tests {
                 Ok([
                     "create_node",
                     "create_relationship",
+                    "get_node",
                     "update_node",
                     "update_schema",
                     "create_schema",
@@ -12807,6 +12920,12 @@ mod tests {
         (tool, false, json!({"success": true, "__args": args}))
     }
 
+    /// The read of a built-in type's schema that comes before a field is
+    /// added to it.
+    fn read_schema(id: &str) -> (&'static str, bool, serde_json::Value) {
+        landed_call("get_node", json!({ "id": id }))
+    }
+
     fn add_effort_to_task() -> (&'static str, bool, serde_json::Value) {
         landed_call(
             "update_schema",
@@ -12940,6 +13059,7 @@ mod tests {
             let response = run_claim_turn(
                 vec![
                     create_task_refused(),
+                    read_schema("task"),
                     add_effort_to_task(),
                     landed_call(
                         "create_node",
@@ -12964,6 +13084,7 @@ mod tests {
             let response = run_claim_turn(
                 vec![
                     create_task_refused(),
+                    read_schema("task"),
                     add_effort_to_task(),
                     landed_call(
                         "create_node",
@@ -13064,6 +13185,7 @@ mod tests {
     async fn a_schema_change_before_the_refusal_is_said() {
         let response = run_claim_turn(
             vec![
+                read_schema("project"),
                 landed_call(
                     "update_schema",
                     json!({"schema_id": "project", "add_fields": [{"name": "goal", "type": "text"}]}),
@@ -13120,6 +13242,7 @@ mod tests {
             let response = run_claim_turn(
                 vec![
                     create_task_refused(),
+                    read_schema("project"),
                     landed_call("update_schema", fields(&names)),
                 ],
                 "All set.",
@@ -13142,6 +13265,7 @@ mod tests {
             let response = run_claim_turn(
                 vec![
                     create_task_refused(),
+                    read_schema("task"),
                     (
                         "update_schema",
                         true,
@@ -13159,6 +13283,37 @@ mod tests {
             assert!(!response.contains("I changed"), "{response}");
             assert!(response.contains("couldn't"), "{response}");
         }
+    }
+
+    /// A hold for an unread schema is the guard working, not a schema update
+    /// failing: the refusal notice does not report it as one.
+    #[test]
+    fn a_held_schema_add_is_not_reported_as_a_failed_update() {
+        let mut session = new_session();
+        let refused_create = ToolExecutionRecord {
+            tool_call_id: "tc".into(),
+            name: "create_node".into(),
+            args: json!({"node_type": "task", "effort": 5}),
+            result: json!({"error": "refused",
+                           "refused": {"node_type": "task", "keys": ["effort"]}}),
+            is_error: true,
+            duration_ms: 0,
+        };
+        let mut hold = update_schema_record(
+            json!({"schema_id": "task", "add_fields": [{"name": "effort", "type": "number"}]}),
+            true,
+        );
+        hold.result = json!({"code": SCHEMA_UNREAD_ERROR, "error": "Not applied"});
+        let mut result = turn_with(vec![refused_create, hold], "Done, effort 5 is set.");
+        undeclared_refusal_backstop(&mut session, &mut result, "Done, effort 5 is set.");
+        assert!(
+            result
+                .response
+                .contains("'effort' is not a field of 'task'"),
+            "{}",
+            result.response
+        );
+        assert!(!result.response.contains("couldn't"), "{}", result.response);
     }
 
     /// What the session keeps as the turn's reply is the notice, so the next turn's
@@ -13321,7 +13476,7 @@ mod tests {
     #[tokio::test]
     async fn a_turn_that_added_a_field_ends_with_the_sentence() {
         let (response, session) = run_claim_turn_full(
-            vec![add_effort_to_task()],
+            vec![read_schema("task"), add_effort_to_task()],
             "The effort field has been added.",
         )
         .await;
@@ -16071,6 +16226,151 @@ mod tests {
 
         assert!(!calls.iter().any(|c| c == "create_node"));
         assert!(result.clarify.is_some(), "got {:?}", result.response);
+    }
+
+    fn schema_read_executor() -> MockToolExecutor {
+        MockToolExecutor::new()
+            .with_tool(
+                "get_node",
+                json!({"type": "object", "properties": {}}),
+                json!({"id": "task", "fields": [{"name": "status"}], "custom_fields": []}),
+            )
+            .with_tool(
+                "update_schema",
+                json!({"type": "object", "properties": {}}),
+                json!({"schema_id": "task", "fields": []}),
+            )
+    }
+
+    const ADD_EFFORT: &str =
+        r#"{"schema_id":"task","add_fields":[{"name":"effort","type":"number"}]}"#;
+
+    #[tokio::test]
+    async fn the_first_field_added_to_a_built_in_type_unread_is_held_with_its_schema() {
+        let executor = schema_read_executor();
+        let mut read = HashSet::new();
+        let args: serde_json::Value = serde_json::from_str(ADD_EFFORT).unwrap();
+
+        let held =
+            schema_to_read_before_adding_a_field(&executor, &mut read, "update_schema", &args)
+                .await
+                .expect("an unread built-in type holds the add");
+        assert_eq!(held["schema"]["custom_fields"], json!([]));
+        assert!(held["error"].as_str().unwrap().contains("every node"));
+        assert!(
+            schema_to_read_before_adding_a_field(&executor, &mut read, "update_schema", &args)
+                .await
+                .is_none(),
+            "the retry goes through"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_schema_the_turn_read_is_not_held() {
+        let executor = schema_read_executor();
+        let mut read = HashSet::new();
+        let args: serde_json::Value = serde_json::from_str(ADD_EFFORT).unwrap();
+
+        assert!(schema_to_read_before_adding_a_field(
+            &executor,
+            &mut read,
+            "get_node",
+            &json!({"id": "task"})
+        )
+        .await
+        .is_none());
+        assert!(
+            schema_to_read_before_adding_a_field(&executor, &mut read, "update_schema", &args)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_field_add_to_a_built_in_type_is_held() {
+        let executor = schema_read_executor();
+        let mut read = HashSet::new();
+        for args in [
+            json!({"schema_id": "ticket", "add_fields": [{"name": "effort", "type": "number"}]}),
+            json!({"schema_id": "task", "rename_fields": [{"from": "a", "to": "b"}]}),
+            json!({"schema_id": "task", "add_fields": []}),
+        ] {
+            assert!(
+                schema_to_read_before_adding_a_field(&executor, &mut read, "update_schema", &args)
+                    .await
+                    .is_none(),
+                "{args}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unread_add_to_a_built_in_type_reads_the_schema_then_lands_once() {
+        let engine = Arc::new(MockEngine::new(vec![
+            tool_round("tc_1", "update_schema", ADD_EFFORT),
+            tool_round("tc_2", "update_schema", ADD_EFFORT),
+            text_round("Done."),
+        ]));
+        let executor = Arc::new(RecordingToolExecutor::new(schema_read_executor()));
+        let calls = executor.calls_handle();
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "Add an effort field to tasks.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert_eq!(*calls.lock().unwrap(), vec!["get_node", "update_schema"]);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_stops_after_the_hold_to_ask_the_user_is_heard_unchanged() {
+        const ASK: &str = "Task is a built-in type, so an effort field will exist on every \
+                           node of the type in this database. Shall I add it?";
+        let engine = Arc::new(MockEngine::new(vec![
+            tool_round("tc_1", "update_schema", ADD_EFFORT),
+            text_round(ASK),
+        ]));
+        let executor = Arc::new(RecordingToolExecutor::new(schema_read_executor()));
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "Add an effort field to tasks.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert_eq!(result.response, ASK);
+    }
+
+    #[tokio::test]
+    async fn a_read_by_node_uri_counts_as_the_read() {
+        let executor = schema_read_executor();
+        let mut read = HashSet::new();
+        let args: serde_json::Value = serde_json::from_str(ADD_EFFORT).unwrap();
+        schema_to_read_before_adding_a_field(
+            &executor,
+            &mut read,
+            "get_node",
+            &json!({"id": "nodespace://task"}),
+        )
+        .await;
+        assert!(
+            schema_to_read_before_adding_a_field(&executor, &mut read, "update_schema", &args)
+                .await
+                .is_none()
+        );
     }
 
     fn creating_a_task_candidate() -> crate::agent_types::SkillCandidate {
