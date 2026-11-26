@@ -793,14 +793,14 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
         ),
         seeded_play(
             DECISION_ACCEPTANCE_PLAY_ID,
-            "Require open work before accepting a decision",
+            "Require a linked open task before accepting a decision",
             "Rejects accepting a decision unless at least one task linked to it is neither \
              done nor cancelled. Reads directly linked tasks only.",
             decision_acceptance_rules(),
         ),
         seeded_play(
             DECISION_IN_EFFECT_PLAY_ID,
-            "Require finished work before a decision is in effect",
+            "Require linked tasks to be finished before a decision is in effect",
             "Rejects putting a decision in effect while a task linked to it is open. A \
              decision with no linked task may go straight from proposed to in_effect.",
             decision_in_effect_rules(),

@@ -3131,9 +3131,9 @@
   },
   "seeded": {
     "1da5e58f-64e4-414e-ab36-029da3931b09": {
-      "configVersion": "6817dba374533f1defd8a9583d357807ffc65732cc850d67640e9be1474b9f85",
+      "configVersion": "24d8e0a129bf0cab5a11ac927dfd5662002dbc49fed4546de4c20cabfe8a1f38",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "key": "Require finished work before a decision is in effect",
+      "key": "Require linked tasks to be finished before a decision is in effect",
       "nodeType": "play",
       "tier": "system"
     },
@@ -3201,9 +3201,9 @@
       "tier": "system"
     },
     "9fa3608f-d872-4dff-b721-0c984c00d29c": {
-      "configVersion": "717a27bee6b66cd92b390b5f1e06f9e5e61262e51a52f82550a1bbb37dfb667f",
+      "configVersion": "25eedbf6a0f46fec2d475b776c8bab7deed8af1bea2bb50a4757c9373cc5159d",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "key": "Require open work before accepting a decision",
+      "key": "Require a linked open task before accepting a decision",
       "nodeType": "play",
       "tier": "system"
     },
