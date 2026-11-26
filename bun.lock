@@ -28,7 +28,7 @@
     },
     "packages/desktop-app": {
       "name": "nodespace-app",
-      "version": "0.3.13",
+      "version": "0.3.14",
       "dependencies": {
         "@tauri-apps/api": "^2.8.0",
         "@tauri-apps/plugin-dialog": "^2.6.0",
