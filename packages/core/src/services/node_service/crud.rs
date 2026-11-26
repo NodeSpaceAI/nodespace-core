@@ -1507,9 +1507,10 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
-        if !update.unset_properties.is_empty() {
+        if !update.unset_properties.is_empty()
+            && Self::remove_property_keys(&mut updated, &update.unset_properties)?
+        {
             properties_changed = true;
-            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
@@ -1642,9 +1643,10 @@ impl NodeService {
             }
         }
 
-        if !update.unset_properties.is_empty() {
+        if !update.unset_properties.is_empty()
+            && Self::remove_property_keys(&mut updated, &update.unset_properties)?
+        {
             properties_changed = true;
-            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
@@ -1785,9 +1787,10 @@ impl NodeService {
             updated.lifecycle_status = status;
         }
 
-        if !update.unset_properties.is_empty() {
+        if !update.unset_properties.is_empty()
+            && Self::remove_property_keys(&mut updated, &update.unset_properties)?
+        {
             properties_changed = true;
-            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
         }
 
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
@@ -2060,9 +2063,10 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
-        if !update.unset_properties.is_empty() {
+        if !update.unset_properties.is_empty()
+            && Self::remove_property_keys(&mut updated, &update.unset_properties)?
+        {
             properties_changed = true;
-            Self::remove_property_keys(&mut updated, &update.unset_properties)?;
         }
 
         Self::ensure_schema_core_status_unchanged(existing, &updated)?;
@@ -2302,6 +2306,25 @@ impl NodeService {
             return Err(NodeServiceError::invalid_update(
                 "Update contains no changes",
             ));
+        }
+
+        // An unset of keys the node does not hold changes nothing: no write,
+        // no version bump, no event. A stale version still conflicts, so it
+        // falls through to the normal path.
+        if update.node_type.is_none()
+            && update.content.is_none()
+            && update.properties.is_none()
+            && update.title.is_none()
+            && update.lifecycle_status.is_none()
+        {
+            if let Some(existing) = self.get_node(node_id).await? {
+                if existing.version == expected_version {
+                    Self::validate_unset_keys(&existing.node_type, &update.unset_properties)?;
+                    if !Self::holds_any_property(&existing.properties, &update.unset_properties) {
+                        return Ok(existing);
+                    }
+                }
+            }
         }
 
         // A seeded node's config or guidance aspect becomes user-owned the
@@ -3409,7 +3432,37 @@ impl NodeService {
         cleared
     }
 
-    /// Remove `keys` from the properties of `updated`.
+    /// The refusals an unset of `keys` on a node of `node_type` carries,
+    /// whether or not the node holds any of them.
+    pub(crate) fn validate_unset_keys(
+        node_type: &str,
+        keys: &[String],
+    ) -> Result<(), NodeServiceError> {
+        if crate::models::CoreNodeType::Schema.is_exactly(node_type) {
+            return Err(NodeServiceError::invalid_update(
+                "A schema's definition is changed with update_schema, not by unsetting properties",
+            ));
+        }
+        if let Some(key) = keys.iter().find(|k| k.is_empty() || k.starts_with('_')) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Cannot unset property '{key}': a property name is not empty and does not start with '_'"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether `properties` holds any of `keys` in a type namespace.
+    pub(crate) fn holds_any_property(properties: &serde_json::Value, keys: &[String]) -> bool {
+        properties.as_object().is_some_and(|namespaces| {
+            namespaces
+                .iter()
+                .filter(|(name, _)| !name.starts_with('_'))
+                .filter_map(|(_, value)| value.as_object())
+                .any(|namespace| keys.iter().any(|k| namespace.contains_key(k)))
+        })
+    }
+
+    /// Remove `keys` from the properties of `updated`; whether any was held.
     ///
     /// A key is a bare field name, so it is removed from every type namespace
     /// the node holds, because an inherited field lives in the bucket of the
@@ -3421,17 +3474,9 @@ impl NodeService {
     pub(crate) fn remove_property_keys(
         updated: &mut Node,
         keys: &[String],
-    ) -> Result<(), NodeServiceError> {
-        if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-            return Err(NodeServiceError::invalid_update(
-                "A schema's definition is changed with update_schema, not by unsetting properties",
-            ));
-        }
-        if let Some(key) = keys.iter().find(|k| k.is_empty() || k.starts_with('_')) {
-            return Err(NodeServiceError::invalid_update(format!(
-                "Cannot unset property '{key}': a property name is not empty and does not start with '_'"
-            )));
-        }
+    ) -> Result<bool, NodeServiceError> {
+        Self::validate_unset_keys(&updated.node_type, keys)?;
+        let mut removed = false;
         if let Some(namespaces) = updated.properties.as_object_mut() {
             for namespace in namespaces
                 .iter_mut()
@@ -3439,11 +3484,11 @@ impl NodeService {
                 .filter_map(|(_, value)| value.as_object_mut())
             {
                 for key in keys {
-                    namespace.remove(key);
+                    removed |= namespace.remove(key).is_some();
                 }
             }
         }
-        Ok(())
+        Ok(removed)
     }
 
     /// Deep-merge namespaced properties

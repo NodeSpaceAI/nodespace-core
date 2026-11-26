@@ -123,12 +123,33 @@ async fn an_unset_of_a_key_the_node_does_not_hold_changes_nothing() -> Result<()
     )
     .await?;
     let before = svc.get_node(&id).await?.unwrap();
+    let mut rx = svc.subscribe_to_events();
 
-    svc.update_node(&id, before.version, unset(&["capacity", "never_set"]))
+    let returned = svc
+        .update_node(&id, before.version, unset(&["capacity", "never_set"]))
         .await?;
 
     let after = svc.get_node(&id).await?.unwrap();
     assert_eq!(after.properties, before.properties);
+    assert_eq!(after.version, before.version, "no version bump");
+    assert_eq!(returned.version, before.version);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv())
+            .await
+            .is_err(),
+        "no event for a write that changed nothing"
+    );
+    // A stale version still conflicts, and a refused key is still refused.
+    assert!(matches!(
+        svc.update_node(&id, before.version + 5, unset(&["never_set"]))
+            .await,
+        Err(NodeServiceError::VersionConflict { .. })
+    ));
+    assert!(matches!(
+        svc.update_node(&id, before.version, unset(&["_seed"]))
+            .await,
+        Err(NodeServiceError::InvalidUpdate(_))
+    ));
     Ok(())
 }
 
