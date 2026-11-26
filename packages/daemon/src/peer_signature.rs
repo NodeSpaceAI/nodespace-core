@@ -174,21 +174,28 @@ enum Entitlements {
     Unreadable,
 }
 
-/// Whether the kernel's status for the running peer (`runtime`: hardened
-/// runtime on, `debugger`: `get-task-allow` in force) and the signature's
-/// `entitlements` describe a hardened program: runtime on, no debugger
-/// allowed, no injection entitlement, and entitlements that can be read.
+/// Whether the kernel's `status` for the running peer and the signature's
+/// `entitlements` describe a hardened program: a valid signature, the hardened
+/// runtime on, no debugger attached or allowed, no injection entitlement, and
+/// entitlements that can be read.
 fn hardening_verdict(
-    runtime: bool,
-    debugger: bool,
+    status: crate::code_identity::CodeStatus,
     entitlements: &Entitlements,
 ) -> Result<(), Refusal> {
-    if !runtime {
+    if !status.is_valid() {
+        return Err(Refusal::NotHardened(
+            "the kernel does not hold its signature valid".into(),
+        ));
+    }
+    if status.has_debugger_attached() {
+        return Err(Refusal::NotHardened("a debugger is attached".into()));
+    }
+    if !status.has_hardened_runtime() {
         return Err(Refusal::NotHardened(
             "the hardened runtime is not enabled".into(),
         ));
     }
-    if debugger {
+    if status.allows_debugger() {
         return Err(Refusal::NotHardened(
             "a debugger may attach (get-task-allow)".into(),
         ));
@@ -250,7 +257,10 @@ pub fn check_hardened(token: Option<AuditToken>) -> Result<(), Refusal> {
     let code = SecCode::copy_guest_with_attribues(None, &attributes, Flags::NONE)
         .map_err(|e| Refusal::NoCode(e.to_string()))?;
 
-    let kernel = crate::code_identity::of_process(token.0[5] as i32).ok_or_else(|| {
+    // The kernel's flags are read by audit token: a pid that was reused, or a
+    // process that exec'd since the token was taken, is refused rather than
+    // described by another image's flags.
+    let kernel = crate::code_identity::of_audit_token(token.0).ok_or_else(|| {
         Refusal::NotHardened("the kernel's signing status of the peer is unreadable".into())
     })?;
 
@@ -273,19 +283,41 @@ pub fn check_hardened(token: Option<AuditToken>) -> Result<(), Refusal> {
     let info: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_create_rule(info) };
 
+    // Note: the runtime flags above are live (the kernel's, for the running
+    // process), while the entitlements are those of the static code behind the
+    // guest, read from its signature on disk. They describe the same image
+    // while the file is not replaced under the running process.
+    hardening_verdict(kernel, &entitlements_from_info(&info))
+}
+
+/// The entitlements in a signing-information dictionary: the parsed
+/// `entitlements-dict` keys, or [`Entitlements::Unreadable`] when the parsed
+/// form is missing beside the raw `entitlements` blob, is not a dictionary,
+/// or has a key that is not a string.
+#[cfg(target_os = "macos")]
+fn entitlements_from_info(
+    info: &core_foundation::dictionary::CFDictionary<
+        core_foundation::string::CFString,
+        core_foundation::base::CFType,
+    >,
+) -> Entitlements {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
     let parsed = info.find(CFString::new("entitlements-dict"));
     let raw = info.find(CFString::new("entitlements"));
-    let entitlements = match (parsed, raw) {
+    match (parsed, raw) {
         (Some(v), _) => match v.downcast::<CFDictionary>() {
             Some(d) => {
                 let (keys, _) = d.get_keys_and_values();
                 let mut names = Vec::new();
                 for k in keys {
-                    // SAFETY: entitlement keys are CFStrings; not owned here.
+                    // SAFETY: a dictionary key is a CFType; not owned here.
                     let k = unsafe { CFType::wrap_under_get_rule(k as _) };
                     match k.downcast::<CFString>() {
                         Some(s) => names.push(s.to_string()),
-                        None => return Err(entitlement_refusal()),
+                        None => return Entitlements::Unreadable,
                     }
                 }
                 Entitlements::Keys(names)
@@ -294,17 +326,7 @@ pub fn check_hardened(token: Option<AuditToken>) -> Result<(), Refusal> {
         },
         (None, Some(_)) => Entitlements::Unreadable,
         (None, None) => Entitlements::None,
-    };
-    hardening_verdict(
-        kernel.has_hardened_runtime(),
-        kernel.allows_debugger(),
-        &entitlements,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn entitlement_refusal() -> Refusal {
-    Refusal::NotHardened("its entitlements could not be read".into())
+    }
 }
 
 /// No audit token or Security framework off macOS: nothing is judged
@@ -485,13 +507,41 @@ mod tests {
         }
     }
 
+    fn status(flags: u32) -> crate::code_identity::CodeStatus {
+        crate::code_identity::CodeStatus(flags)
+    }
+
+    const GOOD: u32 = crate::code_identity::CS_VALID | crate::code_identity::CS_RUNTIME;
+
     #[test]
     fn the_hardened_runtime_is_required() {
-        assert!(hardening_verdict(true, false, &Entitlements::None).is_ok());
+        assert!(hardening_verdict(status(GOOD), &Entitlements::None).is_ok());
         let ok = Entitlements::Keys(vec!["com.apple.security.app-sandbox".into()]);
-        assert!(hardening_verdict(true, false, &ok).is_ok());
+        assert!(hardening_verdict(status(GOOD), &ok).is_ok());
         assert!(matches!(
-            hardening_verdict(false, false, &Entitlements::None),
+            hardening_verdict(status(crate::code_identity::CS_VALID), &Entitlements::None),
+            Err(Refusal::NotHardened(_))
+        ));
+    }
+
+    #[test]
+    fn a_peer_the_kernel_does_not_hold_valid_is_refused() {
+        assert!(matches!(
+            hardening_verdict(
+                status(crate::code_identity::CS_RUNTIME),
+                &Entitlements::None
+            ),
+            Err(Refusal::NotHardened(_))
+        ));
+    }
+
+    #[test]
+    fn a_peer_a_debugger_is_attached_to_is_refused() {
+        assert!(matches!(
+            hardening_verdict(
+                status(GOOD | crate::code_identity::CS_DEBUGGED),
+                &Entitlements::None
+            ),
             Err(Refusal::NotHardened(_))
         ));
     }
@@ -499,7 +549,10 @@ mod tests {
     #[test]
     fn a_debuggable_peer_is_refused() {
         assert!(matches!(
-            hardening_verdict(true, true, &Entitlements::None),
+            hardening_verdict(
+                status(GOOD | crate::code_identity::CS_GET_TASK_ALLOW),
+                &Entitlements::None
+            ),
             Err(Refusal::NotHardened(_))
         ));
     }
@@ -511,7 +564,7 @@ mod tests {
                 Entitlements::Keys(vec!["com.apple.security.network.client".into(), key.into()]);
             assert!(
                 matches!(
-                    hardening_verdict(true, false, &keys),
+                    hardening_verdict(status(GOOD), &keys),
                     Err(Refusal::NotHardened(_))
                 ),
                 "{key}"
@@ -522,9 +575,77 @@ mod tests {
     #[test]
     fn entitlements_that_cannot_be_read_are_refused() {
         assert!(matches!(
-            hardening_verdict(true, false, &Entitlements::Unreadable),
+            hardening_verdict(status(GOOD), &Entitlements::Unreadable),
             Err(Refusal::NotHardened(_))
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    mod mapping {
+        use super::*;
+        use core_foundation::base::{CFType, TCFType};
+        use core_foundation::boolean::CFBoolean;
+        use core_foundation::data::CFData;
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::string::CFString;
+
+        fn info(pairs: &[(&str, CFType)]) -> CFDictionary<CFString, CFType> {
+            let pairs: Vec<(CFString, CFType)> = pairs
+                .iter()
+                .map(|(k, v)| (CFString::new(k), v.clone()))
+                .collect();
+            CFDictionary::from_CFType_pairs(&pairs)
+        }
+
+        #[test]
+        fn no_entitlements_at_all_is_none() {
+            assert_eq!(entitlements_from_info(&info(&[])), Entitlements::None);
+        }
+
+        #[test]
+        fn a_raw_blob_without_the_parsed_dictionary_is_unreadable() {
+            let blob = CFData::from_buffer(b"<plist/>").as_CFType();
+            assert_eq!(
+                entitlements_from_info(&info(&[("entitlements", blob)])),
+                Entitlements::Unreadable
+            );
+        }
+
+        #[test]
+        fn a_parsed_value_that_is_not_a_dictionary_is_unreadable() {
+            let not_dict = CFString::new("oops").as_CFType();
+            assert_eq!(
+                entitlements_from_info(&info(&[("entitlements-dict", not_dict)])),
+                Entitlements::Unreadable
+            );
+        }
+
+        #[test]
+        fn a_key_that_is_not_a_string_is_unreadable() {
+            let inner: CFDictionary<CFType, CFType> = CFDictionary::from_CFType_pairs(&[(
+                CFData::from_buffer(b"k").as_CFType(),
+                CFBoolean::true_value().as_CFType(),
+            )]);
+            assert_eq!(
+                entitlements_from_info(&info(&[("entitlements-dict", inner.as_CFType())])),
+                Entitlements::Unreadable
+            );
+        }
+
+        #[test]
+        fn a_key_present_with_the_value_false_is_still_refused() {
+            let key = "com.apple.security.cs.allow-dyld-environment-variables";
+            let inner: CFDictionary<CFString, CFType> = CFDictionary::from_CFType_pairs(&[(
+                CFString::new(key),
+                CFBoolean::false_value().as_CFType(),
+            )]);
+            let got = entitlements_from_info(&info(&[("entitlements-dict", inner.as_CFType())]));
+            assert_eq!(got, Entitlements::Keys(vec![key.to_string()]));
+            assert!(matches!(
+                hardening_verdict(status(GOOD), &got),
+                Err(Refusal::NotHardened(_))
+            ));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -687,6 +808,41 @@ mod tests {
             for scope in [Scope::AnswerConfirmation, Scope::ApproveTool] {
                 assert!(check.allows(token, scope), "{scope:?}");
             }
+            let _ = child.kill();
+        }
+
+        #[tokio::test]
+        async fn a_peer_that_has_exited_is_refused_and_its_status_is_unreadable() {
+            let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+            let (token, mut child, conn) =
+                token_of_connecting(&mut signed_nc(dir.path(), true, &[])).await;
+            drop(conn);
+            let _ = child.kill();
+            let _ = child.wait();
+            let words = token.expect("a token").0;
+            assert_eq!(crate::code_identity::of_audit_token(words), None);
+            assert!(check_hardened(token).is_err());
+        }
+
+        #[tokio::test]
+        async fn the_kernel_status_of_a_live_peer_is_read_by_audit_token() {
+            let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+            let (token, mut child, _conn) =
+                token_of_connecting(&mut signed_nc(dir.path(), true, &[])).await;
+            let st = crate::code_identity::of_audit_token(token.unwrap().0).expect("readable");
+            assert!(st.is_valid() && st.has_hardened_runtime());
+            let _ = child.kill();
+        }
+
+        #[tokio::test]
+        async fn a_token_with_another_pid_version_reads_no_status() {
+            let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+            let (token, mut child, _conn) =
+                token_of_connecting(&mut signed_nc(dir.path(), true, &[])).await;
+            let mut words = token.unwrap().0;
+            // Word 7 is the pid version: the same pid, another incarnation.
+            words[7] = words[7].wrapping_add(1);
+            assert_eq!(crate::code_identity::of_audit_token(words), None);
             let _ = child.kill();
         }
 

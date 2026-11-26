@@ -22,19 +22,19 @@
 use nodespace_core::secrets::ApprovalKey;
 
 /// `CS_VALID`: the signature is valid.
-const CS_VALID: u32 = 0x0000_0001;
+pub(crate) const CS_VALID: u32 = 0x0000_0001;
 /// `CS_ADHOC`: signed without an identity (as the linker signs a local build).
 const CS_ADHOC: u32 = 0x0000_0002;
 /// `CS_GET_TASK_ALLOW`: a debugger may attach (the `get-task-allow`
 /// entitlement).
-const CS_GET_TASK_ALLOW: u32 = 0x0000_0004;
+pub(crate) const CS_GET_TASK_ALLOW: u32 = 0x0000_0004;
 /// `CS_RUNTIME`: the hardened runtime is on.
-const CS_RUNTIME: u32 = 0x0001_0000;
+pub(crate) const CS_RUNTIME: u32 = 0x0001_0000;
 /// `CS_LINKER_SIGNED`: signed ad hoc by the linker (a local build). The kernel
 /// does not set `CS_ADHOC` for these.
 const CS_LINKER_SIGNED: u32 = 0x0002_0000;
 /// `CS_DEBUGGED`: a debugger has attached.
-const CS_DEBUGGED: u32 = 0x1000_0000;
+pub(crate) const CS_DEBUGGED: u32 = 0x1000_0000;
 
 /// The kernel's code-signing flags for a process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,16 @@ impl CodeStatus {
     /// The hardened runtime is on.
     pub fn has_hardened_runtime(self) -> bool {
         self.0 & CS_RUNTIME != 0
+    }
+
+    /// The kernel holds the signature valid.
+    pub fn is_valid(self) -> bool {
+        self.0 & CS_VALID != 0
+    }
+
+    /// A debugger has attached to the process.
+    pub fn has_debugger_attached(self) -> bool {
+        self.0 & CS_DEBUGGED != 0
     }
 
     /// A debugger may attach (the `get-task-allow` entitlement is in force).
@@ -60,26 +70,13 @@ impl CodeStatus {
             && !has(CS_ADHOC)
             && !has(CS_LINKER_SIGNED)
             && !has(CS_GET_TASK_ALLOW)
-            && !has(CS_DEBUGGED)
+            && !self.has_debugger_attached()
     }
 }
 
 /// This process's code-signing flags, or `None` when they cannot be read (or
 /// the platform has none).
 pub fn this_process() -> Option<CodeStatus> {
-    #[cfg(target_os = "macos")]
-    {
-        of_process(unsafe { libc::getpid() })
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        None
-    }
-}
-
-/// The kernel's code-signing flags for the running process `pid`, or `None`
-/// when they cannot be read (or the platform has none).
-pub fn of_process(pid: i32) -> Option<CodeStatus> {
     #[cfg(target_os = "macos")]
     {
         extern "C" {
@@ -90,14 +87,13 @@ pub fn of_process(pid: i32) -> Option<CodeStatus> {
                 usersize: libc::size_t,
             ) -> libc::c_int;
         }
-        /// `CS_OPS_STATUS`: the process's code-signing flags.
         const CS_OPS_STATUS: libc::c_uint = 0;
         let mut flags: u32 = 0;
         // SAFETY: `flags` is a live, writable u32 of the size passed, which is
         // what CS_OPS_STATUS writes.
         let status = unsafe {
             csops(
-                pid,
+                libc::getpid(),
                 CS_OPS_STATUS,
                 (&mut flags as *mut u32).cast(),
                 std::mem::size_of::<u32>(),
@@ -107,7 +103,46 @@ pub fn of_process(pid: i32) -> Option<CodeStatus> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = pid;
+        None
+    }
+}
+
+/// The kernel's code-signing flags for the process an audit token names, or
+/// `None` when they cannot be read (or the platform has none). The kernel
+/// checks the token's pid version, so a pid that was reused, or a process that
+/// has exec'd since the token was taken, yields `None` rather than the flags
+/// of another image.
+pub fn of_audit_token(token: [u32; 8]) -> Option<CodeStatus> {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn csops_audittoken(
+                pid: libc::pid_t,
+                ops: libc::c_uint,
+                useraddr: *mut libc::c_void,
+                usersize: libc::size_t,
+                token: *const u32,
+            ) -> libc::c_int;
+        }
+        /// `CS_OPS_STATUS`: the process's code-signing flags.
+        const CS_OPS_STATUS: libc::c_uint = 0;
+        let mut flags: u32 = 0;
+        // SAFETY: `flags` is a live, writable u32 of the size passed, which is
+        // what CS_OPS_STATUS writes; `token` is eight words, an audit_token_t.
+        let status = unsafe {
+            csops_audittoken(
+                token[5] as libc::pid_t,
+                CS_OPS_STATUS,
+                (&mut flags as *mut u32).cast(),
+                std::mem::size_of::<u32>(),
+                token.as_ptr(),
+            )
+        };
+        (status == 0).then_some(CodeStatus(flags))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = token;
         None
     }
 }
