@@ -82,6 +82,9 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3.0"
+# The child-process scan in `child_env` reads the daemon's own source as syntax.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"
 # Building a database file of another release's shape from its DDL, and
 # hashing it to show a refused open left it untouched.
 libsql = { workspace = true }
