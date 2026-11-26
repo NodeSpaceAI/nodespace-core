@@ -150,44 +150,81 @@ pub fn check_requirement(token: Option<AuditToken>, requirement: &str) -> Result
         .map_err(|e| Refusal::NotTheSignedApp(e.to_string()))
 }
 
-/// The code-directory flag of the hardened runtime.
-const CS_RUNTIME: u32 = 0x0001_0000;
-
 /// Entitlements that let another process of the same user inject code into
-/// the peer or steer its dynamic loader.
-const INJECTION_ENTITLEMENTS: [&str; 2] = [
+/// the peer or steer its dynamic loader. Any entitlement named here refuses
+/// the peer whatever its value: a key present with the value `false` is
+/// refused too (fail closed; the app's signature has no reason to name them).
+const INJECTION_ENTITLEMENTS: [&str; 3] = [
     "com.apple.security.get-task-allow",
     "com.apple.security.cs.allow-dyld-environment-variables",
+    // Lets the program load a dylib signed by anyone.
+    "com.apple.security.cs.disable-library-validation",
 ];
 
-/// Whether signing `flags` and the `entitlements` the code carries describe a
-/// hardened program: the hardened runtime on, no injection entitlement.
-fn hardening_verdict<'a>(
-    flags: u32,
-    entitlements: impl IntoIterator<Item = &'a str>,
+/// What the signature says about the peer's entitlements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Entitlements {
+    /// The signature carries none (neither the blob nor its parsed form).
+    None,
+    /// The parsed entitlement keys.
+    Keys(Vec<String>),
+    /// The signature carries entitlements that could not be read as a
+    /// dictionary of keys (a raw blob without its parsed form, or a value that
+    /// is not a dictionary).
+    Unreadable,
+}
+
+/// Whether the kernel's status for the running peer (`runtime`: hardened
+/// runtime on, `debugger`: `get-task-allow` in force) and the signature's
+/// `entitlements` describe a hardened program: runtime on, no debugger
+/// allowed, no injection entitlement, and entitlements that can be read.
+fn hardening_verdict(
+    runtime: bool,
+    debugger: bool,
+    entitlements: &Entitlements,
 ) -> Result<(), Refusal> {
-    if flags & CS_RUNTIME == 0 {
+    if !runtime {
         return Err(Refusal::NotHardened(
             "the hardened runtime is not enabled".into(),
         ));
     }
-    for key in entitlements {
-        if INJECTION_ENTITLEMENTS.contains(&key) {
-            return Err(Refusal::NotHardened(format!(
-                "it carries the entitlement {key}"
-            )));
+    if debugger {
+        return Err(Refusal::NotHardened(
+            "a debugger may attach (get-task-allow)".into(),
+        ));
+    }
+    match entitlements {
+        Entitlements::None => {}
+        Entitlements::Unreadable => {
+            return Err(Refusal::NotHardened(
+                "its entitlements could not be read".into(),
+            ))
+        }
+        Entitlements::Keys(keys) => {
+            for key in keys {
+                if INJECTION_ENTITLEMENTS.contains(&key.as_str()) {
+                    return Err(Refusal::NotHardened(format!(
+                        "it carries the entitlement {key}"
+                    )));
+                }
+            }
         }
     }
     Ok(())
 }
 
 /// Check that the code `token` names runs hardened (see [`hardening_verdict`]).
+///
+/// The hardened runtime and `get-task-allow` come from the kernel's flags for
+/// the running process (`csops`, by the pid in the token, after the audit-token
+/// lookup above has proved the token names live code), not from the static
+/// signature. The entitlement keys come from the signing information of that
+/// same guest code.
 #[cfg(target_os = "macos")]
 pub fn check_hardened(token: Option<AuditToken>) -> Result<(), Refusal> {
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::data::CFData;
     use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
-    use core_foundation::number::CFNumber;
     use core_foundation::string::CFString;
     use security_framework::os::macos::code_signing::{Flags, GuestAttributes, SecCode};
 
@@ -213,6 +250,10 @@ pub fn check_hardened(token: Option<AuditToken>) -> Result<(), Refusal> {
     let code = SecCode::copy_guest_with_attribues(None, &attributes, Flags::NONE)
         .map_err(|e| Refusal::NoCode(e.to_string()))?;
 
+    let kernel = crate::code_identity::of_process(token.0[5] as i32).ok_or_else(|| {
+        Refusal::NotHardened("the kernel's signing status of the peer is unreadable".into())
+    })?;
+
     let mut info: CFDictionaryRef = std::ptr::null();
     // SAFETY: `code` is a live SecCode (a SecStaticCode is accepted for a
     // running code object); `info` receives a +1 dictionary on success.
@@ -232,32 +273,47 @@ pub fn check_hardened(token: Option<AuditToken>) -> Result<(), Refusal> {
     let info: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_create_rule(info) };
 
-    let flags = info
-        .find(CFString::new("flags"))
-        .and_then(|v| v.downcast::<CFNumber>())
-        .and_then(|n| n.to_i64())
-        .ok_or_else(|| Refusal::NotHardened("the signing flags are missing".into()))?;
-    let entitlements: Vec<String> = info
-        .find(CFString::new("entitlements-dict"))
-        .and_then(|v| v.downcast::<CFDictionary>())
-        .map(|d| {
-            let (keys, _) = d.get_keys_and_values();
-            keys.into_iter()
-                .filter_map(|k| {
+    let parsed = info.find(CFString::new("entitlements-dict"));
+    let raw = info.find(CFString::new("entitlements"));
+    let entitlements = match (parsed, raw) {
+        (Some(v), _) => match v.downcast::<CFDictionary>() {
+            Some(d) => {
+                let (keys, _) = d.get_keys_and_values();
+                let mut names = Vec::new();
+                for k in keys {
                     // SAFETY: entitlement keys are CFStrings; not owned here.
                     let k = unsafe { CFType::wrap_under_get_rule(k as _) };
-                    k.downcast::<CFString>().map(|s| s.to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    hardening_verdict(flags as u32, entitlements.iter().map(String::as_str))
+                    match k.downcast::<CFString>() {
+                        Some(s) => names.push(s.to_string()),
+                        None => return Err(entitlement_refusal()),
+                    }
+                }
+                Entitlements::Keys(names)
+            }
+            None => Entitlements::Unreadable,
+        },
+        (None, Some(_)) => Entitlements::Unreadable,
+        (None, None) => Entitlements::None,
+    };
+    hardening_verdict(
+        kernel.has_hardened_runtime(),
+        kernel.allows_debugger(),
+        &entitlements,
+    )
 }
 
-/// No audit token or Security framework off macOS.
+#[cfg(target_os = "macos")]
+fn entitlement_refusal() -> Refusal {
+    Refusal::NotHardened("its entitlements could not be read".into())
+}
+
+/// No audit token or Security framework off macOS: nothing is judged
+/// hardened.
 #[cfg(not(target_os = "macos"))]
 pub fn check_hardened(_token: Option<AuditToken>) -> Result<(), Refusal> {
-    Err(Refusal::NoToken)
+    Err(Refusal::NotHardened(
+        "hardening cannot be checked on this platform".into(),
+    ))
 }
 
 /// The peer satisfies `requirement` and runs hardened.
@@ -283,6 +339,14 @@ pub struct TeamSigned {
 impl TeamSigned {
     pub fn new() -> Self {
         Self::for_team(TEAM_ID, APP_IDENTIFIER, CLI_IDENTIFIER)
+    }
+
+    #[cfg(test)]
+    fn with_requirements(app: &str, cli: &str) -> Self {
+        Self {
+            app: Some(app.to_string()),
+            cli: Some(cli.to_string()),
+        }
     }
 
     pub fn for_team(team_id: &str, app_identifier: &str, cli_identifier: &str) -> Self {
@@ -422,11 +486,20 @@ mod tests {
     }
 
     #[test]
-    fn the_hardened_runtime_flag_is_required() {
-        assert!(hardening_verdict(CS_RUNTIME, []).is_ok());
-        assert!(hardening_verdict(CS_RUNTIME | 0x2, ["com.apple.security.app-sandbox"]).is_ok());
+    fn the_hardened_runtime_is_required() {
+        assert!(hardening_verdict(true, false, &Entitlements::None).is_ok());
+        let ok = Entitlements::Keys(vec!["com.apple.security.app-sandbox".into()]);
+        assert!(hardening_verdict(true, false, &ok).is_ok());
         assert!(matches!(
-            hardening_verdict(0x2, []),
+            hardening_verdict(false, false, &Entitlements::None),
+            Err(Refusal::NotHardened(_))
+        ));
+    }
+
+    #[test]
+    fn a_debuggable_peer_is_refused() {
+        assert!(matches!(
+            hardening_verdict(true, true, &Entitlements::None),
             Err(Refusal::NotHardened(_))
         ));
     }
@@ -434,14 +507,24 @@ mod tests {
     #[test]
     fn injection_entitlements_are_refused_even_when_hardened() {
         for key in INJECTION_ENTITLEMENTS {
+            let keys =
+                Entitlements::Keys(vec!["com.apple.security.network.client".into(), key.into()]);
             assert!(
                 matches!(
-                    hardening_verdict(CS_RUNTIME, ["com.apple.security.network.client", key]),
+                    hardening_verdict(true, false, &keys),
                     Err(Refusal::NotHardened(_))
                 ),
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn entitlements_that_cannot_be_read_are_refused() {
+        assert!(matches!(
+            hardening_verdict(true, false, &Entitlements::Unreadable),
+            Err(Refusal::NotHardened(_))
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -490,7 +573,7 @@ mod tests {
         /// A copy of `/usr/bin/nc` re-signed ad hoc under the identifier
         /// `ns-test-peer`, with the hardened runtime (`runtime`) and the
         /// entitlement `get_task_allow` as asked.
-        fn signed_nc(dir: &std::path::Path, runtime: bool, get_task_allow: bool) -> Command {
+        fn signed_nc(dir: &std::path::Path, runtime: bool, entitlements: &[&str]) -> Command {
             let bin = dir.join("nc-copy");
             std::fs::copy("/usr/bin/nc", &bin).unwrap();
             let mut sign = Command::new("/usr/bin/codesign");
@@ -498,12 +581,17 @@ mod tests {
             if runtime {
                 sign.args(["-o", "runtime"]);
             }
-            if get_task_allow {
+            if !entitlements.is_empty() {
                 let plist = dir.join("e.plist");
                 std::fs::write(
                     &plist,
-                    "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>\
-<key>com.apple.security.get-task-allow</key><true/></dict></plist>",
+                    format!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict>{}</dict></plist>",
+                        entitlements
+                            .iter()
+                            .map(|e| format!("<key>{e}</key><true/>"))
+                            .collect::<String>()
+                    ),
                 )
                 .unwrap();
                 sign.arg("--entitlements").arg(&plist);
@@ -525,7 +613,7 @@ mod tests {
         async fn a_peer_signed_without_the_hardened_runtime_is_refused() {
             let dir = tempfile::tempdir_in("/private/tmp").unwrap();
             let (token, mut child, _conn) =
-                token_of_connecting(&mut signed_nc(dir.path(), false, false)).await;
+                token_of_connecting(&mut signed_nc(dir.path(), false, &[])).await;
             // The requirement alone is met; the hardening check refuses.
             check_requirement(token, TEST_REQUIREMENT).expect("the identifier matches");
             assert!(matches!(
@@ -542,8 +630,12 @@ mod tests {
         #[tokio::test]
         async fn a_hardened_peer_with_get_task_allow_is_refused() {
             let dir = tempfile::tempdir_in("/private/tmp").unwrap();
-            let (token, mut child, _conn) =
-                token_of_connecting(&mut signed_nc(dir.path(), true, true)).await;
+            let (token, mut child, _conn) = token_of_connecting(&mut signed_nc(
+                dir.path(),
+                true,
+                &["com.apple.security.get-task-allow"],
+            ))
+            .await;
             assert!(matches!(
                 check_hardened(token),
                 Err(Refusal::NotHardened(_))
@@ -555,9 +647,46 @@ mod tests {
         async fn a_hardened_peer_without_injection_entitlements_passes() {
             let dir = tempfile::tempdir_in("/private/tmp").unwrap();
             let (token, mut child, _conn) =
-                token_of_connecting(&mut signed_nc(dir.path(), true, false)).await;
+                token_of_connecting(&mut signed_nc(dir.path(), true, &[])).await;
             check_hardened(token).expect("hardened and no injection entitlement");
             check_peer(token, TEST_REQUIREMENT).expect("requirement and hardening both hold");
+            let _ = child.kill();
+        }
+
+        #[tokio::test]
+        async fn a_hardened_peer_with_an_injection_entitlement_is_refused() {
+            for key in [
+                "com.apple.security.cs.allow-dyld-environment-variables",
+                "com.apple.security.cs.disable-library-validation",
+            ] {
+                let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+                let (token, mut child, _conn) =
+                    token_of_connecting(&mut signed_nc(dir.path(), true, &[key])).await;
+                assert!(
+                    matches!(check_hardened(token), Err(Refusal::NotHardened(_))),
+                    "{key}"
+                );
+                let _ = child.kill();
+            }
+        }
+
+        #[tokio::test]
+        async fn the_production_check_refuses_an_unhardened_peer_for_both_scopes() {
+            let check = TeamSigned::with_requirements(TEST_REQUIREMENT, TEST_REQUIREMENT);
+            let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+            let (token, mut child, _conn) =
+                token_of_connecting(&mut signed_nc(dir.path(), false, &[])).await;
+            for scope in [Scope::AnswerConfirmation, Scope::ApproveTool] {
+                assert!(!check.allows(token, scope), "{scope:?}");
+            }
+            let _ = child.kill();
+            // The same check lets a hardened peer of that identifier through.
+            let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+            let (token, mut child, _conn) =
+                token_of_connecting(&mut signed_nc(dir.path(), true, &[])).await;
+            for scope in [Scope::AnswerConfirmation, Scope::ApproveTool] {
+                assert!(check.allows(token, scope), "{scope:?}");
+            }
             let _ = child.kill();
         }
 

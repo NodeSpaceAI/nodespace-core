@@ -41,6 +41,16 @@ const CS_DEBUGGED: u32 = 0x1000_0000;
 pub struct CodeStatus(pub u32);
 
 impl CodeStatus {
+    /// The hardened runtime is on.
+    pub fn has_hardened_runtime(self) -> bool {
+        self.0 & CS_RUNTIME != 0
+    }
+
+    /// A debugger may attach (the `get-task-allow` entitlement is in force).
+    pub fn allows_debugger(self) -> bool {
+        self.0 & CS_GET_TASK_ALLOW != 0
+    }
+
     /// Signed as a release is: a valid identity signature with the hardened
     /// runtime, no debugging allowed and none attached.
     pub fn is_signed_release(self) -> bool {
@@ -59,6 +69,19 @@ impl CodeStatus {
 pub fn this_process() -> Option<CodeStatus> {
     #[cfg(target_os = "macos")]
     {
+        of_process(unsafe { libc::getpid() })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// The kernel's code-signing flags for the running process `pid`, or `None`
+/// when they cannot be read (or the platform has none).
+pub fn of_process(pid: i32) -> Option<CodeStatus> {
+    #[cfg(target_os = "macos")]
+    {
         extern "C" {
             fn csops(
                 pid: libc::pid_t,
@@ -74,7 +97,7 @@ pub fn this_process() -> Option<CodeStatus> {
         // what CS_OPS_STATUS writes.
         let status = unsafe {
             csops(
-                libc::getpid(),
+                pid,
                 CS_OPS_STATUS,
                 (&mut flags as *mut u32).cast(),
                 std::mem::size_of::<u32>(),
@@ -84,6 +107,7 @@ pub fn this_process() -> Option<CodeStatus> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = pid;
         None
     }
 }
