@@ -73,24 +73,28 @@ const UI_NAMES: &[&str] = &[
     "PROCESSOR_ARCHITEW6432",
     "NUMBER_OF_PROCESSORS",
     "OS",
+    // The Linux webview's display switches, each named: the GTK, GDK and
+    // WebKit families also hold variables that load code (`GTK_MODULES`,
+    // `GTK_PATH`, `GTK_EXE_PREFIX`, `GTK_IM_MODULE_FILE`,
+    // `GDK_PIXBUF_MODULE_FILE`, `GDK_PIXBUF_MODULEDIR`, `WEBKIT_EXEC_PATH`,
+    // `WEBKIT_INJECTED_BUNDLE_PATH`) or open a debugging port
+    // (`WEBKIT_INSPECTOR_SERVER`), so no prefix passes them.
+    "GDK_BACKEND",
+    "GDK_SCALE",
+    "GDK_DPI_SCALE",
+    "GTK_THEME",
+    "GTK_USE_PORTAL",
+    "WEBKIT_DISABLE_COMPOSITING_MODE",
+    "WEBKIT_DISABLE_DMABUF_RENDERER",
 ];
 
-/// Variable families the app reads: the product's own, XDG and locale, and the
-/// GTK, GDK and WebKit switches the Linux webview honours (`GDK_BACKEND`,
-/// `GTK_THEME`, `WEBKIT_DISABLE_DMABUF_RENDERER` and the like).
+/// Variable families the app reads: the product's own, XDG and locale.
 ///
-/// Left out on purpose: `LD_LIBRARY_PATH` (it redirects which libraries the app
-/// loads), and `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (their URLs can embed
-/// a user name and password). The credential-bearing ones stay with the daemon.
-const UI_PREFIXES: &[&str] = &[
-    "NODESPACE_",
-    "NODESPACED_",
-    "XDG_",
-    "LC_",
-    "GTK_",
-    "GDK_",
-    "WEBKIT_",
-];
+/// Left out on purpose: `LD_LIBRARY_PATH` and the GTK, GDK and WebKit
+/// code-loading variables (see [`UI_NAMES`]), which redirect what the app
+/// loads, and `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` (their URLs can embed
+/// a user name and password). These stay with the daemon.
+const UI_PREFIXES: &[&str] = &["NODESPACE_", "NODESPACED_", "XDG_", "LC_"];
 
 /// Looks a variable up in the daemon's environment.
 type Lookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
@@ -152,44 +156,105 @@ mod tests {
     use proc_macro2::{TokenStream, TokenTree};
     use syn::visit::Visit;
 
-    /// Finds every place a source file starts a program without
-    /// [`scrubbed`]: a path `Command::new` (or `std::process::Command::new`,
-    /// or through a name `Command` was imported or aliased as), whether
-    /// called, passed on as a value, or written inside a macro's arguments.
-    /// Items marked `#[cfg(test)]` are skipped, wherever they sit in the file
-    /// (the scan reads the syntax tree, so an early test-only item does not
-    /// hide what follows it, and spacing does not matter).
-    struct SpawnScan {
-        /// Names that stand for `Command`: `Command` and its renames.
-        names: Vec<String>,
-        hits: Vec<String>,
-    }
+    // Scope: this is a scan for `Command::new` (std or tokio) in the
+    // production source of packages/daemon/src only. It does not see
+    // posix_spawn, system, execve, openers (open::that, webbrowser), build.rs
+    // or tests/it. A different type that is also named `Command` (clap's) is
+    // flagged too: that over-flags loudly rather than missing a spawn.
 
+    /// Whether `attrs` mark an item as compiled only for tests: exactly
+    /// `#[cfg(test)]` or `#[cfg(all(test, ..))]`. `cfg(any(test, unix))`,
+    /// `cfg(not(test))` and the like also build outside tests, so they are
+    /// scanned.
     fn is_test_only(attrs: &[syn::Attribute]) -> bool {
-        attrs.iter().any(|a| match &a.meta {
-            syn::Meta::List(list) if list.path.is_ident("cfg") => {
-                let text = list.tokens.to_string();
-                text.split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .any(|word| word == "test")
-                    && !text.contains("not")
+        use syn::punctuated::Punctuated;
+        attrs.iter().any(|a| {
+            let syn::Meta::List(list) = &a.meta else {
+                return false;
+            };
+            if !list.path.is_ident("cfg") {
+                return false;
             }
-            _ => false,
+            let Ok(args) =
+                list.parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+            else {
+                return false;
+            };
+            let args: Vec<&syn::Meta> = args.iter().collect();
+            match args.as_slice() {
+                [syn::Meta::Path(p)] => p.is_ident("test"),
+                [syn::Meta::List(all)] if all.path.is_ident("all") => all
+                    .parse_args_with(Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+                    .is_ok_and(|inner| {
+                        inner
+                            .iter()
+                            .any(|m| matches!(m, syn::Meta::Path(p) if p.is_ident("test")))
+                    }),
+                _ => false,
+            }
         })
     }
 
-    impl SpawnScan {
-        fn note_use(&mut self, tree: &syn::UseTree) {
-            match tree {
-                syn::UseTree::Path(p) => self.note_use(&p.tree),
-                syn::UseTree::Group(g) => g.items.iter().for_each(|t| self.note_use(t)),
-                syn::UseTree::Name(n) if n.ident == "Command" => {}
-                syn::UseTree::Rename(r) if r.ident == "Command" => {
-                    self.names.push(r.rename.to_string());
+    /// Collects `use .. Command as X`, `type X = Command` and renames of those,
+    /// across every file given, to a fixed point.
+    fn command_names(files: &[syn::File]) -> Vec<String> {
+        #[derive(Default)]
+        struct Pairs(Vec<(String, String)>);
+        impl Pairs {
+            fn tree(&mut self, tree: &syn::UseTree) {
+                match tree {
+                    syn::UseTree::Path(p) => self.tree(&p.tree),
+                    syn::UseTree::Group(g) => g.items.iter().for_each(|t| self.tree(t)),
+                    syn::UseTree::Rename(r) => {
+                        self.0.push((r.ident.to_string(), r.rename.to_string()));
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
+        impl<'ast> Visit<'ast> for Pairs {
+            fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
+                self.tree(&i.tree);
+            }
+            fn visit_item_type(&mut self, i: &'ast syn::ItemType) {
+                if let syn::Type::Path(p) = &*i.ty {
+                    if let Some(last) = p.path.segments.last() {
+                        self.0.push((last.ident.to_string(), i.ident.to_string()));
+                    }
+                }
+            }
+        }
+        let mut pairs = Pairs::default();
+        for file in files {
+            pairs.visit_file(file);
+        }
+        let mut names = vec!["Command".to_string()];
+        loop {
+            let before = names.len();
+            for (target, alias) in &pairs.0 {
+                if names.contains(target) && !names.contains(alias) {
+                    names.push(alias.clone());
+                }
+            }
+            if names.len() == before {
+                return names;
+            }
+        }
+    }
 
+    /// Finds the places a file starts a program without [`scrubbed`]: a path
+    /// `Name::new` (or `std::process::Command::new`, `<Name>::new`) for any
+    /// `Name` that stands for `Command`, whether called, passed on as a value,
+    /// or written inside a macro's arguments. Items marked `#[cfg(test)]` are
+    /// skipped wherever they sit (the scan reads the syntax tree, so an early
+    /// test-only item does not hide what follows it, and spacing does not
+    /// matter).
+    struct SpawnScan<'n> {
+        names: &'n [String],
+        hits: Vec<String>,
+    }
+
+    impl SpawnScan<'_> {
         fn is_command_path(&self, path: &syn::Path) -> bool {
             let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
             segments.len() >= 2
@@ -197,18 +262,37 @@ mod tests {
                 && self.names.contains(&segments[segments.len() - 2])
         }
 
+        fn is_command_type(&self, ty: &syn::Type) -> bool {
+            match ty {
+                syn::Type::Path(p) => p
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|s| self.names.contains(&s.ident.to_string())),
+                syn::Type::Paren(p) => self.is_command_type(&p.elem),
+                syn::Type::Group(g) => self.is_command_type(&g.elem),
+                _ => false,
+            }
+        }
+
         fn scan_tokens(&mut self, tokens: TokenStream) {
             let trees: Vec<TokenTree> = tokens.into_iter().collect();
             for (i, tree) in trees.iter().enumerate() {
                 match tree {
                     TokenTree::Group(g) => self.scan_tokens(g.stream()),
-                    TokenTree::Ident(id) if self.names.contains(&id.to_string()) => {
+                    TokenTree::Ident(id) => {
                         let rest: Vec<String> = trees[i + 1..]
                             .iter()
                             .take(3)
                             .map(|t| t.to_string())
                             .collect();
-                        if rest == [":", ":", "new"] {
+                        if rest != [":", ":", "new"] {
+                            continue;
+                        }
+                        // A name for Command, or a macro fragment (`$c::new`)
+                        // that may stand for it.
+                        let fragment = i > 0 && trees[i - 1].to_string() == "$";
+                        if fragment || self.names.contains(&id.to_string()) {
                             self.hits.push(format!("{id}::new in a macro"));
                         }
                     }
@@ -218,19 +302,7 @@ mod tests {
         }
     }
 
-    impl<'ast> Visit<'ast> for SpawnScan {
-        fn visit_item_use(&mut self, i: &'ast syn::ItemUse) {
-            if !is_test_only(&i.attrs) {
-                self.note_use(&i.tree);
-            }
-        }
-        fn visit_item_type(&mut self, i: &'ast syn::ItemType) {
-            if let syn::Type::Path(p) = &*i.ty {
-                if p.path.segments.last().is_some_and(|s| s.ident == "Command") {
-                    self.names.push(i.ident.to_string());
-                }
-            }
-        }
+    impl<'ast> Visit<'ast> for SpawnScan<'_> {
         fn visit_item_mod(&mut self, i: &'ast syn::ItemMod) {
             if !is_test_only(&i.attrs) {
                 syn::visit::visit_item_mod(self, i);
@@ -257,8 +329,19 @@ mod tests {
             }
         }
         fn visit_expr_path(&mut self, i: &'ast syn::ExprPath) {
-            if self.is_command_path(&i.path) {
-                self.hits.push(path_text(&i.path));
+            let qualified = i.qself.as_ref().is_some_and(|q| {
+                self.is_command_type(&q.ty)
+                    && i.path.segments.last().is_some_and(|s| s.ident == "new")
+            });
+            if self.is_command_path(&i.path) || qualified {
+                self.hits.push(
+                    i.path
+                        .segments
+                        .iter()
+                        .map(|s| s.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::"),
+                );
             }
             syn::visit::visit_expr_path(self, i);
         }
@@ -267,27 +350,33 @@ mod tests {
         }
     }
 
-    fn path_text(path: &syn::Path) -> String {
-        path.segments
+    /// The program-starting paths in the `sources` (name, text) pairs outside
+    /// `#[cfg(test)]` items, as (file, path).
+    fn spawns_in(sources: &[(String, String)]) -> Vec<(String, String)> {
+        let files: Vec<syn::File> = sources
             .iter()
-            .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("::")
+            .map(|(name, text)| {
+                syn::parse_file(text).unwrap_or_else(|e| panic!("{name} does not parse: {e}"))
+            })
+            .collect();
+        let names = command_names(&files);
+        let mut out = Vec::new();
+        for ((name, _), file) in sources.iter().zip(&files) {
+            let mut scan = SpawnScan {
+                names: &names,
+                hits: Vec::new(),
+            };
+            scan.visit_file(file);
+            out.extend(scan.hits.into_iter().map(|h| (name.clone(), h)));
+        }
+        out
     }
 
-    /// The program-starting paths in `source` outside `#[cfg(test)]` items.
-    fn spawns_in(source: &str) -> Vec<String> {
-        let file = syn::parse_file(source).expect("the source parses");
-        let mut scan = SpawnScan {
-            names: vec!["Command".to_string()],
-            hits: Vec::new(),
-        };
-        // Imports come before their uses in a file, but an alias can sit below
-        // the item that uses it: collect them in a first pass.
-        scan.visit_file(&file);
-        scan.hits.clear();
-        scan.visit_file(&file);
-        scan.hits
+    fn one(source: &str) -> Vec<String> {
+        spawns_in(&[("t.rs".to_string(), source.to_string())])
+            .into_iter()
+            .map(|(_, h)| h)
+            .collect()
     }
 
     fn crate_sources() -> Vec<(String, String)> {
@@ -312,22 +401,21 @@ mod tests {
         out
     }
 
-    /// Every program this crate starts goes through this module: a bare
+    /// Every program this crate starts goes through this module: a
     /// `Command::new` anywhere else would hand the daemon's environment on.
+    /// Scope: see the note above (packages/daemon/src, `Command::new` only).
     #[test]
     fn no_other_production_code_starts_a_program_with_the_daemons_environment() {
-        let sources = crate_sources();
+        let sources: Vec<_> = crate_sources()
+            .into_iter()
+            .filter(|(f, _)| !f.ends_with("child_env.rs"))
+            .collect();
         assert!(sources.len() > 5, "the scan reaches the crate's files");
-        for (file, text) in sources {
-            if file.ends_with("child_env.rs") {
-                continue;
-            }
-            let hits = spawns_in(&text);
-            assert!(
-                hits.is_empty(),
-                "{file} starts a program with {hits:?}; use child_env::scrubbed"
-            );
-        }
+        let hits = spawns_in(&sources);
+        assert!(
+            hits.is_empty(),
+            "these start a program with a bare Command::new; use child_env::scrubbed: {hits:?}"
+        );
     }
 
     #[test]
@@ -337,11 +425,11 @@ mod tests {
             use something::Helper;
             fn run() { std::process::Command::new("sh"); }
         "#;
-        assert_eq!(spawns_in(source), ["std::process::Command::new"]);
+        assert_eq!(one(source), ["std::process::Command::new"]);
     }
 
     #[test]
-    fn the_scan_finds_a_spawn_through_an_alias_or_with_spacing() {
+    fn the_scan_finds_a_spawn_through_an_alias_spacing_or_a_macro() {
         for source in [
             "use std::process::Command as C; fn f() { C::new(\"x\"); }",
             "use std::process::Command; fn f() { Command::new (\"x\"); }",
@@ -349,24 +437,58 @@ mod tests {
             "use std::process::Command; type C = Command; fn f() { C::new(\"x\"); }",
             "use std::process::Command; fn f() { vec![Command::new(\"x\")]; }",
             "fn f() { std::process::Command::new(\n\"x\"); }",
+            "use std::process::Command; fn f() { <Command>::new(\"x\"); }",
+            "fn f() { <std::process::Command>::new(\"x\"); }",
+            "macro_rules! m { ($c:ty) => { $c::new(\"x\") }; }",
         ] {
-            assert!(!spawns_in(source).is_empty(), "missed: {source}");
+            assert!(!one(source).is_empty(), "missed: {source}");
         }
     }
 
     #[test]
-    fn the_scan_ignores_test_only_items_and_other_types() {
+    fn the_scan_follows_an_alias_declared_in_another_file() {
+        let files = [
+            (
+                "a.rs".to_string(),
+                "pub type Cmd2 = Cmd; pub use std::process::Command as Cmd;".to_string(),
+            ),
+            (
+                "b.rs".to_string(),
+                "fn f() { Cmd::new(\"x\"); Cmd2::new(\"y\"); }".to_string(),
+            ),
+        ];
+        let hits = spawns_in(&files);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits.iter().all(|(f, _)| f == "b.rs"));
+    }
+
+    #[test]
+    fn only_test_only_cfgs_are_skipped() {
+        let skipped = "use std::process::Command;
+            #[cfg(test)] fn a() { Command::new(\"x\"); }
+            #[cfg(all(test, unix))] fn b() { Command::new(\"x\"); }
+            #[cfg(test)] mod m { fn c() { Command::new(\"x\"); } }";
+        assert_eq!(one(skipped), Vec::<String>::new());
+        for attr in [
+            "#[cfg(any(test, unix))]",
+            "#[cfg(any(test, feature = \"x\"))]",
+            "#[cfg(not(test))]",
+            "#[cfg(unix)]",
+        ] {
+            let source =
+                format!("use std::process::Command; {attr} fn a() {{ Command::new(\"x\"); }}");
+            assert!(!one(&source).is_empty(), "skipped: {attr}");
+        }
+    }
+
+    #[test]
+    fn the_scan_ignores_other_types() {
         let source = r#"
-            use std::process::Command;
-            #[cfg(test)]
-            mod tests { fn t() { Command::new("true"); } }
-            #[cfg(test)]
-            fn helper() { Command::new("true"); }
             struct Other;
             impl Other { fn new() -> Self { Other } }
             fn f() { let _ = Other::new(); let _ = scrubbed("ps"); }
         "#;
-        assert_eq!(spawns_in(source), Vec::<String>::new());
+        assert_eq!(one(source), Vec::<String>::new());
     }
 
     #[cfg(unix)]
@@ -460,7 +582,9 @@ mod tests {
         let needed = [
             ("GDK_BACKEND", "x11"),
             ("GDK_SCALE", "2"),
+            ("GDK_DPI_SCALE", "1.5"),
             ("GTK_THEME", "Adwaita:dark"),
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
             ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
             ("LANGUAGE", "en"),
             ("LOGNAME", "me"),
@@ -477,6 +601,15 @@ mod tests {
         let withheld = [
             ("HTTPS_PROXY", "http://user:pw@proxy:8080"),
             ("LD_LIBRARY_PATH", "/opt/lib"),
+            ("GTK_MODULES", "evil"),
+            ("GTK_PATH", "/evil"),
+            ("GTK_IM_MODULE_FILE", "/evil"),
+            ("GTK_EXE_PREFIX", "/evil"),
+            ("GDK_PIXBUF_MODULE_FILE", "/evil"),
+            ("GDK_PIXBUF_MODULEDIR", "/evil"),
+            ("WEBKIT_EXEC_PATH", "/evil"),
+            ("WEBKIT_INJECTED_BUNDLE_PATH", "/evil"),
+            ("WEBKIT_INSPECTOR_SERVER", "0.0.0.0:9222"),
             ("GITHUB_TOKEN", "ghp_x"),
         ];
         let all: Vec<(&str, &str)> = needed.iter().chain(withheld.iter()).copied().collect();
