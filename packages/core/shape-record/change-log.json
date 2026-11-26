@@ -260,6 +260,34 @@
         "editedUsersAffected": false,
         "mustNotWaitForDecision": false
       }
+    },
+    {
+      "id": "decision-status-in-effect",
+      "after": "0.3.13",
+      "covers": [
+        "schemas.decision.fields.decision_status"
+      ],
+      "area": "core_schema",
+      "class": "refuse",
+      "summary": "The decision_status enum gains the value in_effect (built, or a rule in force) and its description is reworded. A database created by an earlier build holds the decision schema without the value, which the core-type comparison reports as a changed field, so that database is refused at open (a schema mismatch) until it is reset. The change adds one value to a closed enum; it is additive in what it asks of a new database, and a user could not have produced the same state because the enum is closed.",
+      "userProducible": false
+    },
+    {
+      "id": "decision-gate-plays-seeded",
+      "after": "0.3.13",
+      "covers": [
+        "seeded.9fa3608f-d872-4dff-b721-0c984c00d29c",
+        "seeded.1da5e58f-64e4-414e-ab36-029da3931b09"
+      ],
+      "area": "seeded_content",
+      "class": "additive",
+      "summary": "Two core Plays ship: one refuses setting a decision to accepted unless a task linked to it is open, the other refuses setting it to in_effect while a linked task is open. A database that holds neither gets them created on open; a user can edit or disable either.",
+      "userProducible": true,
+      "seeded": {
+        "aspect": "config",
+        "editedUsersAffected": false,
+        "mustNotWaitForDecision": false
+      }
     }
   ]
 }

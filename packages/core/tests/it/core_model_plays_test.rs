@@ -1116,7 +1116,9 @@ async fn a_superseded_decision_cannot_be_reinstated() -> Result<()> {
         Some(json!("proposed"))
     );
 
-    // Every other move is free, in either direction.
+    // Accepting needs an open linked task; the other moves are free.
+    let task = h.task().await?;
+    h.link(&task, "decisions", &decision).await?;
     h.set(&decision, json!({ "decision_status": "accepted" }))
         .await?;
     h.set(&decision, json!({ "decision_status": "proposed" }))
@@ -1131,6 +1133,99 @@ async fn a_superseded_decision_cannot_be_reinstated() -> Result<()> {
             &format!("moving a superseded decision back to {status}"),
         );
     }
+    h.stop().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Decision status gates
+// ---------------------------------------------------------------------------
+
+const CANNOT_BE_ACCEPTED: &str = "cannot be accepted until a task";
+const CANNOT_BE_IN_EFFECT: &str = "cannot be put in effect while a task";
+
+/// A decision is accepted only while a task linked to it is open. A spec
+/// linking the decision (the other relationship named `decisions`) does not
+/// count, and a done or cancelled task does not either.
+#[tokio::test]
+async fn a_decision_is_accepted_only_with_an_open_linked_task() -> Result<()> {
+    let h = Harness::start().await?;
+    let decision = h.create("decision", json!({})).await?;
+
+    assert_rejected(
+        h.set(&decision, json!({ "decision_status": "accepted" }))
+            .await,
+        CANNOT_BE_ACCEPTED,
+        "accepting a decision with nothing linked",
+    );
+
+    // A spec linking the decision is a different relationship (`specs`).
+    let spec = h.create("spec", json!({})).await?;
+    h.link(&spec, "decisions", &decision).await?;
+    assert_rejected(
+        h.set(&decision, json!({ "decision_status": "accepted" }))
+            .await,
+        CANNOT_BE_ACCEPTED,
+        "accepting a decision that only a spec links",
+    );
+
+    let done = h.create("task", json!({ "status": "cancelled" })).await?;
+    h.link(&done, "decisions", &decision).await?;
+    assert_rejected(
+        h.set(&decision, json!({ "decision_status": "accepted" }))
+            .await,
+        CANNOT_BE_ACCEPTED,
+        "accepting a decision whose only task is cancelled",
+    );
+
+    let open = h.create("task", json!({})).await?;
+    h.link(&open, "decisions", &decision).await?;
+    h.set(&decision, json!({ "decision_status": "accepted" }))
+        .await?;
+    assert_eq!(
+        h.field(&decision, "decision", "decision_status").await?,
+        Some(json!("accepted"))
+    );
+    h.stop().await;
+    Ok(())
+}
+
+/// A decision goes in effect once its linked tasks are finished, straight
+/// from proposed when it has none, and can go back to accepted.
+#[tokio::test]
+async fn a_decision_goes_in_effect_only_when_its_linked_work_is_finished() -> Result<()> {
+    let h = Harness::start().await?;
+
+    // The standing-rule path: no task, proposed straight to in_effect.
+    let rule = h.create("decision", json!({})).await?;
+    h.set(&rule, json!({ "decision_status": "in_effect" }))
+        .await?;
+
+    let decision = h.create("decision", json!({})).await?;
+    let task = h.create("task", json!({})).await?;
+    h.link(&task, "decisions", &decision).await?;
+    // Linked from a spec as well: only the task counts.
+    let spec = h.create("spec", json!({})).await?;
+    h.link(&spec, "decisions", &decision).await?;
+    h.set(&decision, json!({ "decision_status": "accepted" }))
+        .await?;
+
+    assert_rejected(
+        h.set(&decision, json!({ "decision_status": "in_effect" }))
+            .await,
+        CANNOT_BE_IN_EFFECT,
+        "putting a decision in effect while its task is open",
+    );
+
+    h.set_status(&task, "done").await?;
+    h.set(&decision, json!({ "decision_status": "in_effect" }))
+        .await?;
+
+    // More work is filed: back to accepted.
+    let more = h.create("task", json!({})).await?;
+    h.link(&more, "decisions", &decision).await?;
+    h.set(&decision, json!({ "decision_status": "accepted" }))
+        .await?;
     h.stop().await;
     Ok(())
 }

@@ -4,4 +4,4 @@
  * Where a decision stands (ADR-092 §1). A closed vocabulary: the seeded
  * lock compares against `superseded` by name.
  */
-export type DecisionStatus = 'proposed' | 'accepted' | 'superseded';
+export type DecisionStatus = 'proposed' | 'accepted' | 'in_effect' | 'superseded';

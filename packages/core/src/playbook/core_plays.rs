@@ -47,6 +47,11 @@ pub const TASK_SPEC_PLAY_ID: &str = "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4";
 /// Node id of the issue findings Play (ADR-092 §6, §8).
 pub const ISSUE_FINDINGS_PLAY_ID: &str = "b2f6a0d4-7c19-4e8a-95d3-1a4c8e6f7b20";
 
+/// Node id of the decision acceptance Play.
+pub const DECISION_ACCEPTANCE_PLAY_ID: &str = "9fa3608f-d872-4dff-b721-0c984c00d29c";
+/// Node id of the decision in-effect Play.
+pub const DECISION_IN_EFFECT_PLAY_ID: &str = "1da5e58f-64e4-414e-ab36-029da3931b09";
+
 /// The id of every Play that ships with the product: the core play table, in
 /// the order the plays are seeded.
 pub const CORE_PLAY_IDS: &[&str] = &[
@@ -59,6 +64,8 @@ pub const CORE_PLAY_IDS: &[&str] = &[
     SUPERSEDED_LOCK_PLAY_ID,
     TASK_SPEC_PLAY_ID,
     ISSUE_FINDINGS_PLAY_ID,
+    DECISION_ACCEPTANCE_PLAY_ID,
+    DECISION_IN_EFFECT_PLAY_ID,
 ];
 
 /// When a task's parent is finished by its sub-tasks (ADR-079 §8). Two
@@ -272,6 +279,67 @@ pub fn spec_approval_rules() -> serde_json::Value {
         "Refuse the approval and say the spec needs success criteria first",
         "This spec cannot be approved until it has success criteria. Add each criterion as \
          a checkbox directly under the spec, then approve it.",
+    )])
+}
+
+/// Refuse to accept a decision that has no unfinished work linked to it.
+///
+/// `accepted` means agreed with work outstanding, so at least one task linked
+/// to the decision (its `tasks` reverse edge) must be neither done nor
+/// cancelled. Specs take no part: the condition reads directly linked tasks
+/// only. It fires on a status change, not on a link change, so unlinking the
+/// last task of an accepted decision is not caught.
+pub fn decision_acceptance_rules() -> serde_json::Value {
+    json!([reject_change(
+        "reject-accepting-a-decision-without-open-work",
+        "Refuse to accept a decision that has no unfinished task linked to it",
+        "decision",
+        "decision_status",
+        json!([
+            {
+                "expr": "node.decision_status == 'accepted'",
+                "description": "The decision is being accepted",
+            },
+            {
+                "expr":
+                    "!has(node.tasks) || !node.tasks.exists(t, t.status != 'done' && t.status != 'cancelled')",
+                "description": "No linked task is open",
+            },
+        ]),
+        "Refuse the change and say a task must be linked first",
+        "This decision cannot be accepted until a task that carries it out is linked to it \
+         and not finished. Link the task from the task (its decisions link), then accept the \
+         decision. A decision that is already built or a rule in force goes straight from \
+         proposed to in_effect.",
+    )])
+}
+
+/// Refuse to put a decision in effect while a linked task is open.
+///
+/// A decision with no linked task may go from `proposed` straight to
+/// `in_effect`: that is the path for a standing rule. It can go back to
+/// `accepted` when more work is filed. Reads directly linked tasks only, and
+/// fires on a status change, not on a link change.
+pub fn decision_in_effect_rules() -> serde_json::Value {
+    json!([reject_change(
+        "reject-putting-a-decision-in-effect-with-open-work",
+        "Refuse to put a decision in effect while a task linked to it is unfinished",
+        "decision",
+        "decision_status",
+        json!([
+            {
+                "expr": "node.decision_status == 'in_effect'",
+                "description": "The decision is being put in effect",
+            },
+            {
+                "expr":
+                    "has(node.tasks) && node.tasks.exists(t, t.status != 'done' && t.status != 'cancelled')",
+                "description": "At least one linked task is open",
+            },
+        ]),
+        "Refuse the change and say the linked work must be finished first",
+        "This decision cannot be put in effect while a task linked to it is not finished. \
+         Finish or cancel the task, or unlink it, then set the decision in effect.",
     )])
 }
 
@@ -723,6 +791,20 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
              checked.",
             issue_findings_rules(),
         ),
+        seeded_play(
+            DECISION_ACCEPTANCE_PLAY_ID,
+            "Require open work before accepting a decision",
+            "Rejects accepting a decision unless at least one task linked to it is neither \
+             done nor cancelled. Reads directly linked tasks only.",
+            decision_acceptance_rules(),
+        ),
+        seeded_play(
+            DECISION_IN_EFFECT_PLAY_ID,
+            "Require finished work before a decision is in effect",
+            "Rejects putting a decision in effect while a task linked to it is open. A \
+             decision with no linked task may go straight from proposed to in_effect.",
+            decision_in_effect_rules(),
+        ),
     ]
 }
 
@@ -757,6 +839,8 @@ mod tests {
             (parent_task_completion_rules(), 1),
             (spec_approval_rules(), 1),
             (plan_approval_rules(), 2),
+            (decision_acceptance_rules(), 1),
+            (decision_in_effect_rules(), 1),
             (task_lineage_rules(), 1),
             (task_blockers_rules(), 1),
             (task_criteria_rules(), 2),
@@ -947,6 +1031,8 @@ mod tests {
                 "54159daf-f37d-47f9-a337-bf644d1f0db2",
                 "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4",
                 "b2f6a0d4-7c19-4e8a-95d3-1a4c8e6f7b20",
+                "9fa3608f-d872-4dff-b721-0c984c00d29c",
+                "1da5e58f-64e4-414e-ab36-029da3931b09",
             ]
         );
         let unique: std::collections::HashSet<_> = CORE_PLAY_IDS.iter().collect();
