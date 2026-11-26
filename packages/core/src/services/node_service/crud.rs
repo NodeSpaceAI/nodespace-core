@@ -597,8 +597,8 @@ impl NodeService {
     /// Called by the single-node creates. A markdown import links its
     /// mentions in bulk. A node a Play's reaction action creates goes
     /// through `create_node` and is linked at creation; a node an invariant
-    /// action inserts inside its own transaction does not pass through this
-    /// call.
+    /// action inserts inside its own transaction is linked after that
+    /// transaction commits (`NodeServiceTx::defer_mention_links`).
     ///
     /// Best-effort, after the create has committed: a mention that cannot be
     /// linked never fails or undoes the create.

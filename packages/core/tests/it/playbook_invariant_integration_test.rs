@@ -4612,3 +4612,92 @@ async fn backlog_context_fires_nothing_and_live_context_fires_reactive_rules_onl
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// A node an invariant action creates is linked to what its content mentions
+// ---------------------------------------------------------------------------
+
+/// A node an invariant action inserts inside the writer's transaction gets
+/// its `mentions` edges once that transaction commits, as a node created
+/// through `create_node` does, without waiting for its content to be edited.
+#[tokio::test]
+async fn a_node_an_invariant_action_creates_is_linked_to_what_its_content_mentions() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv-mention-source",
+        json!([{ "name": "status", "type": "text" }]),
+    )
+    .await?;
+    create_schema(
+        &service,
+        "iv-mention-made",
+        json!([{ "name": "note", "type": "text" }]),
+    )
+    .await?;
+    create_schema(
+        &service,
+        "iv-mention-target",
+        json!([{ "name": "note", "type": "text" }]),
+    )
+    .await?;
+
+    let target_id = service
+        .create_node(Node::new(
+            "iv-mention-target".to_string(),
+            "the mentioned node".to_string(),
+            json!({}),
+        ))
+        .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play = Node::new(
+        "play".to_string(),
+        "mention-rule".to_string(),
+        json!({ "play": { "rules": [{
+            "name": "create-linking-node",
+            "class": "invariant",
+            "description": "Test rule",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-mention-source" } },
+            "conditions": [],
+            "actions": [{
+                "description": "Test action",
+                "action_type": "create_node",
+                "params": {
+                    "node_type": "iv-mention-made",
+                    "content": format!("see [the target](nodespace://{target_id})")
+                }
+            }]
+        }] } }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play)
+            .expect("the play must parse and activate");
+    }
+
+    service
+        .create_node(Node::new(
+            "iv-mention-source".to_string(),
+            "trigger".to_string(),
+            json!({ "status": "pending" }),
+        ))
+        .await?;
+
+    let made = service
+        .query_nodes_by_type("iv-mention-made", false)
+        .await?;
+    assert_eq!(made.len(), 1, "the invariant action created one node");
+    assert_eq!(
+        service.get_mentions(&made[0].id).await?,
+        vec![target_id.clone()],
+        "the created node is linked to the node its content mentions"
+    );
+    assert_eq!(
+        service.get_mentioned_by(&target_id).await?,
+        vec![made[0].id.clone()]
+    );
+    Ok(())
+}
