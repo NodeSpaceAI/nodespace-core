@@ -76,8 +76,8 @@ Team synchronization is in active development. To try it, contact [developer@nod
 ### Build from Source
 
 **Prerequisites:**
-- [Bun 1.0+](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
-- [rustup](https://rustup.rs) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`. It installs the Rust toolchain `rust-toolchain.toml` pins on the first build.
+- [Bun 1.3+](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
+- [rustup](https://rustup.rs) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`. It installs the Rust toolchain `rust-toolchain.toml` pins on the first build (see "Rust toolchain" in `AGENTS.md`).
 
 ```bash
 git clone https://github.com/NodeSpaceAI/nodespace-core
