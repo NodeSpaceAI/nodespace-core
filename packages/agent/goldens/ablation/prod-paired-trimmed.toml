@@ -1,3 +1,4 @@
+# pre-ADR-112 record: the guidance below tells the model to use a `custom:` key prefix; that rule is gone (bare names in the type's custom_fields). Frozen as measured; do not edit.
 # derived-from: dev-schema-creation.toml, with BOTH guidance and tool schemas from source.
 name = "prod-paired-trimmed"
 reps = 5
