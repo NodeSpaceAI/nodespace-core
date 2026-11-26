@@ -1,3 +1,4 @@
+# pre-ADR-112 record: the guidance below tells the model to use a `custom:` key prefix; that rule is gone (bare names in the type's custom_fields). Frozen as measured; do not edit.
 # derived-from: dev-status-change-enum.toml -- the base this arm rebuilds.
 name = "full-tool-surface"
 reps = 5

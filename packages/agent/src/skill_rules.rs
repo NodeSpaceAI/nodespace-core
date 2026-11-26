@@ -1419,6 +1419,58 @@ mod tests {
     /// form must still appear in the prose.
     const PROSE_ONLY_EXAMPLES: &[&str] = &["delete-a-schema"];
 
+    /// Load-bearing facts only the prose form carries, by rule id: the
+    /// imperative form sends the work to another skill and has no
+    /// counterpart for them, so they can't be shared anchors.
+    const PROSE_ONLY_ANCHORS: &[(&str, &[&str])] = &[(
+        "delete-a-schema",
+        &["mirror of the", "instance data", "extends"],
+    )];
+
+    /// Each prose-only anchor is still present in its rule's prose form.
+    #[test]
+    fn prose_only_anchors_stay_in_the_prose_form() {
+        let mut missing = Vec::new();
+        for (id, anchors) in PROSE_ONLY_ANCHORS {
+            let rule = SCHEMA_RULES
+                .iter()
+                .find(|r| r.id == *id)
+                .unwrap_or_else(|| panic!("PROSE_ONLY_ANCHORS names {id:?}, not in SCHEMA_RULES"));
+            let prose = rule.prose.to_lowercase();
+            for anchor in *anchors {
+                if !prose.contains(&anchor.to_lowercase()) {
+                    missing.push(format!("{id}: prose is missing {anchor:?}"));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{}", missing.join("\n"));
+    }
+
+    /// Ablation goldens whose text still teaches the `custom:` key prefix are
+    /// experiment records of a rule that no longer exists; each must say so.
+    #[test]
+    fn ablation_goldens_with_custom_prefix_are_marked_pre_adr_112() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("goldens/ablation");
+        // Assembled, so this test is not itself a prefix use to the checker.
+        let prefix = ["custom", ":"].concat();
+        let mut unmarked = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("goldens/ablation exists") {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let marked = text
+                .lines()
+                .next()
+                .is_some_and(|l| l.starts_with("# pre-ADR-112 record"));
+            if text.contains(&prefix) && !marked {
+                unmarked.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            }
+        }
+        assert!(unmarked.is_empty(), "unmarked goldens: {unmarked:?}");
+    }
+
     /// Every JSON object embedded in `text`, including nested ones, parsed so
     /// that formatting differences between the forms (`"a": 1` vs `"a":1`)
     /// don't count as drift. Anything that doesn't parse is skipped: that is

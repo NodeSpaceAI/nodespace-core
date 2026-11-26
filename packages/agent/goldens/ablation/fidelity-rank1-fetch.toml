@@ -1,3 +1,4 @@
+# pre-ADR-112 record: the guidance below tells the model to use a `custom:` key prefix; that rule is gone (bare names in the type's custom_fields). Frozen as measured; do not edit.
 # derived-from: production-baseline.toml -- the honest 9-tool/3-candidate reference.
 name = "fidelity-rank1-fetch"
 reps = 5

@@ -1,3 +1,4 @@
+# pre-ADR-112 record: the guidance below tells the model to use a `custom:` key prefix; that rule is gone (bare names in the type's custom_fields). Frozen as measured; do not edit.
 # derived-from: full-tool-surface.toml, itself derived from dev-status-change-enum.toml.
 name = "production-baseline"
 reps = 5
