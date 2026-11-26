@@ -37,7 +37,7 @@ Also include at the end of the plan:
 
 Inline the standards the implementing agent needs as well.
 
-Detail: AGENTS.md, "Plan Mode" and "Mandatory Startup Sequence".
+Detail: AGENTS.md, "Mandatory Startup Sequence", and the skill "Working an Issue in nodespace-core" (STEP 10).
 `);
 
 process.exit(0);

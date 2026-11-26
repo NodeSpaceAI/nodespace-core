@@ -116,7 +116,8 @@ Get the user's go-ahead before launching it, and restore afterwards.
    `NODESPACED_SOCKET=/tmp/nsh/.nodespace/daemon-dev.sock`, `NODESPACE_HOME=/tmp/nsh`.
    The log must say `/tmp/nsh/...`, never `/Users/<you>/.nodespace/`.
 4. Launch with `HOME=/tmp/nsh CARGO_HOME=… RUSTUP_HOME=… bun run dev:tauri`
-   (literal paths for the two; a scratch HOME otherwise downloads a toolchain).
+   (literal paths for the two; a scratch HOME otherwise makes rustup download the
+   toolchain `rust-toolchain.toml` pins afresh).
    Do not set `NODESPACED_SOCKET` for the app: the app registers a daemon on its
    home socket, so the two must agree.
 5. Afterwards restore the registration: `launchctl bootout
