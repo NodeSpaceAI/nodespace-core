@@ -170,6 +170,27 @@ async fn a_single_block_given_as_text_takes_the_type_an_import_gives_it() {
 }
 
 #[tokio::test]
+async fn a_caller_property_reaches_the_write_for_the_node_a_single_text_block_becomes() {
+    let (svc, _tmp) = test_service().await;
+    // A header declares no `nope` field, so the closed type refuses it by
+    // name: the caller's property was carried onto the parsed node.
+    let mut request = input("text", "## Context");
+    request.properties = json!({ "nope": 1 });
+    let err = create_document_node(&svc, request).await.unwrap_err();
+    assert!(err.to_string().contains("'nope'"), "{err}");
+    assert!(err.to_string().contains("header"), "{err}");
+}
+
+#[tokio::test]
+async fn a_single_text_block_with_properties_that_are_not_an_object_is_refused() {
+    let (svc, _tmp) = test_service().await;
+    let mut request = input("text", "## Context");
+    request.properties = json!("nope");
+    let err = create_document_node(&svc, request).await.unwrap_err();
+    assert!(matches!(err, OpsError::InvalidParams(_)), "{err:?}");
+}
+
+#[tokio::test]
 async fn a_plain_line_given_as_text_stays_text_as_given() {
     let (svc, _tmp) = test_service().await;
     assert_eq!(

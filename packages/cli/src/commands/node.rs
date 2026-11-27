@@ -1364,9 +1364,6 @@ mod tests {
         }
     }
 
-    // A checklist item's content is `- [ ] ...`. The implementing procedure
-    // prints the tick command with a space after `--content`, so that form,
-    // not only `--content=`, has to parse.
     #[test]
     fn the_create_note_names_the_type_only_when_it_differs() {
         assert_eq!(created_type_note("text", "text"), None);
@@ -1377,6 +1374,9 @@ mod tests {
         );
     }
 
+    // A checklist item's content is `- [ ] ...`. The implementing procedure
+    // prints the tick command with a space after `--content`, so that form,
+    // not only `--content=`, has to parse.
     #[test]
     fn content_may_begin_with_a_dash() {
         let created = create_args(&["--content", "- [ ] ship it", "--parent", "p-1"])

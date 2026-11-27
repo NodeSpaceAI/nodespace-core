@@ -5640,8 +5640,11 @@ impl GraphToolExecutor {
         // The same entry point as the CLI's `node create`: for a document type
         // (text, task, project, spec, plan, decision and what extends them) a
         // content of more than one block, or with front matter, is a markdown
-        // document (first line the title, the rest its children). Any other
-        // type, and single-block content, is stored as given.
+        // document (first line the title, the rest its children). A single
+        // block is one node: `text` takes the type an import gives it, and
+        // another document type keeps its type with the line as its title (a
+        // line that cannot be a title is refused). Any other type is stored
+        // as given.
         let output = node_ops::create_document_node(&ns, input)
             .await
             .map_err(|e| ops_error_to_tool(e, "create_node"))?;
