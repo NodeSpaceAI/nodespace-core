@@ -753,6 +753,7 @@ pub async fn update_node(
         remove_from_collection_ids: Vec::new(),
         lifecycle_status: update.lifecycle_status,
         typed_client: true,
+        ..Default::default()
     };
 
     let resp = c

@@ -243,6 +243,11 @@ pub struct NodeUpdate {
     pub title: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lifecycle_status: Option<String>,
+    /// Property keys to remove, applied after `properties` is merged. Bare
+    /// field names. A key the node does not hold is left as it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub unset_properties: Vec<String>,
 }
 
 impl NodeUpdate {
@@ -275,10 +280,16 @@ impl NodeUpdate {
         self
     }
 
+    pub fn with_unset_properties(mut self, keys: Vec<String>) -> Self {
+        self.unset_properties = keys;
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.node_type.is_none()
             && self.content.is_none()
             && self.properties.is_none()
+            && self.unset_properties.is_empty()
             && self.title.is_none()
             && self.lifecycle_status.is_none()
     }

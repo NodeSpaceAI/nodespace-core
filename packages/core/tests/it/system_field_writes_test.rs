@@ -218,6 +218,7 @@ async fn every_update_path_refuses_a_system_field() {
                 add_to_collection_ids: vec![],
                 remove_from_collection_ids: vec![],
                 lifecycle_status: None,
+                ..Default::default()
             },
         )
         .await,
@@ -248,6 +249,7 @@ async fn a_user_update_cannot_set_a_play_suspension_but_the_engine_does() {
             add_to_collection_ids: vec![],
             remove_from_collection_ids: vec![],
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await
@@ -592,4 +594,32 @@ fn no_user_facing_surface_names_the_maintainer_path() {
         scanned > 40,
         "the scan found little surface source ({scanned})"
     );
+}
+
+#[tokio::test]
+async fn an_unset_of_a_system_field_is_refused() {
+    let (svc, _tmp) = test_service().await;
+    let chat = a_pty_chat(&svc).await;
+    svc.maintaining_system_fields(svc.update_node(
+        &chat.id,
+        chat.version,
+        NodeUpdate::new().with_properties(json!({ "summary": "Fixed the build" })),
+    ))
+    .await
+    .expect("the maintainer writes the field");
+    let chat = svc.get_node(&chat.id).await.unwrap().unwrap();
+
+    assert_refused(
+        "an unset",
+        svc.update_node(
+            &chat.id,
+            chat.version,
+            NodeUpdate::new().with_unset_properties(vec!["summary".to_string()]),
+        )
+        .await,
+        "summary",
+        "ai-chat",
+    );
+    let after = svc.get_node(&chat.id).await.unwrap().unwrap();
+    assert_eq!(after.properties["ai-chat"]["summary"], "Fixed the build");
 }

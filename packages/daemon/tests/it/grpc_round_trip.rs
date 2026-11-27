@@ -248,6 +248,7 @@ async fn update_increments_version() {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         })
         .await
         .expect("update_node failed")
@@ -733,6 +734,7 @@ async fn watch_nodes_receives_create_update_delete_events() {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         })
         .await
         .expect("update_node failed");
@@ -1203,6 +1205,7 @@ async fn update_node_auto_fetches_version_when_omitted() {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         })
         .await
         .expect("update_node without version failed")
@@ -1261,6 +1264,7 @@ async fn update_node_add_then_remove_collection_membership() {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         })
         .await
         .expect("add_to_collection failed");
@@ -1290,6 +1294,7 @@ async fn update_node_add_then_remove_collection_membership() {
             remove_from_collection_ids: vec![collection_id.clone()],
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         })
         .await
         .expect("remove_from_collection failed");

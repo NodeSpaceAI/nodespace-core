@@ -400,6 +400,7 @@ async fn a_write_naming_a_derived_attribute_is_refused() -> Result<()> {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await
@@ -437,6 +438,7 @@ fn status_update(node_id: &str, version: Option<i64>, status: &str) -> UpdateNod
         add_to_collection_ids: Vec::new(),
         remove_from_collection_ids: Vec::new(),
         lifecycle_status: None,
+        ..Default::default()
     }
 }
 

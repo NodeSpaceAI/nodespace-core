@@ -72,6 +72,7 @@ fn update_request(id: &str, properties: &str) -> UpdateNodeRequest {
         remove_from_collection_ids: Vec::new(),
         lifecycle_status: None,
         typed_client: false,
+        ..Default::default()
     }
 }
 
@@ -115,6 +116,7 @@ async fn the_server_refuses_a_system_field_on_create_update_and_batch() {
                 content: None,
                 node_type: None,
                 properties: Some(r#"{"summary":"forged"}"#.into()),
+                ..Default::default()
             }],
         })
         .await;

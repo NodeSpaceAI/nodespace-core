@@ -1036,6 +1036,12 @@ impl NodeService {
             // that actually land in storage, not a pre-rebucket snapshot; for
             // an unextended type `rebucket_and_validate` is a no-op reshuffle,
             // so this changes nothing for the common case.
+            if !update.unset_properties.is_empty()
+                && Self::remove_property_keys(&mut updated, &update.unset_properties)?
+            {
+                properties_changed = true;
+            }
+
             Self::ensure_schema_core_status_unchanged(existing, &updated)?;
             Self::ensure_schema_structure_unchanged(existing, &updated)?;
             self.ensure_retype_allowed(None, existing, &updated).await?;
@@ -1120,6 +1126,7 @@ impl NodeService {
                     properties: Some(updated.properties.clone()),
                     title: title_update.clone(),
                     lifecycle_status: update.lifecycle_status.clone(),
+                    ..Default::default()
                 },
             ));
             // The node as the store will hold it once this update lands —

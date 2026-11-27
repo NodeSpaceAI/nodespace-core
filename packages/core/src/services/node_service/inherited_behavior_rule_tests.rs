@@ -555,3 +555,31 @@ async fn an_update_that_would_unbucket_stored_properties_is_refused() {
         }
     }
 }
+
+/// An unset removes the key on every write path, the inherited field in its
+/// declaring ancestor's bucket included.
+#[tokio::test]
+async fn an_unset_removes_the_key_on_every_write_path() {
+    for path in UPDATE_PATHS {
+        let (service, _tmp) = service_with_campaign_type().await;
+        let id = create_valid_campaign(&service).await;
+
+        apply_via(
+            &service,
+            path,
+            &id,
+            NodeUpdate::new()
+                .with_unset_properties(vec!["channel".to_string(), "end_date".to_string()]),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{path:?}: {e}"));
+
+        let stored = service.get_node(&id).await.unwrap().unwrap();
+        let held = stored.properties.to_string();
+        assert!(
+            !held.contains("channel") && !held.contains("end_date"),
+            "{path:?}: {held}"
+        );
+        assert!(held.contains("start_date"), "{path:?}: {held}");
+    }
+}

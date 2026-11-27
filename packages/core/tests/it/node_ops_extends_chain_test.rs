@@ -106,6 +106,7 @@ fn update_reason(version: Option<i64>) -> UpdateNodeInput {
         add_to_collection_ids: vec![],
         remove_from_collection_ids: vec![],
         lifecycle_status: None,
+        ..Default::default()
     }
 }
 

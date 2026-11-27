@@ -219,10 +219,11 @@ nodespace node update <node-id> --property status=in_progress --property priorit
 - `--content <text>` — replaces the node's content/title. Omit to leave content unchanged.
 - `--property key=value` — repeatable; sets one property, deep-merged into existing properties (properties you don't mention are left untouched). Values are parsed as JSON when possible (numbers, booleans, arrays, objects), otherwise treated as a plain string.
 - `--properties '{json}'` — several properties as one JSON object, deep-merged the same way; each value keeps the type it is written with.
+- `--unset-property <key>` — repeatable; removes a property from the node. The key is deleted, not set to `null` (a `null` value stays stored as one). It goes through the same validation, version check and events as any other update, so a required field cannot be removed, and a key the node does not hold is left as it is. It may not name a key that `--property` or `--properties` sets in the same command. It needs a daemon from the same release as the CLI: an older one ignores it, and the command then fails after the write, saying the key is still there.
 - `--version <n>` — the node's `version` as you read it. The update is written only if the node is still at that version. Omit it to update whatever is current.
 - `--dry-run` — evaluate the update without making it. See "Asking whether a change is allowed" below.
 
-At least one of `--content`, `--property`, `--properties` or a collection flag is required.
+At least one of `--content`, `--property`, `--properties`, `--unset-property` or a collection flag is required.
 
 **Writing at the version you read:** every node has a `version`, printed by `node get` and by every write. Pass it back with `--version` when the change depends on what you read: starting a task, ticking a checklist item, editing text you just fetched. If someone else changed the node in between, nothing is written and the command exits non-zero:
 
@@ -498,7 +499,7 @@ nodespace node batch-get --id <id1> --id <id2> --id <id3>
 nodespace node batch-update --updates '[{"node_id":"abc","content":"new text","version":3}]'
 ```
 
-Each object in the array: `node_id` (required), `version` (optional — omitted or null means unguarded: the item updates whatever is current and bypasses OCC), `content`, `node_type`, `properties`.
+Each object in the array: `node_id` (required), `version` (optional — omitted or null means unguarded: the item updates whatever is current and bypasses OCC), `content`, `node_type`, `properties`, `unset_properties` (an array of property keys to remove, as `--unset-property` does for one node).
 
 **Output:** `{"count":N,"updated":["id1",…],"failed":[{"node_id":"…","error":"…"}]}`
 
@@ -1111,6 +1112,7 @@ Operate on individual nodes (get, context, create, update, set-status, move, del
 - `--content <CONTENT>` — New content. Omit to leave content unchanged (e.g. when only setting properties). A value may begin with a dash, as a checklist item or a list line does
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Deep-merged into the node's existing properties (unspecified keys are left untouched). Do NOT use this to change a task's status; use `node set-status` instead
 - `--properties <JSON>` — Set several properties at once from one JSON object: `--properties '{"key":"value"}'`, deep-merged like `--property`. Each value keeps the JSON type it is written with. May be combined with `--property`, which wins for a key given both ways
+- `--unset-property <KEY>` — Remove a property from the node: `--unset-property key` (repeatable). The key is deleted, not set to null, through the same validation, version check and events as any other update; a required field cannot be removed. A key the node does not hold is left as it is. Applied after --property/--properties, which may not name the same key. Needs a daemon from the same release as this CLI: an older one would ignore it, so the command checks the result and fails if the key is still there
 - `--collection <PATH>` — Collection path to add the node to, `:`-delimited for hierarchy (e.g. `docs:rust`). Missing segments are created. Repeatable. Mutually exclusive with --collection-id
 - `--collection-id <ID>` — Collection ID to add the node to (repeatable). Prefer --collection
 - `--remove-collection-id <ID>` — Collection ID to remove the node from (repeatable)
@@ -1166,7 +1168,7 @@ Operate on individual nodes (get, context, create, update, set-status, move, del
 
 **`nodespace node batch-update`** — Update multiple nodes in one request (OCC-aware)
 
-- `--updates <UPDATES>` — JSON-encoded array of update objects: [{"node_id":"…","content":"…","version":N}]. Each item may have: node_id (required), version (optional; an omitted or null version means unguarded: the item updates whatever is current), content, node_type, properties (required)
+- `--updates <UPDATES>` — JSON-encoded array of update objects: [{"node_id":"…","content":"…","version":N}]. Each item may have: node_id (required), version (optional; an omitted or null version means unguarded: the item updates whatever is current), content, node_type, properties, unset_properties (an array of property keys to remove, not set to null; a key the node does not hold is left as it is). A daemon older than this CLI ignores unset_properties; the command then fails after the write, reporting the key still present (required)
 
 ### `nodespace model`
 

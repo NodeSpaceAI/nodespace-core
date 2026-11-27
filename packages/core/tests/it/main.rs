@@ -84,4 +84,5 @@ mod system_field_writes_test;
 mod tool_subtypes_test;
 mod typed_flat_updates_test;
 mod unique_field_extends_chain_test;
+mod unset_property_test;
 mod update_node_transaction_test;

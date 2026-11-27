@@ -102,6 +102,7 @@ async fn update_listing(svc: &Arc<NodeService>, id: &str, properties: Value) -> 
             add_to_collection_ids: vec![],
             remove_from_collection_ids: vec![],
             lifecycle_status: None,
+            ..Default::default()
         },
     )
     .await?;

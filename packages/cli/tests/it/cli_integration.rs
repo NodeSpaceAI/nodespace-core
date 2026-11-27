@@ -388,6 +388,7 @@ async fn create_get_update_children_delete_round_trip() {
             remove_collection_ids: vec![],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -3645,6 +3646,7 @@ async fn node_update_sets_properties_and_preserves_content() {
             remove_collection_ids: vec![],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -3817,6 +3819,7 @@ async fn node_update_rejects_empty_args() {
             remove_collection_ids: vec![],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -4014,6 +4017,7 @@ async fn a_dry_run_update_or_set_status_writes_nothing() {
                 remove_collection_ids: vec![],
                 version: None,
                 dry_run: true,
+                unset_properties: Vec::new(),
             }),
             json,
         )
@@ -4096,6 +4100,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             remove_collection_ids: vec![],
             version,
             dry_run: false,
+            unset_properties: Vec::new(),
         })
     };
     let assert_refused = |err: anyhow::Error, given: i64, current: i64| {
@@ -4168,6 +4173,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             remove_collection_ids: vec![],
             version,
             dry_run: false,
+            unset_properties: Vec::new(),
         })
     };
     let err = node_run(&mut client, join(Some(1)), false)
@@ -4238,6 +4244,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             remove_collection_ids: vec![],
             version: Some(7),
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         false,
     )
@@ -4264,6 +4271,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
             typed_client: false,
+            ..Default::default()
         })
         .await
         .expect_err("version 2 is stale");
@@ -5070,6 +5078,7 @@ async fn node_update_collection_adds_and_removes_membership() {
             remove_collection_ids: vec![],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -5098,6 +5107,7 @@ async fn node_update_collection_adds_and_removes_membership() {
             remove_collection_ids: vec![leaf_id.clone()],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -5178,6 +5188,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
             remove_collection_ids: vec!["ops:oncall".into()],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -5210,6 +5221,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
             remove_collection_ids: vec![leaf_id],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -5473,6 +5485,7 @@ async fn node_property_sets_reads_and_clears_a_link() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -6479,6 +6492,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
             remove_collection_ids: vec![],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         })
     };
 
@@ -6740,6 +6754,7 @@ async fn node_create_and_update_set_a_collection_description() {
             remove_collection_ids: vec![],
             version: None,
             dry_run: false,
+            unset_properties: Vec::new(),
         }),
         true,
     )
@@ -6780,6 +6795,7 @@ fn update_args(id: &str, content: &str) -> commands::node::UpdateArgs {
         remove_collection_ids: vec![],
         version: None,
         dry_run: false,
+        unset_properties: Vec::new(),
     }
 }
 
@@ -6932,6 +6948,274 @@ async fn a_context_read_of_a_missing_node_is_an_error_naming_it() {
         format!("{err:#}"),
         "Not found: 00000000-0000-4000-8000-000000000000"
     );
+
+    let _ = shutdown.send(());
+}
+
+// ---------------------------------------------------------------------------
+// `node update --unset-property`, `batch-update` unset_properties, and
+// `relationship delete`
+// ---------------------------------------------------------------------------
+
+/// A `ticket` type with two fields and a relationship with a reverse name,
+/// and two tickets carrying both fields.
+async fn seed_tickets() -> (
+    PathBuf,
+    oneshot::Sender<()>,
+    TempDir,
+    NodeClient,
+    NodeClient,
+    String,
+    String,
+) {
+    let (sock, shutdown, tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Create(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({
+                    "name": "Ticket",
+                    "fields": [
+                        {"name": "severity", "type": "text"},
+                        {"name": "area", "type": "text"}
+                    ],
+                    "relationships": [
+                        {"name": "blocks", "targetType": "ticket", "direction": "out", "cardinality": "many", "reverseName": "blocked_by", "reverseCardinality": "many"}
+                    ]
+                })
+                .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect("create ticket schema");
+
+    let mut ids = Vec::new();
+    for content in ["first", "second"] {
+        let created = raw
+            .create_node(CreateNodeRequest {
+                node_type: "ticket".into(),
+                content: content.into(),
+                parent_id: None,
+                properties: serde_json::json!({"severity": "high", "area": "api"}).to_string(),
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                id: None,
+                position: None,
+            })
+            .await
+            .expect("seed ticket")
+            .into_inner();
+        ids.push(created.node_id);
+    }
+    let second = ids.pop().unwrap();
+    let first = ids.pop().unwrap();
+    (sock, shutdown, tempdir, client, raw, first, second)
+}
+
+async fn properties_of(raw: &mut NodeClient, id: &str) -> serde_json::Value {
+    let node = raw
+        .get_node(GetNodeRequest {
+            node_id: id.to_string(),
+        })
+        .await
+        .expect("get_node")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+    let stored: serde_json::Value =
+        serde_json::from_str(&node.properties).expect("properties json");
+    nodespace_types::flatten_namespaced_properties(&stored, &node.node_type)
+}
+
+fn unset_args(id: &str, unset: &[&str]) -> commands::node::UpdateArgs {
+    commands::node::UpdateArgs {
+        id: id.to_string(),
+        content: None,
+        properties: Vec::new(),
+        properties_json: None,
+        unset_properties: unset.iter().map(|k| k.to_string()).collect(),
+        collections: Vec::new(),
+        collection_ids: Vec::new(),
+        remove_collection_ids: Vec::new(),
+        version: None,
+        dry_run: false,
+    }
+}
+
+#[tokio::test]
+async fn node_update_unset_property_removes_the_key_and_the_node_round_trips() {
+    let (_sock, shutdown, _tempdir, mut client, mut raw, first, _second) = seed_tickets().await;
+
+    node_run(
+        &mut client,
+        commands::node::NodeAction::Update(unset_args(&first, &["area"])),
+        true,
+    )
+    .await
+    .expect("unset");
+
+    let props = properties_of(&mut raw, &first).await;
+    assert!(
+        props.get("area").is_none(),
+        "key removed, not nulled: {props}"
+    );
+    assert_eq!(props["severity"], "high", "other fields stay");
+
+    // A key the node does not hold is left as it is: the command succeeds.
+    node_run(
+        &mut client,
+        commands::node::NodeAction::Update(unset_args(&first, &["area", "never_set"])),
+        true,
+    )
+    .await
+    .expect("an unset of an absent key is not an error");
+    let props = properties_of(&mut raw, &first).await;
+    assert!(props.get("area").is_none() && props.get("never_set").is_none());
+    assert_eq!(props["severity"], "high");
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn node_update_unset_property_refuses_a_key_also_set_in_the_same_command() {
+    let (_sock, shutdown, _tempdir, mut client, mut raw, first, _second) = seed_tickets().await;
+
+    let mut args = unset_args(&first, &["area"]);
+    args.properties = vec![("area".to_string(), serde_json::json!("web"))];
+    let err = node_run(&mut client, commands::node::NodeAction::Update(args), true)
+        .await
+        .expect_err("set and unset of one key");
+
+    assert!(err.to_string().contains("both set and unset"), "{err}");
+    assert_eq!(properties_of(&mut raw, &first).await["area"], "api");
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn batch_update_unset_properties_removes_the_keys_per_item() {
+    let (_sock, shutdown, _tempdir, mut client, mut raw, first, second) = seed_tickets().await;
+
+    let updates = serde_json::json!([
+        {"node_id": first, "unset_properties": ["area"]},
+        {"node_id": second, "unset_properties": ["severity", "area"]},
+    ])
+    .to_string();
+    node_run(
+        &mut client,
+        commands::node::NodeAction::BatchUpdate(commands::node::BatchUpdateArgs { updates }),
+        true,
+    )
+    .await
+    .expect("batch unset");
+
+    let one = properties_of(&mut raw, &first).await;
+    assert!(
+        one.get("area").is_none() && one["severity"] == "high",
+        "{one}"
+    );
+    let two = properties_of(&mut raw, &second).await;
+    assert!(
+        two.get("area").is_none() && two.get("severity").is_none(),
+        "{two}"
+    );
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn batch_update_unset_properties_must_be_an_array_of_strings() {
+    let (_sock, shutdown, _tempdir, mut client, mut raw, first, _second) = seed_tickets().await;
+
+    let updates = serde_json::json!([{"node_id": first, "unset_properties": "area"}]).to_string();
+    let err = node_run(
+        &mut client,
+        commands::node::NodeAction::BatchUpdate(commands::node::BatchUpdateArgs { updates }),
+        true,
+    )
+    .await
+    .expect_err("a string is not a list of keys");
+
+    assert!(err.to_string().contains("unset_properties"), "{err}");
+    assert_eq!(properties_of(&mut raw, &first).await["area"], "api");
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn relationship_delete_removes_the_edge_and_its_reverse() {
+    let (_sock, shutdown, _tempdir, mut client, mut raw, source, target) = seed_tickets().await;
+
+    commands::relationship::run(
+        &mut client,
+        commands::relationship::RelationshipAction::Create(commands::relationship::CreateArgs {
+            from: source.clone(),
+            relationship_name: "blocks".into(),
+            to: target.clone(),
+            edge_data: None,
+        }),
+        true,
+    )
+    .await
+    .expect("create");
+
+    async fn related(raw: &mut NodeClient, id: &str, name: &str) -> usize {
+        let response = raw
+            .get_related_nodes(GetRelatedNodesRequest {
+                node_id: id.to_string(),
+                relationship_name: name.to_string(),
+                direction: "out".into(),
+            })
+            .await
+            .expect("get related nodes")
+            .into_inner();
+        let nodes: serde_json::Value =
+            serde_json::from_str(&response.related_nodes_json).expect("related json");
+        nodes.as_array().expect("array").len()
+    }
+    assert_eq!(related(&mut raw, &source, "blocks").await, 1);
+    assert_eq!(related(&mut raw, &target, "blocked_by").await, 1);
+
+    let delete = || {
+        commands::relationship::RelationshipAction::Delete(commands::relationship::DeleteArgs {
+            from: source.clone(),
+            relationship_name: "blocks".into(),
+            to: target.clone(),
+        })
+    };
+    commands::relationship::run(&mut client, delete(), true)
+        .await
+        .expect("delete");
+
+    assert_eq!(related(&mut raw, &source, "blocks").await, 0);
+    assert_eq!(
+        related(&mut raw, &target, "blocked_by").await,
+        0,
+        "the reverse edge disappears with it"
+    );
+
+    // An edge that is not there: the delete is a reported no-op, not an error.
+    let again = raw
+        .delete_relationship(nodespace_daemon::nodespace::DeleteRelationshipRequest {
+            source_id: source.clone(),
+            relationship_name: "blocks".into(),
+            target_id: target.clone(),
+        })
+        .await
+        .expect("delete of a missing edge succeeds")
+        .into_inner();
+    assert!(!again.deleted);
+    commands::relationship::run(&mut client, delete(), true)
+        .await
+        .expect("the command reports it and exits 0");
 
     let _ = shutdown.send(());
 }

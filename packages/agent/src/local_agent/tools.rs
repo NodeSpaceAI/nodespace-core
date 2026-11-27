@@ -5875,6 +5875,7 @@ impl GraphToolExecutor {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            ..Default::default()
         };
 
         if params.dry_run {
@@ -6278,6 +6279,7 @@ impl GraphToolExecutor {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            ..Default::default()
         };
 
         let output = node_ops::update_node(&ns, input)

@@ -177,6 +177,7 @@ fn bench_occ_overhead(c: &mut Criterion) {
                             properties: None,
                             title: None,
                             lifecycle_status: None,
+                            ..Default::default()
                         },
                     )
                     .await
@@ -196,6 +197,7 @@ fn bench_occ_overhead(c: &mut Criterion) {
                                 properties: None,
                                 title: None,
                                 lifecycle_status: None,
+                                ..Default::default()
                             },
                         )
                         .await
@@ -369,6 +371,7 @@ fn bench_batch_update(c: &mut Criterion) {
                                     properties: None,
                                     title: None,
                                     lifecycle_status: None,
+                                    ..Default::default()
                                 },
                             )
                             .await

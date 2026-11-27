@@ -707,6 +707,7 @@ mod tests {
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
+            ..Default::default()
         };
         let stored = || async {
             svc.get_node(&created.node_id)

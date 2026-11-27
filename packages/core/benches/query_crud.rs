@@ -159,6 +159,7 @@ fn bench_crud_core(c: &mut Criterion) {
                             properties: None,
                             title: None,
                             lifecycle_status: None,
+                            ..Default::default()
                         },
                     )
                     .await
