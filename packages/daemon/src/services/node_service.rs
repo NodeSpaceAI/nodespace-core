@@ -153,6 +153,9 @@ pub struct NodeServiceImpl {
     /// The extension ids this daemon supports, reported by `GetDaemonVersion`
     /// for the app's product check. Empty for core's own daemon.
     supported_extensions: Vec<String>,
+    /// The hosting binary's version, reported by `GetDaemonVersion` as
+    /// `binary_version`. Empty when the host did not set it.
+    binary_version: String,
     /// Client ids a request may not present as its `x-ns-client-id`
     /// ([`crate::DaemonExtensions::reserved_client_id`]). Empty for core's
     /// own daemon.
@@ -179,6 +182,7 @@ impl NodeServiceImpl {
             scheduler,
             shutdown_token: tokio_util::sync::CancellationToken::new(),
             supported_extensions: Vec::new(),
+            binary_version: String::new(),
             reserved_client_ids: Arc::from([]),
             playbook_lifecycle: None,
         }
@@ -189,6 +193,15 @@ impl NodeServiceImpl {
     /// [`crate::DaemonExtensions`]; an impl built any other way reports none.
     pub fn with_supported_extensions(mut self, supported_extensions: Vec<String>) -> Self {
         self.supported_extensions = supported_extensions;
+        self
+    }
+
+    /// Set the hosting binary's version `GetDaemonVersion` reports as
+    /// `binary_version`. Set by [`crate::build_database_services`] from
+    /// [`crate::DaemonExtensions::binary_version`]; an impl built any other way
+    /// reports none (empty).
+    pub fn with_binary_version(mut self, binary_version: String) -> Self {
+        self.binary_version = binary_version;
         self
     }
 
@@ -1901,6 +1914,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(GetDaemonVersionResponse {
             version: env!("CARGO_PKG_VERSION").to_string(),
             supported_extensions: self.supported_extensions.clone(),
+            binary_version: self.binary_version.clone(),
         }))
     }
 
@@ -5972,6 +5986,38 @@ mod tests {
             .into_inner();
         assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(!resp.version.is_empty(), "daemon must report a version");
+    }
+
+    #[tokio::test]
+    async fn get_daemon_version_reports_the_hosting_binary_version_apart_from_the_core_version() {
+        let (svc, _tmp) = make_service().await;
+        let unset = svc
+            .get_daemon_version(Request::new(crate::nodespace::GetDaemonVersionRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            unset.binary_version.is_empty(),
+            "a host that sets nothing reports no binary version"
+        );
+
+        let svc = NodeServiceImpl::new(
+            svc.node_service(),
+            Arc::new(tokio::sync::RwLock::new(None)),
+            Arc::new(EmbeddingScheduler::new()),
+        )
+        .with_binary_version("9.9.9".to_string());
+        let set = svc
+            .get_daemon_version(Request::new(crate::nodespace::GetDaemonVersionRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(set.binary_version, "9.9.9");
+        assert_eq!(
+            set.version,
+            env!("CARGO_PKG_VERSION"),
+            "the existing field stays the core version"
+        );
     }
 
     #[tokio::test]

@@ -140,3 +140,44 @@ mod secret_debug_tests {
         assert!(text.contains("tok"));
     }
 }
+
+#[cfg(test)]
+mod daemon_version_wire_tests {
+    use crate::nodespace::GetDaemonVersionResponse;
+    use prost::Message;
+
+    /// `GetDaemonVersionResponse` as a daemon or client from before
+    /// `binary_version` existed defines it: fields 1 and 2 only.
+    #[derive(Clone, PartialEq, Message)]
+    struct OldGetDaemonVersionResponse {
+        #[prost(string, tag = "1")]
+        version: String,
+        #[prost(string, repeated, tag = "2")]
+        supported_extensions: Vec<String>,
+    }
+
+    #[test]
+    fn an_older_client_ignores_the_binary_version_a_newer_daemon_sends() {
+        let sent = GetDaemonVersionResponse {
+            version: "0.3.14".into(),
+            supported_extensions: vec!["fixture".into()],
+            binary_version: "0.1.9".into(),
+        }
+        .encode_to_vec();
+        let old = OldGetDaemonVersionResponse::decode(sent.as_slice()).unwrap();
+        assert_eq!(old.version, "0.3.14");
+        assert_eq!(old.supported_extensions, ["fixture"]);
+    }
+
+    #[test]
+    fn a_newer_client_reads_an_older_daemons_reply_as_an_empty_binary_version() {
+        let sent = OldGetDaemonVersionResponse {
+            version: "0.3.14".into(),
+            supported_extensions: vec![],
+        }
+        .encode_to_vec();
+        let new = GetDaemonVersionResponse::decode(sent.as_slice()).unwrap();
+        assert_eq!(new.version, "0.3.14");
+        assert!(new.binary_version.is_empty());
+    }
+}

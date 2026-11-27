@@ -44,7 +44,7 @@ fn test_context() -> SharedContext {
         serving_ended: tokio_util::sync::CancellationToken::new(),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),
-        extensions: nodespace_daemon::DaemonExtensions::none(),
+        extensions: nodespace_daemon::DaemonExtensions::none().binary_version("host-1.2.3"),
     }
 }
 
@@ -268,6 +268,10 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
         .unwrap()
         .into_inner();
     assert!(!version.version.is_empty());
+    assert_eq!(
+        version.binary_version, "host-1.2.3",
+        "the host's version reaches the response through the unrouted service set"
+    );
 
     assert_eq!(
         contents(&default_dir),

@@ -545,6 +545,7 @@ pub async fn build_database_services(
         shared.scheduler.clone(),
     )
     .with_supported_extensions(shared.extensions.supported_extensions().to_vec())
+    .with_binary_version(shared.extensions.host_binary_version().to_string())
     .with_reserved_client_ids(shared.extensions.reserved_client_ids().to_vec())
     .with_database_id(database_id.to_string())
     .with_shutdown_token(shutdown_token.clone())
@@ -690,6 +691,7 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
         shared.scheduler.clone(),
     )
     .with_supported_extensions(shared.extensions.supported_extensions().to_vec())
+    .with_binary_version(shared.extensions.host_binary_version().to_string())
     .with_reserved_client_ids(shared.extensions.reserved_client_ids().to_vec());
     let embeddings_service_grpc = shared
         .has_model

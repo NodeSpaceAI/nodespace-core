@@ -52,6 +52,9 @@ pub struct DiagnosticsReport {
     pub databases: Vec<DatabaseSummary>,
     /// The running daemon's version, `None` when it could not be read.
     pub daemon_version: Option<String>,
+    /// The version of the binary hosting the daemon, `None` when the daemon
+    /// did not report one (it predates the field, or its host never set it).
+    pub daemon_binary_version: Option<String>,
     /// Id of the database the counts below were computed against.
     pub targeted_database_id: String,
     /// On-disk path of the targeted database.
@@ -149,14 +152,19 @@ pub async fn collect(
     // A CLI and daemon from different releases qualify every figure below, so
     // say so in the report. Neither a mismatch nor a daemon too old to report
     // its version fails the report: both are warnings.
+    let mut daemon_binary_version = None;
     let (daemon_version, version_warning) = match node_client
         .get_daemon_version(GetDaemonVersionRequest {})
         .await
     {
-        Ok(response) => crate::version_skew::diagnostics_version(
-            crate::version_skew::CLI_VERSION,
-            Ok(response.into_inner().version),
-        ),
+        Ok(response) => {
+            let inner = response.into_inner();
+            daemon_binary_version = non_empty(inner.binary_version);
+            crate::version_skew::diagnostics_version(
+                crate::version_skew::CLI_VERSION,
+                Ok(inner.version),
+            )
+        }
         Err(status) => {
             crate::version_skew::diagnostics_version(crate::version_skew::CLI_VERSION, Err(&status))
         }
@@ -328,6 +336,7 @@ pub async fn collect(
 
     Ok(DiagnosticsReport {
         daemon_version,
+        daemon_binary_version,
         databases,
         targeted_database_id,
         targeted_database_path,
@@ -466,6 +475,21 @@ fn or_unknown<T: std::fmt::Display>(value: Option<T>) -> String {
     }
 }
 
+/// A reported version, `None` when the daemon sent an empty one.
+fn non_empty(version: String) -> Option<String> {
+    Some(version).filter(|v| !v.is_empty())
+}
+
+/// The two daemon version lines: the hosting binary's own version and the core
+/// library version, each "unknown" when not reported.
+fn version_lines(binary: Option<&str>, core: Option<&str>) -> String {
+    format!(
+        "Daemon binary:    {}\nCore version:     {}\n",
+        binary.unwrap_or("unknown"),
+        core.unwrap_or("unknown")
+    )
+}
+
 fn print_human(r: &DiagnosticsReport) {
     println!("NodeSpace Diagnostics");
     println!("─────────────────────────────────────");
@@ -492,9 +516,12 @@ fn print_human(r: &DiagnosticsReport) {
     // a live daemon always has an RSS — a missing figure here is only ever a
     // failure, so it gets the louder UNKNOWN treatment.
     println!("CLI version:      {}", crate::version_skew::CLI_VERSION);
-    println!(
-        "Daemon version:   {}",
-        r.daemon_version.as_deref().unwrap_or("unknown")
+    print!(
+        "{}",
+        version_lines(
+            r.daemon_binary_version.as_deref(),
+            r.daemon_version.as_deref()
+        )
     );
     match r.daemon_rss_bytes {
         Some(bytes) => println!("Daemon memory:     {}", format_size(bytes)),
@@ -537,6 +564,7 @@ fn print_json(r: &DiagnosticsReport) -> Result<()> {
         })).collect::<Vec<_>>(),
         "cli_version": crate::version_skew::CLI_VERSION,
         "daemon_version": r.daemon_version,
+        "daemon_binary_version": r.daemon_binary_version,
         "targeted_database_id": r.targeted_database_id,
         "targeted_database_path": r.targeted_database_path,
         "database_size_bytes": r.database_size_bytes,
@@ -554,6 +582,23 @@ fn print_json(r: &DiagnosticsReport) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn version_lines_show_binary_and_core_on_separate_lines() {
+        assert_eq!(
+            super::version_lines(Some("0.1.9"), Some("0.3.14")),
+            "Daemon binary:    0.1.9\nCore version:     0.3.14\n"
+        );
+    }
+
+    #[test]
+    fn an_unset_binary_version_shows_as_unknown() {
+        assert_eq!(super::non_empty(String::new()), None);
+        assert_eq!(
+            super::version_lines(super::non_empty(String::new()).as_deref(), Some("0.3.14")),
+            "Daemon binary:    unknown\nCore version:     0.3.14\n"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -1733,7 +1733,9 @@ async fn serve_headless() -> Result<()> {
 
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let (shared, _model_task) =
+        build_shared_services(DaemonExtensions::none().binary_version(env!("CARGO_PKG_VERSION")))
+            .await?;
     // The dialog check and the approval key, before any database is opened.
     let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
@@ -1819,7 +1821,9 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
     let signal_shutdown =
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let (shared, _model_task) =
+        build_shared_services(DaemonExtensions::none().binary_version(env!("CARGO_PKG_VERSION")))
+            .await?;
     // The dialog check and the approval key, before any database is opened.
     let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
@@ -1963,7 +1967,9 @@ async fn serve_headless() -> Result<()> {
 
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let (shared, _model_task) =
+        build_shared_services(DaemonExtensions::none().binary_version(env!("CARGO_PKG_VERSION")))
+            .await?;
     // The dialog check and the approval key, before any database is opened.
     let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
@@ -2084,7 +2090,9 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
     let signal_shutdown =
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    let (shared, _model_task) =
+        build_shared_services(DaemonExtensions::none().binary_version(env!("CARGO_PKG_VERSION")))
+            .await?;
     // The dialog check and the approval key, before any database is opened.
     let presence = install_approval_services(&shared);
     // A launched agent session is told where this daemon serves, so the
