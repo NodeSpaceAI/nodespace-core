@@ -3145,7 +3145,7 @@
       "tier": "system"
     },
     "3d139d11-c3b7-42d5-b638-f2a2b41e1674": {
-      "configVersion": "2ac912095310a2a2706f5231d12f4361436cc8161246065a8cf46d067eeec6c3",
+      "configVersion": "5c57bdefb784c08e4e420b59009a20a807bec0631f3359c378c9f42e6d6a11ad",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "key": "Require success criteria before approving a spec",
       "nodeType": "play",
@@ -3194,7 +3194,7 @@
       "tier": "system"
     },
     "95796b4d-f078-44f8-807b-8a2e92167a2d": {
-      "configVersion": "c720a5dc99b65421ac00117036cbaf5a70c0de67450e54568d6815a4cdc6bb87",
+      "configVersion": "fdb152c989c094a302d46586e459a43ad4601865c5a56f163ce0070ae13c11cf",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "key": "Require a completed checklist before finishing a task",
       "nodeType": "play",

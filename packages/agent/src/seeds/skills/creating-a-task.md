@@ -14,7 +14,7 @@ STEP 5, DECIDE WHAT IT IS AND HOW BIG IT IS, WITH THE USER: a change to code is 
 
 STEP 6, WRITE THE BRIEF: the task's title says what will exist when it is done. Its brief is the text under it: durable, so it stays true as the code changes, and behavioural, so it says what the result does and not how it is built. Name no file paths or line numbers. Say what is out of scope. Hold it: steps 6 to 8 are written together, in step 8.
 
-STEP 7, WRITE THE CHECKLIST: the checkboxes directly under the task define done. Each is one condition that can be tested, stated as behaviour. Leave every one unchecked. A task with no checklist is not ready: that search does not list it. Hold it too.
+STEP 7, WRITE THE CHECKLIST: the checkboxes define done. The call in step 8 writes them directly under the task, which is where the search for ready tasks looks: a task whose only criteria sit under an `## Acceptance Criteria` header is still held by the finishing rule, but that search does not list it as ready. Each is one condition that can be tested, stated as behaviour. Leave every one unchecked. A task with no checklist is not ready: that search does not list it. Hold it too.
 
 STEP 8, NAME ITS PROJECT AND WRITE THE TASK: <!-- include: task-create-whole -->
 

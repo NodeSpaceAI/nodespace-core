@@ -65,7 +65,7 @@ the real `~/.nodespace`. After a scratch launch, check that `~/.nodespace` gaine
 | Daemon state: `databases.toml`, database files, embedding model, logs, marker | Yes, by `NODESPACE_HOME` (the parent of `.nodespace/`, so `NODESPACE_HOME=/tmp/nsh` gives `/tmp/nsh/.nodespace/...`) |
 | The socket the app dials, the sidecar install, the app's own files | Only by `HOME`. The app never reads `NODESPACE_HOME` for its socket, so `NODESPACE_HOME` alone leaves the app dialing the account's own daemon |
 | launchd label `app.nodespace.daemon.dev` | No. Per user |
-| Chat models | No. They load from `$HOME` |
+| Chat models | Resolved under the state directory (`NODESPACE_HOME`), unless `NODESPACE_MODELS_DIR` names the directory. A Linux daemon with `NODESPACE_HOME` set created `models/` in the scratch home; a model load was not run |
 | Webview storage (`localStorage`, IndexedDB, cookies, cache) | No. See below |
 
 Use `HOME` and `NODESPACE_HOME` set to the same scratch directory (`/tmp/nsh`),
@@ -92,20 +92,64 @@ dev-origin storage: the store is shared, not copied. The way to a separate store
 is a window built with a data store identifier (macOS 14 and later; not
 available through `HOME`); the app does not build its window that way yet.
 
-**Linux, `systemctl --user` (not yet checked on a host).** A scratch `HOME` alone
-is not expected to isolate it: the user manager starts the unit with its own
-environment and the unit file lives under the account's `~/.config/systemd/user`.
-Things to check on a Linux host with a user session: (1) the unit's
-`Environment=HOME=` and `Environment=NODESPACE_HOME=` lines are written when set
-(tests cover the lines, not a run); (2) after a launch with a scratch `HOME`,
-`systemctl --user cat <unit>` shows which unit is loaded and whether it replaced
-the account's own; (3) the daemon's registry and database are under the scratch
-home, and the real `~/.nodespace` gained no `databases.toml`, `database/` or
-`.model-verify-key`; (4) the webview (WebKitGTK) is expected to keep its storage under
-`$XDG_DATA_HOME` / `$XDG_CACHE_HOME`, which `HOME` moves only if those are
-unset, so set them too; (5) restore the unit afterwards.
+**Linux, `systemctl --user`.** Run on Ubuntu 24.04 arm64 (systemd user session,
+linger on) with the released v0.3.14 `nodespaced` and `nodespace`. The desktop app
+has no Linux artifact, so the unit was written by hand from `systemd_unit_text`,
+and the app's own launch and its webview (WebKitGTK) were **not** run. Observed:
 
-Get the user's go-ahead before launching it, and restore afterwards.
+| Thing | Result with a scratch `HOME` and `NODESPACE_HOME` |
+|---|---|
+| The user manager's environment | Its own, fixed at login: `HOME` is the account's real home and `systemctl --user show-environment` has no `NODESPACE_*`. A `HOME` exported to the app or to `systemctl` does not reach a unit |
+| Where the app writes the unit | `$HOME/.config/systemd/user/nodespace.service`, so under the scratch home. The user manager does not read it: `daemon-reload` returns 0, then `enable` fails with "Unit file nodespace.service does not exist", `restart` with "Unit nodespace.service not found", and `systemctl --user cat nodespace.service` prints "No files found". The scratch launch gets **no daemon from the service manager**, and the real home is untouched |
+| The unit in the account's `~/.config/systemd/user` | The manager runs it, but `enable` writes `default.target.wants/nodespace.service` into the real home, and a unit of that name there is the user's own. **A scratch launch cannot use it without replacing it** |
+| Unit with `Environment=HOME=` and `Environment=NODESPACE_HOME=` (what the app writes) | The daemon's environment has both. `databases.toml`, `database/`, `models/`, the socket, the lock and the logs all sit under the scratch home. The real home gained nothing but the `enable` symlink. `nodespace database list` (it asks the daemon, so the path is the daemon's) printed `/tmp/nsh/.nodespace/database/nodespace.db` when the CLI had `HOME` and `NODESPACE_HOME` set, `NODESPACE_HOME` alone, or `HOME` alone. With neither set it dialed the real `~/.nodespace/daemon.sock`. A scratch daemon is reachable only by a client that resolves the scratch home: set `HOME` or `NODESPACE_HOME`, or `NODESPACED_SOCKET`, for the CLI too |
+| Unit with only `NODESPACE_HOME=` | The daemon keeps the real `HOME` but state still lands under the scratch home, and the real home gained nothing but the `enable` symlink |
+| Unit with neither (a registration made by an older build) | The daemon created `~/.nodespace/databases.toml`, `database/nodespace.db` (with `-wal` and `-shm`) and `models/` under the **real** home. Only the socket, lock and logs, which the unit names outright, were scratch |
+| `~/.config`, `~/.local/share`, `~/.cache` | In the runs above, the only change under them was the `systemd/user` entries named above; the headless daemon wrote nothing to `~/.local/share` or `~/.cache` |
+| `.model-verify-key` | Not created: nothing verified a model, and no model was loaded |
+| The `--tray` unit, as the app writes it, on a host with no display | The daemon panics with "Failed to initialize gtk backend" and `Restart=on-failure` restarts it until the journal reads "Start request repeated too quickly" and the unit is `failed`. A headless host needs a display (a virtual one) or a unit without `--tray` |
+| Linking against GTK | The daemon needs `libgtk-3`, `libxdo` and `libgomp` even to print `--version`; on a minimal image install `libgtk-3-0t64 libxdo3 libgomp1` |
+| Secret store | `keyring` is a dependency on macOS and Windows only (`packages/core/Cargo.toml`); no run was made against a Linux secret service |
+
+How to get a scratch daemon on Linux that writes nothing to the real home: do not
+use the unit file. Start the daemon as a transient unit, which the manager keeps in
+`/run/user/$UID/systemd/transient/` and which writes no unit file or symlink. This
+is a **headless** daemon: no `--tray` and no `NODESPACE_UI_BINARY`, unlike the
+app's unit, so it also avoids the GTK panic above. `append:` does not create the
+log directory, so make it first, and set `NODESPACED` to the binary under test:
+
+```bash
+SCRATCH=/tmp/nsh                       # short: the socket path has a length limit
+NODESPACED=/path/to/nodespaced         # the binary you built or downloaded
+mkdir -p "$SCRATCH/.nodespace/logs"
+systemd-run --user --unit=nsh-daemon --collect \
+  -E HOME="$SCRATCH" -E NODESPACE_HOME="$SCRATCH" \
+  -E NODESPACED_SOCKET="$SCRATCH/.nodespace/daemon.sock" \
+  -p StandardOutput="append:$SCRATCH/.nodespace/logs/nodespaced.log" \
+  -p StandardError="append:$SCRATCH/.nodespace/logs/nodespaced-error.log" \
+  "$NODESPACED"
+```
+
+That recipe, pasted as written, left a before and after listing of the real home
+identical. Reach the daemon with `HOME` or `NODESPACE_HOME` set for the CLI. Stop it
+with `systemctl --user stop nsh-daemon`. To exercise the app's own unit writing, set
+`HOME` and `NODESPACE_HOME`, check `systemctl --user cat nodespace.service` shows
+the scratch unit, and expect the manager not to see it (above). To exercise the
+unit itself, put it in the real `~/.config/systemd/user` only on a machine where no
+`nodespace.service` exists, and remove it and its `default.target.wants` link
+afterwards (`systemctl --user disable`, then delete the file and `daemon-reload`).
+Take a `find "$HOME" -printf '%y %p %T+\n' | sort` listing before and after, and
+diff them: `~/.nodespace` must not appear.
+
+On Linux a scratch launch still shares the `enable` symlink in the real config
+directory and the user's own `nodespace.service` name when the unit file is used;
+the transient unit avoids both, and the app's own launch on Linux stays unverified.
+
+Still unchecked on Linux: the app's launch, the webview's storage (WebKitGTK keeps
+it under `$XDG_DATA_HOME` and `$XDG_CACHE_HOME`, which a scratch `HOME` moves only
+when those are unset), and the secret store.
+
+On macOS, get the user's go-ahead before launching it, and restore afterwards.
 
 1. Note the user's job: `launchctl print gui/$(id -u)/app.nodespace.daemon.dev`
    (its `path`, `program` and `pid`).

@@ -609,10 +609,34 @@ pub async fn validate_play(
                         }
                     }
                     for coll in &extraction.collections {
-                        if coll.collection.root == "node" && coll.collection.segments.len() > 1 {
+                        // A collection read from an item of an enclosing
+                        // comprehension (`h.has_child` in
+                        // `node.has_child.exists(h, h.has_child.exists(...))`)
+                        // is validated as the path it is from `node`, so a
+                        // misspelt relationship is refused like any other. The
+                        // engine follows one such level from the items of a
+                        // collection rooted at `node`, so one nested deeper is
+                        // refused rather than saved to never match.
+                        if let Some(outer) = &coll.enclosing {
+                            if outer.root != "node" {
+                                errors.push(PlayValidationError::BrokenPath {
+                                    path: coll.path_from_root().join("."),
+                                    segment: coll.collection.root.clone(),
+                                    message:
+                                        "a collection can be read from the items of a collection \
+                                              rooted at 'node' one level down, not further"
+                                            .to_string(),
+                                    location: location.clone(),
+                                });
+                                continue;
+                            }
+                        }
+                        if (coll.collection.root == "node" || coll.enclosing.is_some())
+                            && coll.collection.segments.len() > 1
+                        {
                             let before = errors.len();
                             validate_schema_path(
-                                &coll.collection.segments,
+                                &coll.path_from_root(),
                                 nt,
                                 &location,
                                 node_service,
@@ -1252,10 +1276,8 @@ async fn validate_derived_item_paths(
     if derived_paths.is_empty() {
         return;
     }
-    let relationships: Vec<&str> = coll.collection.segments[1..]
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let from_root = coll.path_from_root();
+    let relationships: Vec<&str> = from_root[1..].iter().map(String::as_str).collect();
     let item_type =
         match declared_collection_type(node_service, trigger_node_type, &relationships).await {
             Ok(Some(item_type)) => item_type,
@@ -2816,6 +2838,68 @@ mod tests {
             match &errors[0] {
                 PlayValidationError::BrokenPath { message, .. } => {
                     assert!(message.contains("cannot traverse further"), "{message}")
+                }
+                other => panic!("expected BrokenPath, got {other:?}"),
+            }
+        }
+
+        /// A collection read from the items of another is validated as the
+        /// path it is from `node`, like any other.
+        #[tokio::test]
+        async fn a_collection_read_from_an_items_relationship_is_validated() {
+            let (svc, _tmp) = create_test_service().await;
+            create_checklist_schemas(&svc).await;
+
+            let errors = condition_errors(
+                &svc,
+                "task",
+                "node.has_child.exists(h, h.has_child.exists(c, c.checked == false))",
+            )
+            .await;
+            assert!(errors.is_empty(), "{errors:?}");
+
+            // A relationship the items' type does not have is refused.
+            let errors = condition_errors(
+                &svc,
+                "vt-list",
+                "node.notes.exists(n, n.no_such_link.exists(c, c.id == 'x'))",
+            )
+            .await;
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            match &errors[0] {
+                PlayValidationError::BrokenPath { segment, .. } => {
+                    assert_eq!(segment, "no_such_link")
+                }
+                other => panic!("expected BrokenPath, got {other:?}"),
+            }
+
+            // A derived attribute read on the nested items is checked against
+            // their type.
+            let errors = condition_errors(
+                &svc,
+                "vt-list",
+                "node.boxes.exists(b, b.box_of.notes.exists(n, n.checked == false))",
+            )
+            .await;
+            only_derived_refusal(&errors, "vt-note");
+        }
+
+        /// The engine follows one level from the items of a collection rooted
+        /// at `node`; a read two levels down would save and never match.
+        #[tokio::test]
+        async fn a_collection_two_levels_down_from_its_items_is_refused() {
+            let (svc, _tmp) = create_test_service().await;
+
+            let errors = condition_errors(
+                &svc,
+                "task",
+                "node.has_child.exists(a, a.has_child.exists(b, b.has_child.exists(c, c.checked == false)))",
+            )
+            .await;
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            match &errors[0] {
+                PlayValidationError::BrokenPath { message, .. } => {
+                    assert!(message.contains("one level down"), "{message}")
                 }
                 other => panic!("expected BrokenPath, got {other:?}"),
             }

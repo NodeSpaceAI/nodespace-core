@@ -567,6 +567,33 @@ async fn a_parent_with_a_checked_checklist_completes_with_its_last_sub_task() ->
     Ok(())
 }
 
+/// An unchecked item under the parent's Acceptance Criteria heading holds the
+/// parent open as one directly under it does, and the roll-up keeps running.
+#[tokio::test]
+async fn a_parent_with_an_open_criterion_under_the_heading_stays_open() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    let heading = child_node(&service, &parent, "header", "## Acceptance Criteria").await?;
+    child_node(&service, &heading, "checkbox", "- [ ] Not met yet").await?;
+    set_status(&service, &sub_task, "done").await?;
+
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(
+        wait_for_status(&service, &control_parent, "done").await,
+        "the roll-up must go on completing other parents"
+    );
+    assert_eq!(
+        status_of(&service, &parent).await.as_deref(),
+        Some("open"),
+        "an open criterion under the heading keeps the parent open"
+    );
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
 /// The criteria rule is the judge of the checklist: a parent with an
 /// unchecked item is left open by it, the roll-up is not suspended, and it
 /// goes on completing other parents.
