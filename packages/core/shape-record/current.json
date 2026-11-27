@@ -3248,6 +3248,13 @@
       "key": "Ready to merge",
       "nodeType": "query",
       "tier": "system"
+    },
+    "e7c3b95a-4d12-4a68-b0f4-6a1d9c2e8f35": {
+      "configVersion": "533d48c72b29fb081a9b6c4e7aba9c29c5e4f9d69ab8596e0be7c53241f8ff1b",
+      "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "key": "Require a software project before an issue starts",
+      "nodeType": "play",
+      "tier": "system"
     }
   },
   "tables": {

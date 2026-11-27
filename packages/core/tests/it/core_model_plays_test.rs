@@ -35,6 +35,7 @@ const TASK_IS_BLOCKED: &str = "blocked by a task that is not finished";
 const TASK_HAS_UNCHECKED_ITEM: &str = "its checklist has an unchecked item";
 const TASK_NEEDS_CRITERIA: &str = "cannot be marked done without acceptance criteria";
 const IS_LOCKED: &str = "is locked as the record of what was agreed";
+const ISSUE_NEEDS_PROJECT: &str = "not linked to a software project";
 const CANNOT_BE_REINSTATED: &str = "cannot be reinstated";
 
 /// Retry `attempt` every 25ms until it returns `Ok`, or panic after 5s with
@@ -1226,6 +1227,137 @@ async fn a_decision_goes_in_effect_only_when_its_linked_work_is_finished() -> Re
     h.link(&more, "decisions", &decision).await?;
     h.set(&decision, json!({ "decision_status": "accepted" }))
         .await?;
+    h.stop().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// An issue starts only against a software project
+// ---------------------------------------------------------------------------
+
+impl Harness {
+    /// An open issue.
+    async fn issue(&self) -> Result<String> {
+        self.create("issue", json!({ "status": "open" })).await
+    }
+
+    /// A project of `node_type` (`software-project` or `project`) that
+    /// `task` belongs to, through the project's `tasks` link.
+    async fn project_of(&self, node_type: &str, task: &str) -> Result<String> {
+        let project = self.create(node_type, json!({})).await?;
+        self.link(&project, "tasks", task).await?;
+        Ok(project)
+    }
+}
+
+/// An issue with no software project, itself or through its parent task, is
+/// refused `in_progress`, and the refusal says what to link.
+#[tokio::test]
+async fn an_issue_with_no_software_project_cannot_start() -> Result<()> {
+    let h = Harness::start().await?;
+
+    let bare = h.issue().await?;
+    let refused = h.set_status(&bare, "in_progress").await;
+    assert_rejected(refused, ISSUE_NEEDS_PROJECT, "an issue with no project");
+    let refused = h.set_status(&bare, "in_progress").await;
+    assert!(
+        refused.as_ref().err().is_some_and(|e| e
+            .to_string()
+            .contains("Link the issue to a software project")),
+        "the refusal says what to link: {refused:?}"
+    );
+
+    // A parent that has no project either.
+    let parent = h.task().await?;
+    let child = h.issue().await?;
+    h.link(&parent, "has_child", &child).await?;
+    assert_rejected(
+        h.set_status(&child, "in_progress").await,
+        ISSUE_NEEDS_PROJECT,
+        "an issue whose parent has no project",
+    );
+
+    // Moves that do not start the work are free.
+    h.set_status(&bare, "cancelled").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// A software project linked to the issue, or to its parent task, lets it
+/// start.
+#[tokio::test]
+async fn an_issue_linked_to_a_software_project_can_start() -> Result<()> {
+    let h = Harness::start().await?;
+
+    let own = h.issue().await?;
+    h.project_of("software-project", &own).await?;
+    h.set_status(&own, "in_progress").await?;
+
+    let parent = h.task().await?;
+    h.project_of("software-project", &parent).await?;
+    let child = h.issue().await?;
+    h.link(&parent, "has_child", &child).await?;
+    h.set_status(&child, "in_progress").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// A plain project has no repository, so it does not satisfy the rule, itself
+/// or through the parent.
+#[tokio::test]
+async fn an_issue_linked_only_to_a_plain_project_cannot_start() -> Result<()> {
+    let h = Harness::start().await?;
+
+    let own = h.issue().await?;
+    h.project_of("project", &own).await?;
+    assert_rejected(
+        h.set_status(&own, "in_progress").await,
+        ISSUE_NEEDS_PROJECT,
+        "an issue linked to a plain project",
+    );
+
+    let parent = h.task().await?;
+    h.project_of("project", &parent).await?;
+    let child = h.issue().await?;
+    h.link(&parent, "has_child", &child).await?;
+    assert_rejected(
+        h.set_status(&child, "in_progress").await,
+        ISSUE_NEEDS_PROJECT,
+        "an issue whose parent is linked to a plain project",
+    );
+    h.stop().await;
+    Ok(())
+}
+
+/// Only the direct parent is read, and a plain task is never checked.
+#[tokio::test]
+async fn the_project_rule_reads_one_level_and_leaves_plain_tasks_alone() -> Result<()> {
+    let h = Harness::start().await?;
+
+    let grandparent = h.task().await?;
+    h.project_of("software-project", &grandparent).await?;
+    let parent = h.task().await?;
+    h.link(&grandparent, "has_child", &parent).await?;
+    let child = h.issue().await?;
+    h.link(&parent, "has_child", &child).await?;
+    assert_rejected(
+        h.set_status(&child, "in_progress").await,
+        ISSUE_NEEDS_PROJECT,
+        "an issue whose project sits two levels up",
+    );
+
+    // A plain task with no project starts as before.
+    let plain = h.task().await?;
+    h.set_status(&plain, "in_progress").await?;
+    // An issue under a page, with no project, is refused.
+    let page = h.create("text", json!({})).await?;
+    let under_page = h.issue().await?;
+    h.link(&page, "has_child", &under_page).await?;
+    assert_rejected(
+        h.set_status(&under_page, "in_progress").await,
+        ISSUE_NEEDS_PROJECT,
+        "an issue under a node that is not a task",
+    );
     h.stop().await;
     Ok(())
 }

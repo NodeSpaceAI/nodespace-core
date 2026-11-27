@@ -51,8 +51,9 @@ pub struct LaunchArgs {
 
     /// Id of the software project to launch the session for. The session
     /// runs in that project's folder on this machine. A plain project has no
-    /// folder and is refused. Without it the session runs in a private
-    /// folder of its own.
+    /// folder and is refused. Without it, a session launched with `--task`
+    /// runs in the folder of the task's software project (or its parent's),
+    /// and otherwise in a private folder of its own.
     #[arg(long)]
     pub project: Option<String>,
 
@@ -63,7 +64,8 @@ pub struct LaunchArgs {
     pub folder: Option<String>,
 
     /// Id of the task to launch the session for. The agent's plugin opens
-    /// with that task's context.
+    /// with that task's context. An issue needs a software project, its own
+    /// or its parent task's, or `--project`.
     #[arg(long)]
     pub task: Option<String>,
 

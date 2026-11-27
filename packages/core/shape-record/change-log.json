@@ -288,6 +288,22 @@
         "editedUsersAffected": false,
         "mustNotWaitForDecision": false
       }
+    },
+    {
+      "id": "issue-project-play-seeded",
+      "after": "0.3.14",
+      "covers": [
+        "seeded.e7c3b95a-4d12-4a68-b0f4-6a1d9c2e8f35"
+      ],
+      "area": "seeded_content",
+      "class": "additive",
+      "summary": "One core Play ships: it refuses setting an issue to in_progress unless the issue, or its direct parent task, is linked to a software project. A plain project does not count and a plain task is never checked. A database that holds no such Play gets it created on open; a user can edit or disable it. A 0.3.14 build that receives the Play node (through Sync) holds an ordinary play node it has no seed for, and evaluates its rules like any user-written Play.",
+      "userProducible": true,
+      "seeded": {
+        "aspect": "config",
+        "editedUsersAffected": false,
+        "mustNotWaitForDecision": false
+      }
     }
   ]
 }
