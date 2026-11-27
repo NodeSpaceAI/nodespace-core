@@ -305,6 +305,22 @@
         "editedUsersAffected": true,
         "mustNotWaitForDecision": false
       }
+    },
+    {
+      "id": "issue-project-play-seeded",
+      "after": "0.3.14",
+      "covers": [
+        "seeded.e7c3b95a-4d12-4a68-b0f4-6a1d9c2e8f35"
+      ],
+      "area": "seeded_content",
+      "class": "additive",
+      "summary": "One core Play ships: it refuses setting an issue to in_progress unless the issue, or its direct parent task, is linked to a software project. A plain project does not count and a plain task is never checked. A database that holds no such Play gets it created on open; a user can edit or disable it. A 0.3.14 build that receives the Play node (through Sync) holds an ordinary play node it has no seed for, and evaluates its rules like any user-written Play. Limits. The project link is the `tasks` relationship, a custom edge that Sync does not send (the cloud relationship_type CHECK admits only has_child, member_of and mentions, and the push path drops other types) and does not apply on pull, so an issue linked on one device has no project on another until it is linked there by hand: there the Play refuses in_progress, and a task-only session launch is refused, until the link is made again. The refusal text says so. The rule fires on a status change, not on creation, so an issue created already in_progress with no project is not refused; moving it away and back is. As a side effect, an issue with no software project is no longer listed as ready, because the ready search only lists what the rules would let start.",
+      "userProducible": true,
+      "seeded": {
+        "aspect": "config",
+        "editedUsersAffected": false,
+        "mustNotWaitForDecision": false
+      }
     }
   ]
 }

@@ -56,7 +56,16 @@ fn assert_refused<T: std::fmt::Debug>(result: Result<T, NodeServiceError>, needl
     assert!(error.contains(needle), "{needle}: {error}");
 }
 
+/// An open issue in a software project: starting one needs the link.
 async fn issue(h: &Harness) -> Result<String> {
+    let issue = unlinked_issue(h).await?;
+    let project = h.create("software-project", json!({})).await?;
+    h.link(&project, "tasks", &issue).await?;
+    Ok(issue)
+}
+
+/// An open issue linked to no project.
+async fn unlinked_issue(h: &Harness) -> Result<String> {
     h.create("issue", json!({ "status": "open" })).await
 }
 
@@ -596,11 +605,19 @@ async fn ready_tasks_lists_a_ready_issue() -> Result<()> {
         .create("issue", json!({ "status": "changes_requested" }))
         .await?;
     h.child(&started, "checkbox", "- [ ] It works").await?;
+    // No software project: the project rule would refuse the start.
+    let unlinked = unlinked_issue(&h).await?;
+    h.child(&unlinked, "checkbox", "- [ ] It works").await?;
 
     let ready_tasks = define_removed_queue(&h.service, "Ready tasks").await;
     let listed = saved_query(&h, &ready_tasks).await;
     assert_eq!(listed, [ready]);
-    assert!(!listed.contains(&bare) && !listed.contains(&gated) && !listed.contains(&started));
+    assert!(
+        !listed.contains(&bare)
+            && !listed.contains(&gated)
+            && !listed.contains(&started)
+            && !listed.contains(&unlinked)
+    );
     h.stop().await;
     Ok(())
 }

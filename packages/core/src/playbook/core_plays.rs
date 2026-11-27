@@ -52,6 +52,9 @@ pub const DECISION_ACCEPTANCE_PLAY_ID: &str = "9fa3608f-d872-4dff-b721-0c984c00d
 /// Node id of the decision in-effect Play.
 pub const DECISION_IN_EFFECT_PLAY_ID: &str = "1da5e58f-64e4-414e-ab36-029da3931b09";
 
+/// Node id of the issue project Play.
+pub const ISSUE_PROJECT_PLAY_ID: &str = "e7c3b95a-4d12-4a68-b0f4-6a1d9c2e8f35";
+
 /// The id of every Play that ships with the product: the core play table, in
 /// the order the plays are seeded.
 pub const CORE_PLAY_IDS: &[&str] = &[
@@ -66,6 +69,7 @@ pub const CORE_PLAY_IDS: &[&str] = &[
     ISSUE_FINDINGS_PLAY_ID,
     DECISION_ACCEPTANCE_PLAY_ID,
     DECISION_IN_EFFECT_PLAY_ID,
+    ISSUE_PROJECT_PLAY_ID,
 ];
 
 /// When a task's parent is finished by its sub-tasks (ADR-079 §8). Two
@@ -375,6 +379,62 @@ pub fn decision_in_effect_rules() -> serde_json::Value {
         "Refuse the change and say the linked work must be finished first",
         "This decision cannot be put in effect while a task linked to it is not finished. \
          Finish or cancel the task, or unlink it, then set the decision in effect.",
+    )])
+}
+
+/// Whether a node is linked to a software project. A plain project is not
+/// enough: it carries no repository.
+const OWN_SOFTWARE_PROJECT: &str =
+    "has(node.project) && 'software-project' in node.project.type_chain";
+
+/// Whether the node's direct parent is linked to a software project.
+const PARENT_SOFTWARE_PROJECT: &str = "has(node.child_of) \
+     && has(node.child_of.project) \
+     && 'software-project' in node.child_of.project.type_chain";
+
+/// Refuse to start an issue that no software project is linked to.
+///
+/// An issue is one change to one repository, and a software project is what
+/// carries the repository. The issue satisfies the rule when it is linked to
+/// a software project itself (the `project` reverse edge of the project's
+/// `tasks` relationship), or its direct parent task is. A plain project does
+/// not: it has no repository. Only one level up is read, so a sub-task of a
+/// sub-task links the project itself or through its direct parent. Only
+/// `in_progress` is guarded; a plain task is never checked, since the rule is
+/// registered against `issue`.
+///
+/// Two limits. The project link is the `tasks` relationship, a custom edge
+/// that Sync does not send or apply, so an issue linked on one device has no
+/// project on another until it is linked there. And the rule fires on a status
+/// change, not on creation: an issue created already `in_progress` with no
+/// project is not refused.
+pub fn issue_project_rules() -> serde_json::Value {
+    json!([reject_change(
+        "reject-starting-an-issue-without-a-software-project",
+        "Refuse to start an issue that is linked to no software project, itself or through its \
+         parent task",
+        "issue",
+        "status",
+        json!([
+            {
+                "expr": "node.status == 'in_progress'",
+                "description": "The issue is being started",
+            },
+            {
+                "expr": format!("!({OWN_SOFTWARE_PROJECT}) && !({PARENT_SOFTWARE_PROJECT})"),
+                "description":
+                    "Neither the issue nor its direct parent task is linked to a software \
+                     project",
+            },
+        ]),
+        "Refuse the change and say which link is missing",
+        "This issue was not started: it is not linked to a software project, and neither is \
+         its parent task. A plain project does not count, and only the issue's own link or \
+         its direct parent's is read (a sub-task of a sub-task links the project itself or \
+         through its direct parent). Nothing was changed, so do not retry the same change. \
+         Link the issue to a software project (add it to the project's `tasks`) or link its \
+         parent task to one, then start it again. That link is kept on this device only and is \
+         not synced, so an issue linked on another device has to be linked again on this one.",
     )])
 }
 
@@ -851,6 +911,14 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
              decision with no linked task may go straight from proposed to in_effect.",
             decision_in_effect_rules(),
         ),
+        seeded_play(
+            ISSUE_PROJECT_PLAY_ID,
+            "Require a repository before an issue is started",
+            "Rejects moving an issue to in_progress unless the issue, or its parent task, is \
+             linked to a software project. A plain project does not count. A plain task is \
+             never checked.",
+            issue_project_rules(),
+        ),
     ]
 }
 
@@ -887,6 +955,7 @@ mod tests {
             (plan_approval_rules(), 2),
             (decision_acceptance_rules(), 1),
             (decision_in_effect_rules(), 1),
+            (issue_project_rules(), 1),
             (task_lineage_rules(), 1),
             (task_blockers_rules(), 1),
             (task_criteria_rules(), 2),
@@ -1079,6 +1148,7 @@ mod tests {
                 "b2f6a0d4-7c19-4e8a-95d3-1a4c8e6f7b20",
                 "9fa3608f-d872-4dff-b721-0c984c00d29c",
                 "1da5e58f-64e4-414e-ab36-029da3931b09",
+                "e7c3b95a-4d12-4a68-b0f4-6a1d9c2e8f35",
             ]
         );
         let unique: std::collections::HashSet<_> = CORE_PLAY_IDS.iter().collect();
