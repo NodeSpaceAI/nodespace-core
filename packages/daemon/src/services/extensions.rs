@@ -25,6 +25,7 @@ use nodespace_core::extensions::{
 #[derive(Clone, Debug, Default)]
 pub struct DaemonExtensions {
     supported_extensions: Vec<String>,
+    binary_version: String,
     reserved_client_ids: Vec<String>,
     data: DataExtensions,
 }
@@ -55,6 +56,23 @@ impl DaemonExtensions {
     /// declared. A database that lists any other id is refused when opened.
     pub fn supported_extensions(&self) -> &[String] {
         &self.supported_extensions
+    }
+
+    /// Sets the version of the binary that hosts the daemon, which
+    /// `GetDaemonVersion` reports as `binary_version` and `nodespace
+    /// diagnostics` prints beside the core library version. A build composing
+    /// the daemon over core passes its own version (for example
+    /// `env!("CARGO_PKG_VERSION")` evaluated in the host crate). Left unset,
+    /// the response carries an empty `binary_version`, which readers show as
+    /// unknown.
+    pub fn binary_version(mut self, version: impl Into<String>) -> Self {
+        self.binary_version = version.into();
+        self
+    }
+
+    /// The hosting binary's version, empty when none was set.
+    pub fn host_binary_version(&self) -> &str {
+        &self.binary_version
     }
 
     /// Reserves `id` for the build's own in-process writers: a request to the
@@ -192,6 +210,17 @@ impl std::error::Error for DaemonExtensionsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_binary_version_is_empty_until_the_host_sets_it() {
+        assert_eq!(DaemonExtensions::none().host_binary_version(), "");
+        assert_eq!(
+            DaemonExtensions::none()
+                .binary_version("0.1.9")
+                .host_binary_version(),
+            "0.1.9"
+        );
+    }
 
     #[test]
     fn declaring_an_id_twice_declares_it_once() {

@@ -229,6 +229,7 @@ impl<N> Service<http::Request<BoxBody>> for Named<N> {
                             .iter()
                             .map(|id| (*id).to_owned())
                             .collect(),
+                        ..Default::default()
                     }))
                 },
             );

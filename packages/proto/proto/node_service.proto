@@ -1096,12 +1096,18 @@ message RunSavedQueryResponse {
 message GetDaemonVersionRequest {}
 
 message GetDaemonVersionResponse {
-  // The daemon binary's semver (its compiled CARGO_PKG_VERSION).
+  // The core daemon crate's semver (its compiled CARGO_PKG_VERSION): the core
+  // library version. Version-skew checks read this field.
   string version = 1;
   // The extension ids this daemon supports, as declared through
   // `DaemonExtensions::supported_extension`. The app's product check compares
   // this set with the set its daemon profile expects. Empty for core's daemon.
   repeated string supported_extensions = 2;
+  // The semver of the binary that hosts the daemon, set by that binary through
+  // `DaemonExtensions::binary_version`. Differs from `version` when a build
+  // composes the daemon over core. Empty when the host did not set it (an
+  // older daemon never sends the field); readers treat empty as unknown.
+  string binary_version = 3;
 }
 
 message GetDaemonMemoryRequest {}

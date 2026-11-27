@@ -185,7 +185,7 @@ pub(crate) fn routing_test_context() -> SharedContext {
         serving_ended: Default::default(),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),
-        extensions: nodespace_daemon::DaemonExtensions::none(),
+        extensions: nodespace_daemon::DaemonExtensions::none().binary_version("host-1.2.3"),
     }
 }
 
@@ -1310,6 +1310,11 @@ async fn diagnostics_collect_reports_counts_and_recency() {
     assert_eq!(
         baseline.daemon_version.as_deref(),
         Some(nodespace_cli::version_skew::CLI_VERSION)
+    );
+    // The host's own version rides beside the core version in the report.
+    assert_eq!(
+        baseline.daemon_binary_version.as_deref(),
+        Some("host-1.2.3")
     );
     assert!(
         baseline.warnings.is_empty(),

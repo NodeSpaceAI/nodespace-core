@@ -492,6 +492,31 @@ async fn a_reserved_client_id_is_refused_in_every_database() {
     }
 }
 
+/// The hosting binary's version reaches `GetDaemonVersion` from every
+/// database's service set.
+#[tokio::test]
+async fn the_binary_version_is_reported_by_every_database() {
+    use nodespace_daemon::nodespace::node_service_server::NodeService as _;
+
+    let home = IsolatedDaemonHome::new();
+    let shared = shared_services(DaemonExtensions::none().binary_version("host-1.2.3")).await;
+    let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
+        .await
+        .unwrap();
+    let path = database_requiring(home.path(), "first", &[]).await;
+    let id = manager.register(path).await.unwrap().id;
+    let database = manager.get_or_open(&id).await.unwrap();
+    let version = database
+        .node_service_grpc
+        .get_daemon_version(tonic::Request::new(
+            nodespace_daemon::nodespace::GetDaemonVersionRequest {},
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(version.binary_version, "host-1.2.3");
+}
+
 /// Core's own daemon reserves no client id: the same request is served.
 #[tokio::test]
 async fn core_reserves_no_client_id() {
