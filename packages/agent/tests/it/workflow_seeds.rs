@@ -642,6 +642,10 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
     h.set(&spec, json!({ "spec_status": "approved" })).await;
     h.set(&plan, json!({ "plan_status": "approved" })).await;
 
+    // An issue starts only against a software project, so the slices belong
+    // to one.
+    let repository = h.create("software-project", "Apollo", json!({})).await;
+
     // Each slice, in dependency order: the issue, its brief, its checklist,
     // its links.
     let mut issues = Vec::new();
@@ -675,7 +679,7 @@ async fn a_plan_is_split_into_linked_issues_with_briefs_and_checklists() {
             json!({ "node_type": "checkbox", "parent_id": uri(&issue), "content": criterion }),
         )
         .await;
-        for owner in [&plan, &spec] {
+        for owner in [&plan, &spec, &repository] {
             h.ok(
                 "create_relationship",
                 json!({
@@ -1114,6 +1118,8 @@ async fn a_checkbox_beneath_a_section_is_not_a_checklist_item() {
     // An issue whose only checkbox sits under a header has no checklist, so
     // it is not ready.
     let hidden = h.create("issue", "Hidden checklist", json!({})).await;
+    let repository = h.create("software-project", "Apollo", json!({})).await;
+    h.link(&repository, "tasks", &hidden).await;
     let section = h.section(&hidden, "Acceptance", &[]).await;
     h.child(&section, "checkbox", "- [ ] Not a criterion").await;
     let run = h.ready_tasks(10).await;

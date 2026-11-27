@@ -860,7 +860,7 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
         ),
         seeded_play(
             ISSUE_PROJECT_PLAY_ID,
-            "Require a software project before an issue starts",
+            "Require a repository before an issue is started",
             "Rejects moving an issue to in_progress unless the issue, or its parent task, is \
              linked to a software project. A plain project does not count. A plain task is \
              never checked.",
