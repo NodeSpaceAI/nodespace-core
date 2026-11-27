@@ -1415,8 +1415,8 @@ Manage PTY agent sessions (launch, attach, list, kill)
 - `<AGENT>` — Agent to launch: claude-code, codex, antigravity, pi, opencode (required)
 - `--prompt <PROMPT>` — Initial prompt passed to the agent at launch time
 - `--project <PROJECT>` — Id of the software project to launch the session for. The session runs in that project's folder on this machine. A plain project has no folder and is refused. Without it, a session launched with `--task` runs in the folder of the task's software project (or its parent's), and otherwise in a private folder of its own
-- `--folder <FOLDER>` — The project's folder on this machine: the absolute path of its checkout. Needed the first time a session is launched for a project, and remembered on this machine from then on
-- `--task <TASK>` — Id of the task to launch the session for. The agent's plugin opens with that task's context. An issue needs a software project, its own or its parent task's, or `--project`
+- `--folder <FOLDER>` — The project's folder on this machine: the absolute path of its checkout. Needed the first time a session is launched for a project, and remembered on this machine from then on. Needs `--project`, or `--task` whose software project is found through its links
+- `--task <TASK>` — Id of the task to launch the session for. The agent's plugin opens with that task's context. An issue needs a software project, its own or its parent task's, or `--project`. That link is kept on this device only and is not synced: on a device that lacks it, link the issue (or its parent) to a software project, or pass `--project`
 - `--cols <COLS>` — Terminal width in columns (defaults to current terminal width)
 - `--rows <ROWS>` — Terminal height in rows (defaults to current terminal height)
 

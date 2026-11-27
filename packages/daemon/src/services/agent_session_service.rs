@@ -148,10 +148,23 @@ impl AgentSessionHandler {
                 .map(Some);
         }
         let Some(task) = task else {
+            if given_folder.is_some() {
+                return Err(Status::invalid_argument(
+                    "a project folder was named without a project or a task",
+                ));
+            }
             return Ok(None);
         };
         if let Some(project_id) = self.task_software_project(task).await? {
-            return self.project_folder(&project_id, None).await.map(Some);
+            return self
+                .project_folder(&project_id, given_folder)
+                .await
+                .map(Some);
+        }
+        if given_folder.is_some() {
+            return Err(Status::invalid_argument(
+                "a project folder was named, but the task is linked to no software project (its own or its parent's): name the project with --project",
+            ));
         }
         let is_issue = self
             .node_service
@@ -160,8 +173,10 @@ impl AgentSessionHandler {
             .map_err(|e| Status::internal(format!("reading {} failed: {e}", task.id)))?;
         if is_issue {
             return Err(Status::failed_precondition(format!(
-                "issue '{}' is not linked to a software project, and neither is its parent task: \
-                 link the issue (or its parent task) to a software project, or name one with --project",
+                "issue '{}' is not linked to a software project on this device, and neither is its parent task: \
+                 link the issue (or its parent task) to a software project here, or name one with --project. \
+                 The link between a project and its tasks is kept on this device only and is not synced, \
+                 so an issue linked on another device has to be linked again on this one",
                 task.content
             )));
         }
@@ -208,7 +223,7 @@ impl AgentSessionHandler {
         let Some(given) = given else {
             let stored = stored.ok_or_else(|| {
                 Status::failed_precondition(format!(
-                    "project '{}' has no folder on this machine: name its checkout folder to launch a session for it",
+                    "project '{}' ({project_id}) has no folder on this machine: launch once with `--project {project_id} --folder <path>` to name its checkout folder, and it is remembered on this machine",
                     project.content
                 ))
             })?;
@@ -216,7 +231,7 @@ impl AgentSessionHandler {
             // so it gets the checks a named folder gets.
             return checked_folder(stored).map_err(|problem| {
                 Status::failed_precondition(format!(
-                    "the folder of project '{}' cannot be used: {problem}",
+                    "the folder of project '{}' ({project_id}) cannot be used: {problem}. Name its checkout folder again with `--project {project_id} --folder <path>`",
                     project.content
                 ))
             });
@@ -325,11 +340,8 @@ impl AgentSessionService for AgentSessionHandler {
 
         // Everything the launch names is checked before the project's folder
         // is stored: a refused launch changes nothing.
-        if req.project_id.is_none() && req.project_folder.is_some() {
-            return Err(Status::invalid_argument(
-                "a project folder was named without a project",
-            ));
-        }
+        // A folder names the project's checkout: the named project's, or the
+        // one the task resolves to. `launch_folder` refuses one with neither.
         let task = match req.task_id.as_deref() {
             Some(task_id) => Some(
                 this.node_service
@@ -844,6 +856,7 @@ mod tests {
 
     struct Fixture {
         handler: AgentSessionHandler,
+        manager: Arc<PtySessionManager>,
         service: Arc<CoreNodeService>,
         _tmp: TempDir,
     }
@@ -862,13 +875,12 @@ mod tests {
             let tmp = TempDir::new().unwrap();
             let mut store = Arc::new(SqliteStore::new(tmp.path().join("db")).await.unwrap());
             let service = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
-            let handler = AgentSessionHandler::new(
-                Arc::new(PtySessionManager::new()),
-                service.clone(),
-                Arc::new(NoSummary),
-            );
+            let manager = Arc::new(PtySessionManager::new());
+            let handler =
+                AgentSessionHandler::new(manager.clone(), service.clone(), Arc::new(NoSummary));
             Self {
                 handler,
+                manager,
                 service,
                 _tmp: tmp,
             }
@@ -912,6 +924,42 @@ mod tests {
                 )
                 .await;
             (project, folder)
+        }
+
+        /// A software project with no folder on this machine.
+        async fn software_project_without_folder(&self, name: &str) -> Node {
+            self.node("software-project", name, json!({})).await
+        }
+
+        /// Make a `codex` binary that waits, the only agent a launch can use
+        /// here, and the only place the manager looks for one.
+        #[cfg(unix)]
+        fn ready_agent(&self) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = self._tmp.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let codex = bin.join("codex");
+            std::fs::write(&codex, "#!/bin/sh\nexec sleep 30\n").unwrap();
+            std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+            self.manager.set_agent_search_path(bin.into_os_string());
+        }
+
+        async fn launch(
+            &self,
+            project: Option<&Node>,
+            folder: Option<&str>,
+            task: Option<&Node>,
+        ) -> Result<LaunchSessionResponse, Status> {
+            self.handler
+                .launch_session(Request::new(LaunchSessionRequest {
+                    agent_type: "codex".to_string(),
+                    project_id: project.map(|p| p.id.clone()),
+                    project_folder: folder.map(str::to_string),
+                    task_id: task.map(|t| t.id.clone()),
+                    ..Default::default()
+                }))
+                .await
+                .map(Response::into_inner)
         }
 
         async fn folder_for(&self, task: &Node) -> Result<Option<PathBuf>, Status> {
@@ -1008,5 +1056,128 @@ mod tests {
             f.handler.launch_folder(None, None, None).await.unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn a_task_launch_whose_project_has_no_folder_says_how_to_name_it() {
+        let f = Fixture::new().await;
+        let project = f.software_project_without_folder("repo-a").await;
+        let issue = f.node("issue", "Fix it", json!({})).await;
+        f.link(&project, "tasks", &issue).await;
+
+        let refused = f.folder_for(&issue).await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        let expected = format!("--project {} --folder", project.id);
+        assert!(
+            refused.message().contains(&expected),
+            "{}",
+            refused.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_launch_whose_folder_is_gone_is_refused_naming_the_project() {
+        let f = Fixture::new().await;
+        let (project, folder) = f.software_project("repo-a").await;
+        let issue = f.node("issue", "Fix it", json!({})).await;
+        f.link(&project, "tasks", &issue).await;
+        std::fs::remove_dir(&folder).unwrap();
+
+        let refused = f.folder_for(&issue).await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            refused.message().contains("cannot be used")
+                && refused.message().contains(&format!("({})", project.id)),
+            "{}",
+            refused.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_with_a_task_names_the_checkout_of_the_project_the_task_resolves() {
+        let f = Fixture::new().await;
+        let project = f.software_project_without_folder("repo-a").await;
+        let parent = f.node("task", "Parent", json!({})).await;
+        f.link(&project, "tasks", &parent).await;
+        let issue = f.node("issue", "Fix it", json!({})).await;
+        f.link(&parent, "has_child", &issue).await;
+        let folder = f._tmp.path().join("checkout");
+        std::fs::create_dir(&folder).unwrap();
+        let given = folder.to_string_lossy().into_owned();
+
+        let used = f
+            .handler
+            .launch_folder(None, Some(&given), Some(&issue))
+            .await
+            .unwrap();
+        assert_eq!(used, Some(folder));
+        let stored = f.service.get_node(&project.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.properties["software-project"]["checkout_path"],
+            json!(given)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_with_no_project_to_belong_to_is_refused() {
+        let f = Fixture::new().await;
+        let given = f._tmp.path().to_string_lossy().into_owned();
+        let plain = f.node("task", "Chore", json!({})).await;
+        let issue = f.node("issue", "Fix it", json!({})).await;
+        for task in [None, Some(&plain), Some(&issue)] {
+            let refused = f
+                .handler
+                .launch_folder(None, Some(&given), task)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code(), tonic::Code::InvalidArgument, "{task:?}");
+        }
+    }
+
+    /// The whole RPC, with an agent that is ready: a launch with only a task
+    /// runs in the folder of the task's software project.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_session_for_a_task_runs_in_its_software_project_folder() {
+        let f = Fixture::new().await;
+        f.ready_agent();
+        let (project, folder) = f.software_project("repo-a").await;
+        let issue = f.node("issue", "Fix it", json!({})).await;
+        f.link(&project, "tasks", &issue).await;
+
+        let launched = f.launch(None, None, Some(&issue)).await.unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&launched.working_dir).unwrap(),
+            std::fs::canonicalize(&folder).unwrap()
+        );
+        f.handler
+            .terminate_session(Request::new(TerminateSessionRequest {
+                session_id: launched.session_id,
+            }))
+            .await
+            .unwrap();
+    }
+
+    /// The whole RPC refuses an issue with no software project, and a folder
+    /// that names no project, before any session starts.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_session_refuses_an_unlinked_issue_and_a_folder_without_a_project() {
+        let f = Fixture::new().await;
+        f.ready_agent();
+        let issue = f.node("issue", "Fix it", json!({})).await;
+
+        let refused = f.launch(None, None, Some(&issue)).await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(
+            refused.message().contains("is not synced"),
+            "{}",
+            refused.message()
+        );
+
+        let given = f._tmp.path().to_string_lossy().into_owned();
+        let refused = f.launch(None, Some(&given), None).await.unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+        assert!(f.manager.list().await.is_empty());
     }
 }

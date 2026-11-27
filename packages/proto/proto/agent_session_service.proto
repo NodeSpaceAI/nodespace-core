@@ -53,11 +53,14 @@ message LaunchSessionRequest {
   // The project's folder on this machine, for a project that has none set
   // yet or whose folder is being changed. An absolute path to an existing
   // directory: it is stored as the project's `checkout_path` before the
-  // session starts. Requires `project_id`.
+  // session starts. Requires `project_id`, or `task_id` of a task whose
+  // software project is found through its links.
   optional string project_folder = 7;
   // ID of the task (or other item) the session is launched to work on. The
   // session's environment names it, and a harness plugin opens with its
-  // context. Omitted, the environment names `node_id`.
+  // context. With no `project_id`, the session runs in the folder of the
+  // task's software project (its own, else its direct parent's); an issue
+  // with neither is refused. Omitted, the environment names `node_id`.
   optional string task_id = 8;
 }
 

@@ -1502,6 +1502,93 @@ async fn the_project_rule_reads_one_level_and_leaves_plain_tasks_alone() -> Resu
     Ok(())
 }
 
+/// A type that extends `software-project` is a software project for the
+/// rule, itself or through the parent task.
+#[tokio::test]
+async fn a_software_project_subtype_satisfies_the_project_rule() -> Result<()> {
+    let h = Harness::start().await?;
+    handle_create_schema(
+        &h.service,
+        json!({ "name": "Repository", "extends": "software-project", "fields": [] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("repository schema: {e}"))?;
+
+    // The engine learns of a new subtype from the schema's event: wait until
+    // a linked issue can start.
+    let own = h.issue().await?;
+    h.project_of("repository", &own).await?;
+    eventually("the engine to know the repository subtype", || async {
+        let result = h.set_status(&own, "in_progress").await;
+        if result.is_err() {
+            let _ = h.set_status(&own, "open").await;
+        }
+        result.map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await;
+
+    let parent = h.task().await?;
+    h.project_of("repository", &parent).await?;
+    let child = h.issue().await?;
+    h.link(&parent, "has_child", &child).await?;
+    h.set_status(&child, "in_progress").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// The project link is a custom edge that Sync neither sends nor applies, so
+/// an issue linked on another device arrives here without it. Such an issue
+/// is refused here, and the refusal says the link is kept per device and has
+/// to be made again; making it lets the issue start.
+#[tokio::test]
+async fn an_issue_that_arrived_without_its_project_link_is_refused_and_says_so() -> Result<()> {
+    let h = Harness::start().await?;
+    let arrived = h.issue().await?;
+
+    let refused = h.set_status(&arrived, "in_progress").await;
+    assert_rejected(
+        refused,
+        ISSUE_NEEDS_PROJECT,
+        "an issue with no link on this device",
+    );
+    let refused = h.set_status(&arrived, "in_progress").await;
+    assert!(
+        refused.as_ref().err().is_some_and(|e| e
+            .to_string()
+            .contains("kept on this device only and is not synced")),
+        "the refusal says the link is per device: {refused:?}"
+    );
+
+    h.project_of("software-project", &arrived).await?;
+    h.set_status(&arrived, "in_progress").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// The rule fires on a status change, not on creation: an issue created
+/// already `in_progress` with no project is not refused. Moving it out and
+/// back is a status change, and is refused.
+#[tokio::test]
+async fn an_issue_created_in_progress_without_a_project_is_not_refused() -> Result<()> {
+    let h = Harness::start().await?;
+    let created = h
+        .create("issue", json!({ "status": "in_progress" }))
+        .await?;
+    assert_eq!(
+        h.field(&created, "issue", "status").await?,
+        Some(json!("in_progress"))
+    );
+
+    h.set_status(&created, "in_review").await?;
+    assert_rejected(
+        h.set_status(&created, "in_progress").await,
+        ISSUE_NEEDS_PROJECT,
+        "starting it again without a project",
+    );
+    h.stop().await;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // The rules beside the parent-task roll-up
 // ---------------------------------------------------------------------------

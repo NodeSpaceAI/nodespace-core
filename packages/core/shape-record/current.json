@@ -3250,7 +3250,7 @@
       "tier": "system"
     },
     "e7c3b95a-4d12-4a68-b0f4-6a1d9c2e8f35": {
-      "configVersion": "d2a5f50773ff769eeac875baf5d8e3df19e7c19041515e0651aa9c27764c5f68",
+      "configVersion": "249cbd5653d73e6f0d6f7c869a3781f3f18793c6eec3348e42dce50bf583763a",
       "guidanceVersion": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "key": "Require a repository before an issue is started",
       "nodeType": "play",

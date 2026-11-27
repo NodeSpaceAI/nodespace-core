@@ -59,13 +59,16 @@ pub struct LaunchArgs {
 
     /// The project's folder on this machine: the absolute path of its
     /// checkout. Needed the first time a session is launched for a project,
-    /// and remembered on this machine from then on.
-    #[arg(long, requires = "project")]
+    /// and remembered on this machine from then on. Needs `--project`, or
+    /// `--task` whose software project is found through its links.
+    #[arg(long)]
     pub folder: Option<String>,
 
     /// Id of the task to launch the session for. The agent's plugin opens
     /// with that task's context. An issue needs a software project, its own
-    /// or its parent task's, or `--project`.
+    /// or its parent task's, or `--project`. That link is kept on this device
+    /// only and is not synced: on a device that lacks it, link the issue (or
+    /// its parent) to a software project, or pass `--project`.
     #[arg(long)]
     pub task: Option<String>,
 
@@ -119,6 +122,9 @@ pub async fn run(client: &mut SessionClient, action: SessionAction, json: bool) 
 }
 
 async fn launch(client: &mut SessionClient, args: LaunchArgs) -> Result<()> {
+    if args.folder.is_some() && args.project.is_none() && args.task.is_none() {
+        anyhow::bail!("--folder needs --project, or --task whose software project it names");
+    }
     let (cols, rows) = detect_terminal_size(args.cols, args.rows);
 
     let resp = client
@@ -464,8 +470,16 @@ mod tests {
         assert_eq!(launch.folder.as_deref(), Some("/work/core"));
         assert_eq!(launch.task.as_deref(), Some("t1"));
 
-        // A folder belongs to a project.
-        assert!(Launch::try_parse_from(["launch", "codex", "--folder", "/work/core"]).is_err());
+        // A folder may name the checkout of the project a task resolves to.
+        assert!(Launch::try_parse_from([
+            "launch",
+            "codex",
+            "--task",
+            "t1",
+            "--folder",
+            "/work/core"
+        ])
+        .is_ok());
     }
 
     /// The session is named by flag here: the variable a launch sets is

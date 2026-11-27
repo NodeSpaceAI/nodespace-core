@@ -402,6 +402,12 @@ const PARENT_SOFTWARE_PROJECT: &str = "has(node.child_of) \
 /// sub-task links the project itself or through its direct parent. Only
 /// `in_progress` is guarded; a plain task is never checked, since the rule is
 /// registered against `issue`.
+///
+/// Two limits. The project link is the `tasks` relationship, a custom edge
+/// that Sync does not send or apply, so an issue linked on one device has no
+/// project on another until it is linked there. And the rule fires on a status
+/// change, not on creation: an issue created already `in_progress` with no
+/// project is not refused.
 pub fn issue_project_rules() -> serde_json::Value {
     json!([reject_change(
         "reject-starting-an-issue-without-a-software-project",
@@ -427,7 +433,8 @@ pub fn issue_project_rules() -> serde_json::Value {
          its direct parent's is read (a sub-task of a sub-task links the project itself or \
          through its direct parent). Nothing was changed, so do not retry the same change. \
          Link the issue to a software project (add it to the project's `tasks`) or link its \
-         parent task to one, then start it again.",
+         parent task to one, then start it again. That link is kept on this device only and is \
+         not synced, so an issue linked on another device has to be linked again on this one.",
     )])
 }
 
