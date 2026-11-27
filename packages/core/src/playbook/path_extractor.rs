@@ -32,6 +32,29 @@ pub struct CollectionPath {
     pub iter_var: String,
     /// Paths referenced inside the comprehension body, rooted at the iter var
     pub item_paths: Vec<ExtractedPath>,
+    /// For a collection rooted at an enclosing comprehension's iteration
+    /// variable (`h.has_child` in `node.has_child.exists(h, h.has_child.exists(c, ...))`),
+    /// the collection that variable iterates (`["node", "has_child"]`). `None`
+    /// for a collection rooted anywhere else.
+    pub enclosing: Option<ExtractedPath>,
+}
+
+impl CollectionPath {
+    /// The collection's path read from `node`: for one nested in an enclosing
+    /// comprehension, the enclosing collection's path followed by the
+    /// relationships named after the iteration variable
+    /// (`["node", "has_child", "has_child"]`); otherwise its own path.
+    pub fn path_from_root(&self) -> Vec<String> {
+        match &self.enclosing {
+            Some(outer) => outer
+                .segments
+                .iter()
+                .chain(self.collection.segments.iter().skip(1))
+                .cloned()
+                .collect(),
+            None => self.collection.segments.clone(),
+        }
+    }
 }
 
 /// All paths extracted from a CEL expression.
@@ -321,13 +344,21 @@ fn handle_comprehension(
             }
         }
 
-        // Propagate nested collections from the body
-        result.collections.extend(body_result.collections);
+        // Propagate nested collections from the body. One rooted at this
+        // comprehension's iteration variable records the collection it
+        // iterates, so a later step can walk to it from each item.
+        for mut nested in body_result.collections {
+            if nested.enclosing.is_none() && nested.collection.root == *iter_var {
+                nested.enclosing = Some(coll_path.clone());
+            }
+            result.collections.push(nested);
+        }
 
         result.collections.push(CollectionPath {
             collection: coll_path,
             iter_var: iter_var.clone(),
             item_paths,
+            enclosing: None,
         });
     } else {
         // iter_range isn't a simple path (unusual) — just merge body paths
@@ -344,6 +375,34 @@ fn handle_comprehension(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_collection_rooted_at_an_iteration_variable_records_its_enclosing_collection() {
+        let result =
+            extract_paths("node.has_child.exists(h, h.has_child.exists(c, c.checked == false))")
+                .unwrap();
+        let nested = result
+            .collections
+            .iter()
+            .find(|c| c.collection.root == "h")
+            .expect("the nested collection is extracted");
+        assert_eq!(nested.collection.segments, vec!["h", "has_child"]);
+        assert_eq!(nested.iter_var, "c");
+        assert_eq!(
+            nested.enclosing.as_ref().map(|p| p.segments.clone()),
+            Some(vec!["node".to_string(), "has_child".to_string()])
+        );
+        assert_eq!(
+            nested.path_from_root(),
+            vec!["node", "has_child", "has_child"]
+        );
+        let outer = result
+            .collections
+            .iter()
+            .find(|c| c.collection.root == "node")
+            .unwrap();
+        assert!(outer.enclosing.is_none());
+    }
 
     #[test]
     fn extract_simple_property_path() {

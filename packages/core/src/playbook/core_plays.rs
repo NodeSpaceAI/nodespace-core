@@ -130,7 +130,10 @@ const ROLL_UP_CONDITION: &str = "'task' in node.child_of.type_chain \
 /// other, so a parent with an unchecked item is left open by the rule that
 /// says why. Checking the last item afterwards is not a task status change
 /// and re-evaluates nothing: a checklist gates completion and never causes
-/// it, so that parent is finished by hand (ADR-079 §8).
+/// it, so that parent is finished by hand (ADR-079 §8). That includes an
+/// unchecked item under the parent's Acceptance Criteria heading, which the
+/// criteria rule reads; this rule's own condition reads sub-tasks only and
+/// needed no change.
 pub fn parent_task_completion_rules() -> serde_json::Value {
     json!([{
         "name": "complete-parent-when-all-children-done",
@@ -216,12 +219,42 @@ fn parent_task_completion_play() -> NodeTemplate {
 // both edits a field and supersedes the node is refused like an edit made
 // afterwards: supersede in a write of its own.
 
-/// Whether a node has no checkbox child. A checkbox is the only type that
-/// derives `checked` (ADR-094 §5), and on any other child it reads as `null`,
-/// so a child that is either checked or unchecked is a checkbox. Only direct
-/// children are seen: `has_child` is one level.
-const NO_CHECKBOX_CHILD: &str =
-    "!has(node.has_child) || !node.has_child.exists(c, c.checked == true || c.checked == false)";
+/// A header whose text is `Acceptance Criteria` or `AC`, at any level and in
+/// any letter case (`## Acceptance Criteria`, `#### ac`). The text a header
+/// stores keeps its `#` prefix. The words are part of the Play, so a user who
+/// names the section differently edits the Play.
+pub(crate) const AC_HEADING: &str = concat!(
+    "'header' in h.type_chain && ",
+    r"h.content.matches('(?i)^#+\\s*(acceptance criteria|ac)\\s*$')"
+);
+
+/// Whether a checkbox is an unchecked one. A checkbox is the only type that
+/// derives `checked` (ADR-094 §5), and on any other child it reads as `null`.
+pub(crate) const UNCHECKED: &str = "c.checked == false";
+
+/// Whether a node has an unchecked criterion: an unchecked checkbox directly
+/// under it, or under a direct child that is its Acceptance Criteria heading.
+/// A checkbox under any other heading is not a criterion. The second read
+/// follows `has_child` from the items of the first, one further level.
+pub(crate) fn has_unchecked_criterion() -> String {
+    format!(
+        "node.has_child.exists(c, {UNCHECKED}) || \
+         node.has_child.exists(h, {AC_HEADING} && h.has_child.exists(c, {UNCHECKED}))"
+    )
+}
+
+/// Whether a node has no criterion at all: no checkbox directly under it and
+/// none under its Acceptance Criteria heading. A checkbox is the only type
+/// that derives `checked` (ADR-094 §5), and on any other child it reads as
+/// `null`, so a child that is either checked or unchecked is a checkbox.
+pub(crate) fn has_no_criterion() -> String {
+    format!(
+        "!has(node.has_child) || (\
+         !node.has_child.exists(c, c.checked == true || c.checked == false) && \
+         !node.has_child.exists(h, {AC_HEADING} && \
+         h.has_child.exists(c, c.checked == true || c.checked == false)))"
+    )
+}
 
 /// Whether a task is linked into the model: it carries out a plan, or is
 /// governed by at least one spec.
@@ -258,8 +291,9 @@ fn reject_change(
 
 /// Refuse to approve a spec that does not say how done is judged.
 ///
-/// A spec's success criteria are its direct checkbox children (ADR-092 §2),
-/// so a spec with none has no criteria to approve.
+/// A spec's success criteria are its checkbox children (ADR-092 §2), or the
+/// checkboxes under its Acceptance Criteria heading, so a spec with neither
+/// has no criteria to approve.
 pub fn spec_approval_rules() -> serde_json::Value {
     json!([reject_change(
         "reject-approving-a-spec-without-criteria",
@@ -272,13 +306,14 @@ pub fn spec_approval_rules() -> serde_json::Value {
                 "description": "The spec is being approved",
             },
             {
-                "expr": NO_CHECKBOX_CHILD,
-                "description": "The spec has no checkbox child",
+                "expr": has_no_criterion(),
+                "description": "The spec has no checkbox child and none under an Acceptance Criteria heading",
             },
         ]),
         "Refuse the approval and say the spec needs success criteria first",
         "This spec cannot be approved until it has success criteria. Add each criterion as \
-         a checkbox directly under the spec, then approve it.",
+         a checkbox under an `## Acceptance Criteria` heading of the spec (or directly \
+         under the spec), then approve it.",
     )])
 }
 
@@ -521,8 +556,9 @@ pub fn task_blockers_rules() -> serde_json::Value {
 
 /// Refuse to finish a task whose checklist is incomplete.
 ///
-/// A task's acceptance criteria are its direct checkbox children (ADR-092
-/// §2). Two rules:
+/// A task's acceptance criteria are its checkbox children (ADR-092 §2) and the
+/// checkboxes under its Acceptance Criteria heading ([`AC_HEADING`]). Two
+/// rules:
 ///
 /// - A task with an unchecked checkbox child cannot be done. This applies to
 ///   every task: one that has a checklist finishes it before it closes.
@@ -541,13 +577,14 @@ pub fn task_criteria_rules() -> serde_json::Value {
                     "description": "The task is being marked done",
                 },
                 {
-                    "expr": "node.has_child.exists(c, c.checked == false)",
-                    "description": "At least one checkbox child is not checked",
+                    "expr": has_unchecked_criterion(),
+                    "description": "A checkbox directly under the task, or under its Acceptance Criteria heading, is not checked",
                 },
             ]),
             "Refuse the change and say the checklist must be completed first",
-            "This task cannot be marked done while its checklist has an unchecked item. Check \
-             each item once it is met, or remove an item that no longer applies.",
+            "This task cannot be marked done while its checklist has an unchecked item, directly \
+             under the task or under its `## Acceptance Criteria` heading. Check each item once \
+             it is met, or remove an item that no longer applies.",
         ),
         reject_change(
             "reject-done-without-criteria",
@@ -564,18 +601,24 @@ pub fn task_criteria_rules() -> serde_json::Value {
                     "description": "The task is linked to a plan or a spec",
                 },
                 {
-                    "expr": NO_CHECKBOX_CHILD,
-                    "description": "The task has no checkbox child",
+                    "expr": has_no_criterion(),
+                    "description": "The task has no checkbox child and none under an Acceptance Criteria heading",
                 },
             ]),
             "Refuse the change and say the task needs a checklist first",
             "This task is linked to a plan or a spec, so it cannot be marked done without \
-             acceptance criteria. Add each criterion as a checkbox directly under the task \
-             and check it once it is met.",
+             acceptance criteria. Add each criterion as a checkbox under an `## Acceptance \
+             Criteria` heading of the task (or directly under it) and check it once it is \
+             met.",
         ),
     ])
 }
 
+// Findings are not read under an Acceptance Criteria heading: a review writes
+// them as direct children of the issue, and the criteria heading is where its
+// requirements sit, so the two stay apart. An open finding still holds the issue open
+// through the task criteria rule: a finding is a checkbox directly under the issue.
+//
 // A finding is a direct checkbox child whose text opens with `Finding (`
 // after its `- [ ] ` or `- [x] ` marker (ADR-092 §8), so a checklist item
 // that merely mentions a finding is not one. A decision is one of the three
@@ -731,8 +774,9 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
         seeded_play(
             SPEC_APPROVAL_PLAY_ID,
             "Require success criteria before approving a spec",
-            "Rejects approving a spec that has no checkbox child. A spec's success criteria \
-             are the checkboxes directly under it.",
+            "Rejects approving a spec that has no checkbox child and none under its Acceptance \
+             Criteria heading. A spec's success criteria are the checkboxes directly under it \
+             and those under a heading named Acceptance Criteria or AC.",
             spec_approval_rules(),
         ),
         seeded_play(
@@ -760,9 +804,11 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
         seeded_play(
             TASK_CRITERIA_PLAY_ID,
             "Require a completed checklist before finishing a task",
-            "Rejects marking a task done while a checkbox directly under it is unchecked, and \
-             rejects marking a task that is linked to a plan or a spec done when it has no \
-             checkbox at all. A task with no plan, no spec and no checklist is never checked.",
+            "Rejects marking a task done while a checkbox directly under it, or under its \
+             Acceptance Criteria (or AC) heading, is unchecked, and rejects marking a task \
+             that is linked to a plan or a spec done when it has no checkbox in either place. \
+             A checkbox under any other heading is not counted. A task with no plan, no spec \
+             and no checklist is never checked.",
             task_criteria_rules(),
         ),
         seeded_play(

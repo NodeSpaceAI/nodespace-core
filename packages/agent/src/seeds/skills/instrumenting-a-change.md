@@ -8,7 +8,7 @@ STEP 3, WHAT IS MEASURED: three measures cover most changes: the rate at which i
 
 STEP 4, WHERE A TRACE IS NEEDED: a trace is for a request that crosses a boundary, a process or a service, where a log alone cannot say where the time went or where it stopped. Say which boundary, and what is carried across it. A change that stays in one place needs none.
 
-STEP 5, WRITE IT AS CRITERIA ON THE TASK: each log, measure and trace is a checkbox directly under the task, one condition that can be tested, such as "a failed export logs the file and the reason". <!-- include: checkbox-item-create --> Leave each one unchecked: Implementing a Task ticks it with the evidence that it emits, and Shipping a Change reads what it showed.
+STEP 5, WRITE IT AS CRITERIA ON THE TASK: each log, measure and trace is a checkbox under the task (directly, or under its `## Acceptance Criteria` header), one condition that can be tested, such as "a failed export logs the file and the reason". <!-- include: checkbox-item-create --> Leave each one unchecked: Implementing a Task ticks it with the evidence that it emits, and Shipping a Change reads what it showed.
 
 STEP 6, KEEP WHAT IT COSTS IN VIEW: every measure and log has a cost to write, to store and to read. Leave out what nobody would act on, and say what was left out and why.
 

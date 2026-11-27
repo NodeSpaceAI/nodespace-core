@@ -288,6 +288,23 @@
         "editedUsersAffected": false,
         "mustNotWaitForDecision": false
       }
+    },
+    {
+      "id": "criteria-plays-read-the-acceptance-criteria-heading",
+      "after": "0.3.14",
+      "covers": [
+        "seeded.3d139d11-c3b7-42d5-b638-f2a2b41e1674.configVersion",
+        "seeded.95796b4d-f078-44f8-807b-8a2e92167a2d.configVersion"
+      ],
+      "area": "seeded_content",
+      "class": "reconcile",
+      "summary": "A v0.3.14 daemon lets a task be finished, or a spec approved, whose only open items sit under an Acceptance Criteria (or AC) header; the new Plays are not enforced there. The Plays \"Require success criteria before approving a spec\" and \"Require a completed checklist before finishing a task\" count a checkbox under a child header named Acceptance Criteria or AC (any level, any letter case) as a criterion, as well as a checkbox directly under the spec or task. Their conditions read one level further, and their refusal messages name the heading. A database that holds the old Plays unedited has them replaced on open; a user who edited either keeps the edit, and the shipped change is recorded for them to decide on. Nothing is rewritten: a task or spec with criteria directly under it is counted as before. Older builds: a v0.3.14 build reads only direct children, so its direct-child rule sees no checkbox for a task or spec whose criteria sit only under the heading (a task linked to a plan or spec is refused as needing criteria, a spec cannot be approved, and unchecked items under the heading are ignored). Verified against the v0.3.14 source: its resolver resolves only collections rooted at `node` and its path extractor does not link a nested collection to its enclosing one, so an item has no `has_child`; reading it raises a missing-key error, which cel.rs maps to Fail. A failed condition means the reject rule does not fire, so an older daemon running the new Plays fails open (it allows the write); it does not crash. The error is reached only for a task or spec that has a header child named Acceptance Criteria or AC: the condition checks the header's type and text (`'header' in h.type_chain && h.content.matches(...)`) before it reads `h.has_child`, so a header with any other name evaluates false first. By clause order in the shipped Plays (the direct read first, then the heading read, joined by short-circuiting operators): the finishing rule's unchecked condition is `direct unchecked || heading unchecked`, so a task with a directly unchecked checkbox is still refused on an older daemon, and it fails open only when no direct checkbox is unchecked and an AC header child exists; the no-criteria condition is `no children || (no direct checkbox && no checkbox under the heading)`, so it fails open only when the task or spec has no direct checkbox and has an AC header child. A user who edited either Play keeps the old rule while the skills tell agents to use the heading. An older build reopening a database replaces an unedited new Play back to its old config, and the next newer open replaces it again. Known limit: the search for ready tasks filters on a checkbox directly under the task and cannot also look under a heading (the query filters are all combined with AND, with no OR), so a task whose only criteria sit under the heading is not listed as ready; the guidance says so.",
+      "userProducible": true,
+      "seeded": {
+        "aspect": "config",
+        "editedUsersAffected": true,
+        "mustNotWaitForDecision": false
+      }
     }
   ]
 }
