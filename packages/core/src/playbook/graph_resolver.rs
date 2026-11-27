@@ -828,10 +828,19 @@ impl GraphResolver {
         }
 
         // Resolve collection paths
+        //
+        // Two comprehensions over the same path share one entry, keyed by the
+        // path, so it is resolved once. What each reads from its items is
+        // attached by the enclosing path alone, whatever the comprehension's
+        // variable is called and whatever order they are written in; skipping
+        // a repeated path here only saves resolving it again.
+        let mut resolved_paths: Vec<&Vec<String>> = Vec::new();
         for coll in collections {
-            if coll.collection.root != "node" {
+            if coll.collection.root != "node" || resolved_paths.contains(&&coll.collection.segments)
+            {
                 continue;
             }
+            resolved_paths.push(&coll.collection.segments);
             let nodes = self.resolve_collection(root_node, &coll.collection).await?;
             // Load-bearing: an empty collection leaves the key ABSENT rather
             // than injecting an empty list.
@@ -847,11 +856,77 @@ impl GraphResolver {
                 let mut list = self.node_values(&nodes).await?;
                 let derived = derived_names_read_on_items(collections, &coll.collection.segments);
                 absent_derived_read_as_null(&mut list, &derived);
+                self.attach_nested_collections(&nodes, &mut list, coll, collections)
+                    .await?;
                 resolved_values.insert(coll.collection.segments.clone(), Value::List(list.into()));
             }
         }
 
         Ok(resolved_values)
+    }
+}
+
+impl GraphResolver {
+    /// Give each item of `coll` the collections the condition reads from it:
+    /// `h.has_child` in `node.has_child.exists(h, h.has_child.exists(...))`.
+    ///
+    /// One level only: a collection nested in a nested one is not resolved,
+    /// and its path is refused when the Play is saved. The relationship is
+    /// followed from all the items at once, so it costs one statement however
+    /// many items there are, and every item gets an entry, an empty list when
+    /// it has none. That differs from the outer collection, whose absence is
+    /// what holds a childless parent open: a comprehension over an item with
+    /// no children is simply false, where an absent key would fail the whole
+    /// condition because one item had nothing under it.
+    async fn attach_nested_collections(
+        &mut self,
+        nodes: &[Node],
+        list: &mut [Value],
+        coll: &CollectionPath,
+        collections: &[CollectionPath],
+    ) -> Result<(), String> {
+        let nested: Vec<&CollectionPath> = collections
+            .iter()
+            .filter(|n| {
+                n.enclosing
+                    .as_ref()
+                    .is_some_and(|outer| outer.segments == coll.collection.segments)
+            })
+            .collect();
+        for nested in nested {
+            let segments = &nested.collection.segments[1..];
+            if segments.is_empty() {
+                continue;
+            }
+            let mut resolved = self.resolve_path_for(nodes, segments).await;
+            let derived = derived_names_read_on_items(collections, &nested.path_from_root());
+            for (node, item) in nodes.iter().zip(list.iter_mut()) {
+                let value = match resolved.remove(&node.id) {
+                    Some(ResolvedValue::Collection(children)) => {
+                        let mut values = self.node_values(&children).await?;
+                        absent_derived_read_as_null(&mut values, &derived);
+                        Value::List(values.into())
+                    }
+                    Some(ResolvedValue::Node(child)) => {
+                        let mut values = vec![self.node_value(&child).await?];
+                        absent_derived_read_as_null(&mut values, &derived);
+                        Value::List(values.into())
+                    }
+                    Some(ResolvedValue::Unresolved(reason)) => return Err(reason),
+                    Some(ResolvedValue::Scalar(_) | ResolvedValue::Missing) | None => {
+                        Value::List(Vec::new().into())
+                    }
+                };
+                if let Value::Map(map) = item {
+                    let mut with_nested = (*map.map).clone();
+                    inject_nested_value(&mut with_nested, segments, &value);
+                    *item = Value::Map(cel_interpreter::objects::Map {
+                        map: Arc::new(with_nested),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -864,7 +939,7 @@ fn derived_names_read_on_items<'a>(
 ) -> Vec<&'a str> {
     let mut names: Vec<&str> = collections
         .iter()
-        .filter(|coll| coll.collection.segments == segments)
+        .filter(|coll| coll.path_from_root() == segments)
         .flat_map(|coll| {
             coll.item_paths
                 .iter()
@@ -2799,6 +2874,7 @@ mod tests {
                     segments: vec!["t".to_string(), "status".to_string()],
                     root: "t".to_string(),
                 }],
+                enclosing: None,
             }];
 
             let result = resolver
@@ -4064,6 +4140,162 @@ mod tests {
                 );
             }
             assert_eq!(resolver.statements_run(), 2);
+        }
+
+        /// A node with `kinds` as children, each `(node type, content)`, in
+        /// order; returns the parent and the children.
+        async fn seed_children(
+            svc: &Arc<NodeService>,
+            tag: &str,
+            parent_type: &str,
+            kinds: &[(&str, String)],
+        ) -> (Node, Vec<Node>) {
+            let parent = make_node(
+                &format!("c0000000-0000-4000-8000-{tag}00000000"),
+                parent_type,
+                json!({}),
+            );
+            svc.create_node(parent.clone()).await.unwrap();
+            let mut children = Vec::new();
+            for (i, (node_type, content)) in kinds.iter().enumerate() {
+                let mut child = make_node(
+                    &format!("c1000000-0000-4000-8000-{tag}{i:08}"),
+                    node_type,
+                    json!({}),
+                );
+                child.content = content.clone();
+                svc.create_node(child.clone()).await.unwrap();
+                svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+                    .await
+                    .unwrap();
+                children.push(child);
+            }
+            (parent, children)
+        }
+
+        /// A condition follows a relationship from the items of a collection:
+        /// the checkboxes under a child header are read, and the whole read
+        /// costs one statement per level and child type, however many children the task has.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_collection_is_followed_one_level_from_its_items_in_one_statement_per_level() {
+            use crate::db::events::DomainEvent;
+            use crate::playbook::cel::{
+                evaluate_conditions_at_scope, CompiledCondition, ConditionResult,
+            };
+
+            let (svc, _tmp) = create_test_service().await;
+            let mut kinds: Vec<(&str, String)> = Vec::new();
+            for i in 0..40 {
+                kinds.push(("text", format!("Note {i}")));
+            }
+            kinds.push(("header", "## Notes".to_string()));
+            kinds.push(("header", "## Acceptance Criteria".to_string()));
+            let (task, children) = seed_children(&svc, "0000", "task", &kinds).await;
+            let notes = &children[40];
+            let criteria = &children[41];
+            for (parent, content) in [
+                (notes, "- [ ] Under another heading"),
+                (criteria, "- [x] Met"),
+            ] {
+                let item = make_node(
+                    &format!(
+                        "c2000000-0000-4000-8000-{:012}",
+                        parent.id.len() + content.len()
+                    ),
+                    "checkbox",
+                    json!({}),
+                );
+                let mut item = item;
+                item.content = content.to_string();
+                svc.create_node(item.clone()).await.unwrap();
+                svc.create_relationship(&parent.id, "has_child", &item.id, json!({}))
+                    .await
+                    .unwrap();
+            }
+
+            let unchecked = [CompiledCondition::compile(
+                &crate::playbook::core_plays::has_unchecked_criterion(),
+            )
+            .unwrap()];
+            let event = DomainEvent::NodeCreated {
+                node_type: task.node_type.clone(),
+                node_id: task.id.clone(),
+            };
+
+            // Every criterion is met: the open box under "Notes" is not one.
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result =
+                evaluate_conditions_at_scope(&unchecked, &task, &event, Some(&mut resolver), None)
+                    .await;
+            assert!(matches!(result, ConditionResult::Fail { .. }), "{result:?}");
+            // One statement for the 42 children, then one for what is under
+            // them per node TYPE among them (text and header), never per child:
+            // the batched walk runs one statement for all roots of a type.
+            assert_eq!(resolver.statements_run(), 3);
+
+            // The same two reads written the other way round: the plain read
+            // of `node.has_child` must not replace what the nested one needs.
+            let swapped = [CompiledCondition::compile(&format!(
+                "node.has_child.exists(h, {} && h.has_child.exists(c, {})) || \
+                 node.has_child.exists(c, {})",
+                crate::playbook::core_plays::AC_HEADING,
+                crate::playbook::core_plays::UNCHECKED,
+                crate::playbook::core_plays::UNCHECKED,
+            ))
+            .unwrap()];
+
+            // An open box under the Acceptance Criteria heading is found.
+            let open = make_node(
+                "c2000000-0000-4000-8000-ffffffffffff",
+                "checkbox",
+                json!({}),
+            );
+            let mut open = open;
+            open.content = "- [ ] Open".to_string();
+            svc.create_node(open.clone()).await.unwrap();
+            svc.create_relationship(&criteria.id, "has_child", &open.id, json!({}))
+                .await
+                .unwrap();
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result =
+                evaluate_conditions_at_scope(&unchecked, &task, &event, Some(&mut resolver), None)
+                    .await;
+            assert!(matches!(result, ConditionResult::Pass), "{result:?}");
+            assert_eq!(resolver.statements_run(), 3);
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result =
+                evaluate_conditions_at_scope(&swapped, &task, &event, Some(&mut resolver), None)
+                    .await;
+            assert!(
+                matches!(result, ConditionResult::Pass),
+                "clauses swapped: {result:?}"
+            );
+            assert_eq!(resolver.statements_run(), 3);
+
+            // Two comprehensions over the same path under different variables,
+            // each reading a different relationship from its items: the first
+            // must not decide what the second finds.
+            let two_variables = [CompiledCondition::compile(&format!(
+                "node.has_child.exists(g, g.mentions.exists(m, m.id == 'none')) || \
+                 node.has_child.exists(h, {} && h.has_child.exists(c, {}))",
+                crate::playbook::core_plays::AC_HEADING,
+                crate::playbook::core_plays::UNCHECKED,
+            ))
+            .unwrap()];
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = evaluate_conditions_at_scope(
+                &two_variables,
+                &task,
+                &event,
+                Some(&mut resolver),
+                None,
+            )
+            .await;
+            assert!(
+                matches!(result, ConditionResult::Pass),
+                "two variables on one path: {result:?}"
+            );
         }
 
         /// What a scan resolved is handed to each work item's resolver keyed

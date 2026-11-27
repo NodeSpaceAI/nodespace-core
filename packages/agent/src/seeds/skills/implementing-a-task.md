@@ -6,7 +6,7 @@ STEP 2, START IT WITH THE VERSION YOU READ: <!-- include: task-implement-start -
 
 STEP 3, READ WHAT GOVERNS IT: what came back with the task is its context: its spec, its plan, the decisions linked from it and from its spec, and its project. Read the spec's `boundaries` and its sections (implementation decisions, testing decisions and what is out of scope), the plan's sections, the task's own brief (behaviour, interfaces and what is out of scope) and every decision before changing anything: they say what must hold, and where the tests go. Read each of those records whole, with its sections. <!-- include: section-read --> Skills came back too: this procedure, and any standard attached to the task's project, such as naming conventions or a test strategy. Follow each of them.
 
-STEP 4, WORK TEST-FIRST, ONE ITEM AT A TIME: the task's checklist is the checkboxes directly under it that are not findings of a review, and it defines done. Never add, reword or remove an item to fit what was built: if an item is wrong or cannot be met, stop and tell the user. For each item, in order:
+STEP 4, WORK TEST-FIRST, ONE ITEM AT A TIME: the task's checklist is the checkboxes under its `## Acceptance Criteria` header and directly under it that are not findings of a review, and it defines done. Never add, reword or remove an item to fit what was built: if an item is wrong or cannot be met, stop and tell the user. For each item, in order:
 - write one failing test for that item, at a boundary the spec agreed, so it checks behaviour and not structure;
 - run it and see it fail, for the reason the item names, and keep that output;
 - write only enough code to make it pass, run it and keep that output;

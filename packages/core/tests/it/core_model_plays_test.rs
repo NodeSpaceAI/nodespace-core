@@ -945,6 +945,146 @@ async fn only_direct_checkbox_children_are_criteria() -> Result<()> {
     Ok(())
 }
 
+/// A criterion can sit under a heading of its own. An unchecked checkbox under
+/// `## Acceptance Criteria` holds the task open, and the refusal names the
+/// heading; checking it lets the task close.
+#[tokio::test]
+async fn an_unchecked_checkbox_under_an_acceptance_criteria_heading_holds_a_task_open() -> Result<()>
+{
+    let h = Harness::start().await?;
+    let task = h.task().await?;
+    let heading = h.child(&task, "header", "## Acceptance Criteria").await?;
+    let item = h.child(&heading, "checkbox", "- [ ] It works").await?;
+    assert_rejected(
+        h.set_status(&task, "done").await,
+        "`## Acceptance Criteria` heading",
+        "an unchecked criterion under the heading",
+    );
+    assert_rejected(
+        h.set_status(&task, "done").await,
+        TASK_HAS_UNCHECKED_ITEM,
+        "an unchecked criterion under the heading",
+    );
+
+    h.set_content(&item, "- [x] It works").await?;
+    h.set_status(&task, "done").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// The heading matches at any level and in any letter case, and `AC` matches
+/// as well. Text that merely contains the words is another heading.
+#[tokio::test]
+async fn the_acceptance_criteria_heading_matches_at_any_level_and_case() -> Result<()> {
+    let h = Harness::start().await?;
+    for heading in [
+        "# Acceptance Criteria",
+        "#### acceptance criteria",
+        "## ACCEPTANCE CRITERIA",
+        "### AC",
+        "## ac",
+        "## Ac ",
+    ] {
+        let task = h.task().await?;
+        let section = h.child(&task, "header", heading).await?;
+        h.child(&section, "checkbox", "- [ ] Open").await?;
+        assert_rejected(
+            h.set_status(&task, "done").await,
+            TASK_HAS_UNCHECKED_ITEM,
+            heading,
+        );
+    }
+    for heading in [
+        "## Notes",
+        "## Acceptance Criteria Draft",
+        "## Not AC",
+        "## ACs",
+    ] {
+        let task = h.task().await?;
+        let section = h.child(&task, "header", heading).await?;
+        h.child(&section, "checkbox", "- [ ] Open").await?;
+        h.set_status(&task, "done").await?;
+    }
+    h.stop().await;
+    Ok(())
+}
+
+/// Both places count together: a met criterion under the heading does not
+/// excuse an open one directly under the task, nor the other way round, and a
+/// header that is not the Acceptance Criteria heading holds nothing open.
+#[tokio::test]
+async fn criteria_directly_under_a_task_and_under_the_heading_both_count() -> Result<()> {
+    let h = Harness::start().await?;
+    let task = h.task().await?;
+    let notes = h.child(&task, "header", "## Notes").await?;
+    h.child(&notes, "checkbox", "- [ ] Not a criterion").await?;
+    let heading = h.child(&task, "header", "## Acceptance Criteria").await?;
+    h.child(&heading, "checkbox", "- [x] Met").await?;
+    h.child(&heading, "text", "A note under the heading")
+        .await?;
+    let direct = h.child(&task, "checkbox", "- [ ] Open, directly").await?;
+    assert_rejected(
+        h.set_status(&task, "done").await,
+        TASK_HAS_UNCHECKED_ITEM,
+        "an open criterion directly under the task",
+    );
+    h.set_content(&direct, "- [x] Open, directly").await?;
+    h.set_status(&task, "done").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// A task linked to a spec needs a criterion to finish, and one under the
+/// heading is one. An empty heading, or a checkbox under another heading, is
+/// not.
+#[tokio::test]
+async fn a_checkbox_under_the_heading_satisfies_the_need_for_criteria() -> Result<()> {
+    let h = Harness::start().await?;
+    let l = h.traced_task().await?;
+    h.set_status(&l.task, "in_progress").await?;
+    let empty = h.child(&l.task, "header", "## Acceptance Criteria").await?;
+    let other = h.child(&l.task, "header", "## Notes").await?;
+    h.child(&other, "checkbox", "- [x] Not a criterion").await?;
+    assert_rejected(
+        h.set_status(&l.task, "done").await,
+        TASK_NEEDS_CRITERIA,
+        "an empty heading and a checkbox under another heading",
+    );
+    h.child(&empty, "checkbox", "- [x] It works").await?;
+    h.set_status(&l.task, "done").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// A spec's success criteria are found in the same two places.
+#[tokio::test]
+async fn a_spec_with_a_checkbox_under_the_heading_can_be_approved() -> Result<()> {
+    let h = Harness::start().await?;
+
+    let elsewhere = h.create("spec", json!({})).await?;
+    let notes = h.child(&elsewhere, "header", "## Notes").await?;
+    h.child(&notes, "checkbox", "- [ ] Not a criterion").await?;
+    h.child(&elsewhere, "header", "## Acceptance Criteria")
+        .await?;
+    assert_rejected(
+        h.set(&elsewhere, json!({ "spec_status": "approved" }))
+            .await,
+        SPEC_NEEDS_CRITERIA,
+        "a spec whose only checkbox is under another heading",
+    );
+
+    let ready = h.create("spec", json!({})).await?;
+    let heading = h.child(&ready, "header", "## Acceptance Criteria").await?;
+    h.child(&heading, "checkbox", "- [ ] It works").await?;
+    h.set(&ready, json!({ "spec_status": "approved" })).await?;
+    assert_eq!(
+        h.field(&ready, "spec", "spec_status").await?,
+        Some(json!("approved"))
+    );
+    h.stop().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_task_under_a_plan_or_spec_needs_a_checklist_to_finish() -> Result<()> {
     let h = Harness::start().await?;

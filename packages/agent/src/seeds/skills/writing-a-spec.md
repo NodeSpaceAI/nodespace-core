@@ -1,4 +1,4 @@
-A spec is what every plan and task under it is judged against: what is being built, what is out of bounds, and the conditions the finished work must meet. Those conditions are its criteria, and each one is a checkbox directly under the spec. Write it from what the user has told you and what already exists, never from a guess.
+A spec is what every plan and task under it is judged against: what is being built, what is out of bounds, and the conditions the finished work must meet. Those conditions are its criteria, and each one is a checkbox under the spec's `## Acceptance Criteria` header. Write it from what the user has told you and what already exists, never from a guess.
 
 CHECK FOR AN EXISTING SPEC FIRST: a second spec for the same objective splits the work between two. <!-- include: spec-find-first --> A draft that already covers it is edited, not written again. An approved one that is wrong is replaced: see REPLACING A SPEC.
 
@@ -16,11 +16,11 @@ The rest is ordinary nodes beneath the spec, a header for each section and a tex
 
 CREATE THE SPEC FIRST, then its sections. <!-- include: spec-create -->
 
-WRITE EACH CRITERION AS A CHECKBOX DIRECTLY UNDER THE SPEC, not under a section header, since only direct children count: a criterion is one condition that can be tested, taken from the user stories and the testing decisions. "The export finishes in under a second for 10,000 rows" is one; "works correctly" is not. Leave every one unchecked. <!-- include: checkbox-item-create -->
+WRITE EACH CRITERION AS A CHECKBOX UNDER A `## Acceptance Criteria` HEADER OF THE SPEC: a heading named Acceptance Criteria (or AC, at any level, in any case) is where the rules look, and so is a checkbox directly under the spec, but a checkbox under any other header is not a criterion. A criterion is one condition that can be tested, taken from the user stories and the testing decisions. "The export finishes in under a second for 10,000 rows" is one; "works correctly" is not. Leave every one unchecked. <!-- include: checkbox-item-create -->
 
 NEVER INVENT A CRITERION: if the request does not say how done will be judged, ask. A guessed criterion is worse than none, because every plan and task under the spec inherits it. A placeholder such as "TBD" in a field is the same mistake.
 
-APPROVAL IS THE USER'S: a new spec is a `draft`, and stays one until the user approves it. Show them the objective, the boundaries, the sections and the criteria word for word and ask whether to approve. <!-- include: approval-ask-first --> <!-- include: spec-approve --> A spec with no checkbox under it cannot be approved: that write is rejected. A recommendation to approve is never an approval.
+APPROVAL IS THE USER'S: a new spec is a `draft`, and stays one until the user approves it. Show them the objective, the boundaries, the sections and the criteria word for word and ask whether to approve. <!-- include: approval-ask-first --> <!-- include: spec-approve --> A spec with no checkbox under it or under its Acceptance Criteria header cannot be approved: that write is rejected. A recommendation to approve is never an approval.
 
 REPLACING A SPEC: an approved spec that turns out wrong is not edited into a different one. Write a new spec, then set the old one's `spec_status` to `superseded`, in a write that changes nothing else. A superseded spec's fields are locked and it cannot be moved back, so what was built against it still reads what it was built against.
 

@@ -706,7 +706,8 @@ pub const VERSION_CONFLICT: InteractionRule = InteractionRule {
 };
 
 /// A criterion or a checklist item is a checkbox directly under its spec or
-/// task (ADR-092 §2), written unchecked.
+/// task (ADR-092 §2), or under that node's Acceptance Criteria header, written
+/// unchecked.
 pub const CHECKBOX_ITEM_CREATE: InteractionRule = InteractionRule {
     id: "checkbox-item-create",
     imperative: agent_form!("checkbox-item-create"),

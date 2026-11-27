@@ -1,4 +1,4 @@
-A task is finished when its checklist is: every checkbox directly under it is checked. Marking it done is the last write to a task, and the one the rules guard most.
+A task is finished when its checklist is: every checkbox under its `## Acceptance Criteria` header, and every one directly under it, is checked. Marking it done is the last write to a task, and the one the rules guard most.
 
 READ THE TASK FIRST: <!-- include: task-complete-read -->
 

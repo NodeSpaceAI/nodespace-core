@@ -50,13 +50,11 @@ pub async fn referenced_types(node_service: &NodeService, rules: &[RuleDefinitio
             // type is the collection's: `node.stories.all(s, s.owner.active)`
             // reaches `owner`'s type through `story`.
             for collection in &extraction.collections {
-                if collection.collection.root != "node" {
+                if collection.collection.root != "node" && collection.enclosing.is_none() {
                     continue;
                 }
-                let segments: Vec<&str> = collection.collection.segments[1..]
-                    .iter()
-                    .map(String::as_str)
-                    .collect();
+                let from_root = collection.path_from_root();
+                let segments: Vec<&str> = from_root[1..].iter().map(String::as_str).collect();
                 let Ok(Some(item_type)) =
                     declared_collection_type(node_service, &trigger_type, &segments).await
                 else {
