@@ -2920,6 +2920,7 @@ fn undeclared_refusal_backstop(
             r.is_error
                 && !is_duplicate_entity_refusal(r)
                 && !is_unread_schema_hold(r)
+                && !is_declined_work_hold(r)
                 && undeclared_refusal_of(r).is_none()
                 // An unresolved id is what an earlier backstop asked the user about.
                 && !is_unresolved_id_refusal(r)
@@ -5281,6 +5282,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         r.is_error
                             && !is_duplicate_entity_refusal(r)
                             && !is_unread_schema_hold(r)
+                            && !is_declined_work_hold(r)
                             && undeclared_refusal_of(r).is_none()
                             && !all_tool_executions[i + 1..].iter().any(|later| {
                                 !later.is_error
@@ -18736,6 +18738,84 @@ mod tests {
             result.clarify.is_none(),
             "the model went on, so the user is not asked"
         );
+    }
+
+    /// A model that stops after the declined-work hold to ask the user, naming
+    /// the decision, is heard as it wrote: neither the unsurfaced-failure
+    /// rewrite nor the backstops replace its question.
+    #[tokio::test]
+    async fn a_model_that_stops_after_the_declined_hold_to_ask_the_user_is_heard_unchanged() {
+        const ASK: &str = "A decision records that \"A GraphQL API will not be built\". \
+                           Shall I leave it, or create the task anyway?";
+        let engine = MockEngine::new(vec![
+            one_call_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                json!({"query": "build a REST API"}),
+            ),
+            one_call_round(
+                "c1",
+                "create_node",
+                json!({"node_type": "task", "content": "Build a REST API"}),
+            ),
+            text_round(ASK),
+        ]);
+        let registry = MockToolExecutor::new()
+            .with_tool(
+                "search_semantic",
+                json!({}),
+                json!({"count": 1, "results": [
+                    {"id": "nodespace://d1", "title": "A GraphQL API will not be built", "type": "decision"}
+                ]}),
+            )
+            .with_tool("create_node", json!({}), json!({"id": "nodespace://t1"}));
+        let mut candidate = skill_candidate("creating", 0.9, &["create_node", "search_semantic"]);
+        candidate.id = crate::skill_pipeline::CREATING_A_TASK_SKILL_ID.to_string();
+        candidate.role = nodespace_core::models::SkillRole::Procedure;
+        let exec = RoutingToolExecutor::new(registry, vec![candidate]);
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "Add a task to build a REST API.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.response, ASK);
+        assert!(result.clarify.is_none());
+    }
+
+    /// The backstop for a refused write does not list the declined-work hold
+    /// among the failures it reports: it is the guard working.
+    #[test]
+    fn a_declined_hold_is_not_reported_as_a_failure_by_the_refusal_backstop() {
+        let mut session = new_session();
+        let refused_create = ToolExecutionRecord {
+            tool_call_id: "tc".into(),
+            name: "create_node".into(),
+            args: json!({"node_type": "task", "effort": 5}),
+            result: json!({"error": "refused",
+                           "refused": {"node_type": "task", "keys": ["effort"]}}),
+            is_error: true,
+            duration_ms: 0,
+        };
+        let mut hold = held_create_result("", Vec::new()).tool_calls_made.remove(0);
+        hold.args = json!({"node_type": "task", "content": "Build a GraphQL API"});
+        let mut result = turn_with(vec![refused_create, hold], "Done, effort 5 is set.");
+        undeclared_refusal_backstop(&mut session, &mut result, "Done, effort 5 is set.");
+        assert!(
+            result
+                .response
+                .contains("'effort' is not a field of 'task'"),
+            "{}",
+            result.response
+        );
+        assert!(!result.response.contains("couldn't"), "{}", result.response);
     }
 
     #[tokio::test]
