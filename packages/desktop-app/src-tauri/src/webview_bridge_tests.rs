@@ -125,7 +125,9 @@ fn the_committed_tauri_config_is_the_production_one() {
     );
 
     // `default-src` does not cover these two, so each is named on its own.
-    let csp = config["app"]["security"]["csp"].as_str().expect("the CSP is a string");
+    let csp = config["app"]["security"]["csp"]
+        .as_str()
+        .expect("the CSP is a string");
     let directives: Vec<&str> = csp.split(';').map(str::trim).collect();
     assert!(directives.contains(&"base-uri 'self'"));
     assert!(directives.contains(&"form-action 'self'"));
