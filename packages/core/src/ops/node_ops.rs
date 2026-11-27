@@ -209,12 +209,61 @@ fn parse_error(e: impl std::fmt::Debug) -> OpsError {
     OpsError::InvalidParams(format!("Failed to parse markdown: {e:?}"))
 }
 
+/// Give a single block with no front matter the type and content the importer
+/// gives it. A `text` create takes the parsed node type, content and
+/// properties (a heading is a `header`, a checklist line a `checkbox`, a bullet
+/// line a `text` without its marker). Any other document type is a named
+/// record, so its type is kept and the block is its title: a heading loses its
+/// marker, a plain paragraph is stored as given, and a block that cannot be a
+/// title is refused, as the first line of a longer document is.
+fn apply_single_block(
+    input: &mut CreateNodeInput,
+    block: crate::markdown::PreparedNode,
+) -> Result<(), OpsError> {
+    if crate::models::CoreNodeType::Text.is_exactly(&input.node_type) {
+        input.node_type = block.node_type;
+        input.content = block.content;
+        let mut merged = match block.properties {
+            Value::Object(parsed) => parsed,
+            _ => serde_json::Map::new(),
+        };
+        match std::mem::take(&mut input.properties) {
+            Value::Object(given) => merged.extend(given),
+            Value::Null => {}
+            other => {
+                input.properties = other;
+                return Err(OpsError::InvalidParams(
+                    "properties must be an object".to_string(),
+                ));
+            }
+        }
+        input.properties = Value::Object(merged);
+        return Ok(());
+    }
+    let first_line = input
+        .content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default();
+    if let Some(problem) = crate::markdown::title_line_problem(first_line) {
+        return Err(OpsError::InvalidParams(format!(
+            "The content of a {} is its title, and it must be a plain line or a heading; this \
+             one is {problem}",
+            input.node_type
+        )));
+    }
+    if crate::models::CoreNodeType::Header.is_exactly(&block.node_type) {
+        input.content = crate::markdown::root_content_for_title(first_line, false);
+    }
+    Ok(())
+}
+
 /// Turn the content of a create into a document: the root takes the title
 /// and the front matter, and the rest is parsed into children by the
-/// importer's parser. Does nothing for a type that is not a document type, or
-/// for content that is a single block with no front matter, which is stored as
-/// given. Refuses (so nothing is created) content whose first line cannot be
-/// a title, and a front matter block that does not parse.
+/// importer's parser. Does nothing for a type that is not a document type. A
+/// single block with no front matter stays one node, with the type and content
+/// [`apply_single_block`] gives it. Refuses (so nothing is created) content whose first
+/// line cannot be a title, and a front matter block that does not parse.
 async fn split_document(
     node_service: &Arc<NodeService>,
     input: &mut CreateNodeInput,
@@ -253,10 +302,12 @@ async fn split_document(
         None => input.content.clone(),
     };
 
-    // A single block is the node's own content, as it has always been.
     let blocks =
         crate::markdown::prepare_nodes_from_markdown(&document, None).map_err(parse_error)?;
     if front_matter.is_none() && blocks.len() <= 1 {
+        if let Some(block) = blocks.into_iter().next() {
+            apply_single_block(input, block)?;
+        }
         return Ok(None);
     }
 

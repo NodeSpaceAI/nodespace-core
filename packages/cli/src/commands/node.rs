@@ -111,7 +111,11 @@ pub struct CreateArgs {
     /// Node type, e.g. `text`, `task`, `date`.
     #[arg(long = "type")]
     pub node_type: String,
-    /// Content (plain text or markdown). For a document type (`text`, `task`,
+    /// Content (plain text or markdown). A single block with `--type text`
+    /// becomes the node type and content an import of it gives (`## x` a
+    /// `header`, `- [ ] x` a `checkbox`, a bullet line a `text` without its
+    /// marker, a plain line stays `text`); another document type keeps its type
+    /// and takes the line as its title. For a document type (`text`, `task`,
     /// `project`, `spec`, `plan`, `decision`) given more than one block, the
     /// first line is the node's content (a leading `#` marker is dropped) and
     /// the rest is parsed into child nodes, as `import file` parses it; a
@@ -529,6 +533,7 @@ async fn create(
     journal: &WriteJournal,
 ) -> Result<()> {
     let properties = merge_properties(args.properties_json, args.properties).unwrap_or_default();
+    let requested_type = args.node_type.clone();
 
     let response = client
         .create_document(CreateNodeRequest {
@@ -548,7 +553,22 @@ async fn create(
 
     let node = response.node_data.context("daemon returned no node_data")?;
     journal.record(&node.id, node.version);
+    if let Some(note) = created_type_note(&requested_type, &node.node_type) {
+        eprintln!("{note}");
+    }
     output::print_node(&node, json)
+}
+
+/// The note that names the type a create made when it is not the one asked
+/// for: one block of markup given as `text` becomes the node it stands for.
+fn created_type_note(requested: &str, created: &str) -> Option<String> {
+    (requested != created).then(|| {
+        format!(
+            "created a `{}` node, not `{}`: the content is read as markdown",
+            crate::commands::skill::sanitize_for_terminal(created),
+            requested
+        )
+    })
 }
 
 async fn update(
@@ -1143,8 +1163,8 @@ async fn record_batch(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_missing_node, merge_properties, missing_node_json, CreateArgs, NodeAction,
-        VersionConflict,
+        created_type_note, is_missing_node, merge_properties, missing_node_json, CreateArgs,
+        NodeAction, VersionConflict,
     };
     use clap::Parser;
 
@@ -1342,6 +1362,16 @@ mod tests {
             } => Ok(args),
             other => panic!("expected node create, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_create_note_names_the_type_only_when_it_differs() {
+        assert_eq!(created_type_note("text", "text"), None);
+        let note = created_type_note("text", "header").unwrap();
+        assert!(
+            note.contains("`header`") && note.contains("`text`"),
+            "{note}"
+        );
     }
 
     // A checklist item's content is `- [ ] ...`. The implementing procedure

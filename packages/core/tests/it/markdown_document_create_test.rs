@@ -129,20 +129,126 @@ async fn the_titles_heading_marker_is_stripped_in_every_shape() {
     assert_eq!(root.content, "Title");
 }
 
+/// What an import of `line` gives its one node: the type and content.
+fn imported(line: &str) -> (String, String) {
+    let nodes = prepare_nodes_from_markdown(line, None).unwrap();
+    assert_eq!(nodes.len(), 1, "{line:?} is one block");
+    (nodes[0].node_type.clone(), nodes[0].content.clone())
+}
+
+async fn created_as(svc: &Arc<NodeService>, node_type: &str, content: &str) -> (String, String) {
+    let out = create_document_node(svc, input(node_type, content))
+        .await
+        .unwrap();
+    let node = svc.get_node(&out.node_id).await.unwrap().unwrap();
+    assert_eq!(out.node_type, node.node_type, "the result names the type");
+    assert!(svc.get_children(&out.node_id).await.unwrap().is_empty());
+    (node.node_type, node.content)
+}
+
 #[tokio::test]
-async fn a_single_block_is_stored_as_given() {
+async fn a_single_block_given_as_text_takes_the_type_an_import_gives_it() {
     let (svc, _tmp) = test_service().await;
-    for content in [
-        "Just a title",
-        "# A heading only",
-        "two lines\nof one paragraph",
+    let lines = [
+        "## Context",
+        "- [ ] item",
+        "- [x] done",
+        "> a quote",
+        "```rust\nfn a() {}\n```",
+        "1. first",
+        "| a | b |\n|---|---|\n| 1 | 2 |",
+        "---",
+        "- item",
+    ];
+    for line in lines {
+        let expected = imported(line);
+        assert_eq!(created_as(&svc, "text", line).await, expected, "{line:?}");
+    }
+    assert_eq!(imported("## Context").0, "header");
+    assert_eq!(imported("- [ ] item").0, "checkbox");
+    assert_eq!(imported("- item"), ("text".to_string(), "item".to_string()));
+}
+
+#[tokio::test]
+async fn a_caller_property_reaches_the_write_for_the_node_a_single_text_block_becomes() {
+    let (svc, _tmp) = test_service().await;
+    // A header declares no `nope` field, so the closed type refuses it by
+    // name: the caller's property was carried onto the parsed node.
+    let mut request = input("text", "## Context");
+    request.properties = json!({ "nope": 1 });
+    let err = create_document_node(&svc, request).await.unwrap_err();
+    assert!(err.to_string().contains("'nope'"), "{err}");
+    assert!(err.to_string().contains("header"), "{err}");
+}
+
+#[tokio::test]
+async fn a_single_text_block_with_properties_that_are_not_an_object_is_refused() {
+    let (svc, _tmp) = test_service().await;
+    let mut request = input("text", "## Context");
+    request.properties = json!("nope");
+    let err = create_document_node(&svc, request).await.unwrap_err();
+    assert!(matches!(err, OpsError::InvalidParams(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_plain_line_given_as_text_stays_text_as_given() {
+    let (svc, _tmp) = test_service().await;
+    assert_eq!(
+        created_as(&svc, "text", "Just a line").await,
+        ("text".to_string(), "Just a line".to_string())
+    );
+}
+
+#[tokio::test]
+async fn a_single_block_given_as_another_document_type_keeps_the_type() {
+    let (svc, _tmp) = test_service().await;
+    for (content, title) in [
+        ("# Title", "Title"),
+        ("### Deep title", "Deep title"),
+        ("Just a title", "Just a title"),
+        ("two lines\nof one paragraph", "two lines\nof one paragraph"),
     ] {
-        let out = create_document_node(&svc, input("decision", content))
+        for node_type in ["task", "decision", "issue"] {
+            assert_eq!(
+                created_as(&svc, node_type, content).await,
+                (node_type.to_string(), title.to_string()),
+                "{node_type} {content:?}"
+            );
+        }
+    }
+    // The first line of a document of several blocks is stored the same way.
+    let out = create_document_node(&svc, input("task", "# Title\n\nbody"))
+        .await
+        .unwrap();
+    assert_eq!(
+        svc.get_node(&out.node_id).await.unwrap().unwrap().content,
+        "Title"
+    );
+}
+
+#[tokio::test]
+async fn a_single_block_that_cannot_be_a_title_is_refused_for_a_named_record() {
+    let (svc, _tmp) = test_service().await;
+    for content in ["- [ ] item", "- item", "> quote", "---", "1. one"] {
+        let err = create_document_node(&svc, input("task", content))
             .await
-            .unwrap();
-        let root = svc.get_node(&out.node_id).await.unwrap().unwrap();
-        assert_eq!(root.content, content);
-        assert!(svc.get_children(&out.node_id).await.unwrap().is_empty());
+            .unwrap_err();
+        assert!(matches!(err, OpsError::InvalidParams(_)), "{content:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_single_block_given_as_a_type_that_is_not_a_document_type_is_stored_as_given() {
+    let (svc, _tmp) = test_service().await;
+    for (node_type, content) in [
+        ("quote-block", "## not a header"),
+        ("code-block", "- [ ] not a checkbox"),
+        ("header", "## kept"),
+    ] {
+        assert_eq!(
+            created_as(&svc, node_type, content).await,
+            (node_type.to_string(), content.to_string())
+        );
     }
 }
 
